@@ -32,9 +32,9 @@
     },
     {
       group: '门诊挂号台', children: [
-        { key: 'patient', label: '患者建档/查询', phase: 'P1b' },
-        { key: 'register', label: '门诊挂号', phase: 'P1b' },
-        { key: 'unregister', label: '退号', phase: 'P1b' }
+        { key: 'patient', label: '患者建档/查询', comp: 'PatientManage' },
+        { key: 'register', label: '门诊挂号', comp: 'RegistrationDesk' },
+        { key: 'unregister', label: '退号', comp: 'UnregisterDesk' }
       ]
     },
     {

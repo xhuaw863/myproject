@@ -68,6 +68,9 @@ public class MockYbServer {
             case "2201":
                 output = mockRegister(input);
                 break;
+            case "2202":
+                // 挂号撤销: 无输出节点, infcode=0 即成功
+                break;
             case "2204": case "2301":
                 output = mockFeeDetail(input);
                 break;

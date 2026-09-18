@@ -39,6 +39,17 @@ public class OutpatientService {
     }
 
     /**
+     * 【2202】门诊挂号撤销
+     * 输入节点: data(psn_no, mdtrt_id, ipt_otp_no) ; 输出: 无
+     */
+    public YbResponse cancelRegister(OutpatientRegisterCancelReq req) {
+        log.info("门诊挂号撤销: psnNo={}, mdtrtId={}, iptOtpNo={}", req.getPsnNo(), req.getMdtrtId(), req.getIptOtpNo());
+        Map<String, Object> input = new LinkedHashMap<>();
+        input.put("data", req);
+        return ybHttpClient.call("2202", input);
+    }
+
+    /**
      * 【2203】门诊就诊信息上传
      * 输入节点: mdtrtinfo(单行) + diseinfo(多行)
      */

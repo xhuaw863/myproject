@@ -29,6 +29,12 @@ public class OutpatientController {
         return outpatientService.register(req);
     }
 
+    /** 【2202】门诊挂号撤销 */
+    @PostMapping("/register-cancel")
+    public YbResponse cancelRegister(@RequestBody OutpatientRegisterCancelReq req) {
+        return outpatientService.cancelRegister(req);
+    }
+
     /** 【2203】门诊就诊信息上传 */
     @PostMapping("/visit-info")
     public YbResponse uploadVisitInfo(@RequestBody VisitInfoUploadReq req) {
