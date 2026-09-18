@@ -65,6 +65,29 @@
   HIS.put = function (url, body) { return HIS.request('PUT', url, body); };
   HIS.del = function (url) { return HIS.request('DELETE', url); };
 
+  /* 原始请求: 附带令牌, 原样返回解析后的 JSON(不校验 code 信封)。
+   * 用于返回 YbResponse/Map 等非 R 结构的旧接口(如字典下载)。
+   */
+  HIS.raw = function (method, url, body) {
+    var headers = { 'Content-Type': 'application/json' };
+    var token = HIS.getToken();
+    if (token) { headers['Authorization'] = 'Bearer ' + token; }
+    return fetch(url, {
+      method: method,
+      headers: headers,
+      body: body == null ? undefined : JSON.stringify(body)
+    }).then(function (resp) {
+      return resp.json().catch(function () { throw new Error('响应解析失败(HTTP ' + resp.status + ')'); });
+    }).then(function (data) {
+      if (data && data.code === 401) {
+        HIS.logout();
+        if (typeof HIS.onUnauthorized === 'function') { HIS.onUnauthorized(); }
+        throw new Error(data.msg || '未登录或登录已过期');
+      }
+      return data;
+    });
+  };
+
   /* 统一异常提示 */
   HIS.notifyError = function (e) {
     if (window.ElementPlus && ElementPlus.ElMessage) {

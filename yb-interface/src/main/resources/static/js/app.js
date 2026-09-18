@@ -17,17 +17,17 @@
     },
     {
       group: '基础数据', children: [
-        { key: 'dept', label: '科室管理', phase: 'P1a' },
-        { key: 'staff', label: '职工管理', phase: 'P1a' },
-        { key: 'schedule', label: '排班号源', phase: 'P1a' },
-        { key: 'charge-item', label: '收费项目对照', phase: 'P1a' }
+        { key: 'dept', label: '科室管理', comp: 'DeptManage' },
+        { key: 'staff', label: '职工管理', comp: 'StaffManage' },
+        { key: 'schedule', label: '排班号源', comp: 'ScheduleManage' },
+        { key: 'charge-item', label: '收费项目对照', comp: 'ChargeItemManage' }
       ]
     },
     {
       group: '医保字典', children: [
-        { key: 'dict-download', label: '字典下载', phase: 'P1a' },
-        { key: 'dict-version', label: '版本状态', phase: 'P1a' },
-        { key: 'dict-map', label: '目录对照', phase: 'P1a' }
+        { key: 'dict-download', label: '字典下载', comp: 'DictDownload' },
+        { key: 'dict-version', label: '版本状态', comp: 'DictVersion' },
+        { key: 'dict-map', label: '目录对照', comp: 'DictMap' }
       ]
     },
     {
