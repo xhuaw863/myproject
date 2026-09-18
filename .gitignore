@@ -1,0 +1,26 @@
+# ===== Build output =====
+target/
+*.class
+*.jar
+*.war
+
+# ===== Logs =====
+*.log
+logs/
+
+# ===== Runtime downloaded dict files =====
+yb-interface/data/
+
+# ===== IDE =====
+.idea/
+*.iml
+*.ipr
+*.iws
+.vscode/
+
+# ===== OS =====
+.DS_Store
+Thumbs.db
+
+# ===== Temporary verification screenshots =====
+step*.png

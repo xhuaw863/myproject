@@ -1,0 +1,84 @@
+server:
+  port: 8080
+  servlet:
+    encoding:
+      charset: UTF-8
+      force: true
+
+spring:
+  application:
+    name: yb-interface
+  datasource:
+    driver-class-name: com.mysql.cj.jdbc.Driver
+    url: jdbc:mysql://localhost:3306/yb_interface?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai&useSSL=false&allowPublicKeyRetrieval=true
+    username: root
+    password: bsoft
+    hikari:
+      minimum-idle: 5
+      maximum-pool-size: 20
+      connection-timeout: 30000
+
+mybatis-plus:
+  type-aliases-package: com.yb.hi.entity
+  configuration:
+    map-underscore-to-camel-case: true
+    log-impl: org.apache.ibatis.logging.stdout.StdOutImpl
+  global-config:
+    db-config:
+      id-type: auto
+      logic-delete-field: null
+
+# 医保接口配置
+yb:
+  # 模拟医保平台模式: true-本地模拟响应(界面验证用), false-调用真实医保平台
+  mock-enabled: true
+  # 交易接口地址(地方医保局前置机)
+  api-url: http://127.0.0.1:8000/hsa-mdtrt/api/medical/insurance
+  # 字典文件下载地址
+  file-download-url: http://127.0.0.1:8000/hsa-mdtrt/api/medical/download
+  # 定点医药机构编号(12位)
+  fixmedins-code: H42010000000
+  # 定点医药机构名称
+  fixmedins-name: 测试医院
+  # 就医地区行政区划
+  mdtrtarea-admvs: "420100"
+  # 接收方系统编码
+  recer-sys-code: HIS
+  # 接口版本号
+  infver: "V1.0"
+  # 经办人类别(1-医保经办 2-定点医药机构)
+  opter-type: "2"
+  # 经办人编号
+  opter: admin
+  # 经办人姓名
+  opter-name: 管理员
+  # 签名证书编号
+  sign-no: ""
+  # SM2 私钥(Base64), 配置后启用真实SM2签名
+  sm2-private-key: ""
+  # SM2 公钥(Base64)
+  sm2-public-key: ""
+  # 加密类型
+  enc-type: ""
+  # 字典文件本地保存路径
+  dict-file-path: ./data/dict/
+  # 连接超时(毫秒)
+  connect-timeout: 30000
+  # 读取超时(毫秒)
+  read-timeout: 60000
+
+logging:
+  level:
+    com.yb.hi: debug
+    org.springframework: info
+
+# HIS 应用配置
+his:
+  jwt:
+    # 令牌签名密钥(生产环境务必修改)
+    secret: yb-his-default-secret-key-2026
+    # 令牌有效期(分钟)
+    expire-minutes: 720
+  demo-data:
+    # 启动时幂等初始化演示医院与管理员账号
+    enabled: true

@@ -1,0 +1,242 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>医保接口对接验证台</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: "Microsoft YaHei", sans-serif; background: #f0f2f5; color: #333; font-size: 14px; }
+  header { background: #1a5fb4; color: #fff; padding: 12px 24px; display: flex; align-items: center; gap: 16px; }
+  header h1 { font-size: 18px; font-weight: 600; }
+  .badge { padding: 2px 10px; border-radius: 10px; font-size: 12px; background: rgba(255,255,255,.2); }
+  .badge.mock { background: #e6a23c; }
+  .badge.real { background: #67c23a; }
+  .tip { margin-left: auto; font-size: 12px; opacity: .9; }
+  nav { background: #fff; padding: 0 24px; border-bottom: 1px solid #e4e7ed; display: flex; }
+  nav button { border: none; background: none; padding: 12px 20px; cursor: pointer; font-size: 14px; color: #606266; border-bottom: 2px solid transparent; }
+  nav button.active { color: #1a5fb4; border-bottom-color: #1a5fb4; font-weight: 600; }
+  main { padding: 20px 24px; }
+  .tab-page { display: none; }
+  .tab-page.active { display: block; }
+  .card { background: #fff; border-radius: 6px; padding: 18px 20px; margin-bottom: 16px; box-shadow: 0 1px 4px rgba(0,0,0,.06); }
+  .card h3 { font-size: 15px; margin-bottom: 14px; color: #1a5fb4; border-left: 3px solid #1a5fb4; padding-left: 8px; }
+  .grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; }
+  .field { display: flex; flex-direction: column; gap: 4px; }
+  .field label { font-size: 12px; color: #909399; }
+  .field input, .field select { padding: 6px 8px; border: 1px solid #dcdfe6; border-radius: 4px; font-size: 13px; }
+  .btns { margin-top: 14px; display: flex; gap: 10px; flex-wrap: wrap; }
+  button.act { padding: 7px 16px; border: none; border-radius: 4px; background: #1a5fb4; color: #fff; cursor: pointer; font-size: 13px; }
+  button.act:hover { background: #17498a; }
+  button.act.warn { background: #e6a23c; }
+  button.act.danger { background: #f56c6c; padding: 4px 10px; }
+  button.act.plain { background: #909399; }
+  .result { margin-top: 12px; padding: 8px 12px; border-radius: 4px; font-size: 13px; background: #f4f4f5; color: #909399; }
+  .result.ok { background: #f0f9eb; color: #67c23a; }
+  .result.err { background: #fef0f0; color: #f56c6c; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th, td { border: 1px solid #ebeef5; padding: 7px 10px; text-align: left; }
+  th { background: #f5f7fa; color: #606266; font-weight: 600; }
+  td input { width: 100%; padding: 4px 6px; border: 1px solid #dcdfe6; border-radius: 3px; }
+  .log-item { border: 1px solid #ebeef5; border-radius: 4px; margin-bottom: 8px; overflow: hidden; }
+  .log-item .row { padding: 8px 12px; background: #fafafa; cursor: pointer; display: flex; align-items: center; gap: 10px; }
+  .log-item .row .t { color: #909399; font-size: 12px; }
+  .log-item .code.ok { color: #67c23a; }
+  .log-item .code.err { color: #f56c6c; }
+  .log-item pre { display: none; padding: 12px; background: #282c34; color: #abb2bf; font-size: 12px; overflow-x: auto; white-space: pre-wrap; }
+  .log-item.open pre { display: block; }
+  .total { font-weight: 600; color: #f56c6c; }
+</style>
+</head>
+<body>
+<header>
+  <h1>医保接口对接验证台</h1>
+  <span class="badge mock" id="badge-mode">-</span>
+  <span class="badge" id="badge-fix">-</span>
+  <span class="tip">需先在 HIS 主系统登录后使用(共享登录令牌)</span>
+</header>
+<nav>
+  <button data-tab="dict" class="active">字典下载</button>
+  <button data-tab="outpatient">门诊业务</button>
+  <button data-tab="inpatient">住院业务</button>
+  <button data-tab="data">数据验证</button>
+  <button data-tab="log">报文日志</button>
+</nav>
+<main>
+  <!-- 字典下载 -->
+  <section class="tab-page active" id="dict">
+    <div class="card">
+      <h3>基础字典下载(1301-1307)</h3>
+      <div class="btns">
+        <button class="act" onclick="dlDict('drug')">1301 西药中成药</button>
+        <button class="act" onclick="dlDict('tcm')">1302 中药饮片</button>
+        <button class="act" onclick="dlDict('preparation')">1303 医疗机构制剂</button>
+        <button class="act" onclick="dlDict('med-service')">1305 医疗服务项目</button>
+        <button class="act" onclick="dlDict('consumable')">1306 医用耗材</button>
+        <button class="act" onclick="dlDict('disease')">1307 疾病与诊断</button>
+        <button class="act warn" onclick="dlDictAll()">下载全部</button>
+      </div>
+      <div class="result" id="dict-result">尚未执行</div>
+    </div>
+    <div class="card">
+      <h3>字典版本状态</h3>
+      <table id="dict-ver-table">
+        <thead><tr><th>字典类型</th><th>字典名称</th><th>交易号</th><th>本地版本</th><th>最近下载</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- 门诊业务 -->
+  <section class="tab-page" id="outpatient">
+    <div class="card">
+      <h3>2201 门诊挂号</h3>
+      <div class="grid">
+        <div class="field"><label>人员编号 psn_no</label><input id="op-psnno" value="P001"></div>
+        <div class="field"><label>险种 insutype</label><input id="op-insutype" value="310"></div>
+        <div class="field"><label>凭证类型</label><input id="op-certtype" value="01"></div>
+        <div class="field"><label>凭证编号</label><input id="op-certno" value="420100200001010001"></div>
+        <div class="field"><label>门诊号 ipt_otp_no</label><input id="op-iptotpno"></div>
+        <div class="field"><label>科室编码</label><input id="op-deptcode" value="01"></div>
+        <div class="field"><label>科室名称</label><input id="op-deptname" value="内科"></div>
+        <div class="field"><label>科别 caty</label><input id="op-caty" value="普通"></div>
+        <div class="field"><label>医疗类别 med_type</label><input id="op-medtype" value="11"></div>
+        <div class="field"><label>就诊ID mdtrt_id</label><input id="op-mdtrtid" readonly></div>
+      </div>
+      <div class="btns"><button class="act" onclick="opRegister()">挂号</button></div>
+      <div class="result" id="op-reg-result">尚未执行</div>
+    </div>
+    <div class="card">
+      <h3>2203 门诊就诊信息上传</h3>
+      <div class="grid">
+        <div class="field"><label>诊断代码</label><input id="op-diagcode" value="J06.900"></div>
+        <div class="field"><label>诊断名称</label><input id="op-diagname" value="急性上呼吸道感染"></div>
+      </div>
+      <div class="btns"><button class="act" onclick="opVisitInfo()">上传就诊信息</button></div>
+      <div class="result" id="op-visit-result">尚未执行</div>
+    </div>
+    <div class="card">
+      <h3>2204 门诊费用明细上传</h3>
+      <div class="grid">
+        <div class="field"><label>医疗目录编码</label><input id="op-new-medcodg" value="X1"></div>
+        <div class="field"><label>数量</label><input id="op-new-cnt" type="number" value="1"></div>
+        <div class="field"><label>单价</label><input id="op-new-pric" type="number" value="100"></div>
+        <div class="field"><label>收费批次号</label><input id="op-bchno"></div>
+      </div>
+      <div class="btns"><button class="act plain" onclick="addOpFeeRow()">添加明细行</button></div>
+      <table><thead><tr><th>明细号</th><th>目录编码</th><th>院内编码</th><th>数量</th><th>单价</th><th>金额</th><th>操作</th></tr></thead>
+        <tbody id="op-fee-body"></tbody>
+        <tfoot><tr><td colspan="5">合计</td><td class="total" id="op-fee-total">0.00</td><td></td></tr></tfoot>
+      </table>
+      <div class="btns"><button class="act" onclick="opFeeUpload()">上传费用明细</button></div>
+      <div class="result" id="op-fee-result">尚未执行</div>
+    </div>
+    <div class="card">
+      <h3>2206/2207/2208 门诊结算</h3>
+      <div class="grid">
+        <div class="field"><label>医疗费总额</label><input id="op-medfee" value="0.00"></div>
+        <div class="field"><label>结算方式 psn_setlway</label><input id="op-setlway" value="01"></div>
+        <div class="field"><label>账户使用标志</label><input id="op-acctflag" value="0"></div>
+        <div class="field"><label>发票号 invono</label><input id="op-invono" value="INV0001"></div>
+      </div>
+      <div class="btns">
+        <button class="act" onclick="opPreSetl()">2206 预结算</button>
+        <button class="act warn" onclick="opSetl()">2207 结算</button>
+        <button class="act danger" onclick="opCancel()">2208 撤销</button>
+      </div>
+      <div class="result" id="op-setl-result">尚未执行</div>
+    </div>
+  </section>
+
+  <!-- 住院业务 -->
+  <section class="tab-page" id="inpatient">
+    <div class="card">
+      <h3>2401 入院办理</h3>
+      <div class="grid">
+        <div class="field"><label>人员编号</label><input id="ip-psnno" value="P002"></div>
+        <div class="field"><label>险种</label><input id="ip-insutype" value="310"></div>
+        <div class="field"><label>医疗类别</label><input id="ip-medtype" value="21"></div>
+        <div class="field"><label>住院号 ipt_no</label><input id="ip-iptno"></div>
+        <div class="field"><label>医师编码</label><input id="ip-drcode" value="D002"></div>
+        <div class="field"><label>医师姓名</label><input id="ip-drname" value="李医生"></div>
+        <div class="field"><label>入院科室编码</label><input id="ip-deptcodg" value="02"></div>
+        <div class="field"><label>入院科室名称</label><input id="ip-deptname" value="外科"></div>
+        <div class="field"><label>床位</label><input id="ip-bed" value="01"></div>
+        <div class="field"><label>诊断代码</label><input id="ip-diagcode" value="K35.900"></div>
+        <div class="field"><label>诊断名称</label><input id="ip-diagname" value="急性阑尾炎"></div>
+        <div class="field"><label>就诊ID</label><input id="ip-mdtrtid" readonly></div>
+      </div>
+      <div class="btns"><button class="act" onclick="ipAdmission()">入院登记</button></div>
+      <div class="result" id="ip-adm-result">尚未执行</div>
+    </div>
+    <div class="card">
+      <h3>2301 住院费用明细上传</h3>
+      <div class="grid">
+        <div class="field"><label>医疗目录编码</label><input id="ip-new-medcodg" value="Y1"></div>
+        <div class="field"><label>数量</label><input id="ip-new-cnt" type="number" value="1"></div>
+        <div class="field"><label>单价</label><input id="ip-new-pric" type="number" value="5000"></div>
+      </div>
+      <div class="btns"><button class="act plain" onclick="addIpFeeRow()">添加明细行</button></div>
+      <table><thead><tr><th>明细号</th><th>目录编码</th><th>院内编码</th><th>数量</th><th>单价</th><th>金额</th><th>操作</th></tr></thead>
+        <tbody id="ip-fee-body"></tbody>
+        <tfoot><tr><td colspan="5">合计</td><td class="total" id="ip-fee-total">0.00</td><td></td></tr></tfoot>
+      </table>
+      <div class="btns"><button class="act" onclick="ipFeeUpload()">上传费用明细</button></div>
+      <div class="result" id="ip-fee-result">尚未执行</div>
+    </div>
+    <div class="card">
+      <h3>2303/2304/2305 住院结算</h3>
+      <div class="grid">
+        <div class="field"><label>医疗费总额</label><input id="ip-medfee" value="0.00"></div>
+        <div class="field"><label>结算方式</label><input id="ip-setlway" value="01"></div>
+        <div class="field"><label>账户使用标志</label><input id="ip-acctflag" value="0"></div>
+        <div class="field"><label>发票号</label><input id="ip-invono" value="INV0002"></div>
+      </div>
+      <div class="btns">
+        <button class="act" onclick="ipPreSetl()">2303 预结算</button>
+        <button class="act warn" onclick="ipSetl()">2304 结算</button>
+        <button class="act danger" onclick="ipCancel()">2305 撤销</button>
+      </div>
+      <div class="result" id="ip-setl-result">尚未执行</div>
+    </div>
+    <div class="card">
+      <h3>2402 出院办理</h3>
+      <div class="grid">
+        <div class="field"><label>出院科室编码</label><input id="ip-dscgdept" value="02"></div>
+        <div class="field"><label>出院科室名称</label><input id="ip-dscgdeptname" value="外科"></div>
+        <div class="field"><label>离院方式 dscg_way</label><input id="ip-dscgway" value="1"></div>
+      </div>
+      <div class="btns"><button class="act" onclick="ipDischarge()">出院登记</button></div>
+      <div class="result" id="ip-dscg-result">尚未执行</div>
+    </div>
+  </section>
+
+  <!-- 数据验证 -->
+  <section class="tab-page" id="data">
+    <div class="card">
+      <h3>结算记录留存(本地库) <button class="act plain" style="float:right" onclick="loadSetlRecords()">刷新</button></h3>
+      <table id="setl-table">
+        <thead><tr><th>ID</th><th>结算ID</th><th>就诊ID</th><th>患者</th><th>业务</th><th>交易号</th><th>总额</th><th>基金</th><th>现金</th><th>状态</th><th>结算时间</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+    <div class="card">
+      <h3>字典版本状态</h3>
+      <table id="dict-ver-table2">
+        <thead><tr><th>字典类型</th><th>字典名称</th><th>交易号</th><th>本地版本</th><th>最近下载</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- 报文日志 -->
+  <section class="tab-page" id="log">
+    <div class="card">
+      <h3>报文交互日志 <button class="act plain" style="float:right" onclick="clearLog()">清空</button></h3>
+      <div id="log-body"></div>
+    </div>
+  </section>
+</main>
+<script src="/verify/app.js"></script>
+</body>
+</html>

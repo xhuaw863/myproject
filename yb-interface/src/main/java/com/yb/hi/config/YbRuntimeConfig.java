@@ -1,0 +1,26 @@
+package com.yb.hi.config;
+
+import lombok.Data;
+
+/**
+ * 医保接口运行时配置(按当前租户解析后的最终生效值)
+ * 由 TenantYbConfigResolver 合并"全局默认(YbConfig) + 租户配置(sys_tenant)"得到。
+ */
+@Data
+public class YbRuntimeConfig {
+    private String apiUrl;
+    private String fileDownloadUrl;
+    private String fixmedinsCode;
+    private String fixmedinsName;
+    private String mdtrtareaAdmvs;
+    private String recerSysCode;
+    private String infver;
+    private String opterType;
+    private String opter;
+    private String opterName;
+    private String signNo;
+    private String sm2PrivateKey;
+    private String sm2PublicKey;
+    private String encType;
+    private boolean mockEnabled = true;
+}
