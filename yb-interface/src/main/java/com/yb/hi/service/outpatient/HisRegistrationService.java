@@ -21,6 +21,7 @@ import com.yb.hi.service.OutpatientService;
 import com.yb.hi.service.basedata.HisDeptService;
 import com.yb.hi.service.basedata.HisScheduleService;
 import com.yb.hi.service.basedata.HisStaffService;
+import com.yb.hi.service.doctor.HisVisitService;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -44,15 +45,17 @@ public class HisRegistrationService extends ServiceImpl<HisRegistrationMapper, H
     private final HisStaffService staffService;
     private final HisDeptService deptService;
     private final OutpatientService outpatientService;
+    private final HisVisitService visitService;
 
     public HisRegistrationService(HisPatientService patientService, HisScheduleService scheduleService,
                                   HisStaffService staffService, HisDeptService deptService,
-                                  OutpatientService outpatientService) {
+                                  OutpatientService outpatientService, HisVisitService visitService) {
         this.patientService = patientService;
         this.scheduleService = scheduleService;
         this.staffService = staffService;
         this.deptService = deptService;
         this.outpatientService = outpatientService;
+        this.visitService = visitService;
     }
 
     /** 分页查询挂号记录(按日期区间/状态/患者关键字) */
@@ -162,6 +165,9 @@ public class HisRegistrationService extends ServiceImpl<HisRegistrationMapper, H
         schedule.setLeftNum(schedule.getLeftNum() - 1);
         scheduleService.updateById(schedule);
 
+        // 创建候诊就诊记录(医生站接诊来源)
+        visitService.createFromRegistration(reg, patient);
+
         log.info("挂号成功: regNo={}, mdtrtId={}, patient={}", regNo, mdtrtId, patient.getName());
         return reg;
     }
@@ -193,6 +199,9 @@ public class HisRegistrationService extends ServiceImpl<HisRegistrationMapper, H
         reg.setCancelTime(LocalDateTime.now());
         reg.setCancelReason(reason);
         updateById(reg);
+
+        // 取消候诊就诊记录
+        visitService.cancelByRegistration(reg.getId());
 
         // 回滚号源
         if (reg.getScheduleId() != null) {

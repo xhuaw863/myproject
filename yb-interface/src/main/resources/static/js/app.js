@@ -39,8 +39,8 @@
     },
     {
       group: '医生站', children: [
-        { key: 'doctor-queue', label: '候诊列表', phase: 'P1c' },
-        { key: 'doctor-work', label: '接诊工作台', phase: 'P1c' }
+        { key: 'doctor-queue', label: '候诊列表', comp: 'DoctorQueue' },
+        { key: 'doctor-work', label: '接诊工作台', comp: 'DoctorWork' }
       ]
     },
     {
@@ -199,6 +199,11 @@
     methods: {
       onSelect: function (key) { this.activeKey = key; },
       onCmd: function (c) { if (c === 'logout') { this.$emit('logout'); } }
+    },
+    mounted: function () {
+      var vm = this;
+      /* 全局视图跳转: 供列表页跳转到工作台等场景 */
+      HIS.go = function (key) { vm.activeKey = key; };
     },
     template: [
       '<div class="layout">',
