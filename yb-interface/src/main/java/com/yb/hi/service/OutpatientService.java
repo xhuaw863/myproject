@@ -30,6 +30,8 @@ public class OutpatientService {
     /**
      * 【2201】门诊挂号
      * 输入节点: data ; 输出节点: data(mdtrt_id)
+     * 字段集对齐文档【2201A】(表99, 含 med_type 医疗类别); infno 仍传 "2201"
+     * (国家医保平台门诊挂号交易号即 2201, 2201A 仅为文档对扩展字段集的标注, 非单独交易号)
      */
     public YbResponse register(OutpatientRegisterReq req) {
         log.info("门诊挂号: psnNo={}, iptOtpNo={}", req.getPsnNo(), req.getIptOtpNo());

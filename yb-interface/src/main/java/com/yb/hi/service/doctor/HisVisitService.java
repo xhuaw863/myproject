@@ -203,13 +203,12 @@ public class HisVisitService extends ServiceImpl<HisVisitMapper, HisVisit> {
         if (!CollectionUtils.isEmpty(diagnoses)) {
             for (HisDiagnosis d : diagnoses) {
                 DiseInfoReq di = new DiseInfoReq();
-                di.setMdtrtId(v.getMdtrtId());
-                di.setPsnNo(v.getPsnNo());
+                // 门诊2203的diseinfo节点(文档表103/105)仅含10个字段, 不含mdtrt_id/psn_no/adm_cond(住院2401/2402才需要),
+                // 故此处不设置, 避免向门诊报文夹带文档外字段(DiseInfoReq为门诊/住院共用DTO)
                 di.setDiagType(d.getDiagType());
                 di.setDiagSrtNo(d.getDiagSrtNo());
                 di.setDiagCode(d.getDiagCode());
                 di.setDiagName(d.getDiagName());
-                di.setAdmCond(d.getAdmCond());
                 di.setDiagDept(d.getDiagDept());
                 di.setDiseDorNo(d.getDiseDorNo());
                 di.setDiseDorName(d.getDiseDorName());
