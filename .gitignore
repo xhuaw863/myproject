@@ -24,3 +24,18 @@ Thumbs.db
 
 # ===== Temporary verification screenshots =====
 step*.png
+verify_*.png
+test_avatar.png
+
+# ===== Extraction outputs =====
+*.out
+/extract_*.txt
+
+# ===== Reference material (large binaries, not part of program) =====
+/字典标准/
+~$*
+/*.docx
+/*.pdf
+/*.xlsx
+/*.xls
+/*.zip

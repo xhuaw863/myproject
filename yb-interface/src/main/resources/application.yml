@@ -8,9 +8,21 @@ server:
 spring:
   application:
     name: yb-interface
+  # 文件上传(头像/签名图片)大小限制
+  servlet:
+    multipart:
+      max-file-size: 5MB
+      max-request-size: 10MB
+  # 静态资源(前端 JS/CSS/HTML)不缓存, 每次加载都向服务器重新校验,
+  # 避免浏览器启发式缓存导致前端改动(如新增菜单/视图)不生效
+  web:
+    resources:
+      cache:
+        cachecontrol:
+          no-cache: true
   datasource:
     driver-class-name: com.mysql.cj.jdbc.Driver
-    url: jdbc:mysql://localhost:3306/yb_interface?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai&useSSL=false&allowPublicKeyRetrieval=true
+    url: jdbc:mysql://localhost:3306/yb_interface?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai&useSSL=false&allowPublicKeyRetrieval=true&rewriteBatchedStatements=true
     username: root
     password: bsoft
     hikari:
@@ -82,3 +94,19 @@ his:
   demo-data:
     # 启动时幂等初始化演示医院与管理员账号
     enabled: true
+  upload:
+    # 上传文件本地保存根目录(相对运行目录, 与 dict-file-path 一致风格)
+    path: ./data/upload/
+    # 静态访问URL前缀(WebMvcConfig 映射到 upload.path)
+    url-prefix: /uploads/
+
+# 标准字典(医保编码库/国家临床版/中医分类)导入配置
+std-dict:
+  # 标准字典源文件根目录(字典标准文件夹绝对路径)
+  base-path: D:/study/ybtest/字典标准
+  # 是否启用标准字典导入/查询接口
+  enabled: true
+  # 启动时自动全量导入(默认关闭, 通过接口按需触发)
+  auto-import-on-startup: false
+  # 批量提交大小
+  batch-size: 1000

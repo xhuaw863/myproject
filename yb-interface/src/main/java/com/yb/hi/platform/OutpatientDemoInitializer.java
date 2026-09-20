@@ -69,7 +69,7 @@ public class OutpatientDemoInitializer implements ApplicationRunner {
                 HisPatient e = new HisPatient();
                 e.setName((String) p[0]);
                 e.setGender((String) p[1]);
-                e.setBirthDate(LocalDate.parse((String) p[2]));
+                e.setBirthDate(LocalDate.parse((String) p[2]).atStartOfDay());
                 e.setAge(calcAge((String) p[2]));
                 e.setIdCard((String) p[3]);
                 e.setPhone((String) p[4]);
@@ -78,6 +78,10 @@ public class OutpatientDemoInitializer implements ApplicationRunner {
                 e.setInsuplcAdmdvs((String) p[7]);
                 e.setMdtrtCertType("02");
                 e.setMdtrtCertNo((String) p[3]);
+                // 身份人口学默认值(供字典三件套回填验证): 居民身份证/汉族/中国
+                e.setCertType("01");
+                e.setNation("1");
+                e.setNationality("156");
                 e.setStatus(1);
                 patientService.createPatient(e);
             }

@@ -22,6 +22,10 @@ public class LoginUser {
     private Long staffId;
     /** 关联科室ID */
     private Long deptId;
+    /** 归属机构ID */
+    private Long orgId;
+    /** 权威角色ID(sys_role) */
+    private Long roleId;
     /** 医院名称 */
     private String tenantName;
 }

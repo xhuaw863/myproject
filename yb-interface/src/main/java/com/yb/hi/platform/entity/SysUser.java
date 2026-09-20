@@ -24,12 +24,18 @@ public class SysUser extends BaseEntity {
     private String password;
     /** 姓名 */
     private String realName;
-    /** 角色 */
+    /** 角色(角色编码字符串, 兼容JWT/显示) */
     private String role;
     /** 关联职工ID */
     private Long staffId;
     /** 关联科室ID */
     private Long deptId;
+    /** 授权科室范围(数据权限): 逗号分隔 his_dept.id; 空=仅主属科室 dept_id */
+    private String deptScope;
+    /** 归属机构ID(sys_org) */
+    private Long orgId;
+    /** 权威角色ID(sys_role) */
+    private Long roleId;
     /** 手机号 */
     private String phone;
     /** 状态: 1-启用 0-停用 */

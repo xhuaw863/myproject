@@ -44,7 +44,7 @@ public class HisPatientController {
 
     @PutMapping
     public R<Void> update(@RequestBody HisPatient e) {
-        service.updateById(e);
+        service.updatePatient(e);
         return R.ok();
     }
 

@@ -15,6 +15,12 @@ public class UserSaveReq {
     private String role;
     private Long staffId;
     private Long deptId;
+    /** 授权科室范围(逗号分隔 dept_id, 空=仅主属科室) */
+    private String deptScope;
+    /** 归属机构ID */
+    private Long orgId;
+    /** 权威角色ID(sys_role) */
+    private Long roleId;
     private String phone;
     private Integer status;
 }

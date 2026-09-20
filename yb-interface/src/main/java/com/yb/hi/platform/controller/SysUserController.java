@@ -4,7 +4,9 @@ import com.yb.hi.framework.common.BizException;
 import com.yb.hi.framework.common.R;
 import com.yb.hi.framework.tenant.UserContext;
 import com.yb.hi.platform.dto.UserSaveReq;
+import com.yb.hi.platform.entity.SysRole;
 import com.yb.hi.platform.entity.SysUser;
+import com.yb.hi.platform.service.SysRoleService;
 import com.yb.hi.platform.service.SysUserService;
 import org.springframework.web.bind.annotation.*;
 
@@ -18,9 +20,11 @@ import java.util.List;
 public class SysUserController {
 
     private final SysUserService userService;
+    private final SysRoleService roleService;
 
-    public SysUserController(SysUserService userService) {
+    public SysUserController(SysUserService userService, SysRoleService roleService) {
         this.userService = userService;
+        this.roleService = roleService;
     }
 
     @GetMapping("/list")
@@ -33,9 +37,11 @@ public class SysUserController {
         if (req.getUsername() == null || req.getPassword() == null) {
             throw new BizException(400, "账号与密码不能为空");
         }
+        String roleCode = resolveRoleCode(req);
         userService.createUser(UserContext.get().getTenantId(), req.getUsername(), req.getPassword(),
-                req.getRealName(), req.getRole() == null ? "DOCTOR" : req.getRole(),
-                req.getStaffId(), req.getDeptId(), req.getPhone());
+                req.getRealName(), roleCode,
+                req.getStaffId(), req.getDeptId(), req.getOrgId(), req.getRoleId(), req.getPhone(),
+                req.getDeptScope());
         return R.ok();
     }
 
@@ -44,13 +50,27 @@ public class SysUserController {
         SysUser u = new SysUser();
         u.setId(req.getId());
         u.setRealName(req.getRealName());
-        u.setRole(req.getRole());
+        u.setRole(resolveRoleCode(req));
         u.setStaffId(req.getStaffId());
         u.setDeptId(req.getDeptId());
+        u.setOrgId(req.getOrgId());
+        u.setRoleId(req.getRoleId());
         u.setPhone(req.getPhone());
+        u.setDeptScope(req.getDeptScope());
         u.setStatus(req.getStatus());
         userService.update(u);
         return R.ok();
+    }
+
+    /** 优先按 roleId 取权威角色编码; 无 roleId 时回退 role 字符串(默认 DOCTOR) */
+    private String resolveRoleCode(UserSaveReq req) {
+        if (req.getRoleId() != null) {
+            SysRole r = roleService.getById(req.getRoleId());
+            if (r != null) {
+                return r.getRoleCode();
+            }
+        }
+        return req.getRole() == null ? "DOCTOR" : req.getRole();
     }
 
     @PostMapping("/{id}/reset-password")

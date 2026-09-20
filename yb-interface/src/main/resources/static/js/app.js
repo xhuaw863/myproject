@@ -20,7 +20,8 @@
         { key: 'dept', label: '科室管理', comp: 'DeptManage' },
         { key: 'staff', label: '职工管理', comp: 'StaffManage' },
         { key: 'schedule', label: '排班号源', comp: 'ScheduleManage' },
-        { key: 'charge-item', label: '收费项目对照', comp: 'ChargeItemManage' }
+        { key: 'charge-item', label: '收费项目对照', comp: 'ChargeItemManage' },
+        { key: 'area-code', label: '行政区划', comp: 'AreaManage' }
       ]
     },
     {
@@ -28,6 +29,12 @@
         { key: 'dict-download', label: '字典下载', comp: 'DictDownload' },
         { key: 'dict-version', label: '版本状态', comp: 'DictVersion' },
         { key: 'dict-map', label: '目录对照', comp: 'DictMap' }
+      ]
+    },
+    {
+      group: '标准字典', children: [
+        { key: 'std-dict-browse', label: '字典浏览', comp: 'StdDictBrowse' },
+        { key: 'std-dict-import', label: '提取入库', comp: 'StdDictImport' }
       ]
     },
     {
@@ -74,8 +81,13 @@
   ];
 
   function findItem(key) {
-    for (var i = 0; i < MENU.length; i++) {
-      var m = MENU[i];
+    return findItemIn(MENU, key);
+  }
+
+  /* 在给定菜单结构中按键查找项(兼容顶级项与目录子项) */
+  function findItemIn(menu, key) {
+    for (var i = 0; i < (menu || []).length; i++) {
+      var m = menu[i];
       if (m.key === key) { return m; }
       if (m.children) {
         for (var j = 0; j < m.children.length; j++) {
@@ -86,20 +98,43 @@
     return null;
   }
 
-  /* ===== 登录 / 注册页 ===== */
+  /* 取菜单首个可渲染项的键(动态菜单加载后校正默认激活项) */
+  function firstKey(menu) {
+    for (var i = 0; i < (menu || []).length; i++) {
+      var m = menu[i];
+      if (m.key) { return m.key; }
+      if (m.children && m.children.length) { return m.children[0].key; }
+    }
+    return 'dashboard';
+  }
+
+  /* 将后端菜单树节点({menuKey,menuName,comp,phase,children})归一为渲染结构 */
+  function normalizeMenu(nodes) {
+    var out = [];
+    (nodes || []).forEach(function (n) {
+      if (n.children && n.children.length) {
+        out.push({
+          group: n.menuName,
+          children: n.children.map(function (c) {
+            return { key: c.menuKey, label: c.menuName, comp: c.comp, phase: c.phase };
+          })
+        });
+      } else {
+        out.push({ key: n.menuKey, label: n.menuName, comp: n.comp, phase: n.phase });
+      }
+    });
+    return out;
+  }
+
+  /* ===== 登录页 =====
+   * 医院开通不再自助注册: 由平台超级管理员登录后台「医院管理」统一开通并分配权限。
+   */
   var LoginPage = {
     emits: ['logged'],
     data: function () {
       return {
-        tab: 'login',
         loading: false,
-        loginForm: { tenantCode: 'H42010000000', username: 'admin', password: 'admin123' },
-        regForm: {
-          tenantCode: '', tenantName: '', contact: '', phone: '', address: '',
-          fixmedinsCode: '', fixmedinsName: '', mdtrtareaAdmvs: '', insuplcAdmdvs: '',
-          apiUrl: '', mockEnabled: 1,
-          adminUsername: '', adminPassword: '', adminName: ''
-        }
+        loginForm: { tenantCode: 'H42010000000', username: 'admin', password: 'admin123' }
       };
     },
     methods: {
@@ -118,58 +153,21 @@
           })
           .catch(HIS.notifyError)
           .finally(function () { vm.loading = false; });
-      },
-      doRegister: function () {
-        var vm = this;
-        var f = vm.regForm;
-        if (!f.tenantCode || !f.tenantName || !f.adminUsername || !f.adminPassword) {
-          ElementPlus.ElMessage.warning('请填写医院码、医院名称、管理员账号与密码'); return;
-        }
-        vm.loading = true;
-        HIS.post('/api/auth/register', f)
-          .then(function () {
-            ElementPlus.ElMessage.success('医院注册成功，请使用管理员账号登录');
-            vm.loginForm.tenantCode = f.tenantCode;
-            vm.loginForm.username = f.adminUsername;
-            vm.loginForm.password = '';
-            vm.tab = 'login';
-          })
-          .catch(HIS.notifyError)
-          .finally(function () { vm.loading = false; });
       }
     },
     template: [
       '<div class="login-wrap">',
-      '  <div class="login-box" style="width:460px;">',
+      '  <div class="login-box" style="width:420px;">',
       '    <h2>医保原生 HIS</h2>',
       '    <div class="sub">多租户 · 医院信息系统 · 医保接口原生对接</div>',
-      '    <el-tabs v-model="tab" stretch>',
-      '      <el-tab-pane label="登录" name="login">',
-      '        <el-form :model="loginForm" label-width="80px" @submit.prevent>',
-      '          <el-form-item label="医院码"><el-input v-model="loginForm.tenantCode" placeholder="医院登录码"></el-input></el-form-item>',
-      '          <el-form-item label="账号"><el-input v-model="loginForm.username" placeholder="账号"></el-input></el-form-item>',
-      '          <el-form-item label="密码"><el-input v-model="loginForm.password" type="password" show-password @keyup.enter="doLogin" placeholder="密码"></el-input></el-form-item>',
-      '          <el-button type="primary" style="width:100%" :loading="loading" @click="doLogin">登 录</el-button>',
-      '          <div class="login-links"><span style="color:#909399;">演示账号：H42010000000 / admin / admin123</span></div>',
-      '        </el-form>',
-      '      </el-tab-pane>',
-      '      <el-tab-pane label="医院注册" name="register">',
-      '        <el-form :model="regForm" label-width="92px" size="small">',
-      '          <el-form-item label="医院码"><el-input v-model="regForm.tenantCode" placeholder="唯一登录码，如 H42010000000"></el-input></el-form-item>',
-      '          <el-form-item label="医院名称"><el-input v-model="regForm.tenantName"></el-input></el-form-item>',
-      '          <el-form-item label="联系人"><el-input v-model="regForm.contact"></el-input></el-form-item>',
-      '          <el-form-item label="联系电话"><el-input v-model="regForm.phone"></el-input></el-form-item>',
-      '          <el-form-item label="机构编号"><el-input v-model="regForm.fixmedinsCode" placeholder="医保定点机构编号"></el-input></el-form-item>',
-      '          <el-form-item label="医保区划"><el-input v-model="regForm.mdtrtareaAdmvs" placeholder="如 420100"></el-input></el-form-item>',
-      '          <el-form-item label="模拟平台"><el-switch v-model="regForm.mockEnabled" :active-value="1" :inactive-value="0" active-text="模拟" inactive-text="真实"></el-switch></el-form-item>',
-      '          <el-divider content-position="left">管理员账号</el-divider>',
-      '          <el-form-item label="管理员账号"><el-input v-model="regForm.adminUsername"></el-input></el-form-item>',
-      '          <el-form-item label="管理员密码"><el-input v-model="regForm.adminPassword" type="password" show-password></el-input></el-form-item>',
-      '          <el-form-item label="管理员姓名"><el-input v-model="regForm.adminName"></el-input></el-form-item>',
-      '          <el-button type="primary" style="width:100%" :loading="loading" @click="doRegister">注 册</el-button>',
-      '        </el-form>',
-      '      </el-tab-pane>',
-      '    </el-tabs>',
+      '    <el-form :model="loginForm" label-width="80px" @submit.prevent>',
+      '      <el-form-item label="医院码"><el-input v-model="loginForm.tenantCode" placeholder="医院登录码"></el-input></el-form-item>',
+      '      <el-form-item label="账号"><el-input v-model="loginForm.username" placeholder="账号"></el-input></el-form-item>',
+      '      <el-form-item label="密码"><el-input v-model="loginForm.password" type="password" show-password @keyup.enter="doLogin" placeholder="密码"></el-input></el-form-item>',
+      '      <el-button type="primary" style="width:100%" :loading="loading" @click="doLogin">登 录</el-button>',
+      '      <div class="login-links"><span style="color:#909399;">医院管理员：H42010000000 / admin / admin123</span></div>',
+      '      <div class="login-links"><span style="color:#909399;">平台超管(开通医院)：PLATFORM / superadmin / admin123</span></div>',
+      '    </el-form>',
       '  </div>',
       '</div>'
     ].join('\n')
@@ -183,7 +181,7 @@
       return { activeKey: 'dashboard', menu: MENU };
     },
     computed: {
-      currentItem: function () { return findItem(this.activeKey); },
+      currentItem: function () { return findItemIn(this.menu, this.activeKey); },
       currentComp: function () {
         var it = this.currentItem;
         if (it && it.comp && HIS.views[it.comp]) { return HIS.views[it.comp]; }
@@ -194,7 +192,10 @@
         if (it && !it.comp) { return { title: it.label, phase: it.phase || 'P1' }; }
         return {};
       },
-      roleName: function () { return HIS.roleLabel(this.user && this.user.role); }
+      roleName: function () {
+        var u = this.user || {};
+        return u.roleName || HIS.roleLabel(u.role);
+      }
     },
     methods: {
       onSelect: function (key) { this.activeKey = key; },
@@ -204,12 +205,22 @@
       var vm = this;
       /* 全局视图跳转: 供列表页跳转到工作台等场景 */
       HIS.go = function (key) { vm.activeKey = key; };
+      /* 动态菜单: 按角色从后端加载; 失败回退静态 MENU 防锁死 */
+      HIS.get('/api/auth/menus')
+        .then(function (nodes) {
+          if (nodes && nodes.length) {
+            vm.menu = normalizeMenu(nodes);
+            if (!findItemIn(vm.menu, vm.activeKey)) { vm.activeKey = firstKey(vm.menu); }
+          }
+        })
+        .catch(function () { /* 保留静态 MENU 兜底 */ });
     },
     template: [
       '<div class="layout">',
       '  <div class="layout-header">',
       '    <span class="logo">医保原生 HIS</span>',
       '    <span class="hosp">{{ user.tenantName || "-" }}</span>',
+      '    <span class="hosp" v-if="user.orgName" style="opacity:.85;">· {{ user.orgName }}</span>',
       '    <span class="spacer"></span>',
       '    <a class="hosp" href="/verify/index.html" target="_blank" style="text-decoration:none;cursor:pointer;">医保验证台</a>',
       '    <el-dropdown @command="onCmd">',

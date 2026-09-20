@@ -60,7 +60,7 @@ public class DemoDataInitializer implements ApplicationRunner {
         req.setAdminUsername(adminUser);
         req.setAdminPassword(adminPwd);
         req.setAdminName(adminName);
-        authService.register(req);
+        authService.openHospital(req);
         log.info("演示医院已创建: {} ({}), 管理员 {}/{}", name, code, adminUser, adminPwd);
     }
 }

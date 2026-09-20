@@ -21,10 +21,11 @@ public class HisStaffController {
     }
 
     @GetMapping("/list")
-    public R<List<HisStaff>> list(@RequestParam(required = false) Long deptId,
+    public R<List<HisStaff>> list(@RequestParam(required = false) Long orgId,
+                                  @RequestParam(required = false) Long deptId,
                                   @RequestParam(required = false) String staffType,
                                   @RequestParam(required = false) String keyword) {
-        return R.ok(service.listByFilter(deptId, staffType, keyword));
+        return R.ok(service.listByFilter(orgId, deptId, staffType, keyword));
     }
 
     @GetMapping("/{id}")
@@ -34,13 +35,13 @@ public class HisStaffController {
 
     @PostMapping
     public R<Void> create(@RequestBody HisStaff e) {
-        service.save(e);
+        service.saveStaff(e);
         return R.ok();
     }
 
     @PutMapping
     public R<Void> update(@RequestBody HisStaff e) {
-        service.updateById(e);
+        service.updateStaff(e);
         return R.ok();
     }
 

@@ -53,19 +53,86 @@
     data: function () {
       return {
         loading: false, list: [], total: 0, page: 1, size: 15, keyword: '',
-        insutypes: INSUTYPES, certTypes: CERT_TYPES,
+        gendOpts: [], insutypeOpts: [], certTypeOpts: [],
+        gendMap: {}, insutypeMap: {}, certTypeMap: {},
+        /* A 身份人口学字典(医保 cv_code 优先, 其余湖北采集规范 hbvalue) */
+        idTypeOpts: [], nationOpts: [], natlOpts: [], maritalOpts: [], eduOpts: [], occupOpts: [], relOpts: [],
+        idTypeMap: {}, nationMap: {}, natlMap: {}, maritalMap: {}, eduMap: {}, occupMap: {}, relMap: {},
+        areaOpts: [], areaLoading: false, orgs: [],
+        /* 现住址级联选中路径 [省,市,区县,乡镇] */
+        presentPath: [],
+        /* el-cascader 懒加载配置(逐级下钻 area_code_2021; checkStrictly 允许选任意一级) */
+        cascaderProps: { lazy: true, lazyLoad: this.areaLazyLoad, checkStrictly: true, value: 'value', label: 'label', leaf: 'leaf', expandTrigger: 'hover' },
         dlg: false, editing: false, form: this.empty()
       };
     },
-    created: function () { this.load(); },
+    created: function () { this.loadDicts(); this.loadOrgs(); this.load(); },
     methods: {
       empty: function () {
         return {
-          id: null, patientNo: '', psnNo: '', name: '', gender: '男', birthDate: '', age: null,
-          idCard: '', phone: '', address: '', insutype: '310', mdtrtCertType: '02', mdtrtCertNo: '',
-          insuplcAdmdvs: '', contactName: '', contactPhone: '', status: 1, memo: ''
+          id: null, patientNo: '', psnNo: '', name: '', gender: '1', birthDate: '', age: null,
+          idCard: '', phone: '', address: '', insutype: '310', mdtrtCertType: '2', mdtrtCertNo: '',
+          insuplcAdmdvs: '', contactName: '', contactPhone: '', status: 1, orgId: null, memo: '',
+          /* A 身份人口学(默认: 居民身份证/汉族/中国) */
+          certType: '01', nation: '1', nationality: '156', maritalStatus: '', eduLevel: '',
+          occupation: '', occupationOther: '',
+          /* B 现住址五级级联 + 详细/户籍/工作单位地址 */
+          presentProv: '', presentCity: '', presentCounty: '', presentTown: '', presentDetail: '',
+          householdAddr: '', employer: '', employerPhone: '', employerAddr: '',
+          /* C 联系人与患者关系 */
+          contactRelation: '', contactIdCard: '', contactAddr: ''
         };
       },
+      loadDicts: function () {
+        var vm = this;
+        HIS.stdValues('cv_code', 'gend').then(function (l) { vm.gendOpts = l || []; vm.gendMap = HIS.dictMap(l); }).catch(HIS.notifyError);
+        HIS.stdValues('cv_code', 'insutype').then(function (l) { vm.insutypeOpts = l || []; vm.insutypeMap = HIS.dictMap(l); }).catch(HIS.notifyError);
+        HIS.stdValues('cv_code', 'mdtrt_cert_type').then(function (l) { vm.certTypeOpts = l || []; vm.certTypeMap = HIS.dictMap(l); }).catch(HIS.notifyError);
+        /* A 身份人口学: 证件类别/民族 取医保字典; 国籍/婚姻/文化程度/职业/关系 取湖北采集规范值域 */
+        HIS.stdValues('cv_code', 'psn_cert_type').then(function (l) { vm.idTypeOpts = l || []; vm.idTypeMap = HIS.dictMap(l); }).catch(HIS.notifyError);
+        HIS.stdValues('cv_code', 'naty').then(function (l) { vm.nationOpts = l || []; vm.nationMap = HIS.dictMap(l); }).catch(HIS.notifyError);
+        HIS.stdValues('hbvalue', 'GB/T 2659.1-2022').then(function (l) { vm.natlOpts = l || []; vm.natlMap = HIS.dictMap(l); }).catch(HIS.notifyError);
+        HIS.stdValues('hbvalue', 'GB/T 2261.2-2003').then(function (l) { vm.maritalOpts = l || []; vm.maritalMap = HIS.dictMap(l); }).catch(HIS.notifyError);
+        HIS.stdValues('hbvalue', 'GB/T 4658-2006').then(function (l) { vm.eduOpts = l || []; vm.eduMap = HIS.dictMap(l); }).catch(HIS.notifyError);
+        HIS.stdValues('hbvalue', 'CV02.01.202').then(function (l) { vm.occupOpts = l || []; vm.occupMap = HIS.dictMap(l); }).catch(HIS.notifyError);
+        HIS.stdValues('hbvalue', 'GB/T 4761-2008').then(function (l) { vm.relOpts = l || []; vm.relMap = HIS.dictMap(l); }).catch(HIS.notifyError);
+      },
+      /* 现住址 el-cascader 懒加载: 根节点取省(level=1), 其余按父级编码下钻 */
+      areaLazyLoad: function (node, resolve) {
+        var lvl = node.level; var val = node.value;
+        var pcode = lvl === 0 ? null : val;
+        var level = lvl === 0 ? 1 : null;
+        HIS.areaChildren(pcode, level).then(function (list) { resolve(list || []); }).catch(function () { resolve([]); });
+      },
+      /* 级联选择变化: 回填 presentProv/city/county/town 编码 */
+      onPresentChange: function (vals) {
+        var f = this.form; var v = vals || [];
+        f.presentProv = v[0] || ''; f.presentCity = v[1] || '';
+        f.presentCounty = v[2] || ''; f.presentTown = v[3] || '';
+      },
+      /* 由行数据重构级联选中路径(仅非空级别) */
+      buildPresentPath: function (row) {
+        var p = [];
+        if (row.presentProv) { p.push(String(row.presentProv)); }
+        if (row.presentCity) { p.push(String(row.presentCity)); }
+        if (row.presentCounty) { p.push(String(row.presentCounty)); }
+        if (row.presentTown) { p.push(String(row.presentTown)); }
+        this.presentPath = p;
+      },
+      areaRemoteSearch: function (q) {
+        var vm = this; if (!q) { return; } vm.areaLoading = true;
+        HIS.areaSearch(q).then(function (list) {
+          vm.areaOpts = (list || []).map(function (a) { return { code: String(a.code), name: a.name }; });
+        }).catch(HIS.notifyError).finally(function () { vm.areaLoading = false; });
+      },
+      setAreaOpt: function (code, name) {
+        var vm = this;
+        if (!code) { vm.areaOpts = []; return; }
+        vm.areaOpts = [{ code: String(code), name: name || String(code) }];
+        if (!name) { HIS.areaName(code).then(function (nm) { if (nm) { vm.areaOpts = [{ code: String(code), name: nm }]; } }); }
+      },
+      loadOrgs: function () { var vm = this; HIS.get('/api/sys/org/tree').then(function (d) { vm.orgs = HIS.flattenOrgs(d || []); }).catch(function () { vm.orgs = []; }); },
+      orgName: function (id) { for (var i = 0; i < this.orgs.length; i++) { if (this.orgs[i].id === id) { return String(this.orgs[i].label).trim(); } } return '-'; },
       load: function () {
         var vm = this; vm.loading = true;
         var q = '/api/his/patient/page?page=' + vm.page + '&size=' + vm.size;
@@ -75,13 +142,16 @@
       },
       search: function () { this.page = 1; this.load(); },
       onPage: function (p) { this.page = p; this.load(); },
-      add: function () { this.editing = false; this.form = this.empty(); this.dlg = true; },
-      edit: function (row) { this.editing = true; this.form = clean(Object.assign(this.empty(), row)); this.dlg = true; },
+      add: function () { this.editing = false; this.form = this.empty(); this.areaOpts = []; this.presentPath = []; this.dlg = true; },
+      edit: function (row) {
+        this.editing = true; this.form = clean(Object.assign(this.empty(), row));
+        this.setAreaOpt(row.insuplcAdmdvs, row.insuplcAdmdvsName); this.buildPresentPath(row); this.dlg = true;
+      },
       readCard: function () {
         /* 模拟读取医保电子凭证/社保卡(真实环境调用1101人员信息获取) */
         var f = this.form;
         if (!f.idCard) { ElementPlus.ElMessage.warning('请先录入身份证号再读卡'); return; }
-        f.mdtrtCertType = '01';
+        f.mdtrtCertType = '1';
         f.mdtrtCertNo = f.idCard;
         if (!f.psnNo) { f.psnNo = 'PSN' + f.idCard.slice(-8); }
         HIS.notifySuccess('读卡成功(模拟): 已回填医保凭证信息');
@@ -89,9 +159,12 @@
       calcAge: function () {
         var f = this.form;
         if (f.birthDate) {
-          var b = new Date(f.birthDate);
-          var age = new Date().getFullYear() - b.getFullYear();
-          if (age >= 0 && age < 150) { f.age = age; }
+          /* birthDate 为 'yyyy-MM-dd HH:mm:ss', 空格转 T 以兼容各浏览器解析 */
+          var b = new Date(String(f.birthDate).replace(' ', 'T'));
+          if (!isNaN(b.getTime())) {
+            var age = new Date().getFullYear() - b.getFullYear();
+            if (age >= 0 && age < 150) { f.age = age; }
+          }
         }
         if (!f.mdtrtCertNo && f.idCard) { f.mdtrtCertNo = f.idCard; }
       },
@@ -100,9 +173,26 @@
         if (!vm.form.name) { ElementPlus.ElMessage.warning('患者姓名必填'); return; }
         var p = vm.editing ? HIS.put('/api/his/patient', vm.form) : HIS.post('/api/his/patient', vm.form);
         p.then(function (d) {
-          HIS.notifySuccess(vm.editing ? '保存成功' : ('建档成功, 患者号: ' + ((d && d.patientNo) || '')));
+          HIS.notifySuccess(vm.editing ? '保存成功' : ('建档/复用成功, 患者号: ' + ((d && d.patientNo) || '')));
           vm.dlg = false; vm.load();
         }).catch(HIS.notifyError);
+      },
+      /* 医共体统一患者主索引: 按身份证查重, 命中即载入复用同一档案 */
+      checkDup: function () {
+        var vm = this; var f = vm.form;
+        if (!f.idCard) { ElementPlus.ElMessage.warning('请先录入身份证号再查重'); return; }
+        HIS.get('/api/his/patient/by-idcard?idCard=' + encodeURIComponent(f.idCard))
+          .then(function (d) {
+            if (d && d.id) {
+              vm.editing = true;
+              vm.form = clean(Object.assign(vm.empty(), d));
+              vm.setAreaOpt(d.insuplcAdmdvs, d.insuplcAdmdvsName);
+              vm.buildPresentPath(d);
+              ElementPlus.ElMessageBox.alert('医共体内已存在同一自然人档案(患者号 ' + d.patientNo + '), 已载入复用。', '统一患者主索引', { type: 'success' });
+            } else {
+              ElementPlus.ElMessage.info('未查到已有档案, 可新建建档');
+            }
+          }).catch(HIS.notifyError);
       },
       del: function (row) {
         var vm = this;
@@ -122,12 +212,13 @@
       '  <el-table :data="list" v-loading="loading" border stripe size="small">',
       '    <el-table-column prop="patientNo" label="患者号" width="170"></el-table-column>',
       '    <el-table-column prop="name" label="姓名" width="90"></el-table-column>',
-      '    <el-table-column prop="gender" label="性别" width="55"></el-table-column>',
+      '    <el-table-column label="性别" width="55"><template #default="s">{{ s.row.genderName || gendMap[s.row.gender] || s.row.gender }}</template></el-table-column>',
       '    <el-table-column prop="age" label="年龄" width="55"></el-table-column>',
       '    <el-table-column prop="idCard" label="身份证号" width="170"></el-table-column>',
       '    <el-table-column prop="phone" label="电话" width="120"></el-table-column>',
-      '    <el-table-column label="险种" width="120"><template #default="s">{{ insutypeLabel(s.row.insutype) }}</template></el-table-column>',
+      '    <el-table-column label="险种" width="150"><template #default="s">{{ s.row.insutypeName || insutypeMap[s.row.insutype] || s.row.insutype || \'-\' }}</template></el-table-column>',
       '    <el-table-column prop="psnNo" label="医保人员编号" width="140"></el-table-column>',
+      '    <el-table-column label="建档机构" min-width="150" show-overflow-tooltip><template #default="s">{{ orgName(s.row.orgId) }}</template></el-table-column>',
       '    <el-table-column label="状态" width="70"><template #default="s"><el-tag size="small" :type="s.row.status===1?\'success\':\'info\'">{{ s.row.status===1?"正常":"停用" }}</el-tag></template></el-table-column>',
       '    <el-table-column label="操作" width="120" fixed="right"><template #default="s">',
       '      <el-button link type="primary" @click="edit(s.row)">编辑</el-button>',
@@ -135,30 +226,60 @@
       '    </template></el-table-column>',
       '  </el-table>',
       '  <el-pagination style="margin-top:12px;justify-content:flex-end;" background layout="prev, pager, next, total" :total="total" :page-size="size" :current-page="page" @current-change="onPage"></el-pagination>',
-      '  <el-dialog v-model="dlg" :title="editing?\'编辑患者档案\':\'新增患者建档\'" width="680px">',
+      '  <el-dialog v-model="dlg" :title="editing?\'编辑患者档案\':\'新增患者建档\'" width="900px" top="6vh">',
       '    <el-form :model="form" label-width="110px" size="default">',
+      '      <el-divider content-position="left">基本信息</el-divider>',
       '      <el-row :gutter="12">',
       '        <el-col :span="12"><el-form-item label="姓名"><el-input v-model="form.name"></el-input></el-form-item></el-col>',
-      '        <el-col :span="12"><el-form-item label="性别"><el-select v-model="form.gender" style="width:100%"><el-option label="男" value="男"></el-option><el-option label="女" value="女"></el-option></el-select></el-form-item></el-col>',
-      '        <el-col :span="12"><el-form-item label="出生日期"><el-date-picker v-model="form.birthDate" type="date" value-format="YYYY-MM-DD" style="width:100%" @change="calcAge"></el-date-picker></el-form-item></el-col>',
+      '        <el-col :span="12"><el-form-item label="性别"><el-select v-model="form.gender" style="width:100%"><el-option v-for="o in gendOpts" :key="o.code" :label="o.name" :value="o.code"></el-option></el-select></el-form-item></el-col>',
+      '        <el-col :span="12"><el-form-item label="出生时间"><el-date-picker v-model="form.birthDate" type="datetime" value-format="YYYY-MM-DD HH:mm:ss" placeholder="新生儿可精确到时分秒" style="width:100%" @change="calcAge"></el-date-picker></el-form-item></el-col>',
       '        <el-col :span="12"><el-form-item label="年龄"><el-input v-model.number="form.age" type="number"></el-input></el-form-item></el-col>',
-      '        <el-col :span="12"><el-form-item label="身份证号"><el-input v-model="form.idCard" @blur="calcAge"></el-input></el-form-item></el-col>',
+      '        <el-col :span="12"><el-form-item label="身份证件类别"><el-select v-model="form.certType" style="width:100%" filterable><el-option v-for="o in idTypeOpts" :key="o.code" :label="o.name + \' (\' + o.code + \')\'" :value="o.code"></el-option></el-select></el-form-item></el-col>',
+      '        <el-col :span="12"><el-form-item label="身份证号"><el-input v-model="form.idCard" placeholder="新生儿无证件号可填出生8位" @blur="calcAge"></el-input></el-form-item></el-col>',
+      '        <el-col :span="12"><el-form-item label="民族"><el-select v-model="form.nation" style="width:100%" filterable clearable><el-option v-for="o in nationOpts" :key="o.code" :label="o.name" :value="o.code"></el-option></el-select></el-form-item></el-col>',
+      '        <el-col :span="12"><el-form-item label="国籍"><el-select v-model="form.nationality" style="width:100%" filterable clearable><el-option v-for="o in natlOpts" :key="o.code" :label="o.name + \' (\' + o.code + \')\'" :value="o.code"></el-option></el-select></el-form-item></el-col>',
+      '        <el-col :span="12"><el-form-item label="婚姻状况"><el-select v-model="form.maritalStatus" style="width:100%" filterable clearable><el-option v-for="o in maritalOpts" :key="o.code" :label="o.name" :value="o.code"></el-option></el-select></el-form-item></el-col>',
+      '        <el-col :span="12"><el-form-item label="文化程度"><el-select v-model="form.eduLevel" style="width:100%" filterable clearable><el-option v-for="o in eduOpts" :key="o.code" :label="o.name" :value="o.code"></el-option></el-select></el-form-item></el-col>',
+      '        <el-col :span="12"><el-form-item label="职业类别"><el-select v-model="form.occupation" style="width:100%" filterable clearable><el-option v-for="o in occupOpts" :key="o.code" :label="o.name + \' (\' + o.code + \')\'" :value="o.code"></el-option></el-select></el-form-item></el-col>',
+      '        <el-col :span="12"><el-form-item label="职业其他"><el-input v-model="form.occupationOther" placeholder="职业为其他时填写"></el-input></el-form-item></el-col>',
       '        <el-col :span="12"><el-form-item label="联系电话"><el-input v-model="form.phone"></el-input></el-form-item></el-col>',
-      '        <el-col :span="24"><el-form-item label="住址"><el-input v-model="form.address"></el-input></el-form-item></el-col>',
-      '        <el-col :span="12"><el-form-item label="险种类型"><el-select v-model="form.insutype" style="width:100%"><el-option v-for="t in insutypes" :key="t.v" :label="t.l" :value="t.v"></el-option></el-select></el-form-item></el-col>',
-      '        <el-col :span="12"><el-form-item label="参保地区划"><el-input v-model="form.insuplcAdmdvs" placeholder="如 420100"></el-input></el-form-item></el-col>',
-      '        <el-col :span="12"><el-form-item label="就诊凭证类型"><el-select v-model="form.mdtrtCertType" style="width:100%"><el-option v-for="t in certTypes" :key="t.v" :label="t.l" :value="t.v"></el-option></el-select></el-form-item></el-col>',
+      '      </el-row>',
+      '      <el-divider content-position="left">医保信息</el-divider>',
+      '      <el-row :gutter="12">',
+      '        <el-col :span="12"><el-form-item label="险种类型"><el-select v-model="form.insutype" style="width:100%" filterable><el-option v-for="o in insutypeOpts" :key="o.code" :label="o.name + \' (\' + o.code + \')\'" :value="o.code"></el-option></el-select></el-form-item></el-col>',
+      '        <el-col :span="12"><el-form-item label="参保地区划"><el-select v-model="form.insuplcAdmdvs" style="width:100%" filterable remote clearable :remote-method="areaRemoteSearch" :loading="areaLoading" placeholder="输入名称/编码检索"><el-option v-for="a in areaOpts" :key="a.code" :label="a.name + \' (\' + a.code + \')\'" :value="a.code"></el-option></el-select></el-form-item></el-col>',
+      '        <el-col :span="12"><el-form-item label="就诊凭证类型"><el-select v-model="form.mdtrtCertType" style="width:100%"><el-option v-for="o in certTypeOpts" :key="o.code" :label="o.name + \' (\' + o.code + \')\'" :value="o.code"></el-option></el-select></el-form-item></el-col>',
       '        <el-col :span="12"><el-form-item label="就诊凭证编号"><el-input v-model="form.mdtrtCertNo"></el-input></el-form-item></el-col>',
       '        <el-col :span="12"><el-form-item label="医保人员编号"><el-input v-model="form.psnNo" placeholder="psn_no"></el-input></el-form-item></el-col>',
       '        <el-col :span="12"><el-form-item label="患者号"><el-input v-model="form.patientNo" placeholder="留空自动生成" :disabled="!editing"></el-input></el-form-item></el-col>',
-      '        <el-col :span="12"><el-form-item label="联系人"><el-input v-model="form.contactName"></el-input></el-form-item></el-col>',
+      '      </el-row>',
+      '      <el-divider content-position="left">地址信息</el-divider>',
+      '      <el-row :gutter="12">',
+      '        <el-col :span="24"><el-form-item label="现住址"><el-cascader v-model="presentPath" :props="cascaderProps" @change="onPresentChange" clearable style="width:100%" placeholder="省/市/区县/乡镇(逐级选择)"></el-cascader></el-form-item></el-col>',
+      '        <el-col :span="24"><el-form-item label="现住址详细"><el-input v-model="form.presentDetail" placeholder="村/街/路/门牌号"></el-input></el-form-item></el-col>',
+      '        <el-col :span="24"><el-form-item label="通讯地址"><el-input v-model="form.address" placeholder="HEAD_ADDRESS: 本人或联系人通信地址"></el-input></el-form-item></el-col>',
+      '        <el-col :span="24"><el-form-item label="户籍地址"><el-input v-model="form.householdAddr"></el-input></el-form-item></el-col>',
+      '        <el-col :span="12"><el-form-item label="工作单位"><el-input v-model="form.employer"></el-input></el-form-item></el-col>',
+      '        <el-col :span="12"><el-form-item label="单位电话"><el-input v-model="form.employerPhone"></el-input></el-form-item></el-col>',
+      '        <el-col :span="24"><el-form-item label="单位地址"><el-input v-model="form.employerAddr"></el-input></el-form-item></el-col>',
+      '      </el-row>',
+      '      <el-divider content-position="left">联系人</el-divider>',
+      '      <el-row :gutter="12">',
+      '        <el-col :span="12"><el-form-item label="与患者关系"><el-select v-model="form.contactRelation" style="width:100%" filterable clearable><el-option v-for="o in relOpts" :key="o.code" :label="o.name + \' (\' + o.code + \')\'" :value="o.code"></el-option></el-select></el-form-item></el-col>',
+      '        <el-col :span="12"><el-form-item label="联系人姓名"><el-input v-model="form.contactName"></el-input></el-form-item></el-col>',
       '        <el-col :span="12"><el-form-item label="联系人电话"><el-input v-model="form.contactPhone"></el-input></el-form-item></el-col>',
+      '        <el-col :span="12"><el-form-item label="联系人证件号"><el-input v-model="form.contactIdCard"></el-input></el-form-item></el-col>',
+      '        <el-col :span="24"><el-form-item label="联系人地址"><el-input v-model="form.contactAddr"></el-input></el-form-item></el-col>',
+      '      </el-row>',
+      '      <el-divider content-position="left">其他</el-divider>',
+      '      <el-row :gutter="12">',
       '        <el-col :span="12"><el-form-item label="状态"><el-switch v-model="form.status" :active-value="1" :inactive-value="0" active-text="正常" inactive-text="停用"></el-switch></el-form-item></el-col>',
       '        <el-col :span="24"><el-form-item label="备注"><el-input v-model="form.memo" type="textarea"></el-input></el-form-item></el-col>',
       '      </el-row>',
       '    </el-form>',
       '    <template #footer>',
       '      <el-button @click="readCard">读卡(模拟)</el-button>',
+      '      <el-button type="warning" plain @click="checkDup">查重/复用</el-button>',
       '      <el-button @click="dlg=false">取消</el-button>',
       '      <el-button type="primary" @click="submit">确定</el-button>',
       '    </template>',
@@ -237,7 +358,7 @@
       '    <el-divider content-position="left">第一步 · 选择患者</el-divider>',
       '    <div v-if="selectedPatient" style="margin-bottom:10px;">',
       '      <el-tag type="success" size="large" closable @close="selectedPatient=null">',
-      '        {{ selectedPatient.name }} | {{ selectedPatient.gender }} | {{ selectedPatient.age||"-" }}岁 | 患者号 {{ selectedPatient.patientNo }} | 医保 {{ selectedPatient.psnNo||"无" }}',
+      '        {{ selectedPatient.name }} | {{ selectedPatient.genderName || selectedPatient.gender }} | {{ selectedPatient.age||"-" }}岁 | 患者号 {{ selectedPatient.patientNo }} | 医保 {{ selectedPatient.psnNo||"无" }}',
       '      </el-tag>',
       '    </div>',
       '    <div class="toolbar">',
@@ -248,7 +369,7 @@
       '    <el-table :data="patients" v-loading="pLoading" border stripe size="small" height="200" highlight-current-row @current-change="selectPatient">',
       '      <el-table-column prop="patientNo" label="患者号" width="170"></el-table-column>',
       '      <el-table-column prop="name" label="姓名" width="90"></el-table-column>',
-      '      <el-table-column prop="gender" label="性别" width="55"></el-table-column>',
+      '      <el-table-column label="性别" width="55"><template #default="s">{{ s.row.genderName || s.row.gender }}</template></el-table-column>',
       '      <el-table-column prop="age" label="年龄" width="55"></el-table-column>',
       '      <el-table-column prop="idCard" label="身份证号" width="170"></el-table-column>',
       '      <el-table-column prop="psnNo" label="医保编号" width="130"></el-table-column>',

@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>医保原生HIS - 多租户医院信息系统</title>
-  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/element-plus@2.4.4/dist/index.css">
+  <link rel="stylesheet" href="/vendor/element-plus-index.css">
   <link rel="stylesheet" href="/css/his.css">
 </head>
 <body>
@@ -12,10 +12,10 @@
     <div class="boot-loading">系统加载中...</div>
   </div>
 
-  <!-- Vue3 + Element Plus (CDN, 全量构建含模板编译器) -->
-  <script src="https://cdn.jsdelivr.net/npm/vue@3.4.21/dist/vue.global.prod.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/element-plus@2.4.4/dist/index.full.min.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/element-plus@2.4.4/dist/locale/zh-cn.min.js"></script>
+  <!-- Vue3 + Element Plus (本地 vendor, 全量构建含模板编译器; 不依赖外部 CDN) -->
+  <script src="/vendor/vue.global.prod.js"></script>
+  <script src="/vendor/element-plus-index.full.min.js"></script>
+  <script src="/vendor/element-plus-zh-cn.min.js"></script>
 
   <!-- 应用脚本 -->
   <script src="/js/api.js"></script>
@@ -23,8 +23,12 @@
   <script src="/js/views/dashboard.js"></script>
   <script src="/js/views/basedata.js"></script>
   <script src="/js/views/dict.js"></script>
+  <script src="/js/views/std-dict.js"></script>
+  <script src="/js/views/area.js"></script>
   <script src="/js/views/outpatient.js"></script>
   <script src="/js/views/doctor.js"></script>
+  <script src="/js/views/org.js"></script>
+  <script src="/js/views/rbac.js"></script>
   <script src="/js/app.js"></script>
 </body>
 </html>

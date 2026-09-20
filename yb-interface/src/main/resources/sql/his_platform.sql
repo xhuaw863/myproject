@@ -1,7 +1,10 @@
 -- ============================================================
 -- 医保原生多租户HIS - 平台层库表(租户/用户)
 -- 数据库: yb_interface  字符集: utf8mb4
+-- 注意: 用 mysql 客户端执行本文件前, 连接字符集必须为 utf8mb4,
+--       否则中文 COMMENT 会被写坏(乱码)。下方 SET NAMES 强制修正。
 -- ============================================================
+SET NAMES utf8mb4;
 USE yb_interface;
 
 -- ------------------------------------------------------------
@@ -58,6 +61,9 @@ CREATE TABLE sys_user (
     role         VARCHAR(30)  NOT NULL DEFAULT 'DOCTOR' COMMENT '角色:ADMIN/REGISTRAR/DOCTOR/PHARMACIST/CASHIER/NURSE',
     staff_id     BIGINT       DEFAULT NULL COMMENT '关联职工ID',
     dept_id      BIGINT       DEFAULT NULL COMMENT '关联科室ID',
+    dept_scope   VARCHAR(500) DEFAULT NULL COMMENT '授权科室范围(逗号分隔dept_id, 空=仅主属科室)',
+    org_id       BIGINT       DEFAULT NULL COMMENT '归属机构ID(sys_org)',
+    role_id      BIGINT       DEFAULT NULL COMMENT '角色ID(sys_role)',
     phone        VARCHAR(30)  DEFAULT NULL COMMENT '手机号',
     status       TINYINT      DEFAULT 1 COMMENT '状态:1-启用 0-停用',
     create_by    VARCHAR(50)  DEFAULT NULL COMMENT '创建人',

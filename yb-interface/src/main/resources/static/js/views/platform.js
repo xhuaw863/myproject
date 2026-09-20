@@ -87,16 +87,72 @@
       return {
         loading: false,
         list: [],
-        roles: HIS.ROLES,
+        roles: [],
+        orgs: [],
+        depts: [],
+        staffs: [],
+        menuMap: {},
+        roleMenuNames: [],
+        roleIsAll: false,
+        deptScopeArr: [],
+        activeTab: 'account',
         dialogVisible: false,
         editing: false,
         form: this.emptyForm()
       };
     },
-    created: function () { this.load(); },
+    created: function () { this.loadMeta(); this.load(); },
+    computed: {
+      /* 科室下拉选项: 带机构前缀消歧(医共体多机构) */
+      deptOptions: function () {
+        var vm = this;
+        return (vm.depts || []).map(function (d) {
+          var on = vm.orgName(d.orgId);
+          return { id: d.id, label: (on && on !== '-' ? on + ' / ' : '') + d.deptName };
+        });
+      },
+      /* 授权科室分组选项: 按科室大类分组(门诊/住院/病区护理/医技/行政后勤);
+       * 大类节点(level=1)仅作分组容器不可选, 三级窗口/诊室缩进展示 */
+      deptGroups: function () {
+        var vm = this;
+        var groups = {};
+        var order = [];
+        (vm.depts || []).forEach(function (d) {
+          if (d.deptLevel === 1) { return; }
+          var cat = d.deptCategory || '其他';
+          if (!groups[cat]) { groups[cat] = []; order.push(cat); }
+          var prefix = d.deptLevel === 3 ? '　└ ' : '';
+          var on = vm.orgName(d.orgId);
+          groups[cat].push({ id: d.id, label: prefix + d.deptName + (on && on !== '-' ? ' (' + on + ')' : '') });
+        });
+        return order.map(function (c) { return { category: c, options: groups[c] }; });
+      }
+    },
     methods: {
       emptyForm: function () {
-        return { id: null, username: '', password: '', realName: '', role: 'DOCTOR', staffId: null, deptId: null, phone: '', status: 1 };
+        return { id: null, username: '', password: '', realName: '', role: 'DOCTOR', roleId: null, orgId: null, staffId: null, deptId: null, deptScope: '', phone: '', status: 1 };
+      },
+      loadMeta: function () {
+        var vm = this;
+        HIS.loadRoles()
+          .then(function (d) { vm.roles = d || []; })
+          .catch(function () { vm.roles = HIS.ROLES.map(function (r) { return { value: r.value, label: r.label }; }); });
+        HIS.get('/api/sys/org/tree')
+          .then(function (d) { vm.orgs = HIS.flattenOrgs(d || []); })
+          .catch(function () { vm.orgs = []; });
+        HIS.get('/api/his/dept/enabled').then(function (d) { vm.depts = d || []; }).catch(function () { vm.depts = []; });
+        HIS.get('/api/his/staff/list').then(function (d) { vm.staffs = d || []; }).catch(function () { vm.staffs = []; });
+        HIS.get('/api/sys/menu/tree').then(function (d) { vm.menuMap = vm.buildMenuMap(d || [], {}); }).catch(function () { vm.menuMap = {}; });
+      },
+      roleDisplay: function (row) {
+        for (var i = 0; i < this.roles.length; i++) {
+          if (this.roles[i].id === row.roleId || this.roles[i].value === row.role) { return this.roles[i].label; }
+        }
+        return HIS.roleLabel(row.role);
+      },
+      orgName: function (id) {
+        for (var i = 0; i < this.orgs.length; i++) { if (this.orgs[i].id === id) { return String(this.orgs[i].label).trim(); } }
+        return '-';
       },
       load: function () {
         var vm = this;
@@ -109,11 +165,17 @@
       openCreate: function () {
         this.editing = false;
         this.form = this.emptyForm();
+        this.deptScopeArr = [];
+        this.activeTab = 'account';
+        this.roleMenuNames = []; this.roleIsAll = false;
         this.dialogVisible = true;
       },
       openEdit: function (row) {
         this.editing = true;
-        this.form = { id: row.id, username: row.username, password: '', realName: row.realName, role: row.role, staffId: row.staffId, deptId: row.deptId, phone: row.phone, status: row.status == null ? 1 : row.status };
+        this.form = { id: row.id, username: row.username, password: '', realName: row.realName, role: row.role, roleId: row.roleId, orgId: row.orgId, staffId: row.staffId, deptId: row.deptId, deptScope: row.deptScope || '', phone: row.phone, status: row.status == null ? 1 : row.status };
+        this.deptScopeArr = row.deptScope ? String(row.deptScope).split(',').filter(function (x) { return x !== ''; }).map(function (x) { return Number(x); }) : [];
+        this.activeTab = 'account';
+        this.loadRoleMenus(row.roleId);
         this.dialogVisible = true;
       },
       submit: function () {
@@ -121,6 +183,7 @@
         if (!vm.editing && (!vm.form.username || !vm.form.password)) {
           ElementPlus.ElMessage.warning('账号与密码不能为空'); return;
         }
+        vm.form.deptScope = (vm.deptScopeArr || []).join(',');
         var p = vm.editing ? HIS.put('/api/sys/user', vm.form) : HIS.post('/api/sys/user', vm.form);
         p.then(function () {
           HIS.notifySuccess(vm.editing ? '修改成功' : '新增成功');
@@ -146,7 +209,40 @@
           .then(function () { HIS.notifySuccess('已删除'); this.load(); }.bind(this))
           .catch(HIS.notifyError);
       },
-      roleLabel: function (c) { return HIS.roleLabel(c); }
+      roleLabel: function (c) { return HIS.roleLabel(c); },
+      /* 菜单树扁平为 id→menuName 映射(供角色菜单预览) */
+      buildMenuMap: function (nodes, map) {
+        var vm = this;
+        (nodes || []).forEach(function (n) {
+          map[n.id] = n.menuName;
+          if (n.children && n.children.length) { vm.buildMenuMap(n.children, map); }
+        });
+        return map;
+      },
+      /* 加载指定角色已授权菜单(只读预览): allMenus 角色显示"全部菜单" */
+      loadRoleMenus: function (roleId) {
+        var vm = this;
+        vm.roleMenuNames = []; vm.roleIsAll = false;
+        if (!roleId) { return; }
+        var role = null;
+        for (var i = 0; i < vm.roles.length; i++) { if (vm.roles[i].id === roleId) { role = vm.roles[i]; break; } }
+        if (role && role.allMenus === 1) { vm.roleIsAll = true; return; }
+        HIS.get('/api/sys/role/' + roleId + '/menus').then(function (ids) {
+          vm.roleMenuNames = (ids || []).map(function (id) { return vm.menuMap[id]; }).filter(function (n) { return !!n; });
+        }).catch(function () { vm.roleMenuNames = []; });
+      },
+      deptName: function (id) {
+        for (var i = 0; i < this.depts.length; i++) { if (this.depts[i].id === id) { return this.depts[i].deptName; } }
+        return id ? ('#' + id) : '-';
+      },
+      staffName: function (id) {
+        for (var i = 0; i < this.staffs.length; i++) { if (this.staffs[i].id === id) { return this.staffs[i].staffName + '(' + this.staffs[i].staffNo + ')'; } }
+        return id ? ('#' + id) : '-';
+      },
+      scopeText: function (row) {
+        var s = row.deptScope ? String(row.deptScope).split(',').filter(function (x) { return x !== ''; }) : [];
+        return s.length ? (s.length + ' 个科室') : '仅主属科室';
+      }
     },
     template: [
       '<div class="page-card">',
@@ -159,10 +255,12 @@
       '  <el-table :data="list" v-loading="loading" border stripe size="small">',
       '    <el-table-column prop="username" label="账号" width="140"></el-table-column>',
       '    <el-table-column prop="realName" label="姓名" width="120"></el-table-column>',
-      '    <el-table-column label="角色" width="120"><template #default="s"><el-tag size="small">{{ roleLabel(s.row.role) }}</el-tag></template></el-table-column>',
+      '    <el-table-column label="角色" width="130"><template #default="s"><el-tag size="small">{{ roleDisplay(s.row) }}</el-tag></template></el-table-column>',
+      '    <el-table-column label="归属机构" min-width="160" show-overflow-tooltip><template #default="s">{{ orgName(s.row.orgId) }}</template></el-table-column>',
       '    <el-table-column prop="phone" label="联系电话" width="140"></el-table-column>',
-      '    <el-table-column prop="staffId" label="职工ID" width="90"></el-table-column>',
-      '    <el-table-column prop="deptId" label="科室ID" width="90"></el-table-column>',
+      '    <el-table-column label="关联职工" width="150" show-overflow-tooltip><template #default="s">{{ staffName(s.row.staffId) }}</template></el-table-column>',
+      '    <el-table-column label="主属科室" width="120" show-overflow-tooltip><template #default="s">{{ deptName(s.row.deptId) }}</template></el-table-column>',
+      '    <el-table-column label="授权科室" width="110"><template #default="s"><el-tag size="small" :type="s.row.deptScope?\'warning\':\'info\'">{{ scopeText(s.row) }}</el-tag></template></el-table-column>',
       '    <el-table-column label="状态" width="90"><template #default="s">',
       '      <el-tag :type="s.row.status === 1 ? \'success\' : \'info\'" size="small">{{ s.row.status === 1 ? "启用" : "停用" }}</el-tag>',
       '    </template></el-table-column>',
@@ -177,26 +275,143 @@
       '      </template>',
       '    </el-table-column>',
       '  </el-table>',
-      '  <el-dialog v-model="dialogVisible" :title="editing ? \'编辑用户\' : \'新增用户\'" width="480px">',
-      '    <el-form :model="form" label-width="90px">',
-      '      <el-form-item label="账号"><el-input v-model="form.username" :disabled="editing" placeholder="登录账号"></el-input></el-form-item>',
-      '      <el-form-item label="密码" v-if="!editing"><el-input v-model="form.password" type="password" show-password placeholder="至少6位"></el-input></el-form-item>',
-      '      <el-form-item label="姓名"><el-input v-model="form.realName"></el-input></el-form-item>',
-      '      <el-form-item label="角色">',
-      '        <el-select v-model="form.role" style="width:100%">',
-      '          <el-option v-for="r in roles" :key="r.value" :label="r.label" :value="r.value"></el-option>',
-      '        </el-select>',
-      '      </el-form-item>',
-      '      <el-form-item label="联系电话"><el-input v-model="form.phone"></el-input></el-form-item>',
-      '      <el-form-item label="职工ID"><el-input v-model.number="form.staffId" placeholder="关联his_staff(P1a)"></el-input></el-form-item>',
-      '      <el-form-item label="科室ID"><el-input v-model.number="form.deptId" placeholder="关联his_dept(P1a)"></el-input></el-form-item>',
-      '      <el-form-item label="状态" v-if="editing">',
-      '        <el-switch v-model="form.status" :active-value="1" :inactive-value="0" active-text="启用" inactive-text="停用"></el-switch>',
-      '      </el-form-item>',
-      '    </el-form>',
+      '  <el-dialog v-model="dialogVisible" :title="editing ? \'编辑用户\' : \'新增用户\'" width="640px">',
+      '    <el-tabs v-model="activeTab">',
+      '      <el-tab-pane label="账号信息" name="account">',
+      '        <el-form :model="form" label-width="90px">',
+      '          <el-form-item label="账号"><el-input v-model="form.username" :disabled="editing" placeholder="登录账号"></el-input></el-form-item>',
+      '          <el-form-item label="密码" v-if="!editing"><el-input v-model="form.password" type="password" show-password placeholder="至少6位"></el-input></el-form-item>',
+      '          <el-form-item label="姓名"><el-input v-model="form.realName"></el-input></el-form-item>',
+      '          <el-form-item label="联系电话"><el-input v-model="form.phone"></el-input></el-form-item>',
+      '          <el-form-item label="归属机构"><el-select v-model="form.orgId" style="width:100%" clearable filterable placeholder="选择归属机构"><el-option v-for="o in orgs" :key="o.id" :label="o.label" :value="o.id"></el-option></el-select></el-form-item>',
+      '          <el-form-item label="关联职工"><el-select v-model="form.staffId" style="width:100%" clearable filterable placeholder="关联 his_staff(操作留痕/电子签名)"><el-option v-for="st in staffs" :key="st.id" :label="st.staffName + \'(\' + st.staffNo + \')\'" :value="st.id"></el-option></el-select></el-form-item>',
+      '          <el-form-item label="状态" v-if="editing"><el-switch v-model="form.status" :active-value="1" :inactive-value="0" active-text="启用" inactive-text="停用"></el-switch></el-form-item>',
+      '        </el-form>',
+      '      </el-tab-pane>',
+      '      <el-tab-pane label="角色权限" name="role">',
+      '        <el-form :model="form" label-width="90px">',
+      '          <el-form-item label="角色"><el-select v-model="form.roleId" style="width:100%" placeholder="选择角色" @change="loadRoleMenus(form.roleId)"><el-option v-for="r in roles" :key="r.id || r.value" :label="r.label" :value="r.id"></el-option></el-select></el-form-item>',
+      '          <el-form-item label="菜单权限">',
+      '            <div v-if="roleIsAll" style="line-height:24px;"><el-tag type="danger" size="small">全部菜单(管理员角色)</el-tag></div>',
+      '            <div v-else-if="roleMenuNames.length" style="line-height:28px;"><el-tag v-for="(n,i) in roleMenuNames" :key="i" size="small" style="margin:2px 4px 2px 0;">{{ n }}</el-tag></div>',
+      '            <span v-else style="color:#909399;font-size:12px;">尚未选择角色, 或该角色未分配菜单</span>',
+      '          </el-form-item>',
+      '        </el-form>',
+      '        <el-alert type="info" :closable="false" title="菜单权限(功能权限)由「系统管理 → 角色权限」统一授权, 此处为只读预览。"></el-alert>',
+      '      </el-tab-pane>',
+      '      <el-tab-pane label="科室权限" name="dept">',
+      '        <el-form :model="form" label-width="90px">',
+      '          <el-form-item label="主属科室"><el-select v-model="form.deptId" style="width:100%" clearable filterable placeholder="该账号编制主属科室"><el-option-group v-for="g in deptGroups" :key="g.category" :label="g.category"><el-option v-for="d in g.options" :key="d.id" :label="d.label" :value="d.id"></el-option></el-option-group></el-select></el-form-item>',
+      '          <el-form-item label="授权科室"><el-select v-model="deptScopeArr" multiple clearable filterable style="width:100%" placeholder="可登录/执业的多个科室(数据权限); 留空=仅主属科室"><el-option-group v-for="g in deptGroups" :key="g.category" :label="g.category"><el-option v-for="d in g.options" :key="d.id" :label="d.label" :value="d.id"></el-option></el-option-group></el-select></el-form-item>',
+      '          <el-form-item label=" "><span style="color:#909399;font-size:12px;">已授权 {{ deptScopeArr.length }} 个科室。一个医生可登录多个住院科室、护士可进多个病区、药师可进多个药房。科室权限决定账号可见的就诊/患者数据范围(数据权限), 与角色菜单权限(功能权限)相互独立。</span></el-form-item>',
+      '        </el-form>',
+      '      </el-tab-pane>',
+      '    </el-tabs>',
       '    <template #footer>',
       '      <el-button @click="dialogVisible = false">取消</el-button>',
       '      <el-button type="primary" @click="submit">确定</el-button>',
+      '    </template>',
+      '  </el-dialog>',
+      '</div>'
+    ].join('\n')
+  };
+
+  /* ============ 医院管理(平台超级管理员专属: 跨租户开通/停用医院) ============ */
+  HIS.views.HospitalManage = {
+    data: function () {
+      return { loading: false, saving: false, list: [], dlg: false, form: this.empty() };
+    },
+    created: function () { this.load(); },
+    methods: {
+      empty: function () {
+        return {
+          tenantCode: '', tenantName: '', contact: '', phone: '', address: '',
+          fixmedinsCode: '', fixmedinsName: '', mdtrtareaAdmvs: '', insuplcAdmdvs: '',
+          apiUrl: '', mockEnabled: 1,
+          adminUsername: '', adminPassword: '', adminName: ''
+        };
+      },
+      load: function () {
+        var vm = this;
+        vm.loading = true;
+        HIS.get('/api/sys/tenant/list')
+          .then(function (d) { vm.list = d || []; })
+          .catch(HIS.notifyError)
+          .finally(function () { vm.loading = false; });
+      },
+      openCreate: function () { this.form = this.empty(); this.dlg = true; },
+      submit: function () {
+        var vm = this;
+        var f = vm.form;
+        if (!f.tenantCode || !f.tenantName || !f.adminUsername || !f.adminPassword) {
+          ElementPlus.ElMessage.warning('请填写医院码、医院名称、初始管理员账号与密码'); return;
+        }
+        vm.saving = true;
+        HIS.post('/api/sys/tenant/open', f)
+          .then(function () {
+            HIS.notifySuccess('医院开通成功, 已即时生效(可用初始管理员登录)');
+            vm.dlg = false; vm.load();
+          })
+          .catch(HIS.notifyError)
+          .finally(function () { vm.saving = false; });
+      },
+      toggleStatus: function (row) {
+        var target = row.status === 1 ? 0 : 1;
+        HIS.post('/api/sys/tenant/' + row.id + '/status?status=' + target)
+          .then(function () { HIS.notifySuccess(target === 1 ? '已启用' : '已停用'); row.status = target; })
+          .catch(HIS.notifyError);
+      }
+    },
+    template: [
+      '<div class="page-card" v-loading="loading">',
+      '  <div class="page-title">医院管理<span style="font-size:12px;color:#909399;font-weight:normal;margin-left:8px;">平台超级管理员 · 跨租户开通与管理</span></div>',
+      '  <el-alert type="info" :closable="false" show-icon style="margin-bottom:12px;" title="新医院由此统一开通: 建租户 + 医保配置 + 默认机构 + 初始管理员账号, 开通即时生效。之后由该医院管理员登录自行维护科室/职工并分配用户权限。"></el-alert>',
+      '  <div class="toolbar">',
+      '    <el-button type="primary" @click="openCreate">开通新医院</el-button>',
+      '    <el-button @click="load">刷新</el-button>',
+      '    <span style="color:#909399;font-size:13px;">共 {{ list.length }} 家医院</span>',
+      '  </div>',
+      '  <el-table :data="list" border stripe size="small" style="width:100%">',
+      '    <el-table-column prop="tenantCode" label="医院码" width="150"></el-table-column>',
+      '    <el-table-column prop="tenantName" label="医院名称" min-width="180" show-overflow-tooltip></el-table-column>',
+      '    <el-table-column prop="fixmedinsCode" label="定点机构编号" width="140"></el-table-column>',
+      '    <el-table-column prop="mdtrtareaAdmvs" label="医保区划" width="100"></el-table-column>',
+      '    <el-table-column prop="contact" label="联系人" width="90"></el-table-column>',
+      '    <el-table-column prop="phone" label="联系电话" width="130"></el-table-column>',
+      '    <el-table-column label="平台" width="80"><template #default="s"><el-tag size="small" :type="s.row.mockEnabled===1?\'warning\':\'success\'">{{ s.row.mockEnabled===1?"模拟":"真实" }}</el-tag></template></el-table-column>',
+      '    <el-table-column label="状态" width="80"><template #default="s"><el-tag size="small" :type="s.row.status===1?\'success\':\'info\'">{{ s.row.status===1?"启用":"停用" }}</el-tag></template></el-table-column>',
+      '    <el-table-column label="操作" width="90" fixed="right"><template #default="s"><el-button link :type="s.row.status===1?\'info\':\'success\'" @click="toggleStatus(s.row)">{{ s.row.status===1?"停用":"启用" }}</el-button></template></el-table-column>',
+      '  </el-table>',
+      '  <el-dialog v-model="dlg" title="开通新医院" width="720px" top="6vh">',
+      '    <el-form :model="form" label-width="120px" size="small">',
+      '      <el-divider content-position="left">医院基本信息</el-divider>',
+      '      <el-row :gutter="12">',
+      '        <el-col :span="12"><el-form-item label="医院码" required><el-input v-model="form.tenantCode" placeholder="唯一登录码, 如 H42010000000"></el-input></el-form-item></el-col>',
+      '        <el-col :span="12"><el-form-item label="医院名称" required><el-input v-model="form.tenantName"></el-input></el-form-item></el-col>',
+      '        <el-col :span="12"><el-form-item label="联系人"><el-input v-model="form.contact"></el-input></el-form-item></el-col>',
+      '        <el-col :span="12"><el-form-item label="联系电话"><el-input v-model="form.phone"></el-input></el-form-item></el-col>',
+      '        <el-col :span="24"><el-form-item label="医院地址"><el-input v-model="form.address"></el-input></el-form-item></el-col>',
+      '      </el-row>',
+      '      <el-divider content-position="left">医保接口配置</el-divider>',
+      '      <el-row :gutter="12">',
+      '        <el-col :span="12"><el-form-item label="定点机构编号"><el-input v-model="form.fixmedinsCode" placeholder="fixmedins_code"></el-input></el-form-item></el-col>',
+      '        <el-col :span="12"><el-form-item label="定点机构名称"><el-input v-model="form.fixmedinsName" placeholder="默认同医院名称"></el-input></el-form-item></el-col>',
+      '        <el-col :span="12"><el-form-item label="就诊地医保区划"><el-input v-model="form.mdtrtareaAdmvs" placeholder="如 420100"></el-input></el-form-item></el-col>',
+      '        <el-col :span="12"><el-form-item label="参保地医保区划"><el-input v-model="form.insuplcAdmdvs" placeholder="如 420100"></el-input></el-form-item></el-col>',
+      '        <el-col :span="24"><el-form-item label="医保接口地址"><el-input v-model="form.apiUrl" placeholder="api_url, 留空用默认"></el-input></el-form-item></el-col>',
+      '        <el-col :span="12"><el-form-item label="模拟平台"><el-switch v-model="form.mockEnabled" :active-value="1" :inactive-value="0" active-text="模拟" inactive-text="真实"></el-switch></el-form-item></el-col>',
+      '      </el-row>',
+      '      <el-divider content-position="left">初始管理员账号</el-divider>',
+      '      <el-row :gutter="12">',
+      '        <el-col :span="12"><el-form-item label="管理员账号" required><el-input v-model="form.adminUsername" placeholder="该医院首次登录账号"></el-input></el-form-item></el-col>',
+      '        <el-col :span="12"><el-form-item label="管理员密码" required><el-input v-model="form.adminPassword" type="password" show-password placeholder="至少6位"></el-input></el-form-item></el-col>',
+      '        <el-col :span="12"><el-form-item label="管理员姓名"><el-input v-model="form.adminName"></el-input></el-form-item></el-col>',
+      '      </el-row>',
+      '      <el-alert type="success" :closable="false" title="开通后系统自动创建默认县级机构并绑定该管理员, 即时生效, 无需重启。"></el-alert>',
+      '    </el-form>',
+      '    <template #footer>',
+      '      <el-button @click="dlg=false">取消</el-button>',
+      '      <el-button type="primary" :loading="saving" @click="submit">开通</el-button>',
       '    </template>',
       '  </el-dialog>',
       '</div>'

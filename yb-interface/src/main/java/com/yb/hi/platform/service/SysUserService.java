@@ -37,7 +37,8 @@ public class SysUserService {
      * 在指定租户下创建用户
      */
     public SysUser createUser(Long tenantId, String username, String rawPassword, String realName,
-                              String role, Long staffId, Long deptId, String phone) {
+                              String role, Long staffId, Long deptId, Long orgId, Long roleId, String phone,
+                              String deptScope) {
         Long prev = TenantContext.get();
         try {
             TenantContext.set(tenantId);
@@ -51,7 +52,10 @@ public class SysUserService {
             user.setRole(role);
             user.setStaffId(staffId);
             user.setDeptId(deptId);
+            user.setOrgId(orgId);
+            user.setRoleId(roleId);
             user.setPhone(phone);
+            user.setDeptScope(deptScope);
             user.setStatus(1);
             sysUserMapper.insert(user);
             user.setPassword(null);
