@@ -26,6 +26,8 @@ public class HisYbMapLog extends BaseEntity {
     public static final String TYPE_CHANGE = "CHANGE";
     /** 变更类型: 清除对照 */
     public static final String TYPE_CLEAR = "CLEAR";
+    /** 变更类型: 对照生效时间调整 */
+    public static final String TYPE_EFF = "EFF";
 
     /** 对照方式: 人工确认 */
     public static final String SRC_MANUAL = "manual";

@@ -25,7 +25,12 @@ Thumbs.db
 # ===== Temporary verification screenshots =====
 step*.png
 verify_*.png
+walkthrough_*.png
+bug_*.png
 test_avatar.png
+
+# ===== Database backups =====
+/backup/
 
 # ===== Extraction outputs =====
 *.out

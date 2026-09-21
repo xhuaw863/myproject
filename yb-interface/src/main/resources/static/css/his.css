@@ -31,9 +31,12 @@ body { font-family: "Microsoft YaHei", "PingFang SC", sans-serif; background: #f
 .layout-header .spacer { flex: 1; }
 .layout-header .user { font-size: 13px; cursor: pointer; display: flex; align-items: center; gap: 8px; }
 .layout-body { display: flex; height: calc(100% - 56px); }
-.layout-aside { flex: 0 0 auto; width: 210px; background: #fff; border-right: 1px solid #e4e7ed; overflow-y: auto; transition: width .15s ease; }
+/* 不做 width 过渡: 后台标签页/受限环境下 CSS 过渡会暂停, 收缩/展开宽度卡住; 直接瞬时切换最稳 */
+.layout-aside { flex: 0 0 auto; width: 210px; background: #fff; border-right: 1px solid #e4e7ed; overflow-y: auto; }
 .layout-aside.is-collapsed { width: 40px; overflow: hidden; }
 .layout-aside.is-collapsed .el-menu { display: none; }
+/* 保险: 兜底任何内联 width 残留(如 el-menu collapse 过渡未收尾), 菜单始终撑满侧栏 */
+.layout-aside .el-menu { width: 100% !important; }
 .aside-bar { display: flex; justify-content: flex-end; padding: 2px 6px; border-bottom: 1px solid #ebeef5; }
 .layout-aside.is-collapsed .aside-bar { justify-content: center; }
 .layout-main { flex: 1; overflow-y: auto; padding: 16px; }
@@ -51,3 +54,27 @@ body { font-family: "Microsoft YaHei", "PingFang SC", sans-serif; background: #f
   font-size: 12px; white-space: pre-wrap; max-height: 320px; overflow: auto; }
 .placeholder { text-align: center; color: #909399; padding: 60px 20px; }
 .placeholder .big { font-size: 40px; margin-bottom: 12px; }
+
+/* 表格当前选中行(highlight-current-row)高亮加强: 默认色太浅, 与斑马纹/悬停色区分不明显 */
+.el-table__body tr.current-row > td.el-table__cell,
+.el-table--striped .el-table__body tr.el-table__row--striped.current-row > td.el-table__cell,
+.el-table__body tr.current-row:hover > td.el-table__cell {
+  background-color: #d9ecff !important;
+  color: #12406e;
+  font-weight: 600;
+}
+.el-table__body tr.current-row > td.el-table__cell:first-child { box-shadow: inset 4px 0 0 #1a5fb4; }
+
+/* 对照失效行(医保码在标准字典中已作废/过期/删除): 淡红底提示需重新对照, 置于选中行规则之后以覆盖 */
+.el-table__body tr.row-yb-invalid > td.el-table__cell,
+.el-table--striped .el-table__body tr.el-table__row--striped.row-yb-invalid > td.el-table__cell {
+  background-color: #fef0f0 !important;
+}
+.el-table__body tr.row-yb-invalid > td.el-table__cell:first-child { box-shadow: inset 4px 0 0 #f56c6c; }
+.el-table__body tr.row-yb-invalid.current-row > td.el-table__cell,
+.el-table__body tr.row-yb-invalid.current-row:hover > td.el-table__cell {
+  background-color: #fbd9d9 !important;
+  color: #8a1f1f;
+  font-weight: 600;
+}
+.el-table__body tr.row-yb-invalid.current-row > td.el-table__cell:first-child { box-shadow: inset 4px 0 0 #c45656; }

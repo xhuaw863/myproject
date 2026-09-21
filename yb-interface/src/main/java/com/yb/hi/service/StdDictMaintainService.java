@@ -13,11 +13,16 @@ import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.ResultSetMetaData;
 import java.sql.Statement;
+import java.sql.Timestamp;
 import java.sql.Types;
+import java.time.LocalDateTime;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * 标准字典维护服务(仅平台超级管理员使用): 对 std_* 表按注册表元数据做通用 CRUD。
@@ -34,6 +39,8 @@ public class StdDictMaintainService {
 
     private final DataSource dataSource;
     private final Map<String, StdDict> registry = StdDictRegistry.build();
+    /** 字典列名缓存(小写): 避免每次有效性判定都查 information_schema */
+    private final Map<String, Set<String>> colNameCache = new ConcurrentHashMap<>();
 
     public StdDictMaintainService(DataSource dataSource) {
         this.dataSource = dataSource;
@@ -161,6 +168,154 @@ public class StdDictMaintainService {
             log.error("读取字典[{}]行[{}]失败", key, id, e);
             throw new BizException("读取记录失败: " + e.getMessage());
         }
+    }
+
+    /** 按编码批量取名称(code -> name), 供业务列表回显医保/标准名称 */
+    public Map<String, String> namesByCode(String key, List<String> codes) {
+        Map<String, String> out = new LinkedHashMap<>();
+        if (codes == null || codes.isEmpty()) {
+            return out;
+        }
+        StdDict dict = requireDict(key);
+        StringBuilder sb = new StringBuilder("SELECT ").append(dict.getCodeCol()).append(" AS c, ")
+                .append(dict.getNameCol()).append(" AS n FROM ").append(dict.getTable())
+                .append(" WHERE ").append(dict.getCodeCol()).append(" IN (");
+        for (int i = 0; i < codes.size(); i++) {
+            sb.append(i > 0 ? ",?" : "?");
+        }
+        sb.append(")");
+        try (Connection conn = dataSource.getConnection();
+             PreparedStatement ps = conn.prepareStatement(sb.toString())) {
+            for (int i = 0; i < codes.size(); i++) {
+                ps.setString(i + 1, codes.get(i));
+            }
+            try (ResultSet rs = ps.executeQuery()) {
+                while (rs.next()) {
+                    out.put(rs.getString("c"), rs.getString("n"));
+                }
+            }
+        } catch (Exception e) {
+            log.warn("标准字典按编码取名称失败 key={}: {}", key, e.getMessage());
+        }
+        return out;
+    }
+
+    /** 按名称模糊反查字典编码(供留痕按医保名称检索), 最多返回 limit 个码 */
+    public List<String> codesByNameLike(String key, String kw, int limit) {
+        List<String> out = new ArrayList<>();
+        if (kw == null || kw.trim().isEmpty()) {
+            return out;
+        }
+        StdDict dict = requireDict(key);
+        String sql = "SELECT " + dict.getCodeCol() + " AS c FROM " + dict.getTable()
+                + " WHERE " + dict.getNameCol() + " LIKE ? LIMIT " + limit;
+        try (Connection conn = dataSource.getConnection();
+             PreparedStatement ps = conn.prepareStatement(sql)) {
+            ps.setString(1, "%" + kw.trim() + "%");
+            try (ResultSet rs = ps.executeQuery()) {
+                while (rs.next()) {
+                    out.add(rs.getString("c"));
+                }
+            }
+        } catch (Exception e) {
+            log.warn("标准字典按名称反查编码失败 key={}: {}", key, e.getMessage());
+        }
+        return out;
+    }
+
+    /** 按编码批量取名称与有效性: code -> {name, valid, invalidReason}。
+     *  作废判定: vali_flag='0'(字典已作废) 或 end_time 已到(已过期);
+     *  返回中缺失的编码表示字典中已查不到(被删除), 由调用方自行判定。 */
+    public Map<String, Map<String, Object>> infoByCode(String key, List<String> codes) {
+        Map<String, Map<String, Object>> out = new LinkedHashMap<>();
+        if (codes == null || codes.isEmpty()) {
+            return out;
+        }
+        StdDict dict = requireDict(key);
+        boolean hasVali = hasColumn(key, "vali_flag");
+        boolean hasEnd = hasColumn(key, "end_time");
+        StringBuilder sb = new StringBuilder("SELECT ").append(dict.getCodeCol()).append(" AS c, ")
+                .append(dict.getNameCol()).append(" AS n");
+        if (hasVali) {
+            sb.append(", vali_flag AS vf");
+        }
+        if (hasEnd) {
+            sb.append(", end_time AS et");
+        }
+        sb.append(" FROM ").append(dict.getTable()).append(" WHERE ").append(dict.getCodeCol()).append(" IN (");
+        for (int i = 0; i < codes.size(); i++) {
+            sb.append(i > 0 ? ",?" : "?");
+        }
+        sb.append(")");
+        try (Connection conn = dataSource.getConnection();
+             PreparedStatement ps = conn.prepareStatement(sb.toString())) {
+            for (int i = 0; i < codes.size(); i++) {
+                ps.setString(i + 1, codes.get(i));
+            }
+            try (ResultSet rs = ps.executeQuery()) {
+                while (rs.next()) {
+                    String code = rs.getString("c");
+                    Map<String, Object> prev = out.get(code);
+                    /* 同码多行时以"任一行仍有效"为准, 避免历史版本行误判为作废 */
+                    if (prev != null && Boolean.TRUE.equals(prev.get("valid"))) {
+                        continue;
+                    }
+                    String vf = hasVali ? trimToNull(rs.getString("vf")) : null;
+                    Timestamp et = hasEnd ? rs.getTimestamp("et") : null;
+                    String reason = null;
+                    if (vf != null && !"1".equals(vf)) {
+                        reason = "已作废";
+                    } else if (et != null && et.toLocalDateTime().isBefore(LocalDateTime.now())) {
+                        reason = "已过期";
+                    }
+                    Map<String, Object> m = new LinkedHashMap<>();
+                    m.put("name", rs.getString("n"));
+                    m.put("valid", reason == null);
+                    m.put("invalidReason", reason);
+                    out.put(code, m);
+                }
+            }
+        } catch (Exception e) {
+            log.warn("标准字典按编码取有效性失败 key={}: {}", key, e.getMessage());
+        }
+        return out;
+    }
+
+    /** 构造"该医保码在标准字典中仍有效"的 EXISTS 子查询 SQL(表名/列名取自可信注册表, 非用户输入)。
+     *  用于业务侧过滤"对照失效"条目: 外层 NOT EXISTS 即医保码已作废/已过期/已删除。
+     *
+     * @param outerCol 外层表的医保码列(需带表名限定, 如 his_drug_catalog.yb_drug_code) */
+    public String validExistsSql(String key, String outerCol) {
+        StdDict dict = requireDict(key);
+        StringBuilder sb = new StringBuilder("SELECT 1 FROM ").append(dict.getTable()).append(" s WHERE s.")
+                .append(dict.getCodeCol()).append(" = ").append(outerCol);
+        if (hasColumn(key, "vali_flag")) {
+            sb.append(" AND (s.vali_flag IS NULL OR s.vali_flag = '' OR s.vali_flag = '1')");
+        }
+        if (hasColumn(key, "end_time")) {
+            sb.append(" AND (s.end_time IS NULL OR s.end_time > NOW())");
+        }
+        return sb.toString();
+    }
+
+    /** 字典表是否存在指定列(部分字典无 vali_flag/end_time) */
+    private boolean hasColumn(String key, String col) {
+        Set<String> names = colNameCache.computeIfAbsent(key, k -> {
+            Set<String> s = new HashSet<>();
+            for (Map<String, Object> c : columns(k)) {
+                s.add(String.valueOf(c.get("name")).toLowerCase());
+            }
+            return s;
+        });
+        return names.contains(col.toLowerCase());
+    }
+
+    private static String trimToNull(String v) {
+        if (v == null) {
+            return null;
+        }
+        String s = v.trim();
+        return s.isEmpty() ? null : s;
     }
 
     /** 单行详情(带中文列注释): [{field,label,value}], 仅返回非空字段且跳过 id, 供前端展示标准字典(如物价)完整内容 */

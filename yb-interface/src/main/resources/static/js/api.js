@@ -116,6 +116,30 @@
     });
   };
 
+  /* 带令牌下载二进制文件(如导出 Excel): 从 Content-Disposition 取文件名, 触发浏览器保存, 返回文件名 */
+  HIS.download = function (url, fallbackName) {
+    var headers = {};
+    var token = HIS.getToken();
+    if (token) { headers['Authorization'] = 'Bearer ' + token; }
+    return fetch(url, { headers: headers }).then(function (resp) {
+      if (!resp.ok) { throw new Error('下载失败(HTTP ' + resp.status + ')'); }
+      var cd = resp.headers.get('Content-Disposition') || '';
+      var name = fallbackName || 'download';
+      var m = /filename\*=UTF-8''([^;]+)/i.exec(cd) || /filename="?([^";]+)"?/i.exec(cd);
+      if (m) {
+        try { name = decodeURIComponent(m[1]); } catch (e) { name = m[1]; }
+      }
+      return resp.blob().then(function (b) { return { blob: b, name: name }; });
+    }).then(function (r) {
+      var a = document.createElement('a');
+      var u = URL.createObjectURL(r.blob);
+      a.href = u; a.download = r.name;
+      document.body.appendChild(a); a.click();
+      setTimeout(function () { URL.revokeObjectURL(u); a.parentNode && a.parentNode.removeChild(a); }, 1000);
+      return r.name;
+    });
+  };
+
   /* 统一异常提示 */
   HIS.notifyError = function (e) {
     if (window.ElementPlus && ElementPlus.ElMessage) {

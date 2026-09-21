@@ -1,9 +1,11 @@
 package com.yb.hi.controller.community;
 
+import com.alibaba.excel.EasyExcel;
 import com.baomidou.mybatisplus.core.metadata.IPage;
 import com.yb.hi.dto.community.CatalogMapApplyReq;
 import com.yb.hi.dto.community.CatalogMapAutoReq;
 import com.yb.hi.dto.community.CatalogMapClearReq;
+import com.yb.hi.dto.community.CatalogMapEffReq;
 import com.yb.hi.entity.community.HisYbMapLog;
 import com.yb.hi.framework.common.BizException;
 import com.yb.hi.framework.common.R;
@@ -13,8 +15,12 @@ import com.yb.hi.framework.tenant.UserContext;
 import com.yb.hi.platform.entity.SysOrg;
 import com.yb.hi.platform.mapper.SysOrgMapper;
 import com.yb.hi.service.community.CatalogMapService;
+import org.springframework.format.annotation.DateTimeFormat;
 import org.springframework.web.bind.annotation.*;
 
+import javax.servlet.http.HttpServletResponse;
+import java.io.IOException;
+import java.net.URLEncoder;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
@@ -54,6 +60,40 @@ public class CatalogMapController {
         return R.ok(catalogMapService.items(catalog, page, size, mapped, keyword, itemType));
     }
 
+    /** 导出对照结果(xlsx): 与列表同一筛选条件, 一次性导出全部匹配行(含医保名称/变更前码/生效时间) */
+    @GetMapping("/export")
+    public void export(@RequestParam String catalog,
+                       @RequestParam(required = false) Integer mapped,
+                       @RequestParam(required = false) String keyword,
+                       @RequestParam(required = false) String itemType,
+                       HttpServletResponse resp) throws IOException {
+        Map<String, Object> data = catalogMapService.exportRows(catalog, mapped, keyword, itemType);
+        String fname = "医保对照结果_" + catalogLabel(catalog) + "_" + LocalDate.now() + ".xlsx";
+        String enc = URLEncoder.encode(fname, "UTF-8").replace("+", "%20");
+        resp.setContentType("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+        resp.setCharacterEncoding("UTF-8");
+        resp.setHeader("Content-Disposition", "attachment; filename=\"" + enc + "\"; filename*=UTF-8''" + enc);
+        resp.setHeader("Access-Control-Expose-Headers", "Content-Disposition");
+        @SuppressWarnings("unchecked")
+        List<List<String>> head = (List<List<String>>) data.get("head");
+        @SuppressWarnings("unchecked")
+        List<List<Object>> rows = (List<List<Object>>) data.get("rows");
+        EasyExcel.write(resp.getOutputStream()).head(head).sheet("对照结果").doWrite(rows);
+    }
+
+    private static String catalogLabel(String catalog) {
+        if ("drug".equals(catalog)) {
+            return "药品目录";
+        }
+        if ("cons".equals(catalog)) {
+            return "耗材目录";
+        }
+        if ("charge".equals(catalog)) {
+            return "医疗服务项目";
+        }
+        return String.valueOf(catalog);
+    }
+
     /** 打分候选: 选中院内条目后拉取标准字典候选(score>=0.5 前 limit) */
     @GetMapping("/candidates")
     public R<List<Map<String, Object>>> candidates(@RequestParam String catalog,
@@ -63,14 +103,15 @@ public class CatalogMapController {
         return R.ok(catalogMapService.candidates(catalog, itemId, keyword, limit));
     }
 
-    /** 人工/预览确认写入对照(幂等) */
+    /** 人工/预览确认写入对照(幂等); 已对照条目改码属变更对照, 需前端二次确认后带 force=true */
     @PostMapping("/apply")
     public R<Integer> apply(@RequestBody CatalogMapApplyReq req) {
         requireLeadOrg();
         if (req == null || req.getItems() == null || req.getItems().isEmpty()) {
             return R.ok(0);
         }
-        return R.ok(catalogMapService.apply(req.getCatalog(), req.getItems()));
+        return R.ok(catalogMapService.apply(req.getCatalog(), req.getItems(),
+                HisYbMapLog.SRC_MANUAL, Boolean.TRUE.equals(req.getForce())));
     }
 
     /** 批量自动对照: dryRun=true 仅预览, 否则写入达阈值项 */
@@ -96,13 +137,28 @@ public class CatalogMapController {
         return R.ok(catalogMapService.clear(req.getCatalog(), req.getItemIds()));
     }
 
-    /** 对照变更留痕分页: catalog/itemId 可选, 按变更时间倒序 */
+    /** 对照变更留痕分页: catalog/itemId 可选, kw=院内码/院内名/医保码/医保名称, start/end=变更日期(含两端) */
     @GetMapping("/logs")
     public R<IPage<HisYbMapLog>> logs(@RequestParam(required = false) String catalog,
                                       @RequestParam(required = false) Long itemId,
+                                      @RequestParam(required = false) String kw,
+                                      @RequestParam(required = false) @DateTimeFormat(pattern = "yyyy-MM-dd") LocalDate start,
+                                      @RequestParam(required = false) @DateTimeFormat(pattern = "yyyy-MM-dd") LocalDate end,
                                       @RequestParam(defaultValue = "1") long page,
                                       @RequestParam(defaultValue = "20") long size) {
-        return R.ok(catalogMapService.logs(catalog, itemId, page, size));
+        return R.ok(catalogMapService.logs(catalog, itemId, kw, start, end, page, size));
+    }
+
+    /** 修改对照生效时间(人工纠偏/补录历史生效时点, 留痕 EFF) */
+    @PostMapping("/eff-time")
+    public R<Void> effTime(@RequestBody CatalogMapEffReq req) {
+        requireLeadOrg();
+        if (req == null || req.getCatalog() == null || req.getItemId() == null) {
+            throw new BizException(400, "catalog/itemId 不能为空");
+        }
+        catalogMapService.updateEffTime(req.getCatalog(), req.getItemId(),
+                req.getEffTime() == null || req.getEffTime().trim().isEmpty() ? null : parseAt(req.getEffTime()));
+        return R.ok(null);
     }
 
     /** 某时点生效的医保码: at 支持 yyyy-MM-dd HH:mm:ss 或 yyyy-MM-dd */

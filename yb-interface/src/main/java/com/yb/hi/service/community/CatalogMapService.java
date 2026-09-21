@@ -20,8 +20,11 @@ import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
 
 import java.math.BigDecimal;
+import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -43,6 +46,9 @@ public class CatalogMapService {
     public static final String CAT_DRUG = "drug";
     public static final String CAT_CONS = "cons";
     public static final String CAT_CHARGE = "charge";
+
+    /** 对照失效原因: 医保码在标准字典中已查不到(目录行被删除) */
+    private static final String REASON_DELETED = "已删除";
 
     private final HisDrugCatalogService drugService;
     private final HisConsCatalogService consService;
@@ -76,37 +82,70 @@ public class CatalogMapService {
         throw new BizException(400, "不支持的目录: " + catalog);
     }
 
+    /** 目录 -> 院内表的医保码列(带表名限定), 供标准字典有效性子查询引用外层列 */
+    private String ybColRef(String catalog) {
+        if (CAT_DRUG.equals(catalog)) {
+            return "his_drug_catalog.yb_drug_code";
+        }
+        if (CAT_CONS.equals(catalog)) {
+            return "his_cons_catalog.yb_cons_code";
+        }
+        if (CAT_CHARGE.equals(catalog)) {
+            return "his_charge_item.med_list_codg";
+        }
+        throw new BizException(400, "不支持的目录: " + catalog);
+    }
+
     /* ================= 覆盖率看板 ================= */
 
-    /** 每目录 {total, mapped, unmapped} */
+    /** 每目录 {total, mapped, unmapped, invalid}: invalid = 已对照但医保码在标准字典中已作废/过期/删除, 需重新对照 */
     public Map<String, Object> summary() {
         Map<String, Object> out = new LinkedHashMap<>();
         out.put(CAT_DRUG, countOf(drugService.count(), drugService.count(new LambdaQueryWrapper<HisDrugCatalog>()
-                .isNotNull(HisDrugCatalog::getYbDrugCode).ne(HisDrugCatalog::getYbDrugCode, ""))));
+                .isNotNull(HisDrugCatalog::getYbDrugCode).ne(HisDrugCatalog::getYbDrugCode, "")), invalidCount(CAT_DRUG)));
         out.put(CAT_CONS, countOf(consService.count(), consService.count(new LambdaQueryWrapper<HisConsCatalog>()
-                .isNotNull(HisConsCatalog::getYbConsCode).ne(HisConsCatalog::getYbConsCode, ""))));
+                .isNotNull(HisConsCatalog::getYbConsCode).ne(HisConsCatalog::getYbConsCode, "")), invalidCount(CAT_CONS)));
         out.put(CAT_CHARGE, countOf(chargeService.count(), chargeService.count(new LambdaQueryWrapper<HisChargeItem>()
-                .isNotNull(HisChargeItem::getMedListCodg).ne(HisChargeItem::getMedListCodg, ""))));
+                .isNotNull(HisChargeItem::getMedListCodg).ne(HisChargeItem::getMedListCodg, "")), invalidCount(CAT_CHARGE)));
         return out;
     }
 
-    private Map<String, Object> countOf(long total, long mapped) {
+    /** 对照失效条数: 已对照且医保码在标准字典中已无有效行(作废/过期/删除) */
+    private long invalidCount(String catalog) {
+        String validSub = stdMaintain.validExistsSql(stdKeyOf(catalog), ybColRef(catalog));
+        if (CAT_DRUG.equals(catalog)) {
+            return drugService.count(new LambdaQueryWrapper<HisDrugCatalog>()
+                    .isNotNull(HisDrugCatalog::getYbDrugCode).ne(HisDrugCatalog::getYbDrugCode, "")
+                    .notExists(validSub));
+        }
+        if (CAT_CONS.equals(catalog)) {
+            return consService.count(new LambdaQueryWrapper<HisConsCatalog>()
+                    .isNotNull(HisConsCatalog::getYbConsCode).ne(HisConsCatalog::getYbConsCode, "")
+                    .notExists(validSub));
+        }
+        return chargeService.count(new LambdaQueryWrapper<HisChargeItem>()
+                .isNotNull(HisChargeItem::getMedListCodg).ne(HisChargeItem::getMedListCodg, "")
+                .notExists(validSub));
+    }
+
+    private Map<String, Object> countOf(long total, long mapped, long invalid) {
         Map<String, Object> m = new LinkedHashMap<>();
         m.put("total", total);
         m.put("mapped", mapped);
         m.put("unmapped", total - mapped);
+        m.put("invalid", invalid);
         return m;
     }
 
     /* ================= 院内工作队列 ================= */
 
-    /** 院内条目归一视图分页: {id,code,name,spec,manufacturer,unit,ybCode,mapped} */
+    /** 院内条目归一视图分页: {id,code,name,spec,manufacturer,unit,ybCode,ybName,ybValid,mapped} */
     public IPage<Map<String, Object>> items(String catalog, long page, long size,
                                             Integer mapped, String keyword, String itemType) {
         boolean hasKw = StringUtils.hasText(keyword);
         if (CAT_DRUG.equals(catalog)) {
             LambdaQueryChainWrapper<HisDrugCatalog> q = drugService.lambdaQuery();
-            applyMapped(q, mapped, HisDrugCatalog::getYbDrugCode);
+            applyMapped(q, mapped, HisDrugCatalog::getYbDrugCode, catalog);
             if (hasKw) {
                 q.and(w -> w.like(HisDrugCatalog::getGenericName, keyword)
                         .or().like(HisDrugCatalog::getTradeName, keyword)
@@ -114,12 +153,12 @@ public class CatalogMapService {
                         .or().like(HisDrugCatalog::getYbDrugCode, keyword));
             }
             IPage<HisDrugCatalog> p = q.orderByDesc(HisDrugCatalog::getId).page(new Page<>(page, size));
-            return mapView(p, e -> hosp(e.getId(), e.getDrugCode(), e.getGenericName(), e.getSpec(),
-                    e.getManufacturer(), "", e.getYbDrugCode(), e.getRetailPrice(), e.getPrevYbCode(), e.getYbMapEffTime()));
+            return enrichYbInfo(catalog, mapView(p, e -> hosp(e.getId(), e.getDrugCode(), e.getGenericName(), e.getSpec(),
+                    e.getManufacturer(), "", e.getYbDrugCode(), e.getRetailPrice(), e.getPrevYbCode(), e.getYbMapEffTime())));
         }
         if (CAT_CONS.equals(catalog)) {
             LambdaQueryChainWrapper<HisConsCatalog> q = consService.lambdaQuery();
-            applyMapped(q, mapped, HisConsCatalog::getYbConsCode);
+            applyMapped(q, mapped, HisConsCatalog::getYbConsCode, catalog);
             if (hasKw) {
                 q.and(w -> w.like(HisConsCatalog::getName, keyword)
                         .or().like(HisConsCatalog::getConsCode, keyword)
@@ -127,31 +166,120 @@ public class CatalogMapService {
                         .or().like(HisConsCatalog::getRegCertNo, keyword));
             }
             IPage<HisConsCatalog> p = q.orderByDesc(HisConsCatalog::getId).page(new Page<>(page, size));
-            return mapView(p, e -> hosp(e.getId(), e.getConsCode(), e.getName(), e.getSpecModel(),
-                    e.getManufacturer(), "", e.getYbConsCode(), e.getChargePrice(), e.getPrevYbCode(), e.getYbMapEffTime()));
+            return enrichYbInfo(catalog, mapView(p, e -> hosp(e.getId(), e.getConsCode(), e.getName(), e.getSpecModel(),
+                    e.getManufacturer(), "", e.getYbConsCode(), e.getChargePrice(), e.getPrevYbCode(), e.getYbMapEffTime())));
         }
         // charge
         LambdaQueryChainWrapper<HisChargeItem> q = chargeService.lambdaQuery()
                 .eq(StringUtils.hasText(itemType), HisChargeItem::getItemType, itemType);
-        applyMapped(q, mapped, HisChargeItem::getMedListCodg);
+        applyMapped(q, mapped, HisChargeItem::getMedListCodg, catalog);
         if (hasKw) {
             q.and(w -> w.like(HisChargeItem::getItemName, keyword)
                     .or().like(HisChargeItem::getItemCode, keyword)
                     .or().like(HisChargeItem::getMedListCodg, keyword));
         }
         IPage<HisChargeItem> p = q.orderByDesc(HisChargeItem::getId).page(new Page<>(page, size));
-        return mapView(p, e -> hosp(e.getId(), e.getItemCode(), e.getItemName(), e.getSpec(),
-                "", e.getUnit(), e.getMedListCodg(), e.getPrice(), e.getPrevYbCode(), e.getYbMapEffTime()));
+        return enrichYbInfo(catalog, mapView(p, e -> hosp(e.getId(), e.getItemCode(), e.getItemName(), e.getSpec(),
+                "", e.getUnit(), e.getMedListCodg(), e.getPrice(), e.getPrevYbCode(), e.getYbMapEffTime())));
     }
 
-    /** mapped=1 仅已对照, mapped=0 仅未对照, null 全部 */
+    /** 左栏回显医保名称与有效性: 按已对照医保码批量查标准字典(一页一次),
+     *  便于直接肉眼核对对照是否正确; 医保码已作废/过期/删除的行标记为对照失效, 需重新对照 */
+    private IPage<Map<String, Object>> enrichYbInfo(String catalog, IPage<Map<String, Object>> pg) {
+        String stdKey = stdKeyOf(catalog);
+        List<String> codes = new ArrayList<>();
+        for (Map<String, Object> m : pg.getRecords()) {
+            String c = str(m.get("ybCode"));
+            if (!c.isEmpty()) {
+                codes.add(c);
+            }
+        }
+        Map<String, Map<String, Object>> info = codes.isEmpty()
+                ? new LinkedHashMap<>() : stdMaintain.infoByCode(stdKey, codes);
+        for (Map<String, Object> m : pg.getRecords()) {
+            String c = str(m.get("ybCode"));
+            if (c.isEmpty()) {
+                m.put("ybName", null);
+                m.put("ybValid", null);
+                m.put("ybInvalidReason", null);
+                continue;
+            }
+            Map<String, Object> si = info.get(c);
+            if (si == null) {
+                /* 标准字典中已无此医保码: 目录行被删除, 必须重新对照 */
+                m.put("ybName", null);
+                m.put("ybValid", false);
+                m.put("ybInvalidReason", REASON_DELETED);
+            } else {
+                m.put("ybName", si.get("name"));
+                m.put("ybValid", si.get("valid"));
+                m.put("ybInvalidReason", si.get("invalidReason"));
+            }
+        }
+        return pg;
+    }
+
+    /** 导出对照结果行数上限(按当前筛选一次性导出, 不分页) */
+    private static final long EXPORT_MAX = 200000L;
+    private static final DateTimeFormatter EFF_FMT = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
+    private static final String[] EXPORT_HEAD = {"院内码", "名称", "规格/型号", "单位", "厂家", "单价",
+            "医保码", "医保名称", "对照有效性", "变更前医保码", "对照生效时间", "对照状态"};
+
+    /** 导出对照结果: 复用列表查询与医保名称回显, 返回 {head, rows, total} */
+    public Map<String, Object> exportRows(String catalog, Integer mapped, String keyword, String itemType) {
+        stdKeyOf(catalog);
+        IPage<Map<String, Object>> pg = items(catalog, 1, EXPORT_MAX, mapped, keyword, itemType);
+        List<List<String>> head = new ArrayList<>();
+        for (String h : EXPORT_HEAD) {
+            head.add(Collections.singletonList(h));
+        }
+        List<List<Object>> rows = new ArrayList<>();
+        for (Map<String, Object> m : pg.getRecords()) {
+            List<Object> r = new ArrayList<>();
+            r.add(str(m.get("code")));
+            r.add(str(m.get("name")));
+            r.add(str(m.get("spec")));
+            r.add(str(m.get("unit")));
+            r.add(str(m.get("manufacturer")));
+            r.add(m.get("price"));
+            r.add(str(m.get("ybCode")));
+            r.add(str(m.get("ybName")));
+            r.add(validityText(m));
+            r.add(str(m.get("prevYbCode")));
+            Object eff = m.get("mapEffTime");
+            r.add(eff instanceof LocalDateTime ? ((LocalDateTime) eff).format(EFF_FMT) : "");
+            r.add(Boolean.TRUE.equals(m.get("mapped")) ? "已对照" : "未对照");
+            rows.add(r);
+        }
+        Map<String, Object> out = new LinkedHashMap<>();
+        out.put("head", head);
+        out.put("rows", rows);
+        out.put("total", pg.getTotal());
+        return out;
+    }
+
+    /** 导出用的对照有效性文本: 未对照为 —, 失效则写明原因(医保目录已作废/已过期/已删除) */
+    private static String validityText(Map<String, Object> m) {
+        if (!Boolean.TRUE.equals(m.get("mapped"))) {
+            return "—";
+        }
+        Object reason = m.get("ybInvalidReason");
+        return reason == null ? "有效" : "医保目录" + reason;
+    }
+
+    /** mapped=1 仅已对照, mapped=0 仅未对照, mapped=2 仅对照失效(医保码已作废/过期/删除), null 全部 */
     private <T> void applyMapped(LambdaQueryChainWrapper<T> q, Integer mapped,
-                                 com.baomidou.mybatisplus.core.toolkit.support.SFunction<T, String> col) {
+                                 com.baomidou.mybatisplus.core.toolkit.support.SFunction<T, String> col,
+                                 String catalog) {
         if (mapped == null) {
             return;
         }
         if (mapped == 1) {
             q.isNotNull(col).ne(col, "");
+        } else if (mapped == 2) {
+            /* 已对照但标准字典中已无有效行: NOT EXISTS 覆盖"作废/过期"与"被删除"两种情况 */
+            q.isNotNull(col).ne(col, "")
+                    .notExists(stdMaintain.validExistsSql(stdKeyOf(catalog), ybColRef(catalog)));
         } else {
             q.and(w -> w.isNull(col).or().eq(col, ""));
         }
@@ -271,7 +399,45 @@ public class CatalogMapService {
                 m.put("row", stdMaintain.row(stdKey, ((Number) sid).longValue()));
             }
         }
+        /* 标注候选医保码在标准字典中的有效性: 已作废/已过期的编码不应再用于新对照 */
+        annotateStdValid(stdKey, fin);
         return fin;
+    }
+
+    /** 批量标注标准字典行的有效性: 写入 valid / invalidReason(已作废·已过期·已删除) */
+    private void annotateStdValid(String stdKey, List<Map<String, Object>> rows) {
+        List<String> codes = new ArrayList<>();
+        for (Map<String, Object> m : rows) {
+            String c = str(m.get("code"));
+            if (!c.isEmpty()) {
+                codes.add(c);
+            }
+        }
+        if (codes.isEmpty()) {
+            return;
+        }
+        Map<String, Map<String, Object>> info = stdMaintain.infoByCode(stdKey, codes);
+        for (Map<String, Object> m : rows) {
+            Map<String, Object> si = info.get(str(m.get("code")));
+            boolean valid = si != null && Boolean.TRUE.equals(si.get("valid"));
+            m.put("valid", valid);
+            m.put("invalidReason", valid ? null : (si == null ? REASON_DELETED : si.get("invalidReason")));
+        }
+    }
+
+    /** 剔除标准字典中已作废/已过期的行(自动对照不得写入失效医保码) */
+    private List<Map<String, Object>> dropInvalidStd(String stdKey, List<Map<String, Object>> rows) {
+        if (rows.isEmpty()) {
+            return rows;
+        }
+        annotateStdValid(stdKey, rows);
+        List<Map<String, Object>> out = new ArrayList<>();
+        for (Map<String, Object> m : rows) {
+            if (!Boolean.FALSE.equals(m.get("valid"))) {
+                out.add(m);
+            }
+        }
+        return out;
     }
 
     /** 按目录适配"规格/厂家"参与打分的字段: 耗材规格不可比(用分类), 医疗服务用单位比 prc_unit */
@@ -330,11 +496,16 @@ public class CatalogMapService {
 
     /** 人工/预览确认写入, 返回写入条数(幂等: 重复对照即更新) */
     public int apply(String catalog, List<CatalogMapApplyReq.Item> items) {
-        return apply(catalog, items, HisYbMapLog.SRC_MANUAL);
+        return apply(catalog, items, HisYbMapLog.SRC_MANUAL, false);
     }
 
-    /** 写入对照并留痕: src=manual人工/auto自动 */
+    /** 写入对照并留痕: src=manual人工/auto自动; 自动对照仅作用于未对照条目, 不受 force 限制 */
     public int apply(String catalog, List<CatalogMapApplyReq.Item> items, String src) {
+        return apply(catalog, items, src, true);
+    }
+
+    /** 写入对照并留痕: force=false 时, 已对照且目标医保码不同的条目视为"变更对照", 直接拒绝(需前端二次确认后带 force=true) */
+    public int apply(String catalog, List<CatalogMapApplyReq.Item> items, String src, boolean force) {
         String stdKey = stdKeyOf(catalog);
         int applied = 0;
         for (CatalogMapApplyReq.Item it : items) {
@@ -342,16 +513,55 @@ public class CatalogMapService {
                 continue;
             }
             Map<String, Object> std = stdMaintain.row(stdKey, it.getStdId());
-            if (applyOne(catalog, it.getItemId(), std, src)) {
+            /* 人工对照不得写入已作废/已删除的医保码(自动对照已在候选阶段剔除) */
+            if (HisYbMapLog.SRC_MANUAL.equals(src)) {
+                guardStdValid(catalog, std);
+            }
+            if (applyOne(catalog, it.getItemId(), std, src, force)) {
                 applied++;
             }
         }
         return applied;
     }
 
+    /** 目录 -> 标准字典主码列名 */
+    private String stdCodeCol(String catalog) {
+        if (CAT_DRUG.equals(catalog)) {
+            return "drug_code";
+        }
+        return CAT_CONS.equals(catalog) ? "cons_code" : "nat_item_code";
+    }
+
+    /** 目标医保码在标准字典中已作废/过期/删除时禁止写入对照, 避免把院内条目对到失效编码上 */
+    private void guardStdValid(String catalog, Map<String, Object> std) {
+        String code = str(std.get(stdCodeCol(catalog)));
+        if (code.isEmpty()) {
+            return;
+        }
+        Map<String, Object> si = stdMaintain.infoByCode(stdKeyOf(catalog), Collections.singletonList(code)).get(code);
+        if (si == null) {
+            throw new BizException(409, "医保码 " + code + " 已从标准字典删除, 不能用于对照, 请另选有效的医保项目");
+        }
+        if (!Boolean.TRUE.equals(si.get("valid"))) {
+            throw new BizException(409, "医保码 " + code + " 在标准字典中" + si.get("invalidReason")
+                    + ", 不能用于对照, 请另选有效的医保项目");
+        }
+    }
+
+    /** 已对照条目换成不同医保码 => 变更对照, 必须显式确认, 避免误操作覆盖既有对照 */
+    private void guardChange(String catalog, boolean force, String oldCode, String newCode, String itemName) {
+        if (force || oldCode == null || oldCode.isEmpty() || oldCode.equals(newCode)) {
+            return;
+        }
+        String oldName = stdMaintain.namesByCode(stdKeyOf(catalog), Collections.singletonList(oldCode)).get(oldCode);
+        throw new BizException(409, "院内条目「" + itemName + "」已对照医保码 " + oldCode
+                + (oldName == null || oldName.isEmpty() ? "" : "(" + oldName + ")") + ", 变更对照需二次确认");
+    }
+
     /** 单条写入: 主对照码必写, 附带字段仅空才回填, 并写溯源三件套;
-     *  对照码发生变化时记录 prev_yb_code + yb_map_eff_time 并写变更留痕。 */
-    private boolean applyOne(String catalog, Long itemId, Map<String, Object> std, String src) {
+     *  对照码发生变化时记录 prev_yb_code + yb_map_eff_time 并写变更留痕;
+     *  已对照条目改码需 force=true(前端二次确认), 否则拒绝写入。 */
+    private boolean applyOne(String catalog, Long itemId, Map<String, Object> std, String src, boolean force) {
         LocalDateTime now = LocalDateTime.now();
         if (CAT_DRUG.equals(catalog)) {
             HisDrugCatalog e = drugService.getById(itemId);
@@ -360,6 +570,7 @@ public class CatalogMapService {
             }
             String old = str(e.getYbDrugCode());
             String neu = str(std.get("drug_code"));
+            guardChange(catalog, force, old, neu, e.getGenericName());
             e.setYbDrugCode(neu);
             fillIfEmpty(e::setDrugStdCode, e.getDrugStdCode(), str(std.get("drug_std_code")));
             fillIfEmpty(e::setApprovalNo, e.getApprovalNo(), str(std.get("approval_no")));
@@ -391,6 +602,7 @@ public class CatalogMapService {
             }
             String old = str(e.getYbConsCode());
             String neu = str(std.get("cons_code"));
+            guardChange(catalog, force, old, neu, e.getName());
             e.setYbConsCode(neu);
             fillIfEmpty(e::setCat1, e.getCat1(), str(std.get("cat1")));
             fillIfEmpty(e::setCat2, e.getCat2(), str(std.get("cat2")));
@@ -421,6 +633,7 @@ public class CatalogMapService {
         }
         String old = str(e.getMedListCodg());
         String neu = str(std.get("nat_item_code"));
+        guardChange(catalog, force, old, neu, e.getItemName());
         e.setMedListCodg(neu);
         e.setMedChrgitmType("02");
         fillIfEmpty(e::setNatItemCode, e.getNatItemCode(), str(std.get("nat_item_code")));
@@ -447,6 +660,12 @@ public class CatalogMapService {
     /** 写对照变更留痕(新增/变更/清除均记一行) */
     private void logChange(String catalog, Long itemId, String itemCode, String itemName,
                            String oldCode, String newCode, String type, Double score, String src) {
+        logChange(catalog, itemId, itemCode, itemName, oldCode, newCode, type, score, src, null);
+    }
+
+    /** 写对照变更留痕(带备注) */
+    private void logChange(String catalog, Long itemId, String itemCode, String itemName,
+                           String oldCode, String newCode, String type, Double score, String src, String memo) {
         HisYbMapLog rec = new HisYbMapLog();
         rec.setCatalogType(catalog);
         rec.setCatalogId(itemId);
@@ -464,6 +683,7 @@ public class CatalogMapService {
             rec.setOrgId(lu.getOrgId());
         }
         rec.setChangeTime(LocalDateTime.now());
+        rec.setMemo(memo);
         ybMapLogMapper.insert(rec);
     }
 
@@ -555,7 +775,8 @@ public class CatalogMapService {
 
     /** 单条目最优匹配(达阈值才返回), 返回候选行视图 */
     private Map<String, Object> bestMatch(String catalog, String stdKey, HospItem h, double thr) {
-        List<Map<String, Object>> rows = fetchStdCandidates(stdKey, h.name, 10);
+        /* 已作废/已过期的医保码不参与自动对照 */
+        List<Map<String, Object>> rows = dropInvalidStd(stdKey, fetchStdCandidates(stdKey, h.name, 10));
         Map<String, Object> best = null;
         double bestScore = 0;
         for (Map<String, Object> row : rows) {
@@ -641,14 +862,41 @@ public class CatalogMapService {
 
     /* ================= 变更留痕查询 ================= */
 
-    /** 对照变更留痕分页: catalog/itemId 可选过滤, 按变更时间倒序 */
-    public IPage<HisYbMapLog> logs(String catalog, Long itemId, long page, long size) {
+    /** 对照变更留痕分页: catalog/itemId 可选过滤; kw 匹配院内码/院内名/医保码/医保名称任一;
+     *  start/end 为变更日期(含两端); 按变更时间倒序 */
+    public IPage<HisYbMapLog> logs(String catalog, Long itemId, String kw, LocalDate start, LocalDate end, long page, long size) {
         LambdaQueryWrapper<HisYbMapLog> q = new LambdaQueryWrapper<HisYbMapLog>()
                 .eq(StringUtils.hasText(catalog), HisYbMapLog::getCatalogType, catalog)
                 .eq(itemId != null, HisYbMapLog::getCatalogId, itemId)
+                .ge(start != null, HisYbMapLog::getChangeTime, start == null ? null : start.atStartOfDay())
+                .lt(end != null, HisYbMapLog::getChangeTime, end == null ? null : end.plusDays(1).atStartOfDay())
                 .orderByDesc(HisYbMapLog::getChangeTime)
                 .orderByDesc(HisYbMapLog::getId);
+        if (StringUtils.hasText(kw)) {
+            final String k = kw.trim();
+            final List<String> stdCodes = stdCodesByName(catalog, k);
+            q.and(w -> {
+                w.like(HisYbMapLog::getItemCode, k).or().like(HisYbMapLog::getItemName, k)
+                        .or().like(HisYbMapLog::getOldCode, k).or().like(HisYbMapLog::getNewCode, k);
+                if (!stdCodes.isEmpty()) {
+                    w.or().in(HisYbMapLog::getOldCode, stdCodes).or().in(HisYbMapLog::getNewCode, stdCodes);
+                }
+            });
+        }
         return ybMapLogMapper.selectPage(new Page<>(page, size), q);
+    }
+
+    /** 按医保名称反查医保码: catalog 指定时只查对应标准字典, 否则三本都查(上限 200 防 IN 过长) */
+    private List<String> stdCodesByName(String catalog, String kw) {
+        List<String> codes = new ArrayList<>();
+        if (StringUtils.hasText(catalog)) {
+            codes.addAll(stdMaintain.codesByNameLike(stdKeyOf(catalog), kw, 200));
+        } else {
+            codes.addAll(stdMaintain.codesByNameLike(stdKeyOf(CAT_DRUG), kw, 200));
+            codes.addAll(stdMaintain.codesByNameLike(stdKeyOf(CAT_CONS), kw, 200));
+            codes.addAll(stdMaintain.codesByNameLike(stdKeyOf(CAT_CHARGE), kw, 200));
+        }
+        return codes;
     }
 
     /** 某时点生效的医保码: 取该时点(含)前最近一条留痕的 new_code(CLEAR 则为空);
@@ -682,6 +930,42 @@ public class CatalogMapService {
         out.put("code", mappedThen ? h.ybCode : null);
         out.put("basis", mappedThen ? "current" : "none");
         return out;
+    }
+
+    /** 修改对照生效时间(人工纠偏/补录历史生效时点), 留痕 EFF; 医保码本身不变 */
+    public void updateEffTime(String catalog, Long itemId, LocalDateTime eff) {
+        stdKeyOf(catalog);
+        String memo = "对照生效时间调整为 " + eff;
+        if (CAT_DRUG.equals(catalog)) {
+            HisDrugCatalog e = drugService.getById(itemId);
+            if (e == null) {
+                throw new BizException(404, "院内条目不存在: " + itemId);
+            }
+            e.setYbMapEffTime(eff);
+            drugService.updateById(e);
+            logChange(catalog, itemId, e.getDrugCode(), e.getGenericName(), e.getYbDrugCode(), e.getYbDrugCode(),
+                    HisYbMapLog.TYPE_EFF, null, HisYbMapLog.SRC_MANUAL, memo);
+            return;
+        }
+        if (CAT_CONS.equals(catalog)) {
+            HisConsCatalog e = consService.getById(itemId);
+            if (e == null) {
+                throw new BizException(404, "院内条目不存在: " + itemId);
+            }
+            e.setYbMapEffTime(eff);
+            consService.updateById(e);
+            logChange(catalog, itemId, e.getConsCode(), e.getName(), e.getYbConsCode(), e.getYbConsCode(),
+                    HisYbMapLog.TYPE_EFF, null, HisYbMapLog.SRC_MANUAL, memo);
+            return;
+        }
+        HisChargeItem e = chargeService.getById(itemId);
+        if (e == null) {
+            throw new BizException(404, "院内条目不存在: " + itemId);
+        }
+        e.setYbMapEffTime(eff);
+        chargeService.updateById(e);
+        logChange(catalog, itemId, e.getItemCode(), e.getItemName(), e.getMedListCodg(), e.getMedListCodg(),
+                HisYbMapLog.TYPE_EFF, null, HisYbMapLog.SRC_MANUAL, memo);
     }
 
     /* ================= 工具 ================= */

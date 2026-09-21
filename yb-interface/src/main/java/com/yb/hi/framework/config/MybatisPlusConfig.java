@@ -22,13 +22,17 @@ import java.util.Set;
 @Configuration
 public class MybatisPlusConfig {
 
-    /** 全局表(不做租户隔离): 租户注册表 + 行政区划国家标准表 + RBAC 全局/半全局表(菜单真源、角色含全局角色、角色菜单关联) */
+    /** 全局表(不做租户隔离): 租户注册表 + 行政区划国家标准表 + RBAC 全局/半全局表(菜单真源、角色含全局角色、角色菜单关联)
+     *  + 三目录标准字典(全局共享、无 tenant_id 列, 业务查询需以子查询校验医保码是否仍有效) */
     private static final Set<String> IGNORE_TABLES = new HashSet<>(Arrays.asList(
             "sys_tenant",
             "area_code_2021",
             "sys_menu",
             "sys_role",
-            "sys_role_menu"
+            "sys_role_menu",
+            "std_drug",
+            "std_consumable",
+            "std_med_service"
     ));
 
     @Bean

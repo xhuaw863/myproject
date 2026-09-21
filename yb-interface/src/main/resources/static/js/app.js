@@ -241,7 +241,9 @@
       '      <div class="aside-bar">',
       '        <el-button link size="small" :title="collapsed?\'展开菜单\':\'收起菜单\'" @click="toggleAside">{{ collapsed?"\u00bb":"\u00ab" }}</el-button>',
       '      </div>',
-      '      <el-menu v-show="!collapsed" :default-active="activeKey" @select="onSelect">',
+      /* 不用 v-show 隐藏: v-show 会触发 el-menu 内置 collapse 过渡, 展开后残留内联 width:0 裁掉全部菜单项;
+         改由 CSS .layout-aside.is-collapsed .el-menu{display:none} 控制显隐 */
+      '      <el-menu :default-active="activeKey" @select="onSelect">',
       '        <template v-for="m in menu">',
       '          <el-menu-item v-if="!m.group" :index="m.key">{{ m.label }}</el-menu-item>',
       '          <el-sub-menu v-else :index="m.group">',
