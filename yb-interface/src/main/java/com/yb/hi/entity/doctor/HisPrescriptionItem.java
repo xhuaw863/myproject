@@ -22,6 +22,14 @@ public class HisPrescriptionItem extends BaseEntity {
 
     /** 处方ID */
     private Long prescriptionId;
+    /** 医共体药品目录ID(his_drug_catalog.id) */
+    private Long drugId;
+    /** 每最小包装单位含药量(换算快照) */
+    private BigDecimal unitDose;
+    /** 包装换算比(大包装→最小单位, 快照) */
+    private Integer packRatio;
+    /** 发药取整规则快照:1向上 2向下 3四舍五入 */
+    private Integer roundRule;
     /** 收费项目ID(his_charge_item) */
     private Long itemId;
     /** 院内项目编码 */

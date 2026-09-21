@@ -52,6 +52,8 @@
       },
       search: function () { this.page = 1; this.load(); },
       onPage: function (p) { this.page = p; this.load(); },
+            onSize: function (s) { this.size = s; this.onPage(1); },
+            seqNo: function (i) { return (this.page - 1) * this.size + i + 1; },
       receive: function (row) {
         var vm = this;
         var go = function () { HIS.pendingVisitId = row.id; HIS.go('doctor-work'); };
@@ -79,6 +81,7 @@
       '    <span style="color:#909399;font-size:13px;">共 {{ total }} 人</span>',
       '  </div>',
       '  <el-table :data="list" v-loading="loading" border stripe size="small">',
+      '    <el-table-column type="index" label="序号" width="60" :index="seqNo"></el-table-column>',
       '    <el-table-column prop="regNo" label="挂号单号" width="170"></el-table-column>',
       '    <el-table-column prop="patientName" label="患者" width="90"></el-table-column>',
       '    <el-table-column prop="gender" label="性别" width="55"></el-table-column>',
@@ -92,7 +95,7 @@
       '      <el-button link type="primary" :disabled="s.row.visitStatus>=3" @click="receive(s.row)">{{ s.row.visitStatus===1?"接诊":"查看" }}</el-button>',
       '    </template></el-table-column>',
       '  </el-table>',
-      '  <el-pagination style="margin-top:12px;justify-content:flex-end;" background layout="prev, pager, next, total" :total="total" :page-size="size" :current-page="page" @current-change="onPage"></el-pagination>',
+      '  <el-pagination style="margin-top:12px;justify-content:flex-end;" background layout="total, sizes, prev, pager, next" :total="total" :page-size="size" :page-sizes="[10, 20, 50, 100]" :current-page="page" @current-change="onPage" @size-change="onSize"></el-pagination>',
       '</div>'
     ].join('\n')
   };
@@ -107,14 +110,22 @@
         diagnoses: [], prescriptions: [], orders: [],
         diag: { keyword: '', results: [], loading: false },
         rx: { keyword: '', results: [], loading: false, rxType: '西药', items: [] },
-        od: { keyword: '', results: [], loading: false, orderType: '检查', items: [] }
+        od: { keyword: '', results: [], loading: false, orderType: '检查', items: [] },
+        /* 本机构启用的用法/频次选项(L3) */
+        usageOpts: [], freqOpts: []
       };
     },
     created: function () {
       this.loadQueue();
+      this.loadMedOpts();
       if (HIS.pendingVisitId) { this.selectVisit(HIS.pendingVisitId); HIS.pendingVisitId = null; }
     },
     methods: {
+      loadMedOpts: function () {
+        var vm = this;
+        HIS.get('/api/org-catalog/available/med-dict?dictType=usage').then(function (d) { vm.usageOpts = d || []; }).catch(function () {});
+        HIS.get('/api/org-catalog/available/med-dict?dictType=freq').then(function (d) { vm.freqOpts = d || []; }).catch(function () {});
+      },
       loadQueue: function () {
         var vm = this;
         HIS.get('/api/his/visit/queue?page=1&size=50&workDate=' + today()).then(function (d) {
@@ -160,20 +171,55 @@
       },
       removeDiag: function (i) { this.diagnoses.splice(i, 1); },
       setMain: function (i) { for (var k = 0; k < this.diagnoses.length; k++) { this.diagnoses[k].maindiagFlag = (k === i ? '1' : '0'); } },
-      /* ---- 处方 ---- */
+      /* ---- 处方(取数走本机构启用的医共体药品目录 L3) ---- */
       searchRx: function () {
         var vm = this; vm.rx.loading = true;
-        var q = '/api/his/charge-item/page?page=1&size=20&itemType=' + encodeURIComponent('药品');
+        var q = '/api/org-catalog/available/drug?page=1&size=20';
         if (vm.rx.keyword) { q += '&keyword=' + encodeURIComponent(vm.rx.keyword); }
         HIS.get(q).then(function (d) { vm.rx.results = (d && d.records) || []; })
           .catch(HIS.notifyError).finally(function () { vm.rx.loading = false; });
       },
       addRx: function (it) {
         this.rx.items.push({
-          itemId: it.id, itemCode: it.itemCode, itemName: it.itemName, spec: it.spec, unit: it.unit,
-          price: it.price, quantity: 1, dosage: '', dosageUnit: '', usageMethod: '', frequency: '',
-          administration: '', groupNo: '', days: 3, medListCodg: it.medListCodg
+          drugId: it.id, itemId: it.id, itemCode: it.drugCode, itemName: it.genericName,
+          spec: it.spec, unit: it.minUnit, price: it.retailPrice, quantity: 1,
+          dosage: '', dosageUnit: it.doseUnit || '', usageMethod: '', frequency: '',
+          administration: '', groupNo: '', days: 3, medListCodg: it.ybDrugCode,
+          unitDose: it.unitDose, packRatio: it.packRatio, roundRule: it.roundRule
         });
+      },
+      /* 频次->每日次数: 优先取本机构启用频次字典的 daily_times, 无则按名称解析 */
+      freqTimes: function (f) {
+        for (var i = 0; i < this.freqOpts.length; i++) {
+          if (this.freqOpts[i].name === f && this.freqOpts[i].dailyTimes != null) {
+            return Number(this.freqOpts[i].dailyTimes);
+          }
+        }
+        var s = String(f || '').toLowerCase();
+        if (s.indexOf('qid') >= 0 || s.indexOf('q6h') >= 0) { return 4; }
+        if (s.indexOf('tid') >= 0 || s.indexOf('q8h') >= 0) { return 3; }
+        if (s.indexOf('bid') >= 0 || s.indexOf('q12h') >= 0) { return 2; }
+        if (s.indexOf('qd') >= 0 || s.indexOf('q24h') >= 0) { return 1; }
+        return 1;
+      },
+      /* 按 round_rule 取整: 1向上 2向下 3四舍五入 */
+      roundByRule: function (v, rule) {
+        var n = Number(v) || 0;
+        if (rule === 2) { return Math.floor(n); }
+        if (rule === 3) { return Math.round(n); }
+        return Math.ceil(n);
+      },
+      /* 剂量->发药数量换算: 每次=剂量/单位含药量(按规则取整), 总量=每次×每日次数×天数 */
+      calcQty: function (row) {
+        var perDose = Number(row.dosage) || 0;
+        var unitDose = Number(row.unitDose) || 0;
+        var times = this.freqTimes(row.frequency);
+        var days = Number(row.days) || 0;
+        if (perDose <= 0 || unitDose <= 0 || days <= 0) {
+          ElementPlus.ElMessage.warning('请先填写单次剂量, 且该药品需已配置单位含药量'); return;
+        }
+        var per = this.roundByRule(perDose / unitDose, Number(row.roundRule) || 1);
+        row.quantity = Math.ceil(per * times * days);
       },
       removeRxItem: function (i) { this.rx.items.splice(i, 1); },
       lineAmount: function (it) { return money((Number(it.price) || 0) * (Number(it.quantity) || 0)); },
@@ -186,16 +232,17 @@
           .then(function (p) { HIS.notifySuccess('处方已开立: ' + p.rxNo + '  金额￥' + money(p.totalAmount)); vm.rx.items = []; vm.selectVisit(vm.currentVisitId); })
           .catch(HIS.notifyError);
       },
-      /* ---- 检查单 ---- */
+      /* ---- 检查单(取数走本机构启用的收费项目 L3, 附执行价) ---- */
       searchOd: function () {
         var vm = this; vm.od.loading = true;
-        var q = '/api/his/charge-item/page?page=1&size=20&itemType=' + encodeURIComponent('诊疗');
+        var q = '/api/org-catalog/available/charge?page=1&size=20&itemType=' + encodeURIComponent('诊疗');
         if (vm.od.keyword) { q += '&keyword=' + encodeURIComponent(vm.od.keyword); }
         HIS.get(q).then(function (d) { vm.od.results = (d && d.records) || []; })
           .catch(HIS.notifyError).finally(function () { vm.od.loading = false; });
       },
       addOd: function (it) {
-        this.od.items.push({ itemId: it.id, itemCode: it.itemCode, itemName: it.itemName, spec: it.spec, unit: it.unit, price: it.price, quantity: 1, medListCodg: it.medListCodg, execDept: '' });
+        var px = (it.execPrice != null ? it.execPrice : it.price);
+        this.od.items.push({ itemId: it.id, itemCode: it.itemCode, itemName: it.itemName, spec: it.spec, unit: it.unit, price: px, quantity: 1, medListCodg: it.medListCodg, execDept: '' });
       },
       removeOdItem: function (i) { this.od.items.splice(i, 1); },
       odTotal: function () { var s = 0; for (var i = 0; i < this.od.items.length; i++) { s += (Number(this.od.items[i].price) || 0) * (Number(this.od.items[i].quantity) || 0); } return money(s); },
@@ -260,12 +307,13 @@
       '          <el-button type="primary" @click="searchDiag">检索目录</el-button>',
       '        </div>',
       '        <el-table :data="diag.results" v-loading="diag.loading" border size="small" height="180" style="margin-bottom:12px;">',
+      '          <el-table-column type="index" label="序号" width="60"></el-table-column>',
       '          <el-table-column prop="code" label="诊断编码" width="160"></el-table-column>',
       '          <el-table-column prop="name" label="诊断名称"></el-table-column>',
       '          <el-table-column label="操作" width="80"><template #default="s"><el-button link type="primary" @click="addDiag(s.row)">添加</el-button></template></el-table-column>',
       '        </el-table>',
       '        <el-table :data="diagnoses" border size="small">',
-      '          <el-table-column type="index" label="#" width="45"></el-table-column>',
+      '          <el-table-column type="index" label="序号" width="60"></el-table-column>',
       '          <el-table-column prop="diagCode" label="编码" width="160"></el-table-column>',
       '          <el-table-column prop="diagName" label="诊断名称"></el-table-column>',
       '          <el-table-column label="主诊断" width="90"><template #default="s"><el-radio :model-value="s.row.maindiagFlag" label="1" @change="setMain(s.$index)"><span></span></el-radio></template></el-table-column>',
@@ -280,19 +328,21 @@
       '          <el-select v-model="rx.rxType" style="width:110px"><el-option label="西药" value="西药"></el-option><el-option label="中药" value="中药"></el-option></el-select>',
       '        </div>',
       '        <el-table :data="rx.results" v-loading="rx.loading" border size="small" height="170" style="margin-bottom:12px;">',
-      '          <el-table-column prop="itemName" label="药品名称"></el-table-column>',
-      '          <el-table-column prop="spec" label="规格" width="140"></el-table-column>',
-      '          <el-table-column prop="unit" label="单位" width="70"></el-table-column>',
-      '          <el-table-column prop="price" label="单价" width="90"></el-table-column>',
+      '          <el-table-column type="index" label="序号" width="60"></el-table-column>',
+      '          <el-table-column prop="genericName" label="药品名称" min-width="150" show-overflow-tooltip></el-table-column>',
+      '          <el-table-column prop="spec" label="规格" width="140" show-overflow-tooltip></el-table-column>',
+      '          <el-table-column prop="minUnit" label="发药单位" width="80"></el-table-column>',
+      '          <el-table-column prop="retailPrice" label="零售价" width="90"></el-table-column>',
       '          <el-table-column label="操作" width="80"><template #default="s"><el-button link type="primary" @click="addRx(s.row)">添加</el-button></template></el-table-column>',
       '        </el-table>',
       '        <el-table :data="rx.items" border size="small">',
+      '          <el-table-column type="index" label="序号" width="60"></el-table-column>',
       '          <el-table-column prop="itemName" label="药品" min-width="150"></el-table-column>',
       '          <el-table-column prop="spec" label="规格" width="110"></el-table-column>',
       '          <el-table-column label="数量" width="110"><template #default="s"><el-input-number v-model="s.row.quantity" :min="1" size="small" controls-position="right" style="width:95px"></el-input-number></template></el-table-column>',
-      '          <el-table-column label="剂量" width="110"><template #default="s"><el-input v-model="s.row.dosage" size="small" placeholder="如0.5"></el-input></template></el-table-column>',
-      '          <el-table-column label="用法" width="120"><template #default="s"><el-input v-model="s.row.usageMethod" size="small" placeholder="口服"></el-input></template></el-table-column>',
-      '          <el-table-column label="频次" width="110"><template #default="s"><el-input v-model="s.row.frequency" size="small" placeholder="tid"></el-input></template></el-table-column>',
+      '          <el-table-column label="剂量" width="150"><template #default="s"><div style="display:flex;gap:4px;"><el-input v-model="s.row.dosage" size="small" placeholder="如0.5"></el-input><el-button link type="primary" size="small" @click="calcQty(s.row)">算量</el-button></div></template></el-table-column>',
+      '          <el-table-column label="用法" width="140"><template #default="s"><el-select v-model="s.row.usageMethod" size="small" placeholder="选择用法" clearable filterable style="width:125px"><el-option v-for="o in usageOpts" :key="o.id" :label="o.name" :value="o.name"></el-option></el-select></template></el-table-column>',
+      '          <el-table-column label="频次" width="140"><template #default="s"><el-select v-model="s.row.frequency" size="small" placeholder="选择频次" clearable filterable style="width:125px"><el-option v-for="o in freqOpts" :key="o.id" :label="o.name" :value="o.name"></el-option></el-select></template></el-table-column>',
       '          <el-table-column label="天数" width="90"><template #default="s"><el-input-number v-model="s.row.days" :min="1" size="small" controls-position="right" style="width:75px"></el-input-number></template></el-table-column>',
       '          <el-table-column label="金额" width="90"><template #default="s">{{ lineAmount(s.row) }}</template></el-table-column>',
       '          <el-table-column label="操作" width="60"><template #default="s"><el-button link type="danger" @click="removeRxItem(s.$index)">删</el-button></template></el-table-column>',
@@ -303,6 +353,7 @@
       '        </div>',
       '        <el-divider content-position="left">已开处方</el-divider>',
       '        <el-table :data="prescriptions" border size="small">',
+      '          <el-table-column type="index" label="序号" width="60"></el-table-column>',
       '          <el-table-column prop="rxNo" label="处方号" width="180"></el-table-column>',
       '          <el-table-column prop="rxType" label="类型" width="80"></el-table-column>',
       '          <el-table-column prop="diagName" label="临床诊断"></el-table-column>',
@@ -318,12 +369,14 @@
       '          <el-select v-model="od.orderType" style="width:110px"><el-option label="检查" value="检查"></el-option><el-option label="检验" value="检验"></el-option><el-option label="治疗" value="治疗"></el-option></el-select>',
       '        </div>',
       '        <el-table :data="od.results" v-loading="od.loading" border size="small" height="170" style="margin-bottom:12px;">',
-      '          <el-table-column prop="itemName" label="项目名称"></el-table-column>',
-      '          <el-table-column prop="spec" label="规格" width="140"></el-table-column>',
-      '          <el-table-column prop="price" label="单价" width="90"></el-table-column>',
+      '          <el-table-column type="index" label="序号" width="60"></el-table-column>',
+      '          <el-table-column prop="itemName" label="项目名称" min-width="150" show-overflow-tooltip></el-table-column>',
+      '          <el-table-column prop="spec" label="规格" width="140" show-overflow-tooltip></el-table-column>',
+      '          <el-table-column label="执行价" width="90"><template #default="s">{{ (s.row.execPrice!=null?s.row.execPrice:s.row.price) }}</template></el-table-column>',
       '          <el-table-column label="操作" width="80"><template #default="s"><el-button link type="primary" @click="addOd(s.row)">添加</el-button></template></el-table-column>',
       '        </el-table>',
       '        <el-table :data="od.items" border size="small">',
+      '          <el-table-column type="index" label="序号" width="60"></el-table-column>',
       '          <el-table-column prop="itemName" label="项目" min-width="160"></el-table-column>',
       '          <el-table-column label="数量" width="120"><template #default="s"><el-input-number v-model="s.row.quantity" :min="1" size="small" controls-position="right" style="width:100px"></el-input-number></template></el-table-column>',
       '          <el-table-column label="执行科室" width="140"><template #default="s"><el-input v-model="s.row.execDept" size="small"></el-input></template></el-table-column>',
@@ -336,6 +389,7 @@
       '        </div>',
       '        <el-divider content-position="left">已开单据</el-divider>',
       '        <el-table :data="orders" border size="small">',
+      '          <el-table-column type="index" label="序号" width="60"></el-table-column>',
       '          <el-table-column prop="orderNo" label="单据号" width="180"></el-table-column>',
       '          <el-table-column prop="orderType" label="类型" width="80"></el-table-column>',
       '          <el-table-column prop="diagName" label="临床诊断"></el-table-column>',

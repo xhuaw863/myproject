@@ -2,7 +2,11 @@ package com.yb.hi.controller.basedata;
 
 import com.baomidou.mybatisplus.core.metadata.IPage;
 import com.yb.hi.entity.basedata.AreaCode;
+import com.yb.hi.framework.common.BizException;
 import com.yb.hi.framework.common.R;
+import com.yb.hi.framework.common.Roles;
+import com.yb.hi.framework.tenant.LoginUser;
+import com.yb.hi.framework.tenant.UserContext;
 import com.yb.hi.service.basedata.AreaCodeService;
 import org.springframework.web.bind.annotation.*;
 
@@ -45,24 +49,35 @@ public class AreaCodeController {
         return R.ok(service.levelStats());
     }
 
-    /** 新增 */
+    /** 新增(仅平台超管: 行政区划为基础字典) */
     @PostMapping
     public R<Void> create(@RequestBody AreaCode e) {
+        requireSuper();
         service.createArea(e);
         return R.ok();
     }
 
-    /** 修改(代码为主键不可改) */
+    /** 修改(代码为主键不可改; 仅平台超管) */
     @PutMapping
     public R<Void> update(@RequestBody AreaCode e) {
+        requireSuper();
         service.updateArea(e);
         return R.ok();
     }
 
-    /** 删除(存在下级时禁止) */
+    /** 删除(存在下级时禁止; 仅平台超管) */
     @DeleteMapping("/{code}")
     public R<Void> delete(@PathVariable Long code) {
+        requireSuper();
         service.deleteArea(code);
         return R.ok();
+    }
+
+    /** 仅平台超级管理员可维护行政区划(基础字典); 读取接口(page/path/stats)对所有登录用户开放, 供地址级联/机构区划下拉 */
+    private void requireSuper() {
+        LoginUser u = UserContext.get();
+        if (u == null || !Roles.SUPER_ADMIN.equals(u.getRole())) {
+            throw new BizException(403, "行政区划为基础字典, 仅平台超级管理员可维护");
+        }
     }
 }

@@ -116,8 +116,102 @@ public class HisPatient extends BaseEntity {
     private String employer;
     /** 工作单位电话(WORKADDRPHONE) */
     private String employerPhone;
-    /** 工作单位地址(GZDWJDZ, 文本) */
+    /** 工作单位地址(GZDWJDZ, 文本; 作为单位地址详细) */
     private String employerAddr;
+
+    /* ---------- B2 出生地/户籍/通讯/单位/联系人 地址四级级联(编码+名称, 来源 area_code_2021; 详细沿用原文本列) ---------- */
+    /** 出生地-省编码 */
+    private String birthProv;
+    /** 出生地-省名称(服务端回填) */
+    private String birthProvName;
+    /** 出生地-市编码 */
+    private String birthCity;
+    /** 出生地-市名称(服务端回填) */
+    private String birthCityName;
+    /** 出生地-区县编码 */
+    private String birthCounty;
+    /** 出生地-区县名称(服务端回填) */
+    private String birthCountyName;
+    /** 出生地-乡镇/街道编码 */
+    private String birthTown;
+    /** 出生地-乡镇/街道名称(服务端回填) */
+    private String birthTownName;
+    /** 出生地来源标识(area_code_2021) */
+    private String birthSrc;
+    /** 出生地-详细地址 */
+    private String birthDetail;
+    /** 户籍地址-省编码 */
+    private String householdProv;
+    /** 户籍地址-省名称(服务端回填) */
+    private String householdProvName;
+    /** 户籍地址-市编码 */
+    private String householdCity;
+    /** 户籍地址-市名称(服务端回填) */
+    private String householdCityName;
+    /** 户籍地址-区县编码 */
+    private String householdCounty;
+    /** 户籍地址-区县名称(服务端回填) */
+    private String householdCountyName;
+    /** 户籍地址-乡镇/街道编码 */
+    private String householdTown;
+    /** 户籍地址-乡镇/街道名称(服务端回填) */
+    private String householdTownName;
+    /** 户籍地址来源标识(area_code_2021) */
+    private String householdSrc;
+    /** 通讯地址-省编码 */
+    private String mailProv;
+    /** 通讯地址-省名称(服务端回填) */
+    private String mailProvName;
+    /** 通讯地址-市编码 */
+    private String mailCity;
+    /** 通讯地址-市名称(服务端回填) */
+    private String mailCityName;
+    /** 通讯地址-区县编码 */
+    private String mailCounty;
+    /** 通讯地址-区县名称(服务端回填) */
+    private String mailCountyName;
+    /** 通讯地址-乡镇/街道编码 */
+    private String mailTown;
+    /** 通讯地址-乡镇/街道名称(服务端回填) */
+    private String mailTownName;
+    /** 通讯地址来源标识(area_code_2021) */
+    private String mailSrc;
+    /** 单位地址-省编码 */
+    private String empProv;
+    /** 单位地址-省名称(服务端回填) */
+    private String empProvName;
+    /** 单位地址-市编码 */
+    private String empCity;
+    /** 单位地址-市名称(服务端回填) */
+    private String empCityName;
+    /** 单位地址-区县编码 */
+    private String empCounty;
+    /** 单位地址-区县名称(服务端回填) */
+    private String empCountyName;
+    /** 单位地址-乡镇/街道编码 */
+    private String empTown;
+    /** 单位地址-乡镇/街道名称(服务端回填) */
+    private String empTownName;
+    /** 单位地址来源标识(area_code_2021) */
+    private String empSrc;
+    /** 联系人地址-省编码 */
+    private String contactProv;
+    /** 联系人地址-省名称(服务端回填) */
+    private String contactProvName;
+    /** 联系人地址-市编码 */
+    private String contactCity;
+    /** 联系人地址-市名称(服务端回填) */
+    private String contactCityName;
+    /** 联系人地址-区县编码 */
+    private String contactCounty;
+    /** 联系人地址-区县名称(服务端回填) */
+    private String contactCountyName;
+    /** 联系人地址-乡镇/街道编码 */
+    private String contactTown;
+    /** 联系人地址-乡镇/街道名称(服务端回填) */
+    private String contactTownName;
+    /** 联系人地址来源标识(area_code_2021) */
+    private String contactSrc;
 
     /** 险种类型编码(医保字典 insutype: 310职工 390居民等) */
     private String insutype;

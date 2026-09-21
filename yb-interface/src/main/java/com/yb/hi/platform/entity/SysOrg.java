@@ -57,6 +57,8 @@ public class SysOrg extends BaseEntity {
     private String pdLicenseNo;
     /** 编制床位数(卫统/评审/绩效) */
     private Integer bedCnt;
+    /** 收费价格档次: 1/2/3(医共体分级价格执行档, 决定收费项目取 price_l1/l2/l3) */
+    private Integer priceLv;
     /** 行政区划代码(关联 area_code_2021) */
     private String admvsCode;
     /** 负责人 */

@@ -3,7 +3,7 @@
   var HIS = (window.HIS = window.HIS || {});
   HIS.views = HIS.views || {};
 
-  /* 21 类标准字典: v=后端type; st=标准类型; doc=来源文档; cols=列标签(统一 {code,name,spec,extra}) */
+  /* 24 类标准字典: v=后端type; st=标准类型; doc=来源文档; cols=列标签(统一 {code,name,spec,extra}) */
   var STD_TYPES = [
     { v: 'cv_code', l: '医保字典值域代码(第6章)', st: '医保字典', doc: '湖北省医保定点医药机构接口规范V1.2.02·第6章 字典表', cols: ['值代码', '值名称', '字典类型', '类型代码'] },
     { v: 'drug', l: '西药中成药(湖北医保)', st: '医保字典', doc: '湖北省医保药品(西药、中成药)编码数据库·2024-12-02', cols: ['药品代码', '注册名称', '实际规格', '生产企业'] },
@@ -26,9 +26,13 @@
     { v: 'wst364', l: 'WS/T 364 值域代码', st: '卫生健康标准', doc: 'WS/T 364—2023 卫生健康信息数据元值域代码', cols: ['值', '值含义', '所属代码表', 'CV标识'] },
     { v: 'hbvalue', l: '湖北采集规范值域代码', st: '卫生健康标准', doc: '湖北省健康医疗大数据采集规范--数据元值域代码20240826', cols: ['值', '值含义', '所属代码表', '代码表标识'] },
     { v: 'whvalue', l: '武汉平台值域代码', st: '卫生健康标准', doc: '武汉市全民健康信息平台数据元值域代码规范20240905_V1(20250326修订)', cols: ['值', '值含义', '所属代码表', '代码表标识'] },
-{ v: 'msi_nat', l: '全国医疗服务项目技术规范(2023年版)', st: '物价标准', doc: '全国医疗服务项目技术规范(2023年版).xlsx 原样全列导入(不合并/不对照)', cols: ['项目编码', '项目名称', '计量单位', '收费票据分类'], ph: '编码/名称/英文名/分类/必需耗材检索' },
+{ v: 'msi_nat', l: '全国医疗服务项目技术规范(2023年版)', st: '物价标准', doc: '全国医疗服务项目技术规范(2023年版).xlsx 原样全列导入(不合并/不对照)', cols: ['项目编码', '项目名称', '计量单位', '收费票据分类'], ph: '编码/名称/英文名/分类/必需耗材/分类码检索' },
+{ v: 'msi_cat', l: '医疗服务项目物价分类(2023技术规范)', st: '物价标准', doc: '全国医疗服务项目技术规范(2023年版)·项目分类(类/章/节三级, 原生字母码)', cols: ['分类码', '分类名称', '上级码', '项目数'], ph: '分类码/名称/上级码检索' },
 { v: 'msi_hb', l: '湖北省医疗服务价格项目及医保支付目录(2023版)', st: '物价标准', doc: '湖北省医疗服务价格项目及医保支付目录(2023版).xlsx 基础项+子项原样导入(不合并/不对照)', cols: ['项目编码', '项目名称', '计价单位', '医保支付类别'], ph: '编码/名称/分类/备注检索' },
-{ v: 'msi_fin', l: '医疗服务项目相关财务归集口径规范', st: '物价标准', doc: '医疗服务项目相关财务归集口径规范.pdf 全表行原样导入(含2023/2012/2001码, 不做对照加工)', cols: ['2023版编码', '2023版名称', '收费票据分类', '会计科目分类'], ph: '2023/2012/2001编码或名称检索' }
+{ v: 'msi_fin', l: '医疗服务项目相关财务归集口径规范', st: '物价标准', doc: '医疗服务项目相关财务归集口径规范.pdf 全表行原样导入(含2023/2012/2001码, 不做对照加工)', cols: ['2023版编码', '2023版名称', '收费票据分类', '会计科目分类'], ph: '2023/2012/2001编码或名称检索' },
+{ v: 'mr_cost_class', l: '病案首页费用分类', st: '物价标准', doc: '医疗服务项目相关财务归集口径规范·病案首页费用分类', cols: ['分项编码', '费用分项名称', '所属大类', '原始完整值'], ph: '大类/分项/原始值检索' },
+{ v: 'invoice_class', l: '收费票据分类', st: '物价标准', doc: '医疗服务项目相关财务归集口径规范·收费票据分类', cols: ['分类编码', '收费票据分类', '对应会计科目分类', '归集项目数'], ph: '票据分类/会计科目检索' },
+{ v: 'acct_class', l: '会计科目分类', st: '物价标准', doc: '医疗服务项目相关财务归集口径规范·会计科目分类', cols: ['分类编码', '会计科目分类', '对应收费票据分类', '归集项目数'], ph: '会计科目/票据分类检索' }
   ];
 
   /* 按标准类型分组(供下拉 el-option-group), 固定顺序 */
@@ -72,6 +76,8 @@
         }).catch(HIS.notifyError).finally(function () { vm.loading = false; });
       },
       onPage: function (p) { this.page = p; this.fetch(); },
+            onSize: function (s) { this.size = s; this.onPage(1); },
+            seqNo: function (i) { return (this.page - 1) * this.size + i + 1; },
       onTypeChange: function () { this.keyword = ''; this.search(); }
     },
     template: [
@@ -92,12 +98,13 @@
       '    <span style="color:#909399;font-size:13px;">共 {{ total }} 条</span>',
       '  </div>',
       '  <el-table :data="list" v-loading="loading" border stripe size="small">',
+      '    <el-table-column type="index" label="序号" width="60" :index="seqNo"></el-table-column>',
       '    <el-table-column prop="code" :label="cols[0]" width="220" show-overflow-tooltip></el-table-column>',
       '    <el-table-column prop="name" :label="cols[1]" min-width="240" show-overflow-tooltip></el-table-column>',
       '    <el-table-column prop="spec" :label="cols[2]" min-width="140" show-overflow-tooltip></el-table-column>',
       '    <el-table-column prop="extra" :label="cols[3]" min-width="160" show-overflow-tooltip></el-table-column>',
       '  </el-table>',
-      '  <el-pagination style="margin-top:12px;justify-content:flex-end;" background layout="prev, pager, next, total" :total="total" :page-size="size" :current-page="page" @current-change="onPage"></el-pagination>',
+      '  <el-pagination style="margin-top:12px;justify-content:flex-end;" background layout="total, sizes, prev, pager, next" :total="total" :page-size="size" :page-sizes="[10, 20, 50, 100]" :current-page="page" @current-change="onPage" @size-change="onSize"></el-pagination>',
       '</div>'
     ].join('\n')
   };
@@ -160,6 +167,7 @@
       '    <el-button type="warning" :loading="busy && busyLabel===\'全部\'" @click="doImportAll">导入全部</el-button>',
       '  </div>',
       '  <el-table :data="results" size="small" border stripe style="margin-top:8px;">',
+      '    <el-table-column type="index" label="序号" width="60"></el-table-column>',
       '    <el-table-column prop="time" label="时间" width="100"></el-table-column>',
       '    <el-table-column prop="label" label="字典" min-width="180"></el-table-column>',
       '    <el-table-column label="结果" width="90"><template #default="s"><el-tag size="small" :type="s.row.ok?\'success\':\'danger\'">{{ s.row.ok?"成功":"失败" }}</el-tag></template></el-table-column>',
@@ -171,6 +179,7 @@
       '  <el-divider content-position="left">导入登记(std_dict_version)</el-divider>',
       '  <div class="toolbar"><el-button size="small" @click="loadVersions">刷新</el-button></div>',
       '  <el-table :data="versions" v-loading="vloading" size="small" border stripe>',
+      '    <el-table-column type="index" label="序号" width="60"></el-table-column>',
       '    <el-table-column prop="dictKey" label="标识" width="140"></el-table-column>',
       '    <el-table-column prop="dictName" label="字典名称" min-width="180"></el-table-column>',
       '    <el-table-column prop="ver" label="版本" width="110"></el-table-column>',
@@ -231,6 +240,8 @@
         }).catch(HIS.notifyError).finally(function () { vm.loading = false; });
       },
       onPage: function (p) { this.page = p; this.fetch(); },
+            onSize: function (s) { this.size = s; this.onPage(1); },
+            seqNo: function (i) { return (this.page - 1) * this.size + i + 1; },
       onTypeChange: function () { this.keyword = ''; this.reload(); },
       openCreate: function () {
         var f = {};
@@ -283,6 +294,7 @@
       '    <span style="color:#909399;font-size:13px;">共 {{ total }} 条</span>',
       '  </div>',
       '  <el-table :data="list" v-loading="loading" border stripe size="small">',
+      '    <el-table-column type="index" label="序号" width="60" :index="seqNo"></el-table-column>',
       '    <el-table-column prop="code" :label="cols[0]" width="200" show-overflow-tooltip></el-table-column>',
       '    <el-table-column prop="name" :label="cols[1]" min-width="220" show-overflow-tooltip></el-table-column>',
       '    <el-table-column prop="spec" :label="cols[2]" min-width="130" show-overflow-tooltip></el-table-column>',
@@ -292,7 +304,7 @@
       '      <el-button link type="danger" @click="del(s.row)">删除</el-button>',
       '    </template></el-table-column>',
       '  </el-table>',
-      '  <el-pagination style="margin-top:12px;justify-content:flex-end;" background layout="prev, pager, next, total" :total="total" :page-size="size" :current-page="page" @current-change="onPage"></el-pagination>',
+      '  <el-pagination style="margin-top:12px;justify-content:flex-end;" background layout="total, sizes, prev, pager, next" :total="total" :page-size="size" :page-sizes="[10, 20, 50, 100]" :current-page="page" @current-change="onPage" @size-change="onSize"></el-pagination>',
       '  <el-dialog v-model="dlg" :title="editing ? (\'编辑字典值 #\' + editId) : \'新增字典值\'" width="820px" top="6vh">',
       '    <div style="max-height:62vh;overflow:auto;padding-right:6px;">',
       '      <el-form label-position="top" size="small">',

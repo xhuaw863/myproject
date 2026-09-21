@@ -73,6 +73,9 @@ def load_national():
             return cl(row[idx]) if len(row) > idx and row[idx] is not None else ""
 
         if ITEM_RE.match(code):
+            if not name:
+                # 附录区(一次性医用耗材分类: 器械和器具等)项目行仅有编码无名称, 不纳入字典
+                continue
             rows.append([code, name, cl_en(row[5]) if len(row) > 5 else "", g(7), g(16), g(18),
                          g(20), g(21), g(24), g(25), g(26), g(28), g(29), g(30), g(32), g(34),
                          g(35), " > ".join([p for p in path_lv if p])])

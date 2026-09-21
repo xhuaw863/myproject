@@ -1,0 +1,23 @@
+-- ============================================================
+-- 医共体统一字典(三层治理 L2/L3)库表存档
+-- 数据库: yb_interface  字符集: utf8mb4
+-- 说明:
+--   1) 四张新表 his_drug_catalog / his_cons_catalog / his_price_adjust / his_org_catalog
+--      由 DictSchemaMigration(@Order(0)) 的 ensureCommunityDictTables 幂等建表(CREATE TABLE IF NOT EXISTS),
+--      完整列定义以迁移代码为准, 此处不重复维护 DDL, 避免双源漂移。
+--   2) 已有表增列(由 DictSchemaMigration 幂等 ALTER, 此处仅存档):
+--        his_charge_item:      price_l1/price_l2/price_l3(牵头机构统一定义一二三级分级价格),
+--                              nat_item_code/loc_item_code/item_content/item_excluded/invoice_class/acct_class/dept_caty,
+--                              src_type/src_doc/src_code(标准字典溯源三件套), eff_date/end_date
+--        sys_org:              price_lv(收费价格档次1/2/3, 默认县级牵头→2 乡镇/村→1)
+--        his_prescription_item: drug_id(his_drug_catalog.id), unit_dose/pack_ratio/round_rule(换算参数快照)
+--   3) 值域补充种子(std_cv_code, ensureCommunityDictSeeds 幂等):
+--        dosform(剂型)/drug_class(药品管理类别)/storage_cond(储存条件)/dose_unit(剂量单位)/pack_unit(包装发药单位)
+--        抗菌分级复用 hbvalue:HBCV08.50.029(11非限制/12限制/13特殊使用); 甲乙丙复用 cv_code:chrgitm_lv。
+--   4) 治理规则:
+--        L2 医共体目录由牵头机构(租户根机构, sys_org.org_level=1)统一维护, 含价格;
+--        L3 机构开展目录 his_org_catalog 为选用子集(只能启停, 不能改价);
+--        牵头机构默认全量开展(不落记录, 隐式启用); 调价一律走 his_price_adjust 留痕(文号+生效日期必录)。
+-- ============================================================
+SET NAMES utf8mb4;
+USE yb_interface;

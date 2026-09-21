@@ -31,7 +31,11 @@ body { font-family: "Microsoft YaHei", "PingFang SC", sans-serif; background: #f
 .layout-header .spacer { flex: 1; }
 .layout-header .user { font-size: 13px; cursor: pointer; display: flex; align-items: center; gap: 8px; }
 .layout-body { display: flex; height: calc(100% - 56px); }
-.layout-aside { width: 210px; background: #fff; border-right: 1px solid #e4e7ed; overflow-y: auto; }
+.layout-aside { flex: 0 0 auto; width: 210px; background: #fff; border-right: 1px solid #e4e7ed; overflow-y: auto; transition: width .15s ease; }
+.layout-aside.is-collapsed { width: 40px; overflow: hidden; }
+.layout-aside.is-collapsed .el-menu { display: none; }
+.aside-bar { display: flex; justify-content: flex-end; padding: 2px 6px; border-bottom: 1px solid #ebeef5; }
+.layout-aside.is-collapsed .aside-bar { justify-content: center; }
 .layout-main { flex: 1; overflow-y: auto; padding: 16px; }
 .el-menu { border-right: none; }
 

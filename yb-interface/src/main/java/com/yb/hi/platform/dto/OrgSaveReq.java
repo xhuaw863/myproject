@@ -32,6 +32,8 @@ public class OrgSaveReq {
     private String pdLicenseNo;
     /** 编制床位数 */
     private Integer bedCnt;
+    /** 收费价格档次: 1/2/3(医共体分级价格执行档) */
+    private Integer priceLv;
     /** 行政区划代码 */
     private String admvsCode;
     /** 负责人 */

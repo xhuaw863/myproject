@@ -163,6 +163,34 @@ public class StdDictMaintainService {
         }
     }
 
+    /** 单行详情(带中文列注释): [{field,label,value}], 仅返回非空字段且跳过 id, 供前端展示标准字典(如物价)完整内容 */
+    public List<Map<String, Object>> detail(String key, long id) {
+        Map<String, Object> row = row(key, id);
+        Map<String, String> labelByLower = new LinkedHashMap<>();
+        for (Map<String, Object> c : columns(key)) {
+            String n = String.valueOf(c.get("name"));
+            String comment = c.get("comment") == null ? "" : String.valueOf(c.get("comment")).trim();
+            labelByLower.put(n.toLowerCase(), comment.isEmpty() ? n : comment);
+        }
+        List<Map<String, Object>> out = new ArrayList<>();
+        for (Map.Entry<String, Object> e : row.entrySet()) {
+            String field = e.getKey();
+            if ("id".equalsIgnoreCase(field)) {
+                continue;
+            }
+            String v = e.getValue() == null ? "" : String.valueOf(e.getValue()).trim();
+            if (v.isEmpty()) {
+                continue;
+            }
+            Map<String, Object> m = new LinkedHashMap<>();
+            m.put("field", field);
+            m.put("label", labelByLower.getOrDefault(field.toLowerCase(), field));
+            m.put("value", v);
+            out.add(m);
+        }
+        return out;
+    }
+
     /** 新增一行, 返回自增 id */
     public long insert(String key, Map<String, Object> data) {
         StdDict dict = requireDict(key);

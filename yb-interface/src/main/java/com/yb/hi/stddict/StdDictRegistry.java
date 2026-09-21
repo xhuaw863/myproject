@@ -4,7 +4,7 @@ import java.util.LinkedHashMap;
 import java.util.Map;
 
 /**
- * 标准字典注册表: 集中定义 21 类标准字典的源文件、sheet、列映射与查询映射。
+ * 标准字典注册表: 集中定义 27 类标准字典的源文件、sheet、列映射与查询映射。
  * 以湖北省医保编码数据库(2024版)为主, 纳入国家临床版与中医分类等标准。
  * 列索引均基于勘察确认的源文件表头顺序(0基)。
  */
@@ -30,7 +30,8 @@ public final class StdDictRegistry {
                 wst364(),
                 hbvalue(),
                 whvalue(),
-                msiNat(), msiHb(), msiFin()}) {
+                msiNat(), msiHb(), msiFin(), msiCat(),
+                mrCostClass(), invoiceClass(), acctClass()}) {
             d.stdType(stdTypeOf(d.getKey()));
             d.srcDoc(srcDocOf(d.getKey()));
             map.put(d.getKey(), d);
@@ -51,6 +52,10 @@ public final class StdDictRegistry {
             case "msi_nat":
             case "msi_hb":
             case "msi_fin":
+            case "msi_cat":
+            case "mr_cost_class":
+            case "invoice_class":
+            case "acct_class":
                 return "物价标准";
             case "icd10_nat":
             case "icd9_nat":
@@ -100,7 +105,11 @@ public final class StdDictRegistry {
             case "whvalue":       return "武汉市全民健康信息平台数据元值域代码规范20240905_V1(20250326修订)";
             case "msi_nat":       return "全国医疗服务项目技术规范(2023年版)";
             case "msi_hb":        return "湖北省医疗服务价格项目及医保支付目录(2023版)";
-            case "msi_fin":       return "医疗服务项目相关财务归集口径规范";
+            case "msi_fin":        return "医疗服务项目相关财务归集口径规范";
+            case "msi_cat":        return "全国医疗服务项目技术规范(2023年版)·项目分类";
+            case "mr_cost_class": return "医疗服务项目相关财务归集口径规范·病案首页费用分类";
+            case "invoice_class": return "医疗服务项目相关财务归集口径规范·收费票据分类";
+            case "acct_class":    return "医疗服务项目相关财务归集口径规范·会计科目分类";
             default:              return "";
         }
     }
@@ -161,7 +170,20 @@ public final class StdDictRegistry {
         return new StdDict("msi_nat", "std_msi_nat", "全国医疗服务项目技术规范(2023年版)")
                 .seed("2023", "全国医疗服务项目技术规范(2023年版)全列")
                 .query("item_code", "item_name", "unit", "invoice_class",
-                        "item_name_en", "cat_name", "consumable_req");
+                        "item_name_en", "cat_name", "consumable_req", "cat_code");
+    }
+
+    /**
+     * 【新】医疗服务项目物价分类(2023技术规范·类/章/节三级, 标准类型=物价标准)。
+     * 编码沿用 xlsx 原生字母码(类1/章2/节3字母, 区间码取首段), 第四级组并入节,
+     * 区间横幅行与附录表(器械和器具等)不纳入; 由 tools/extract_msi_cat_tree.py 离线抽取为
+     * classpath 种子文件 seed/std_msi_cat.tsv(同工具为 std_msi_nat 追加 cat_code 列)。
+     */
+    private static StdDict msiCat() {
+        return new StdDict("msi_cat", "std_msi_cat", "医疗服务项目物价分类(2023技术规范)")
+                .seed("2023", "全国医疗服务项目技术规范(2023年版)·项目分类(类/章/节)")
+                .query("cat_code", "cat_name", "parent_code", "item_count",
+                        "cat_code", "cat_name", "parent_code");
     }
 
     /**
@@ -187,6 +209,45 @@ public final class StdDictRegistry {
                 .seed("2023", "医疗服务项目相关财务归集口径规范全表行")
                 .query("code_2023", "name_2023", "invoice_class", "acct_class",
                         "code_2012", "code_2001", "name_2012", "name_2001");
+    }
+
+    /**
+     * 【新】病案首页费用分类(标准类型=物价标准)。
+     * 由 tools/extract_msi_fin_classes.py 从 std_msi_fin(财务归集口径规范)的 mr_cost_class 列
+     * 去重规范化抽取为 classpath 种子文件 seed/std_mr_cost_class.tsv(首行表头), 走种子分支加载。
+     * 层级: 大类(综合医疗服务/诊断/治疗/康复/中医) -> 费用分项(源文括号序号1~12)。
+     */
+    private static StdDict mrCostClass() {
+        return new StdDict("mr_cost_class", "std_mr_cost_class", "病案首页费用分类")
+                .seed("2023", "医疗服务项目相关财务归集口径规范·病案首页费用分类")
+                .query("item_code", "item_name", "cat_name", "raw_value",
+                        "cat_no", "cat_name", "item_name", "raw_value");
+    }
+
+    /**
+     * 【新】收费票据分类(标准类型=物价标准)。
+     * 由 tools/extract_msi_fin_classes.py 从 std_msi_fin 的 invoice_class 列去重抽取为
+     * classpath 种子文件 seed/std_invoice_class.tsv(首行表头), 走种子分支加载。
+     * 源文无编码, class_code 为字典内序号; 与会计科目分类逐行 1:1 对应(acct_class 列)。
+     */
+    private static StdDict invoiceClass() {
+        return new StdDict("invoice_class", "std_invoice_class", "收费票据分类")
+                .seed("2023", "医疗服务项目相关财务归集口径规范·收费票据分类")
+                .query("class_code", "class_name", "acct_class", "item_count",
+                        "class_name", "acct_class");
+    }
+
+    /**
+     * 【新】会计科目分类(标准类型=物价标准)。
+     * 由 tools/extract_msi_fin_classes.py 从 std_msi_fin 的 acct_class 列去重抽取为
+     * classpath 种子文件 seed/std_acct_class.tsv(首行表头), 走种子分支加载。
+     * 源文无编码, class_code 为字典内序号; 与收费票据分类逐行 1:1 对应(invoice_class 列)。
+     */
+    private static StdDict acctClass() {
+        return new StdDict("acct_class", "std_acct_class", "会计科目分类")
+                .seed("2023", "医疗服务项目相关财务归集口径规范·会计科目分类")
+                .query("class_code", "class_name", "invoice_class", "item_count",
+                        "class_name", "invoice_class");
     }
 
     /** 【1】西药中成药 */
@@ -225,7 +286,7 @@ public final class StdDictRegistry {
                 .col("item_explain", 8).col("policy_flag", 9).col("pay_std", 10).col("memo", 11)
                 .col("data_source", 12).cst("ver", "20241129");
         return new StdDict("med_service", "std_med_service", "医疗服务项目").add(s)
-                .query("loc_item_code", "loc_item_name", "prc_unit", "nat_item_name",
+                .query("nat_item_code", "loc_item_name", "prc_unit", "nat_item_name",
                         "nat_item_code", "loc_item_code", "nat_item_name", "loc_item_name");
     }
 

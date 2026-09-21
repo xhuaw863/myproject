@@ -93,6 +93,9 @@ public class RbacInitializer implements ApplicationRunner {
             Map<String, Long> menuIds = seedMenus();
             ensureHospitalManageMenu();
             ensureStdDictMaintainMenu();
+            moveAreaCodeMenuToStdDict();
+            ensureCommunityDictMenus();
+            migrateDictMapToCatalogMap();
             Map<String, Long> roleIds = seedGlobalRoles();
             seedRoleMenus(menuIds, roleIds);
             seedPlatformAdmin(roleIds);
@@ -127,16 +130,17 @@ public class RbacInitializer implements ApplicationRunner {
         ids.put("staff", menuK("staff", "职工管理", "StaffManage", null, g2, ++sort[0]));
         ids.put("schedule", menuK("schedule", "排班号源", "ScheduleManage", null, g2, ++sort[0]));
         ids.put("charge-item", menuK("charge-item", "收费项目对照", "ChargeItemManage", null, g2, ++sort[0]));
-        ids.put("area-code", menuK("area-code", "行政区划", "AreaManage", null, g2, ++sort[0]));
         // 医保字典
         long g3 = dir("yb-dict", "医保字典", 0L, ++sort[0]);
         ids.put("dict-download", menuK("dict-download", "字典下载", "DictDownload", null, g3, ++sort[0]));
         ids.put("dict-version", menuK("dict-version", "版本状态", "DictVersion", null, g3, ++sort[0]));
-        ids.put("dict-map", menuK("dict-map", "目录对照", "DictMap", null, g3, ++sort[0]));
+        ids.put("catalog-map", menuK("catalog-map", "三目录医保对照", "CatalogMap", null, g3, ++sort[0]));
         // 标准字典
         long g4 = dir("std-dict", "标准字典", 0L, ++sort[0]);
         ids.put("std-dict-browse", menuK("std-dict-browse", "字典浏览", "StdDictBrowse", null, g4, ++sort[0]));
         ids.put("std-dict-import", menuK("std-dict-import", "提取入库", "StdDictImport", null, g4, ++sort[0]));
+        // 行政区划为基础字典(全局共享 area_code_2021), 归标准字典目录, 仅平台超管可见
+        ids.put("area-code", menuK("area-code", "行政区划", "AreaManage", null, g4, ++sort[0]));
         // 门诊挂号台
         long g5 = dir("outpatient", "门诊挂号台", 0L, ++sort[0]);
         ids.put("patient", menuK("patient", "患者建档/查询", "PatientManage", null, g5, ++sort[0]));
@@ -326,6 +330,67 @@ public class RbacInitializer implements ApplicationRunner {
         m.setStatus(1);
         menuMapper.insert(m);
         log.info("字典维护菜单已补充(平台超级管理员专属)");
+    }
+
+    /**
+     * 幂等将"行政区划"菜单移至"标准字典"目录下: 行政区划(area_code_2021)为全局共享基础字典,
+     * 仅平台超级管理员可见/可维护(见 SysRoleService: 医院端排除 area-code)。
+     * 兼容既有库(seedMenus 表非空即跳过时, 老库 area-code 仍挂在 basedata 下)。
+     */
+    private void moveAreaCodeMenuToStdDict() {
+        SysMenu stdDir = menuMapper.selectOne(new QueryWrapper<SysMenu>().eq("menu_key", "std-dict").last("LIMIT 1"));
+        SysMenu area = menuMapper.selectOne(new QueryWrapper<SysMenu>().eq("menu_key", "area-code").last("LIMIT 1"));
+        if (stdDir == null || area == null || stdDir.getId().equals(area.getParentId())) {
+            return;
+        }
+        area.setParentId(stdDir.getId());
+        menuMapper.updateById(area);
+        log.info("行政区划菜单已移至标准字典目录(平台超级管理员专属)");
+    }
+
+    /**
+     * 幂等确保医共体统一字典相关顶级菜单存在(既有库 seedMenus 表非空即跳过时补种):
+     * - community-dict(医共体字典): 牵头机构维护三目录+调价+标准字典导入, 非牵头 ADMIN 在 SysRoleService 排除;
+     * - org-catalog(机构目录选用): 各机构勾选本院开展的项目(L3)。
+     */
+    private void ensureCommunityDictMenus() {
+        ensureTopMenu("community-dict", "医共体字典", "CommunityDict", 12);
+        ensureTopMenu("org-catalog", "机构目录选用", "OrgCatalog", 13);
+    }
+
+    /**
+     * 幂等迁移: 旧"目录对照"(dict-map/DictMap, 仅收费项目单条对照)升级为"三目录医保对照"(catalog-map/CatalogMap)。
+     * 既有库 seedMenus 表非空即跳过, 故在此按 menu_key 原地改名+换组件, 保证老库菜单同步。
+     */
+    private void migrateDictMapToCatalogMap() {
+        SysMenu old = menuMapper.selectOne(new QueryWrapper<SysMenu>().eq("menu_key", "dict-map").last("LIMIT 1"));
+        if (old == null) {
+            return;
+        }
+        old.setMenuKey("catalog-map");
+        old.setMenuName("三目录医保对照");
+        old.setComp("CatalogMap");
+        menuMapper.updateById(old);
+        log.info("目录对照菜单已迁移为三目录医保对照(catalog-map/CatalogMap)");
+    }
+
+    /** 幂等插入一个顶级菜单节点(menu_type=2, parent=0), 已存在则跳过 */
+    private void ensureTopMenu(String key, String name, String comp, int sortNo) {
+        Long cnt = menuMapper.selectCount(new QueryWrapper<SysMenu>().eq("menu_key", key));
+        if (cnt != null && cnt > 0) {
+            return;
+        }
+        SysMenu m = new SysMenu();
+        m.setParentId(0L);
+        m.setMenuKey(key);
+        m.setMenuName(name);
+        m.setMenuType(2);
+        m.setComp(comp);
+        m.setSortNo(sortNo);
+        m.setVisible(1);
+        m.setStatus(1);
+        menuMapper.insert(m);
+        log.info("医共体字典菜单已补充: {}({})", name, key);
     }
 
     /**

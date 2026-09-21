@@ -59,11 +59,17 @@
         idTypeOpts: [], nationOpts: [], natlOpts: [], maritalOpts: [], eduOpts: [], occupOpts: [], relOpts: [],
         idTypeMap: {}, nationMap: {}, natlMap: {}, maritalMap: {}, eduMap: {}, occupMap: {}, relMap: {},
         areaOpts: [], areaLoading: false, orgs: [],
-        /* 现住址级联选中路径 [省,市,区县,乡镇] */
-        presentPath: [],
+        /* 各地址级联选中路径 [省,市,区县,乡镇]: present/birth/household/mail/emp/contact */
+        areaPaths: { present: [], birth: [], household: [], mail: [], emp: [], contact: [] },
+        /* 建档弹窗 tab 页签: basic-基本信息 / insu-医保信息 */
+        activeTab: 'basic',
         /* el-cascader 懒加载配置(逐级下钻 area_code_2021; checkStrictly 允许选任意一级) */
         cascaderProps: { lazy: true, lazyLoad: this.areaLazyLoad, checkStrictly: true, value: 'value', label: 'label', leaf: 'leaf', expandTrigger: 'hover' },
-        dlg: false, editing: false, form: this.empty()
+        dlg: false, editing: false, form: this.empty(),
+        /* 修改记录弹窗 */
+        logDlg: false, logLoading: false, logPatientName: '', logList: [],
+        /* 医保参保信息记录(读卡完整记录, 一人可多条) */
+        insuList: [], insuLoading: false
       };
     },
     created: function () { this.loadDicts(); this.loadOrgs(); this.load(); },
@@ -76,11 +82,17 @@
           /* A 身份人口学(默认: 居民身份证/汉族/中国) */
           certType: '01', nation: '1', nationality: '156', maritalStatus: '', eduLevel: '',
           occupation: '', occupationOther: '',
-          /* B 现住址五级级联 + 详细/户籍/工作单位地址 */
+          /* B 现住址四级级联 + 详细 */
           presentProv: '', presentCity: '', presentCounty: '', presentTown: '', presentDetail: '',
-          householdAddr: '', employer: '', employerPhone: '', employerAddr: '',
+          /* B2 出生地/户籍/通讯/单位/联系人 四级级联(编码) + 详细(沿用原文本列) */
+          birthProv: '', birthCity: '', birthCounty: '', birthTown: '', birthDetail: '',
+          householdProv: '', householdCity: '', householdCounty: '', householdTown: '', householdAddr: '',
+          mailProv: '', mailCity: '', mailCounty: '', mailTown: '',
+          empProv: '', empCity: '', empCounty: '', empTown: '',
+          employer: '', employerPhone: '', employerAddr: '',
           /* C 联系人与患者关系 */
-          contactRelation: '', contactIdCard: '', contactAddr: ''
+          contactRelation: '', contactIdCard: '', contactAddr: '',
+          contactProv: '', contactCity: '', contactCounty: '', contactTown: ''
         };
       },
       loadDicts: function () {
@@ -104,20 +116,29 @@
         var level = lvl === 0 ? 1 : null;
         HIS.areaChildren(pcode, level).then(function (list) { resolve(list || []); }).catch(function () { resolve([]); });
       },
-      /* 级联选择变化: 回填 presentProv/city/county/town 编码 */
-      onPresentChange: function (vals) {
+      /* 级联选择变化: 按前缀回填 <prefix>Prov/City/County/Town 编码 */
+      onAreaChange: function (prefix, vals) {
         var f = this.form; var v = vals || [];
-        f.presentProv = v[0] || ''; f.presentCity = v[1] || '';
-        f.presentCounty = v[2] || ''; f.presentTown = v[3] || '';
+        f[prefix + 'Prov'] = v[0] || ''; f[prefix + 'City'] = v[1] || '';
+        f[prefix + 'County'] = v[2] || ''; f[prefix + 'Town'] = v[3] || '';
       },
-      /* 由行数据重构级联选中路径(仅非空级别) */
-      buildPresentPath: function (row) {
+      /* 由行数据重构某地址级联选中路径(仅非空级别) */
+      buildAreaPath: function (row, prefix) {
         var p = [];
-        if (row.presentProv) { p.push(String(row.presentProv)); }
-        if (row.presentCity) { p.push(String(row.presentCity)); }
-        if (row.presentCounty) { p.push(String(row.presentCounty)); }
-        if (row.presentTown) { p.push(String(row.presentTown)); }
-        this.presentPath = p;
+        if (row[prefix + 'Prov']) { p.push(String(row[prefix + 'Prov'])); }
+        if (row[prefix + 'City']) { p.push(String(row[prefix + 'City'])); }
+        if (row[prefix + 'County']) { p.push(String(row[prefix + 'County'])); }
+        if (row[prefix + 'Town']) { p.push(String(row[prefix + 'Town'])); }
+        this.areaPaths[prefix] = p;
+      },
+      /* 编辑/复用时一次性重构全部地址级联路径 */
+      buildAllAreaPaths: function (row) {
+        var vm = this;
+        ['present', 'birth', 'household', 'mail', 'emp', 'contact'].forEach(function (k) { vm.buildAreaPath(row, k); });
+      },
+      /* 新增建档时清空全部地址级联路径 */
+      resetAreaPaths: function () {
+        this.areaPaths = { present: [], birth: [], household: [], mail: [], emp: [], contact: [] };
       },
       areaRemoteSearch: function (q) {
         var vm = this; if (!q) { return; } vm.areaLoading = true;
@@ -142,10 +163,12 @@
       },
       search: function () { this.page = 1; this.load(); },
       onPage: function (p) { this.page = p; this.load(); },
-      add: function () { this.editing = false; this.form = this.empty(); this.areaOpts = []; this.presentPath = []; this.dlg = true; },
+            onSize: function (s) { this.size = s; this.onPage(1); },
+            seqNo: function (i) { return (this.page - 1) * this.size + i + 1; },
+      add: function () { this.editing = false; this.form = this.empty(); this.areaOpts = []; this.resetAreaPaths(); this.activeTab = 'basic'; this.insuList = []; this.dlg = true; },
       edit: function (row) {
         this.editing = true; this.form = clean(Object.assign(this.empty(), row));
-        this.setAreaOpt(row.insuplcAdmdvs, row.insuplcAdmdvsName); this.buildPresentPath(row); this.dlg = true;
+        this.setAreaOpt(row.insuplcAdmdvs, row.insuplcAdmdvsName); this.buildAllAreaPaths(row); this.activeTab = 'basic'; this.loadInsu(row.id); this.dlg = true;
       },
       readCard: function () {
         /* 模拟读取医保电子凭证/社保卡(真实环境调用1101人员信息获取) */
@@ -155,6 +178,8 @@
         f.mdtrtCertNo = f.idCard;
         if (!f.psnNo) { f.psnNo = 'PSN' + f.idCard.slice(-8); }
         HIS.notifySuccess('读卡成功(模拟): 已回填医保凭证信息');
+        /* 已建档患者读卡时同步保存 1101 返读的完整参保信息记录 */
+        if (this.editing && this.form.id) { this.syncInsu(); }
       },
       calcAge: function () {
         var f = this.form;
@@ -187,7 +212,7 @@
               vm.editing = true;
               vm.form = clean(Object.assign(vm.empty(), d));
               vm.setAreaOpt(d.insuplcAdmdvs, d.insuplcAdmdvsName);
-              vm.buildPresentPath(d);
+              vm.buildAllAreaPaths(d);
               ElementPlus.ElMessageBox.alert('医共体内已存在同一自然人档案(患者号 ' + d.patientNo + '), 已载入复用。', '统一患者主索引', { type: 'success' });
             } else {
               ElementPlus.ElMessage.info('未查到已有档案, 可新建建档');
@@ -198,6 +223,44 @@
         var vm = this;
         HIS.del('/api/his/patient/' + row.id).then(function () { HIS.notifySuccess('已删除'); vm.load(); }).catch(HIS.notifyError);
       },
+      /* 查看患者档案修改记录(字段级留痕, 时间倒序) */
+      showLogs: function (row) {
+        var vm = this;
+        vm.logPatientName = row.name || ''; vm.logList = []; vm.logDlg = true; vm.logLoading = true;
+        HIS.get('/api/his/patient/' + row.id + '/change-logs')
+          .then(function (d) { vm.logList = d || []; })
+          .catch(HIS.notifyError)
+          .finally(function () { vm.logLoading = false; });
+      },
+      /* 修改记录: 时间格式化(T 转空格) */
+      logTime: function (v) { return v ? String(v).replace('T', ' ') : '-'; },
+      /* 修改记录: 来源标签色 */
+      logSourceTag: function (s) { return s === '建档' ? 'success' : (s === '医保读卡' ? 'warning' : 'primary'); },
+      /* 修改记录: 空值占位 */
+      logVal: function (v) { return (v === null || v === undefined || v === '') ? '（空）' : v; },
+      /* 参保信息记录: 加载该患者读卡完整记录(一人可多条) */
+      loadInsu: function (id) {
+        var vm = this; vm.insuList = [];
+        if (!id) { return; }
+        vm.insuLoading = true;
+        HIS.get('/api/his/patient/' + id + '/insu').then(function (d) { vm.insuList = d || []; })
+          .catch(HIS.notifyError).finally(function () { vm.insuLoading = false; });
+      },
+      /* 读卡同步: 模拟 1101 人员信息获取返回完整参保信息列表并覆盖保存 */
+      syncInsu: function () {
+        var vm = this;
+        if (!vm.form.id) { ElementPlus.ElMessage.warning('请先保存建档, 再读卡同步参保信息'); return; }
+        vm.insuLoading = true;
+        HIS.post('/api/his/patient/' + vm.form.id + '/insu/read-sync')
+          .then(function (d) { vm.insuList = d || []; HIS.notifySuccess('读卡同步成功: 共 ' + (d ? d.length : 0) + ' 条参保记录'); })
+          .catch(HIS.notifyError).finally(function () { vm.insuLoading = false; });
+      },
+      delInsu: function (row) {
+        var vm = this;
+        HIS.del('/api/his/patient/insu/' + row.id).then(function () { HIS.notifySuccess('已删除'); vm.loadInsu(vm.form.id); }).catch(HIS.notifyError);
+      },
+      /* 参保日期展示(yyyy-MM-dd) */
+      insuDate: function (v) { return v ? String(v).substring(0, 10) : '-'; },
       insutypeLabel: insutypeLabel
     },
     template: [
@@ -210,6 +273,7 @@
       '    <span style="color:#909399;font-size:13px;">共 {{ total }} 人</span>',
       '  </div>',
       '  <el-table :data="list" v-loading="loading" border stripe size="small">',
+      '    <el-table-column type="index" label="序号" width="60" :index="seqNo"></el-table-column>',
       '    <el-table-column prop="patientNo" label="患者号" width="170"></el-table-column>',
       '    <el-table-column prop="name" label="姓名" width="90"></el-table-column>',
       '    <el-table-column label="性别" width="55"><template #default="s">{{ s.row.genderName || gendMap[s.row.gender] || s.row.gender }}</template></el-table-column>',
@@ -220,14 +284,18 @@
       '    <el-table-column prop="psnNo" label="医保人员编号" width="140"></el-table-column>',
       '    <el-table-column label="建档机构" min-width="150" show-overflow-tooltip><template #default="s">{{ orgName(s.row.orgId) }}</template></el-table-column>',
       '    <el-table-column label="状态" width="70"><template #default="s"><el-tag size="small" :type="s.row.status===1?\'success\':\'info\'">{{ s.row.status===1?"正常":"停用" }}</el-tag></template></el-table-column>',
-      '    <el-table-column label="操作" width="120" fixed="right"><template #default="s">',
+      '    <el-table-column label="操作" width="210" fixed="right"><template #default="s">',
       '      <el-button link type="primary" @click="edit(s.row)">编辑</el-button>',
       '      <el-popconfirm title="确认删除该患者档案？" @confirm="del(s.row)"><template #reference><el-button link type="danger">删除</el-button></template></el-popconfirm>',
+      '      <el-button link type="info" @click="showLogs(s.row)">修改记录</el-button>',
       '    </template></el-table-column>',
       '  </el-table>',
-      '  <el-pagination style="margin-top:12px;justify-content:flex-end;" background layout="prev, pager, next, total" :total="total" :page-size="size" :current-page="page" @current-change="onPage"></el-pagination>',
+      '  <el-pagination style="margin-top:12px;justify-content:flex-end;" background layout="total, sizes, prev, pager, next" :total="total" :page-size="size" :page-sizes="[10, 20, 50, 100]" :current-page="page" @current-change="onPage" @size-change="onSize"></el-pagination>',
       '  <el-dialog v-model="dlg" :title="editing?\'编辑患者档案\':\'新增患者建档\'" width="900px" top="6vh">',
+      '    <div style="max-height:62vh;overflow-y:auto;padding-right:6px;">',
       '    <el-form :model="form" label-width="110px" size="default">',
+      '      <el-tabs v-model="activeTab">',
+      '        <el-tab-pane label="基本信息" name="basic">',
       '      <el-divider content-position="left">基本信息</el-divider>',
       '      <el-row :gutter="12">',
       '        <el-col :span="12"><el-form-item label="姓名"><el-input v-model="form.name"></el-input></el-form-item></el-col>',
@@ -244,7 +312,38 @@
       '        <el-col :span="12"><el-form-item label="职业其他"><el-input v-model="form.occupationOther" placeholder="职业为其他时填写"></el-input></el-form-item></el-col>',
       '        <el-col :span="12"><el-form-item label="联系电话"><el-input v-model="form.phone"></el-input></el-form-item></el-col>',
       '      </el-row>',
-      '      <el-divider content-position="left">医保信息</el-divider>',
+      '      <el-divider content-position="left">地址信息(区划均按 area_code_2021 字典级联选择)</el-divider>',
+      '      <el-row :gutter="12">',
+      '        <el-col :span="24"><el-form-item label="现住址"><el-cascader v-model="areaPaths.present" :props="cascaderProps" @change="onAreaChange(\'present\', $event)" clearable style="width:100%" placeholder="省/市/区县/乡镇(逐级选择)"></el-cascader></el-form-item></el-col>',
+      '        <el-col :span="24"><el-form-item label="现住址详细"><el-input v-model="form.presentDetail" placeholder="村/街/路/门牌号"></el-input></el-form-item></el-col>',
+      '        <el-col :span="24"><el-form-item label="出生地"><el-cascader v-model="areaPaths.birth" :props="cascaderProps" @change="onAreaChange(\'birth\', $event)" clearable style="width:100%" placeholder="省/市/区县/乡镇(逐级选择)"></el-cascader></el-form-item></el-col>',
+      '        <el-col :span="24"><el-form-item label="出生地详细"><el-input v-model="form.birthDetail" placeholder="村/街/路/门牌号"></el-input></el-form-item></el-col>',
+      '        <el-col :span="24"><el-form-item label="户籍地址"><el-cascader v-model="areaPaths.household" :props="cascaderProps" @change="onAreaChange(\'household\', $event)" clearable style="width:100%" placeholder="省/市/区县/乡镇(逐级选择)"></el-cascader></el-form-item></el-col>',
+      '        <el-col :span="24"><el-form-item label="户籍详细"><el-input v-model="form.householdAddr" placeholder="村/街/路/门牌号"></el-input></el-form-item></el-col>',
+      '        <el-col :span="24"><el-form-item label="通讯地址"><el-cascader v-model="areaPaths.mail" :props="cascaderProps" @change="onAreaChange(\'mail\', $event)" clearable style="width:100%" placeholder="省/市/区县/乡镇(逐级选择)"></el-cascader></el-form-item></el-col>',
+      '        <el-col :span="24"><el-form-item label="通讯详细"><el-input v-model="form.address" placeholder="HEAD_ADDRESS: 本人或联系人通信地址"></el-input></el-form-item></el-col>',
+      '        <el-col :span="12"><el-form-item label="工作单位"><el-input v-model="form.employer"></el-input></el-form-item></el-col>',
+      '        <el-col :span="12"><el-form-item label="单位电话"><el-input v-model="form.employerPhone"></el-input></el-form-item></el-col>',
+      '        <el-col :span="24"><el-form-item label="单位地址"><el-cascader v-model="areaPaths.emp" :props="cascaderProps" @change="onAreaChange(\'emp\', $event)" clearable style="width:100%" placeholder="省/市/区县/乡镇(逐级选择)"></el-cascader></el-form-item></el-col>',
+      '        <el-col :span="24"><el-form-item label="单位详细"><el-input v-model="form.employerAddr" placeholder="村/街/路/门牌号"></el-input></el-form-item></el-col>',
+      '      </el-row>',
+      '      <el-divider content-position="left">联系人</el-divider>',
+      '      <el-row :gutter="12">',
+      '        <el-col :span="12"><el-form-item label="与患者关系"><el-select v-model="form.contactRelation" style="width:100%" filterable clearable><el-option v-for="o in relOpts" :key="o.code" :label="o.name + \' (\' + o.code + \')\'" :value="o.code"></el-option></el-select></el-form-item></el-col>',
+      '        <el-col :span="12"><el-form-item label="联系人姓名"><el-input v-model="form.contactName"></el-input></el-form-item></el-col>',
+      '        <el-col :span="12"><el-form-item label="联系人电话"><el-input v-model="form.contactPhone"></el-input></el-form-item></el-col>',
+      '        <el-col :span="12"><el-form-item label="联系人证件号"><el-input v-model="form.contactIdCard"></el-input></el-form-item></el-col>',
+      '        <el-col :span="24"><el-form-item label="联系人地址"><el-cascader v-model="areaPaths.contact" :props="cascaderProps" @change="onAreaChange(\'contact\', $event)" clearable style="width:100%" placeholder="省/市/区县/乡镇(逐级选择)"></el-cascader></el-form-item></el-col>',
+      '        <el-col :span="24"><el-form-item label="联系人详细"><el-input v-model="form.contactAddr" placeholder="村/街/路/门牌号"></el-input></el-form-item></el-col>',
+      '      </el-row>',
+      '      <el-divider content-position="left">其他</el-divider>',
+      '      <el-row :gutter="12">',
+      '        <el-col :span="12"><el-form-item label="状态"><el-switch v-model="form.status" :active-value="1" :inactive-value="0" active-text="正常" inactive-text="停用"></el-switch></el-form-item></el-col>',
+      '        <el-col :span="24"><el-form-item label="备注"><el-input v-model="form.memo" type="textarea"></el-input></el-form-item></el-col>',
+      '      </el-row>',
+      '        </el-tab-pane>',
+      '        <el-tab-pane label="医保信息" name="insu">',
+      '      <el-divider content-position="left">医保信息(医保接口返读/读卡回填)</el-divider>',
       '      <el-row :gutter="12">',
       '        <el-col :span="12"><el-form-item label="险种类型"><el-select v-model="form.insutype" style="width:100%" filterable><el-option v-for="o in insutypeOpts" :key="o.code" :label="o.name + \' (\' + o.code + \')\'" :value="o.code"></el-option></el-select></el-form-item></el-col>',
       '        <el-col :span="12"><el-form-item label="参保地区划"><el-select v-model="form.insuplcAdmdvs" style="width:100%" filterable remote clearable :remote-method="areaRemoteSearch" :loading="areaLoading" placeholder="输入名称/编码检索"><el-option v-for="a in areaOpts" :key="a.code" :label="a.name + \' (\' + a.code + \')\'" :value="a.code"></el-option></el-select></el-form-item></el-col>',
@@ -253,36 +352,48 @@
       '        <el-col :span="12"><el-form-item label="医保人员编号"><el-input v-model="form.psnNo" placeholder="psn_no"></el-input></el-form-item></el-col>',
       '        <el-col :span="12"><el-form-item label="患者号"><el-input v-model="form.patientNo" placeholder="留空自动生成" :disabled="!editing"></el-input></el-form-item></el-col>',
       '      </el-row>',
-      '      <el-divider content-position="left">地址信息</el-divider>',
-      '      <el-row :gutter="12">',
-      '        <el-col :span="24"><el-form-item label="现住址"><el-cascader v-model="presentPath" :props="cascaderProps" @change="onPresentChange" clearable style="width:100%" placeholder="省/市/区县/乡镇(逐级选择)"></el-cascader></el-form-item></el-col>',
-      '        <el-col :span="24"><el-form-item label="现住址详细"><el-input v-model="form.presentDetail" placeholder="村/街/路/门牌号"></el-input></el-form-item></el-col>',
-      '        <el-col :span="24"><el-form-item label="通讯地址"><el-input v-model="form.address" placeholder="HEAD_ADDRESS: 本人或联系人通信地址"></el-input></el-form-item></el-col>',
-      '        <el-col :span="24"><el-form-item label="户籍地址"><el-input v-model="form.householdAddr"></el-input></el-form-item></el-col>',
-      '        <el-col :span="12"><el-form-item label="工作单位"><el-input v-model="form.employer"></el-input></el-form-item></el-col>',
-      '        <el-col :span="12"><el-form-item label="单位电话"><el-input v-model="form.employerPhone"></el-input></el-form-item></el-col>',
-      '        <el-col :span="24"><el-form-item label="单位地址"><el-input v-model="form.employerAddr"></el-input></el-form-item></el-col>',
-      '      </el-row>',
-      '      <el-divider content-position="left">联系人</el-divider>',
-      '      <el-row :gutter="12">',
-      '        <el-col :span="12"><el-form-item label="与患者关系"><el-select v-model="form.contactRelation" style="width:100%" filterable clearable><el-option v-for="o in relOpts" :key="o.code" :label="o.name + \' (\' + o.code + \')\'" :value="o.code"></el-option></el-select></el-form-item></el-col>',
-      '        <el-col :span="12"><el-form-item label="联系人姓名"><el-input v-model="form.contactName"></el-input></el-form-item></el-col>',
-      '        <el-col :span="12"><el-form-item label="联系人电话"><el-input v-model="form.contactPhone"></el-input></el-form-item></el-col>',
-      '        <el-col :span="12"><el-form-item label="联系人证件号"><el-input v-model="form.contactIdCard"></el-input></el-form-item></el-col>',
-      '        <el-col :span="24"><el-form-item label="联系人地址"><el-input v-model="form.contactAddr"></el-input></el-form-item></el-col>',
-      '      </el-row>',
-      '      <el-divider content-position="left">其他</el-divider>',
-      '      <el-row :gutter="12">',
-      '        <el-col :span="12"><el-form-item label="状态"><el-switch v-model="form.status" :active-value="1" :inactive-value="0" active-text="正常" inactive-text="停用"></el-switch></el-form-item></el-col>',
-      '        <el-col :span="24"><el-form-item label="备注"><el-input v-model="form.memo" type="textarea"></el-input></el-form-item></el-col>',
-      '      </el-row>',
+      '      <el-divider content-position="left">参保信息记录(【1101】人员基本信息获取输出节点 insuinfo, 一人可多条)</el-divider>',
+      '      <div class="toolbar">',
+      '        <el-button type="primary" size="small" :loading="insuLoading" @click="syncInsu">读卡同步参保信息</el-button>',
+      '        <el-button size="small" @click="loadInsu(form.id)">刷新</el-button>',
+      '        <span style="color:#909399;font-size:12px;">共 {{ insuList.length }} 条参保记录; 读卡按来源"医保读卡(1101)"覆盖保存, 重复读卡不产生重复</span>',
+      '      </div>',
+      '      <el-table :data="insuList" v-loading="insuLoading" border stripe size="small" style="width:100%">',
+      '        <el-table-column type="index" label="序号" width="60"></el-table-column>',
+      '        <el-table-column prop="insutypeName" label="险种(insutype)" width="150" show-overflow-tooltip></el-table-column>',
+      '        <el-table-column prop="psnTypeName" label="人员类别(psn_type)" width="120" show-overflow-tooltip></el-table-column>',
+      '        <el-table-column label="参保状态" width="90"><template #default="s"><el-tag size="small" :type="s.row.psnInsuStas===\'1\'?\'success\':\'info\'">{{ s.row.psnInsuStasName || (s.row.psnInsuStas===\'1\'?"参保":"停保") }}</el-tag></template></el-table-column>',
+      '        <el-table-column label="个人参保日期" width="110"><template #default="s">{{ insuDate(s.row.psnInsuDate) }}</template></el-table-column>',
+      '        <el-table-column label="暂停参保日期" width="110"><template #default="s">{{ s.row.pausInsuDate ? insuDate(s.row.pausInsuDate) : "当前在保" }}</template></el-table-column>',
+      '        <el-table-column prop="cvlservFlagName" label="公务员" width="70"></el-table-column>',
+      '        <el-table-column prop="insuplcAdmdvsName" label="参保地" width="90" show-overflow-tooltip></el-table-column>',
+      '        <el-table-column prop="balc" label="余额" width="90"></el-table-column>',
+      '        <el-table-column prop="empName" label="单位名称(参保单位)" min-width="150" show-overflow-tooltip></el-table-column>',
+      '        <el-table-column prop="src" label="来源" width="110"></el-table-column>',
+      '        <el-table-column label="操作" width="60" fixed="right"><template #default="s"><el-button link type="danger" @click="delInsu(s.row)">删除</el-button></template></el-table-column>',
+      '      </el-table>',
+      '        </el-tab-pane>',
+      '      </el-tabs>',
       '    </el-form>',
+      '    </div>',
       '    <template #footer>',
       '      <el-button @click="readCard">读卡(模拟)</el-button>',
       '      <el-button type="warning" plain @click="checkDup">查重/复用</el-button>',
       '      <el-button @click="dlg=false">取消</el-button>',
       '      <el-button type="primary" @click="submit">确定</el-button>',
       '    </template>',
+      '  </el-dialog>',
+      '  <el-dialog v-model="logDlg" :title="\'修改记录 - \'+logPatientName" width="900px" top="6vh">',
+      '    <el-table :data="logList" v-loading="logLoading" border stripe size="small" max-height="460">',
+      '      <el-table-column type="index" label="序号" width="60"></el-table-column>',
+      '      <el-table-column label="修改时间" width="160"><template #default="s">{{ logTime(s.row.createTime) }}</template></el-table-column>',
+      '      <el-table-column label="修改人" width="100"><template #default="s">{{ s.row.changeByName || s.row.createBy || \'-\' }}</template></el-table-column>',
+      '      <el-table-column label="来源" width="90"><template #default="s"><el-tag size="small" :type="logSourceTag(s.row.source)">{{ s.row.source || \'-\' }}</el-tag></template></el-table-column>',
+      '      <el-table-column prop="fieldLabel" label="字段" width="120"></el-table-column>',
+      '      <el-table-column label="修改前" min-width="160" show-overflow-tooltip><template #default="s">{{ logVal(s.row.oldValue) }}</template></el-table-column>',
+      '      <el-table-column label="修改后" min-width="160" show-overflow-tooltip><template #default="s">{{ logVal(s.row.newValue) }}</template></el-table-column>',
+      '    </el-table>',
+      '    <template #footer><el-button @click="logDlg=false">关闭</el-button></template>',
       '  </el-dialog>',
       '</div>'
     ].join('\n')
@@ -367,6 +478,7 @@
       '      <span style="color:#909399;font-size:13px;">未建档请先到“患者建档”页新增</span>',
       '    </div>',
       '    <el-table :data="patients" v-loading="pLoading" border stripe size="small" height="200" highlight-current-row @current-change="selectPatient">',
+      '      <el-table-column type="index" label="序号" width="60"></el-table-column>',
       '      <el-table-column prop="patientNo" label="患者号" width="170"></el-table-column>',
       '      <el-table-column prop="name" label="姓名" width="90"></el-table-column>',
       '      <el-table-column label="性别" width="55"><template #default="s">{{ s.row.genderName || s.row.gender }}</template></el-table-column>',
@@ -385,6 +497,7 @@
       '      <el-button type="primary" :loading="submitting" @click="doRegister">确认挂号</el-button>',
       '    </div>',
       '    <el-table :data="schedules" v-loading="sLoading" border stripe size="small" height="240" highlight-current-row @current-change="chooseSchedule">',
+      '      <el-table-column type="index" label="序号" width="60"></el-table-column>',
       '      <el-table-column label="科室" width="120"><template #default="s">{{ deptName(s.row.deptId) }}</template></el-table-column>',
       '      <el-table-column label="医师" width="100"><template #default="s">{{ staffName(s.row.staffId) }}</template></el-table-column>',
       '      <el-table-column prop="workDate" label="出诊日期" width="120"></el-table-column>',
@@ -425,6 +538,8 @@
       },
       search: function () { this.page = 1; this.load(); },
       onPage: function (p) { this.page = p; this.load(); },
+            onSize: function (s) { this.size = s; this.onPage(1); },
+            seqNo: function (i) { return (this.page - 1) * this.size + i + 1; },
       doCancel: function (row) {
         var vm = this;
         ElementPlus.ElMessageBox.prompt('请输入退号原因(可留空)', '退号确认 - ' + row.patientName, {
@@ -452,6 +567,7 @@
       '    <span style="color:#909399;font-size:13px;">共 {{ total }} 条</span>',
       '  </div>',
       '  <el-table :data="list" v-loading="loading" border stripe size="small">',
+      '    <el-table-column type="index" label="序号" width="60" :index="seqNo"></el-table-column>',
       '    <el-table-column prop="regNo" label="挂号单号" width="170"></el-table-column>',
       '    <el-table-column prop="patientName" label="患者" width="90"></el-table-column>',
       '    <el-table-column prop="deptName" label="科室" width="110"></el-table-column>',
@@ -466,7 +582,7 @@
       '      <el-button link type="danger" :disabled="s.row.status!==1" @click="doCancel(s.row)">退号</el-button>',
       '    </template></el-table-column>',
       '  </el-table>',
-      '  <el-pagination style="margin-top:12px;justify-content:flex-end;" background layout="prev, pager, next, total" :total="total" :page-size="size" :current-page="page" @current-change="onPage"></el-pagination>',
+      '  <el-pagination style="margin-top:12px;justify-content:flex-end;" background layout="total, sizes, prev, pager, next" :total="total" :page-size="size" :page-sizes="[10, 20, 50, 100]" :current-page="page" @current-change="onPage" @size-change="onSize"></el-pagination>',
       '</div>'
     ].join('\n')
   };

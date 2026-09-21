@@ -7,8 +7,10 @@ import com.yb.hi.framework.tenant.LoginUser;
 import com.yb.hi.framework.tenant.TenantContext;
 import com.yb.hi.platform.dto.MenuNode;
 import com.yb.hi.platform.dto.RoleSaveReq;
+import com.yb.hi.platform.entity.SysOrg;
 import com.yb.hi.platform.entity.SysRole;
 import com.yb.hi.platform.entity.SysRoleMenu;
+import com.yb.hi.platform.mapper.SysOrgMapper;
 import com.yb.hi.platform.mapper.SysRoleMapper;
 import com.yb.hi.platform.mapper.SysRoleMenuMapper;
 import org.springframework.stereotype.Service;
@@ -29,16 +31,19 @@ public class SysRoleService {
     private final SysRoleMapper roleMapper;
     private final SysRoleMenuMapper roleMenuMapper;
     private final SysMenuService menuService;
+    private final SysOrgMapper orgMapper;
 
-    /** 医院端不可见菜单: 平台级"医院管理"(顶级) + 标准字典"提取入库"与"字典维护"(维护类子菜单, 仅超管可见) */
-    private static final List<String> HOSPITAL_EXCLUDED_MENUS = Arrays.asList("hospital-manage", "std-dict-import", "std-dict-maintain");
+    /** 医院端不可见菜单: 平台级"医院管理"(顶级) + 标准字典"提取入库"/"字典维护" + "行政区划"(基础字典, 仅超管可见) */
+    private static final List<String> HOSPITAL_EXCLUDED_MENUS = Arrays.asList("hospital-manage", "std-dict-import", "std-dict-maintain", "area-code");
     /** 超级管理员精简菜单: 工作台 + 医院管理 + 标准字典(浏览+维护) */
     private static final List<String> SUPER_ADMIN_MENUS = Arrays.asList("dashboard", "hospital-manage", "std-dict");
 
-    public SysRoleService(SysRoleMapper roleMapper, SysRoleMenuMapper roleMenuMapper, SysMenuService menuService) {
+    public SysRoleService(SysRoleMapper roleMapper, SysRoleMenuMapper roleMenuMapper, SysMenuService menuService,
+                          SysOrgMapper orgMapper) {
         this.roleMapper = roleMapper;
         this.roleMenuMapper = roleMenuMapper;
         this.menuService = menuService;
+        this.orgMapper = orgMapper;
     }
 
     private Long currentTenant() {
@@ -191,7 +196,7 @@ public class SysRoleService {
             return menuService.treeOnlyTopKeys(SUPER_ADMIN_MENUS);
         }
         if (Roles.ADMIN.equals(code)) {
-            return menuService.treeExcludingKeys(HOSPITAL_EXCLUDED_MENUS);
+            return menuService.treeExcludingKeys(adminExcludedMenus(lu));
         }
         SysRole role = null;
         if (lu.getRoleId() != null) {
@@ -204,8 +209,29 @@ public class SysRoleService {
             return new ArrayList<>();
         }
         if (role.getAllMenus() != null && role.getAllMenus() == 1) {
-            return menuService.treeExcludingKeys(HOSPITAL_EXCLUDED_MENUS);
+            return menuService.treeExcludingKeys(adminExcludedMenus(lu));
         }
         return menuService.treeByIds(getMenuIds(role.getId()));
+    }
+
+    /**
+     * 医院端全菜单角色的排除集: 基础排除项 + 非牵头机构追加排除"医共体字典"(community-dict)。
+     * 医共体字典仅牵头机构(租户根机构 org_level=1)可见/可维护, 乡镇院长(ADMIN)不下发该菜单。
+     */
+    private List<String> adminExcludedMenus(LoginUser lu) {
+        List<String> ex = new ArrayList<>(HOSPITAL_EXCLUDED_MENUS);
+        if (!isLeadOrg(lu)) {
+            ex.add("community-dict");
+        }
+        return ex;
+    }
+
+    /** 当前登录用户是否归属牵头机构(org_level=1) */
+    private boolean isLeadOrg(LoginUser lu) {
+        if (lu == null || lu.getOrgId() == null) {
+            return false;
+        }
+        SysOrg org = orgMapper.selectById(lu.getOrgId());
+        return org != null && org.getOrgLevel() != null && org.getOrgLevel() == 1;
     }
 }

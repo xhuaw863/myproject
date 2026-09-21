@@ -49,6 +49,8 @@
         }).catch(HIS.notifyError).finally(function () { vm.loading = false; });
       },
       onPage: function (p) { this.page = p; this.fetch(); },
+            onSize: function (s) { this.size = s; this.onPage(1); },
+            seqNo: function (i) { return (this.page - 1) * this.size + i + 1; },
       /* 下钻到某节点的下级 */
       drill: function (row) {
         var vm = this;
@@ -138,6 +140,7 @@
       '    <el-breadcrumb-item v-for="c in crumbs" :key="c.code"><a href="javascript:;" @click="gotoCrumb(c)">{{ c.name }}</a></el-breadcrumb-item>',
       '  </el-breadcrumb>',
       '  <el-table :data="list" v-loading="loading" border stripe size="small">',
+      '    <el-table-column type="index" label="序号" width="60" :index="seqNo"></el-table-column>',
       '    <el-table-column prop="code" label="区划代码" width="160"></el-table-column>',
       '    <el-table-column prop="name" label="名称" min-width="200" show-overflow-tooltip></el-table-column>',
       '    <el-table-column label="级别" width="120"><template #default="s"><el-tag size="small" :type="levelTag(s.row.level)">{{ levelLabel(s.row.level) }}</el-tag></template></el-table-column>',
@@ -148,7 +151,7 @@
       '      <el-button link type="danger" @click="del(s.row)">删除</el-button>',
       '    </template></el-table-column>',
       '  </el-table>',
-      '  <el-pagination style="margin-top:12px;justify-content:flex-end;" background layout="prev, pager, next, total" :total="total" :page-size="size" :current-page="page" @current-change="onPage"></el-pagination>',
+      '  <el-pagination style="margin-top:12px;justify-content:flex-end;" background layout="total, sizes, prev, pager, next" :total="total" :page-size="size" :page-sizes="[10, 20, 50, 100]" :current-page="page" @current-change="onPage" @size-change="onSize"></el-pagination>',
       '  <el-dialog v-model="dlg" :title="editing?\'修改行政区划\':\'新增行政区划\'" width="480px">',
       '    <el-form :model="form" label-width="96px">',
       '      <el-form-item label="区划代码"><el-input v-model="form.code" :disabled="editing" placeholder="如 110101001001(数字)"></el-input></el-form-item>',

@@ -93,6 +93,7 @@ public class SysOrgService {
         n.setHospLvSrc(o.getHospLvSrc());
         n.setPdLicenseNo(o.getPdLicenseNo());
         n.setBedCnt(o.getBedCnt());
+        n.setPriceLv(o.getPriceLv());
         n.setAdmvsCode(o.getAdmvsCode());
         n.setLeader(o.getLeader());
         n.setPhone(o.getPhone());
@@ -198,6 +199,7 @@ public class SysOrgService {
         }
         o.setPdLicenseNo(req.getPdLicenseNo());
         o.setBedCnt(req.getBedCnt());
+        o.setPriceLv(req.getPriceLv());
         o.setAdmvsCode(req.getAdmvsCode());
         o.setLeader(req.getLeader());
         o.setPhone(req.getPhone());

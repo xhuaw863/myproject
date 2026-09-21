@@ -20,21 +20,21 @@
         { key: 'dept', label: '科室管理', comp: 'DeptManage' },
         { key: 'staff', label: '职工管理', comp: 'StaffManage' },
         { key: 'schedule', label: '排班号源', comp: 'ScheduleManage' },
-        { key: 'charge-item', label: '收费项目对照', comp: 'ChargeItemManage' },
-        { key: 'area-code', label: '行政区划', comp: 'AreaManage' }
+        { key: 'charge-item', label: '收费项目对照', comp: 'ChargeItemManage' }
       ]
     },
     {
       group: '医保字典', children: [
         { key: 'dict-download', label: '字典下载', comp: 'DictDownload' },
         { key: 'dict-version', label: '版本状态', comp: 'DictVersion' },
-        { key: 'dict-map', label: '目录对照', comp: 'DictMap' }
+        { key: 'catalog-map', label: '三目录医保对照', comp: 'CatalogMap' }
       ]
     },
     {
       group: '标准字典', children: [
         { key: 'std-dict-browse', label: '字典浏览', comp: 'StdDictBrowse' },
-        { key: 'std-dict-import', label: '提取入库', comp: 'StdDictImport' }
+        { key: 'std-dict-import', label: '提取入库', comp: 'StdDictImport' },
+        { key: 'area-code', label: '行政区划', comp: 'AreaManage' }
       ]
     },
     {
@@ -77,7 +77,9 @@
         { key: 'rpt-setl', label: '结算记录', phase: 'P1f' },
         { key: 'rpt-daily', label: '门诊日结', phase: 'P1f' }
       ]
-    }
+    },
+    { key: 'community-dict', label: '医共体字典', comp: 'CommunityDict' },
+    { key: 'org-catalog', label: '机构目录选用', comp: 'OrgCatalog' }
   ];
 
   function findItem(key) {
@@ -178,7 +180,7 @@
     props: ['user'],
     emits: ['logout'],
     data: function () {
-      return { activeKey: 'dashboard', menu: MENU };
+      return { activeKey: 'dashboard', menu: MENU, collapsed: localStorage.getItem('his-aside-collapsed') === '1' };
     },
     computed: {
       currentItem: function () { return findItemIn(this.menu, this.activeKey); },
@@ -199,7 +201,11 @@
     },
     methods: {
       onSelect: function (key) { this.activeKey = key; },
-      onCmd: function (c) { if (c === 'logout') { this.$emit('logout'); } }
+      onCmd: function (c) { if (c === 'logout') { this.$emit('logout'); } },
+      toggleAside: function () {
+        this.collapsed = !this.collapsed;
+        localStorage.setItem('his-aside-collapsed', this.collapsed ? '1' : '0');
+      }
     },
     mounted: function () {
       var vm = this;
@@ -219,8 +225,8 @@
       '<div class="layout">',
       '  <div class="layout-header">',
       '    <span class="logo">医保原生 HIS</span>',
-      '    <span class="hosp">{{ user.tenantName || "-" }}</span>',
-      '    <span class="hosp" v-if="user.orgName" style="opacity:.85;">· {{ user.orgName }}</span>',
+      '    <span class="hosp">租户: {{ user.tenantName || "-" }}</span>',
+      '    <span class="hosp" v-if="user.orgName" style="opacity:.85;">机构: {{ user.orgName }}</span>',
       '    <span class="spacer"></span>',
       '    <a class="hosp" href="/verify/index.html" target="_blank" style="text-decoration:none;cursor:pointer;">医保验证台</a>',
       '    <el-dropdown @command="onCmd">',
@@ -231,8 +237,11 @@
       '    </el-dropdown>',
       '  </div>',
       '  <div class="layout-body">',
-      '    <div class="layout-aside">',
-      '      <el-menu :default-active="activeKey" @select="onSelect">',
+      '    <div class="layout-aside" :class="{\'is-collapsed\':collapsed}">',
+      '      <div class="aside-bar">',
+      '        <el-button link size="small" :title="collapsed?\'展开菜单\':\'收起菜单\'" @click="toggleAside">{{ collapsed?"\u00bb":"\u00ab" }}</el-button>',
+      '      </div>',
+      '      <el-menu v-show="!collapsed" :default-active="activeKey" @select="onSelect">',
       '        <template v-for="m in menu">',
       '          <el-menu-item v-if="!m.group" :index="m.key">{{ m.label }}</el-menu-item>',
       '          <el-sub-menu v-else :index="m.group">',

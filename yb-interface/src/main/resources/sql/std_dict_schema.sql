@@ -701,6 +701,7 @@ CREATE TABLE std_msi_nat (
     acct_class      VARCHAR(100)  DEFAULT NULL COMMENT '会计科目分类',
     mr_cost_class   VARCHAR(300)  DEFAULT NULL COMMENT '病案首页费用分类',
     cat_name        VARCHAR(300)  DEFAULT NULL COMMENT '分类路径(类>章>节>组)',
+    cat_code        VARCHAR(20)   DEFAULT NULL COMMENT '分类码(std_msi_cat.cat_code, 节级优先, 无节时章级, 附录为空)',
     ver             VARCHAR(30)   DEFAULT NULL COMMENT '数据版本',
     std_type        VARCHAR(30)   DEFAULT '物价标准' COMMENT '字典标准类型',
     src_doc         VARCHAR(200)  DEFAULT NULL COMMENT '来源文档',
@@ -710,8 +711,33 @@ CREATE TABLE std_msi_nat (
     PRIMARY KEY (id),
     KEY idx_msin_item_code (item_code),
     KEY idx_msin_item_name (item_name),
-    KEY idx_msin_std_type (std_type)
+    KEY idx_msin_std_type (std_type),
+    KEY idx_msin_cat_code (cat_code)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='全国医疗服务项目技术规范(2023年版)原样全列';
+
+-- ============================================================
+-- 【新】医疗服务项目物价分类(2023技术规范·类/章/节三级)(标准类型=物价标准)
+--   源: 全国医疗服务项目技术规范(2023年版).xlsx Sheet1 层级标题行
+--   编码沿用原生字母码(类1字母/章2字母/节3字母, 区间码取首段), 第四级组并入节,
+--   区间横幅行与附录表(器械和器具等)不纳入
+--   由 tools/extract_msi_cat_tree.py 离线抽取为 seed/std_msi_cat.tsv
+-- ============================================================
+DROP TABLE IF EXISTS std_msi_cat;
+CREATE TABLE std_msi_cat (
+    id          BIGINT       NOT NULL AUTO_INCREMENT COMMENT '主键',
+    cat_code    VARCHAR(20)  NOT NULL COMMENT '分类码(原生字母码: 类1/章2/节3字母, 区间取首段)',
+    cat_name    VARCHAR(200) DEFAULT NULL COMMENT '分类名称(类/章/节)',
+    parent_code VARCHAR(20)  DEFAULT NULL COMMENT '上级分类码(类为空)',
+    lv          TINYINT      DEFAULT NULL COMMENT '层级: 1-类 2-章 3-节',
+    item_count  INT          DEFAULT NULL COMMENT '下属项目数(节含组, 章含节与直属)',
+    ver         VARCHAR(30)  DEFAULT NULL COMMENT '数据版本',
+    std_type    VARCHAR(30)  DEFAULT '物价标准' COMMENT '字典标准类型',
+    src_doc     VARCHAR(200) DEFAULT NULL COMMENT '来源文档',
+    PRIMARY KEY (id),
+    UNIQUE KEY uk_msic_cat_code (cat_code),
+    KEY idx_msic_parent (parent_code),
+    KEY idx_msic_lv (lv)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='医疗服务项目物价分类(2023技术规范类/章/节三级)';
 
 -- ============================================================
 -- 【新】湖北省医疗服务价格项目及医保支付目录(2023版)(标准类型=物价标准)
@@ -775,3 +801,80 @@ CREATE TABLE std_msi_fin (
     KEY idx_msif_name_2023 (name_2023),
     KEY idx_msif_std_type (std_type)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='医疗服务项目相关财务归集口径规范原样表行';
+
+-- ============================================================
+-- 【新】病案首页费用分类(标准类型=物价标准)
+--   源: 医疗服务项目相关财务归集口径规范(std_msi_fin 的 mr_cost_class 列去重规范化)
+--   由 tools/extract_msi_fin_classes.py 离线抽取为 seed/std_mr_cost_class.tsv
+--   层级: 大类(综合医疗服务/诊断/治疗/康复/中医) -> 费用分项(源文括号序号1~12)
+-- ============================================================
+DROP TABLE IF EXISTS std_mr_cost_class;
+CREATE TABLE std_mr_cost_class (
+    id         BIGINT       NOT NULL AUTO_INCREMENT COMMENT '主键',
+    cat_no     VARCHAR(10)  DEFAULT NULL COMMENT '大类序号(1-5)',
+    cat_name   VARCHAR(100) DEFAULT NULL COMMENT '大类名称(综合医疗服务类/诊断类/治疗类/康复类/中医类)',
+    item_code  VARCHAR(20)  DEFAULT NULL COMMENT '费用分项编码(源文括号序号1~12,中医手术费/诊断费无编码为空)',
+    item_name  VARCHAR(200) DEFAULT NULL COMMENT '费用分项名称',
+    raw_value  VARCHAR(300) DEFAULT NULL COMMENT '源文件原始完整值(大类:分项 形式)',
+    ver        VARCHAR(30)  DEFAULT NULL COMMENT '数据版本',
+    std_type   VARCHAR(30)  DEFAULT '物价标准' COMMENT '字典标准类型',
+    src_doc    VARCHAR(200) DEFAULT NULL COMMENT '来源文档',
+    vali_flag  VARCHAR(3)   DEFAULT '1' COMMENT '有效标志:1-有效 0-无效',
+    begn_time  DATETIME     DEFAULT NULL COMMENT '生效时间',
+    end_time   DATETIME     DEFAULT NULL COMMENT '作废时间',
+    PRIMARY KEY (id),
+    KEY idx_mrcost_cat_no (cat_no),
+    KEY idx_mrcost_item_code (item_code),
+    KEY idx_mrcost_item_name (item_name),
+    KEY idx_mrcost_std_type (std_type)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='病案首页费用分类(源:医疗服务项目相关财务归集口径规范)';
+
+-- ============================================================
+-- 【新】收费票据分类(标准类型=物价标准)
+--   源: 医疗服务项目相关财务归集口径规范(std_msi_fin 的 invoice_class 列去重)
+--   由 tools/extract_msi_fin_classes.py 离线抽取为 seed/std_invoice_class.tsv
+--   源文无编码, class_code 为字典内序号; 与会计科目分类逐行 1:1 对应
+-- ============================================================
+DROP TABLE IF EXISTS std_invoice_class;
+CREATE TABLE std_invoice_class (
+    id          BIGINT       NOT NULL AUTO_INCREMENT COMMENT '主键',
+    class_code  VARCHAR(20)  DEFAULT NULL COMMENT '分类编码(字典内序号,源文无编码)',
+    class_name  VARCHAR(100) DEFAULT NULL COMMENT '收费票据分类名称',
+    acct_class  VARCHAR(100) DEFAULT NULL COMMENT '对应会计科目分类',
+    item_count  VARCHAR(20)  DEFAULT NULL COMMENT '归集医疗服务项目数(源文件出现次数)',
+    ver         VARCHAR(30)  DEFAULT NULL COMMENT '数据版本',
+    std_type    VARCHAR(30)  DEFAULT '物价标准' COMMENT '字典标准类型',
+    src_doc     VARCHAR(200) DEFAULT NULL COMMENT '来源文档',
+    vali_flag   VARCHAR(3)   DEFAULT '1' COMMENT '有效标志:1-有效 0-无效',
+    begn_time   DATETIME     DEFAULT NULL COMMENT '生效时间',
+    end_time    DATETIME     DEFAULT NULL COMMENT '作废时间',
+    PRIMARY KEY (id),
+    KEY idx_inv_code (class_code),
+    KEY idx_inv_name (class_name),
+    KEY idx_inv_std_type (std_type)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='收费票据分类(源:医疗服务项目相关财务归集口径规范)';
+
+-- ============================================================
+-- 【新】会计科目分类(标准类型=物价标准)
+--   源: 医疗服务项目相关财务归集口径规范(std_msi_fin 的 acct_class 列去重)
+--   由 tools/extract_msi_fin_classes.py 离线抽取为 seed/std_acct_class.tsv
+--   源文无编码, class_code 为字典内序号; 与收费票据分类逐行 1:1 对应
+-- ============================================================
+DROP TABLE IF EXISTS std_acct_class;
+CREATE TABLE std_acct_class (
+    id            BIGINT       NOT NULL AUTO_INCREMENT COMMENT '主键',
+    class_code    VARCHAR(20)  DEFAULT NULL COMMENT '分类编码(字典内序号,源文无编码)',
+    class_name    VARCHAR(100) DEFAULT NULL COMMENT '会计科目分类名称',
+    invoice_class VARCHAR(100) DEFAULT NULL COMMENT '对应收费票据分类',
+    item_count    VARCHAR(20)  DEFAULT NULL COMMENT '归集医疗服务项目数(源文件出现次数)',
+    ver           VARCHAR(30)  DEFAULT NULL COMMENT '数据版本',
+    std_type      VARCHAR(30)  DEFAULT '物价标准' COMMENT '字典标准类型',
+    src_doc       VARCHAR(200) DEFAULT NULL COMMENT '来源文档',
+    vali_flag     VARCHAR(3)   DEFAULT '1' COMMENT '有效标志:1-有效 0-无效',
+    begn_time     DATETIME     DEFAULT NULL COMMENT '生效时间',
+    end_time      DATETIME     DEFAULT NULL COMMENT '作废时间',
+    PRIMARY KEY (id),
+    KEY idx_acct_code (class_code),
+    KEY idx_acct_name (class_name),
+    KEY idx_acct_std_type (std_type)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='会计科目分类(源:医疗服务项目相关财务归集口径规范)';
