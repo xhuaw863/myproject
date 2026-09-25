@@ -58,6 +58,12 @@
       rightSpan: function () { return this.panelMode === 'right' ? 22 : (this.panelMode === 'left' ? 2 : 10); }
     },
     methods: {
+      /* 左栏甲乙丙列显示: 药品/耗材为院内回填名称或编码1~4直接透传; 服务项目自身存01/02/03码映射为甲/乙/丙; 空显示— */
+      lvText: function (v) {
+        if (!v) return "—";
+        var m = { '01': '甲', '02': '乙', '03': '丙' };
+        return m[v] || v;
+      },
       loadSummary: function () {
         var vm = this;
         HIS.get('/api/catalog-map/summary').then(function (d) { vm.summary = d || {}; }).catch(function () {});
@@ -313,19 +319,20 @@
       '      <div style="margin-bottom:6px;color:#606266;font-size:13px;">院内工作队列<span style="float:right;"><el-button link type="primary" size="small" @click="togglePanel(\'left\')">{{ panelMode===\'left\'?\'还原布局\':\'扩展左栏\' }}</el-button></span></div>',
       '      <el-table :data="list" v-loading="loading" border stripe size="small" height="620" highlight-current-row :row-class-name="rowCls" @current-change="pickRow" @selection-change="onSelChange">',
       '        <el-table-column type="selection" width="42"></el-table-column>',
-      '        <el-table-column type="index" label="#" width="50" :index="seq"></el-table-column>',
+      '        <el-table-column type="index" label="序号" width="60" :index="seq"></el-table-column>',
       '        <el-table-column prop="code" label="院内码" width="100" show-overflow-tooltip></el-table-column>',
       '        <el-table-column prop="name" label="名称" min-width="150" show-overflow-tooltip></el-table-column>',
       '        <el-table-column v-if="catalog!==\'charge\'" prop="spec" label="规格" min-width="110" show-overflow-tooltip><template #default="s">{{ s.row.spec || "—" }}</template></el-table-column>',
       '        <el-table-column prop="price" label="单价" width="80"></el-table-column>',
       '        <el-table-column :label="catalog===\'charge\'?\'单位\':\'厂家\'" :min-width="catalog===\'charge\'?64:110" show-overflow-tooltip><template #default="s">{{ catalog===\'charge\'? s.row.unit : s.row.manufacturer }}</template></el-table-column>',
+      '        <el-table-column prop="chrgitmLv" label="甲乙丙" width="80" show-overflow-tooltip><template #default="s">{{ lvText(s.row.chrgitmLv) }}</template></el-table-column>',
       '        <el-table-column prop="ybCode" label="医保码" width="150" show-overflow-tooltip><template #default="s">{{ s.row.ybCode || "—" }}</template></el-table-column>',
       '        <el-table-column prop="ybName" label="医保名称" min-width="150" show-overflow-tooltip><template #default="s">{{ s.row.ybName || "—" }}</template></el-table-column>',
       '        <el-table-column prop="prevYbCode" label="变更前码" width="140" show-overflow-tooltip><template #default="s">{{ s.row.prevYbCode || "—" }}</template></el-table-column>',
       '        <el-table-column label="对照生效时间" width="175"><template #default="s"><el-date-picker v-model="s.row.mapEffTime" type="datetime" size="small" placeholder="生效时间" format="YYYY-MM-DD HH:mm" value-format="YYYY-MM-DD HH:mm:ss" :disabled="!s.row.mapped" style="width:158px" @change="saveEff(s.row)"></el-date-picker></template></el-table-column>',
       '        <el-table-column label="状态" width="86"><template #default="s"><el-tag size="small" :type="stType(s.row)" :title="stTitle(s.row)">{{ stText(s.row) }}</el-tag></template></el-table-column>',
       '      </el-table>',
-      '      <el-pagination style="margin-top:10px;justify-content:flex-end;" background layout="total, sizes, prev, pager, next" :total="total" :page-size="size" :page-sizes="[20,50,100]" :current-page="page" @current-change="onPage" @size-change="onSize"></el-pagination>',
+      '      <el-pagination style="margin-top:10px;justify-content:flex-end;" background layout="total, sizes, prev, pager, next" :total="total" :page-size="size" :page-sizes="[10,20,50,100]" :current-page="page" @current-change="onPage" @size-change="onSize"></el-pagination>',
       '      </div>',
       '      <div v-else style="padding:6px 0;"><el-button size="small" @click="togglePanel(\'\')">‹ 展开左栏</el-button></div>',
       '    </el-col>',
@@ -360,12 +367,23 @@
       '          <el-table-column v-if="catalog===\'drug\'" label="最小包装单位" width="100" show-overflow-tooltip><template #default="s">{{ (s.row.row||{}).min_pack_unit || "—" }}</template></el-table-column>',
       '          <el-table-column v-if="catalog===\'drug\'" label="批准文号" width="130" show-overflow-tooltip><template #default="s">{{ (s.row.row||{}).approval_no || "—" }}</template></el-table-column>',
       '          <el-table-column v-if="catalog===\'drug\'" label="上市许可持有人" min-width="130" show-overflow-tooltip><template #default="s">{{ (s.row.row||{}).mkt_holder || "—" }}</template></el-table-column>',
+      '          <el-table-column v-if="catalog===\'drug\'" label="医保通用名" min-width="130" show-overflow-tooltip><template #default="s">{{ (s.row.row||{}).hi_drug_name || "—" }}</template></el-table-column>',
+      '          <el-table-column v-if="catalog===\'drug\'" label="注册剂型" width="90" show-overflow-tooltip><template #default="s">{{ (s.row.row||{}).reg_dosform || "—" }}</template></el-table-column>',
+      '          <el-table-column v-if="catalog===\'drug\'" label="医保剂型" width="90" show-overflow-tooltip><template #default="s">{{ (s.row.row||{}).hi_dosform || "—" }}</template></el-table-column>',
+      '          <el-table-column v-if="catalog===\'drug\'" label="注册规格" min-width="120" show-overflow-tooltip><template #default="s">{{ (s.row.row||{}).reg_spec || "—" }}</template></el-table-column>',
+      '          <el-table-column v-if="catalog===\'drug\'" label="包装材质" min-width="100" show-overflow-tooltip><template #default="s">{{ (s.row.row||{}).pack_material || "—" }}</template></el-table-column>',
+      '          <el-table-column v-if="catalog===\'drug\'" label="最小制剂单位" width="100" show-overflow-tooltip><template #default="s">{{ (s.row.row||{}).min_prep_unit || "—" }}</template></el-table-column>',
+      '          <el-table-column v-if="catalog===\'drug\'" label="本位码" width="120" show-overflow-tooltip><template #default="s">{{ (s.row.row||{}).drug_std_code || "—" }}</template></el-table-column>',
+      '          <el-table-column v-if="catalog===\'drug\'" label="上市状态" width="90" show-overflow-tooltip><template #default="s">{{ (s.row.row||{}).market_status || "—" }}</template></el-table-column>',
       '          <el-table-column v-if="catalog===\'cons\'" label="注册证号" min-width="140" show-overflow-tooltip><template #default="s">{{ (s.row.row||{}).reg_cert_no || "—" }}</template></el-table-column>',
       '          <el-table-column v-if="catalog===\'cons\'" label="耗材类型" width="90" show-overflow-tooltip><template #default="s">{{ (s.row.row||{}).cons_type || "—" }}</template></el-table-column>',
       '          <el-table-column v-if="catalog===\'cons\'" label="政策标识" width="80"><template #default="s">{{ (s.row.row||{}).policy_flag || "—" }}</template></el-table-column>',
       '          <el-table-column v-if="catalog===\'charge\'" label="地方码" width="170" show-overflow-tooltip><template #default="s">{{ (s.row.row||{}).loc_item_code }}</template></el-table-column>',
       '          <el-table-column v-if="catalog===\'charge\'" label="项目内涵" min-width="180" show-overflow-tooltip><template #default="s">{{ (s.row.row||{}).item_connotation }}</template></el-table-column>',
       '          <el-table-column v-if="catalog===\'charge\'" label="除外内容" min-width="140" show-overflow-tooltip><template #default="s">{{ (s.row.row||{}).item_excluded }}</template></el-table-column>',
+      '          <el-table-column v-if="catalog===\'charge\'" label="政策标识" width="80"><template #default="s">{{ (s.row.row||{}).policy_flag || "—" }}</template></el-table-column>',
+      '          <el-table-column v-if="catalog===\'charge\'" label="国家项目名称" min-width="150" show-overflow-tooltip><template #default="s">{{ (s.row.row||{}).nat_item_name || "—" }}</template></el-table-column>',
+      '          <el-table-column v-if="catalog===\'charge\'" label="项目说明" min-width="160" show-overflow-tooltip><template #default="s">{{ (s.row.row||{}).item_explain || "—" }}</template></el-table-column>',
       '          <el-table-column label="支付标准" width="80"><template #default="s">{{ (s.row.row||{}).pay_std || (s.row.row||{}).pay_std_prep || "—" }}</template></el-table-column>',
       '          <el-table-column prop="score" label="置信度" width="70"></el-table-column>',
       '          <el-table-column label="依据" min-width="120" show-overflow-tooltip><template #default="s">{{ (s.row.reasons||[]).join(" / ") }}</template></el-table-column>',

@@ -14,8 +14,10 @@ public class OrgNode {
     private Long parentId;
     private String orgCode;
     private String orgName;
-    /** 机构级别: 1-县级(牵头) 2-乡镇 3-村 */
+    /** 机构级别: 1-县级 2-乡镇 3-村(牵头与否见 isLead) */
     private Integer orgLevel;
+    /** 是否牵头机构: 1-牵头 0-成员 */
+    private Integer isLead;
     private String orgType;
     /** 机构类型名称(字典回填) */
     private String orgTypeName;

@@ -17,7 +17,7 @@ import java.util.stream.Collectors;
 
 /**
  * 医保字典查询接口(SPA用, 统一 R 响应)
- * 提供: 字典版本状态 / 目录分页浏览(供收费项目对照选择)
+ * 提供: 字典版本状态 / 目录分页浏览(供三目录医保对照选择)
  * 所有查询均按当前租户自动隔离(租户插件 + dict 表已加 tenant_id)。
  */
 @RestController

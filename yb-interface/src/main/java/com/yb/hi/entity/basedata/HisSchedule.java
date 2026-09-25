@@ -41,4 +41,10 @@ public class HisSchedule extends BaseEntity {
     private Integer leftNum;
     /** 状态: 1-开放 0-停诊 */
     private Integer status;
+    /** 诊室 */
+    private String room;
+    /** 来源模板ID(his_schedule_template.id) */
+    private Long templateId;
+    /** 停诊原因 */
+    private String stopReason;
 }

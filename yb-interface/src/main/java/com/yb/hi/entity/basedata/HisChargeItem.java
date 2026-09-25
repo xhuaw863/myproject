@@ -78,6 +78,9 @@ public class HisChargeItem extends BaseEntity {
     private LocalDate endDate;
     /** 医保医疗目录编码(对照) */
     private String medListCodg;
+    /** 医保目录名称(不落库: 分页后按 med_list_codg 回查 std_med_service.loc_item_name 实时回填) */
+    @TableField(exist = false)
+    private String ybName;
     /** 变更前医保码(上一次对照的医保编码, 对照变更留痕) */
     private String prevYbCode;
     /** 医保对照生效时间(当前医保码开始生效时刻) */

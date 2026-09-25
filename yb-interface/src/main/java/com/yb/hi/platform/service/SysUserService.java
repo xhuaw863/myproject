@@ -27,8 +27,12 @@ public class SysUserService {
                 .eq("username", username).last("LIMIT 1"));
     }
 
-    public List<SysUser> list() {
-        List<SysUser> users = sysUserMapper.selectList(new QueryWrapper<SysUser>().orderByAsc("id"));
+    /** 可见用户列表; orgId 非空时仅返回该机构用户(非牵头机构由控制器强制本院) */
+    public List<SysUser> list(Long orgId) {
+        QueryWrapper<SysUser> q = new QueryWrapper<SysUser>()
+                .eq(orgId != null, "org_id", orgId)
+                .orderByAsc("id");
+        List<SysUser> users = sysUserMapper.selectList(q);
         users.forEach(u -> u.setPassword(null));
         return users;
     }

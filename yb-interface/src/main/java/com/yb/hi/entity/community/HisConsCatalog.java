@@ -1,6 +1,7 @@
 package com.yb.hi.entity.community;
 
 import com.baomidou.mybatisplus.annotation.IdType;
+import com.baomidou.mybatisplus.annotation.TableField;
 import com.baomidou.mybatisplus.annotation.TableId;
 import com.baomidou.mybatisplus.annotation.TableName;
 import com.fasterxml.jackson.annotation.JsonFormat;
@@ -33,6 +34,9 @@ public class HisConsCatalog extends BaseEntity {
     /** 医保对照生效时间(当前医保码开始生效时刻) */
     @JsonFormat(pattern = "yyyy-MM-dd HH:mm:ss")
     private LocalDateTime ybMapEffTime;
+    /** 医保目录名称(不落库: 分页后按 yb_cons_code 回查 std_consumable.hi_genname 实时回填) */
+    @TableField(exist = false)
+    private String ybName;
     /** 注册证号 */
     private String regCertNo;
 

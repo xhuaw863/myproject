@@ -34,6 +34,12 @@ public class AuthController {
         return R.ok(authService.login(req));
     }
 
+    /** 切换当前账号活动机构(多点执业, 需鉴权): 校验在可登录机构范围内, 重签令牌 */
+    @PostMapping("/switch-org")
+    public R<LoginResp> switchOrg(@RequestBody LoginReq req) {
+        return R.ok(authService.switchOrg(req == null ? null : req.getOrgId()));
+    }
+
     /** 当前登录用户(需鉴权) */
     @GetMapping("/me")
     public R<LoginUser> me() {

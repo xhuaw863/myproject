@@ -36,6 +36,9 @@ public class HisDrugCatalog extends BaseEntity {
     /** 医保对照生效时间(当前医保码开始生效时刻) */
     @JsonFormat(pattern = "yyyy-MM-dd HH:mm:ss")
     private LocalDateTime ybMapEffTime;
+    /** 医保目录名称(不落库: 分页后按 yb_drug_code 回查 std_drug.reg_name 实时回填) */
+    @TableField(exist = false)
+    private String ybName;
     /** 药品本位码 */
     private String drugStdCode;
     /** 批准文号 */

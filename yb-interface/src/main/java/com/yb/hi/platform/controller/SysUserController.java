@@ -6,7 +6,9 @@ import com.yb.hi.framework.tenant.UserContext;
 import com.yb.hi.platform.dto.UserSaveReq;
 import com.yb.hi.platform.entity.SysRole;
 import com.yb.hi.platform.entity.SysUser;
+import com.yb.hi.platform.service.OrgAccessGuard;
 import com.yb.hi.platform.service.SysRoleService;
+import com.yb.hi.platform.service.SysUserOrgService;
 import com.yb.hi.platform.service.SysUserService;
 import org.springframework.web.bind.annotation.*;
 
@@ -14,6 +16,7 @@ import java.util.List;
 
 /**
  * 用户管理接口(医院管理员)
+ * 读: 非牵头机构强制本院(scopeOrgId); 写: 仅牵头机构管理员(requireLeadWrite)。
  */
 @RestController
 @RequestMapping("/api/sys/user")
@@ -21,32 +24,42 @@ public class SysUserController {
 
     private final SysUserService userService;
     private final SysRoleService roleService;
+    private final OrgAccessGuard guard;
+    private final SysUserOrgService userOrgService;
 
-    public SysUserController(SysUserService userService, SysRoleService roleService) {
+    public SysUserController(SysUserService userService, SysRoleService roleService, OrgAccessGuard guard,
+                             SysUserOrgService userOrgService) {
         this.userService = userService;
         this.roleService = roleService;
+        this.guard = guard;
+        this.userOrgService = userOrgService;
     }
 
     @GetMapping("/list")
-    public R<List<SysUser>> list() {
-        return R.ok(userService.list());
+    public R<List<SysUser>> list(@RequestParam(required = false) Long orgId) {
+        List<SysUser> users = userService.list(guard.scopeOrgId(orgId));
+        users.forEach(u -> u.setLoginOrgIds(userOrgService.allowedOrgIds(u.getId(), u.getOrgId())));
+        return R.ok(users);
     }
 
     @PostMapping
     public R<Void> create(@RequestBody UserSaveReq req) {
+        guard.requireLeadWrite();
         if (req.getUsername() == null || req.getPassword() == null) {
             throw new BizException(400, "账号与密码不能为空");
         }
         String roleCode = resolveRoleCode(req);
-        userService.createUser(UserContext.get().getTenantId(), req.getUsername(), req.getPassword(),
+        SysUser created = userService.createUser(UserContext.get().getTenantId(), req.getUsername(), req.getPassword(),
                 req.getRealName(), roleCode,
                 req.getStaffId(), req.getDeptId(), req.getOrgId(), req.getRoleId(), req.getPhone(),
                 req.getDeptScope());
+        userOrgService.setLoginOrgs(created.getId(), created.getOrgId(), req.getLoginOrgIds());
         return R.ok();
     }
 
     @PutMapping
     public R<Void> update(@RequestBody UserSaveReq req) {
+        guard.requireLeadWrite();
         SysUser u = new SysUser();
         u.setId(req.getId());
         u.setRealName(req.getRealName());
@@ -59,6 +72,9 @@ public class SysUserController {
         u.setDeptScope(req.getDeptScope());
         u.setStatus(req.getStatus());
         userService.update(u);
+        if (req.getLoginOrgIds() != null) {
+            userOrgService.setLoginOrgs(req.getId(), req.getOrgId(), req.getLoginOrgIds());
+        }
         return R.ok();
     }
 
@@ -75,18 +91,21 @@ public class SysUserController {
 
     @PostMapping("/{id}/reset-password")
     public R<Void> resetPassword(@PathVariable Long id, @RequestParam String password) {
+        guard.requireLeadWrite();
         userService.resetPassword(id, password);
         return R.ok();
     }
 
     @PostMapping("/{id}/status")
     public R<Void> updateStatus(@PathVariable Long id, @RequestParam Integer status) {
+        guard.requireLeadWrite();
         userService.updateStatus(id, status);
         return R.ok();
     }
 
     @DeleteMapping("/{id}")
     public R<Void> delete(@PathVariable Long id) {
+        guard.requireLeadWrite();
         userService.delete(id);
         return R.ok();
     }

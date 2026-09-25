@@ -26,6 +26,8 @@ public class LoginUser {
     private Long orgId;
     /** 权威角色ID(sys_role) */
     private Long roleId;
+    /** 是否牵头机构(org_level=1): 牵头可维护全医共体基础数据, 非牵头只读 */
+    private Boolean leadOrg;
     /** 医院名称 */
     private String tenantName;
 }

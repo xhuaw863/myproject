@@ -53,6 +53,8 @@ public class HisDept extends BaseEntity {
     private Integer sortNo;
     /** 状态: 1-启用 0-停用 */
     private Integer status;
+    /** 门诊开诊: 1-开诊 0-未开诊(仅对 dept_category=门诊科室 有意义; 排班/挂号科室下拉只列开诊科室) */
+    private Integer openClinic;
     /** 备注 */
     private String memo;
 

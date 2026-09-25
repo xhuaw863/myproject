@@ -25,8 +25,10 @@ public class SysOrg extends BaseEntity {
     private String orgCode;
     /** 机构名称 */
     private String orgName;
-    /** 机构级别: 1-县级(牵头) 2-乡镇 3-村 */
+    /** 机构级别: 1-县级 2-乡镇 3-村(牵头与否见 isLead) */
     private Integer orgLevel;
+    /** 是否牵头机构: 1-牵头(每医共体唯一) 0-成员 */
+    private Integer isLead;
     /** 上级机构ID(县级为0) */
     private Long parentId;
     /** 机构类型编码(医保字典 MEDINS_TYPE, 如 A100综合医院/C220乡卫生院/D600村卫生室/G100妇幼保健院) */

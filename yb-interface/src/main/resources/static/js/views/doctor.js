@@ -38,7 +38,8 @@
     methods: {
       loadDepts: function () {
         var vm = this;
-        HIS.get('/api/his/dept/enabled').then(function (d) { vm.depts = d || []; }).catch(HIS.notifyError);
+        /* 候诊列表科室筛选: 仅本机构开诊门诊科室(号源只出自这些科室) */
+        HIS.get('/api/his/dept/outpatient').then(function (d) { vm.depts = d || []; }).catch(HIS.notifyError);
       },
       load: function () {
         var vm = this; vm.loading = true;

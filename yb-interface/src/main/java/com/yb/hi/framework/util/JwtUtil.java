@@ -40,6 +40,7 @@ public class JwtUtil {
         payload.put("deptId", user.getDeptId());
         payload.put("orgId", user.getOrgId());
         payload.put("roleId", user.getRoleId());
+        payload.put("leadOrg", user.getLeadOrg());
         payload.put("tenantName", user.getTenantName());
         long now = System.currentTimeMillis();
         payload.put("iat", new Date(now));
@@ -68,6 +69,7 @@ public class JwtUtil {
             user.setDeptId(toLong(jwt.getPayload("deptId")));
             user.setOrgId(toLong(jwt.getPayload("orgId")));
             user.setRoleId(toLong(jwt.getPayload("roleId")));
+            user.setLeadOrg(toBool(jwt.getPayload("leadOrg")));
             user.setTenantName(toStr(jwt.getPayload("tenantName")));
             return user;
         } catch (Exception e) {
@@ -91,5 +93,15 @@ public class JwtUtil {
 
     private String toStr(Object o) {
         return o == null ? null : o.toString();
+    }
+
+    private Boolean toBool(Object o) {
+        if (o == null) {
+            return null;
+        }
+        if (o instanceof Boolean) {
+            return (Boolean) o;
+        }
+        return Boolean.parseBoolean(o.toString());
     }
 }

@@ -90,14 +90,23 @@ public class RbacInitializer implements ApplicationRunner {
             return;
         }
         try {
+            ensureOrgLeadColumn();
             Map<String, Long> menuIds = seedMenus();
             ensureHospitalManageMenu();
             ensureStdDictMaintainMenu();
             moveAreaCodeMenuToStdDict();
+            mergeBasedataIntoPlatform();
+            moveScheduleToOutpatient();
             ensureCommunityDictMenus();
+            bindWarehouseMenus();
+            bindPharmacyMenus();
+            bindChargeMenus();
             migrateDictMapToCatalogMap();
+            activateReportMenus();
             Map<String, Long> roleIds = seedGlobalRoles();
+            ensureOrgAdminRole();
             seedRoleMenus(menuIds, roleIds);
+            ensureBizRoleGrants(menuIds, roleIds);
             seedPlatformAdmin(roleIds);
             migrateTenants(roleIds);
         } catch (Exception e) {
@@ -109,6 +118,7 @@ public class RbacInitializer implements ApplicationRunner {
 
     /** 种子菜单, 返回 menu_key -> id 映射(表非空时从现有数据加载) */
     private Map<String, Long> seedMenus() {
+        pruneRetiredMenus();
         Map<String, Long> ids = new HashMap<>();
         List<SysMenu> existing = menuMapper.selectList(null);
         if (!existing.isEmpty()) {
@@ -120,16 +130,12 @@ public class RbacInitializer implements ApplicationRunner {
         int[] sort = {0};
         // 顶级菜单: 工作台
         ids.put("dashboard", menu("dashboard", "工作台", 2, "Dashboard", null, 0L, ++sort[0]));
-        // 平台管理
+        // 平台管理(含基础数据: 医院信息/用户管理 + 科室/职工, 2026-09 两组合并; 收费项目对照已并入三目录医保对照下线; 排班号源 2026-09 移至门诊挂号台)
         long g1 = dir("platform", "平台管理", 0L, ++sort[0]);
         ids.put("tenant-info", menuK("tenant-info", "医院信息", "TenantInfo", null, g1, ++sort[0]));
         ids.put("user-manage", menuK("user-manage", "用户管理", "UserManage", null, g1, ++sort[0]));
-        // 基础数据
-        long g2 = dir("basedata", "基础数据", 0L, ++sort[0]);
-        ids.put("dept", menuK("dept", "科室管理", "DeptManage", null, g2, ++sort[0]));
-        ids.put("staff", menuK("staff", "职工管理", "StaffManage", null, g2, ++sort[0]));
-        ids.put("schedule", menuK("schedule", "排班号源", "ScheduleManage", null, g2, ++sort[0]));
-        ids.put("charge-item", menuK("charge-item", "收费项目对照", "ChargeItemManage", null, g2, ++sort[0]));
+        ids.put("dept", menuK("dept", "科室管理", "DeptManage", null, g1, ++sort[0]));
+        ids.put("staff", menuK("staff", "职工管理", "StaffManage", null, g1, ++sort[0]));
         // 医保字典
         long g3 = dir("yb-dict", "医保字典", 0L, ++sort[0]);
         ids.put("dict-download", menuK("dict-download", "字典下载", "DictDownload", null, g3, ++sort[0]));
@@ -146,30 +152,32 @@ public class RbacInitializer implements ApplicationRunner {
         ids.put("patient", menuK("patient", "患者建档/查询", "PatientManage", null, g5, ++sort[0]));
         ids.put("register", menuK("register", "门诊挂号", "RegistrationDesk", null, g5, ++sort[0]));
         ids.put("unregister", menuK("unregister", "退号", "UnregisterDesk", null, g5, ++sort[0]));
+        ids.put("schedule", menuK("schedule", "排班号源", "ScheduleManage", null, g5, ++sort[0]));
         // 医生站
         long g6 = dir("doctor", "医生站", 0L, ++sort[0]);
         ids.put("doctor-queue", menuK("doctor-queue", "候诊列表", "DoctorQueue", null, g6, ++sort[0]));
         ids.put("doctor-work", menuK("doctor-work", "接诊工作台", "DoctorWork", null, g6, ++sort[0]));
-        // 药房(建设中)
+        // 药房(2026-09 P1d 交付: 待发药/调剂发药/退药前端已上线)
         long g7 = dir("pharmacy", "药房", 0L, ++sort[0]);
-        ids.put("dispense-todo", menuK("dispense-todo", "待发药", null, "P1d", g7, ++sort[0]));
-        ids.put("dispense", menuK("dispense", "调剂发药", null, "P1d", g7, ++sort[0]));
-        ids.put("drug-return", menuK("drug-return", "退药", null, "P1d", g7, ++sort[0]));
-        // 药库(建设中)
+        ids.put("dispense-todo", menuK("dispense-todo", "待发药", "DispenseTodo", null, g7, ++sort[0]));
+        ids.put("dispense", menuK("dispense", "调剂发药", "DispenseRecord", null, g7, ++sort[0]));
+        ids.put("drug-return", menuK("drug-return", "退药", "DrugReturn", null, g7, ++sort[0]));
+        // 药库(采购入库/出库管理/库存流水已上线, 药品目录/盘点建设中)
         long g8 = dir("warehouse", "药库", 0L, ++sort[0]);
         ids.put("wh-drug", menuK("wh-drug", "药品目录", null, "P1d", g8, ++sort[0]));
-        ids.put("wh-in", menuK("wh-in", "采购入库", null, "P1d", g8, ++sort[0]));
-        ids.put("wh-stock", menuK("wh-stock", "库存/流水", null, "P1d", g8, ++sort[0]));
+        ids.put("wh-in", menuK("wh-in", "采购入库", "StockInManage", null, g8, ++sort[0]));
+        ids.put("wh-out", menuK("wh-out", "出库管理", "StockOutManage", null, g8, ++sort[0]));
+        ids.put("wh-stock", menuK("wh-stock", "库存/流水", "DrugStock", null, g8, ++sort[0]));
         ids.put("wh-check", menuK("wh-check", "盘点", null, "P1d", g8, ++sort[0]));
-        // 收费结算台(建设中)
+        // 收费结算台(2026-09 P1e 交付: 待收费/医保结算/退费前端已上线)
         long g9 = dir("charge", "收费结算台", 0L, ++sort[0]);
-        ids.put("charge-todo", menuK("charge-todo", "待收费", null, "P1e", g9, ++sort[0]));
-        ids.put("charge-setl", menuK("charge-setl", "医保结算", null, "P1e", g9, ++sort[0]));
-        ids.put("charge-refund", menuK("charge-refund", "退费", null, "P1e", g9, ++sort[0]));
-        // 查询报表(建设中)
+        ids.put("charge-todo", menuK("charge-todo", "待收费", "ChargeTodo", null, g9, ++sort[0]));
+        ids.put("charge-setl", menuK("charge-setl", "医保结算", "ChargeSetl", null, g9, ++sort[0]));
+        ids.put("charge-refund", menuK("charge-refund", "退费", "ChargeRefund", null, g9, ++sort[0]));
+        // 查询报表(2026-09 P1f 交付: 结算记录/门诊日结前端已上线)
         long g10 = dir("report", "查询报表", 0L, ++sort[0]);
-        ids.put("rpt-setl", menuK("rpt-setl", "结算记录", null, "P1f", g10, ++sort[0]));
-        ids.put("rpt-daily", menuK("rpt-daily", "门诊日结", null, "P1f", g10, ++sort[0]));
+        ids.put("rpt-setl", menuK("rpt-setl", "结算记录", "SettleRecords", null, g10, ++sort[0]));
+        ids.put("rpt-daily", menuK("rpt-daily", "门诊日结", "DailySettle", null, g10, ++sort[0]));
         // 系统管理(新增): 机构/角色/菜单维护
         long g11 = dir("system", "系统管理", 0L, ++sort[0]);
         ids.put("org-manage", menuK("org-manage", "机构管理", "OrgManage", null, g11, ++sort[0]));
@@ -177,6 +185,21 @@ public class RbacInitializer implements ApplicationRunner {
         ids.put("menu-manage", menuK("menu-manage", "菜单管理", "MenuManage", null, g11, ++sort[0]));
         log.info("RBAC 菜单种子完成, 共 {} 项", ids.size());
         return ids;
+    }
+
+    /** 已下线菜单(功能移除, 不再种子): 清理其角色授权与菜单行, 幂等; charge-item=收费项目对照(与三目录医保对照重复, 2026-09 下线) */
+    private static final String[] RETIRED_MENU_KEYS = {"charge-item"};
+
+    private void pruneRetiredMenus() {
+        for (String key : RETIRED_MENU_KEYS) {
+            SysMenu m = menuMapper.selectOne(new QueryWrapper<SysMenu>().eq("menu_key", key));
+            if (m == null) {
+                continue;
+            }
+            roleMenuMapper.delete(new QueryWrapper<SysRoleMenu>().eq("menu_id", m.getId()));
+            menuMapper.deleteById(m.getId());
+            log.info("已下线菜单清理: {} (id={})", key, m.getId());
+        }
     }
 
     /** 插入目录(menu_type=1, 无 comp), 返回自增 id */
@@ -226,6 +249,7 @@ public class RbacInitializer implements ApplicationRunner {
             return ids;
         }
         ids.put(Roles.ADMIN, role(Roles.ADMIN, "系统管理员", 1, "医共体牵头机构管理员, 拥有全部菜单"));
+        ids.put(Roles.ORG_ADMIN, role(Roles.ORG_ADMIN, "机构系统管理员", 1, "非牵头医疗机构管理员, 无系统管理(机构/角色/菜单)权限"));
         ids.put(Roles.REGISTRAR, role(Roles.REGISTRAR, "挂号员", 0, "门诊挂号/退号"));
         ids.put(Roles.DOCTOR, role(Roles.DOCTOR, "医生", 0, "接诊/处方"));
         ids.put(Roles.PHARMACIST, role(Roles.PHARMACIST, "药师", 0, "调剂发药"));
@@ -249,6 +273,20 @@ public class RbacInitializer implements ApplicationRunner {
         return r.getId();
     }
 
+    /**
+     * 幂等确保全局预置"机构系统管理员"(ORG_ADMIN)角色存在: 既有库 seedGlobalRoles 表非空即跳过,
+     * 在此按 role_code 判存补种, 保证老库也能下发该角色(all_menus=1, 菜单排除见 SysRoleService)。
+     */
+    private void ensureOrgAdminRole() {
+        Long cnt = roleMapper.selectCount(new QueryWrapper<SysRole>()
+                .isNull("tenant_id").eq("role_code", Roles.ORG_ADMIN));
+        if (cnt != null && cnt > 0) {
+            return;
+        }
+        role(Roles.ORG_ADMIN, "机构系统管理员", 1, "非牵头医疗机构管理员, 无系统管理(机构/角色/菜单)权限");
+        log.info("机构系统管理员角色已补充(ORG_ADMIN, 全局预置)");
+    }
+
     /* ===================== 3. 角色-菜单种子 ===================== */
 
     private void seedRoleMenus(Map<String, Long> menuIds, Map<String, Long> roleIds) {
@@ -259,8 +297,8 @@ public class RbacInitializer implements ApplicationRunner {
         Map<String, String[]> grants = new HashMap<>();
         grants.put(Roles.REGISTRAR, new String[]{"dashboard", "patient", "register", "unregister"});
         grants.put(Roles.DOCTOR, new String[]{"dashboard", "doctor-queue", "doctor-work", "patient"});
-        grants.put(Roles.PHARMACIST, new String[]{"dashboard", "dispense-todo", "dispense", "drug-return"});
-        grants.put(Roles.CASHIER, new String[]{"dashboard", "charge-todo", "charge-setl", "charge-refund"});
+        grants.put(Roles.PHARMACIST, new String[]{"dashboard", "dispense-todo", "dispense", "drug-return", "wh-stock", "wh-in", "wh-out"});
+        grants.put(Roles.CASHIER, new String[]{"dashboard", "charge-todo", "charge-setl", "charge-refund", "rpt-setl", "rpt-daily"});
         grants.put(Roles.NURSE, new String[]{"dashboard", "patient", "doctor-queue"});
         for (Map.Entry<String, String[]> e : grants.entrySet()) {
             Long roleId = roleIds.get(e.getKey());
@@ -275,6 +313,39 @@ public class RbacInitializer implements ApplicationRunner {
             }
         }
         log.info("RBAC 角色-菜单种子完成");
+    }
+
+    /**
+     * 幂等补充业务角色新菜单授权(2026-09 药库/收费/报表上线): 既有库 seedRoleMenus 表非空即跳过,
+     * 老库药师(PHARMACIST)缺药库菜单、收费员(CASHIER)缺报表菜单, 在此按 role+menu 判存补授;
+     * ADMIN/ORG_ADMIN/SUPER_ADMIN 走 all_menus 免配置, 新菜单自动可见。
+     */
+    private void ensureBizRoleGrants(Map<String, Long> menuIds, Map<String, Long> roleIds) {
+        Map<String, String[]> grants = new HashMap<>();
+        grants.put(Roles.PHARMACIST, new String[]{"wh-stock", "wh-in", "wh-out"});
+        grants.put(Roles.CASHIER, new String[]{"rpt-setl", "rpt-daily"});
+        int added = 0;
+        for (Map.Entry<String, String[]> e : grants.entrySet()) {
+            Long roleId = roleIds.get(e.getKey());
+            if (roleId == null) {
+                continue;
+            }
+            for (String key : e.getValue()) {
+                Long menuId = menuIds.get(key);
+                if (menuId == null) {
+                    continue;
+                }
+                Long cnt = roleMenuMapper.selectCount(new QueryWrapper<SysRoleMenu>()
+                        .eq("role_id", roleId).eq("menu_id", menuId));
+                if (cnt == null || cnt == 0) {
+                    roleMenuMapper.insert(new SysRoleMenu(roleId, menuId, null));
+                    added++;
+                }
+            }
+        }
+        if (added > 0) {
+            log.info("业务角色新菜单授权已补充: 药师(药库)/收费员(报表) 共 {} 条", added);
+        }
     }
 
     /* ===================== 3b. 平台超管 + 医院管理菜单 ===================== */
@@ -349,6 +420,55 @@ public class RbacInitializer implements ApplicationRunner {
     }
 
     /**
+     * 幂等将"排班号源"菜单移至"门诊挂号台"目录(2026-09 分组调整, 排班与挂号业务同域):
+     * 重挂 outpatient 目录且 sort_no 续接该目录现有子项之后; 菜单 id 不变, 角色授权不受影响。
+     */
+    private void moveScheduleToOutpatient() {
+        SysMenu outpatient = menuMapper.selectOne(new QueryWrapper<SysMenu>().eq("menu_key", "outpatient").last("LIMIT 1"));
+        SysMenu schedule = menuMapper.selectOne(new QueryWrapper<SysMenu>().eq("menu_key", "schedule").last("LIMIT 1"));
+        if (outpatient == null || schedule == null || outpatient.getId().equals(schedule.getParentId())) {
+            return;
+        }
+        int maxSort = 0;
+        for (SysMenu c : menuMapper.selectList(new QueryWrapper<SysMenu>().eq("parent_id", outpatient.getId()))) {
+            maxSort = Math.max(maxSort, c.getSortNo() == null ? 0 : c.getSortNo());
+        }
+        schedule.setParentId(outpatient.getId());
+        schedule.setSortNo(maxSort + 1);
+        menuMapper.updateById(schedule);
+        log.info("排班号源菜单已移至门诊挂号台目录");
+    }
+
+    /**
+     * 幂等将"基础数据"目录并入"平台管理"(两组菜单合并):
+     * 子菜单(科室/职工/排班/收费项目对照)重挂到 platform 目录、排序续接原平台子项之后,
+     * 随后删除 basedata 目录及其角色授权残留(旧 role_menu 指向已删 id 会被 treeByIds 自动忽略, 清理为卫生)。
+     * 子集角色无需补授权: SysMenuService.treeByIds 会自动补全命中菜单的祖先目录。
+     * 需在 moveAreaCodeMenuToStdDict 之后执行(老库 area-code 曾挂 basedata 下, 先移走再合并)。
+     */
+    private void mergeBasedataIntoPlatform() {
+        SysMenu basedata = menuMapper.selectOne(new QueryWrapper<SysMenu>().eq("menu_key", "basedata").last("LIMIT 1"));
+        SysMenu platform = menuMapper.selectOne(new QueryWrapper<SysMenu>().eq("menu_key", "platform").last("LIMIT 1"));
+        if (basedata == null || platform == null) {
+            return;
+        }
+        List<SysMenu> children = menuMapper.selectList(new QueryWrapper<SysMenu>()
+                .eq("parent_id", basedata.getId()).orderByAsc("sort_no", "id"));
+        int maxSort = 0;
+        for (SysMenu c : menuMapper.selectList(new QueryWrapper<SysMenu>().eq("parent_id", platform.getId()))) {
+            maxSort = Math.max(maxSort, c.getSortNo() == null ? 0 : c.getSortNo());
+        }
+        for (SysMenu c : children) {
+            c.setParentId(platform.getId());
+            c.setSortNo(++maxSort);
+            menuMapper.updateById(c);
+        }
+        roleMenuMapper.delete(new QueryWrapper<SysRoleMenu>().eq("menu_id", basedata.getId()));
+        menuMapper.deleteById(basedata.getId());
+        log.info("「基础数据」目录已并入「平台管理」(迁移子菜单 {} 个)", children.size());
+    }
+
+    /**
      * 幂等确保医共体统一字典相关顶级菜单存在(既有库 seedMenus 表非空即跳过时补种):
      * - community-dict(医共体字典): 牵头机构维护三目录+调价+标准字典导入, 非牵头 ADMIN 在 SysRoleService 排除;
      * - org-catalog(机构目录选用): 各机构勾选本院开展的项目(L3)。
@@ -356,6 +476,80 @@ public class RbacInitializer implements ApplicationRunner {
     private void ensureCommunityDictMenus() {
         ensureTopMenu("community-dict", "医共体字典", "CommunityDict", 12);
         ensureTopMenu("org-catalog", "机构目录选用", "OrgCatalog", 13);
+    }
+
+    /**
+     * 幂等绑定药库菜单组件(2026-09 药库前端上线): 采购入库/出库管理/库存流水绑定组件并清除建设中标记;
+     * 既有库 seedMenus 表非空即跳过, 故在此按 menu_key 原地更新; 出库管理(wh-out)为新菜单补种
+     * (挂 warehouse 目录, sort_no 续接), ADMIN/SUPER_ADMIN 走 all_menus 免配置即可见。
+     */
+    private void bindWarehouseMenus() {
+        bindMenuComp("wh-in", "StockInManage");
+        bindMenuComp("wh-stock", "DrugStock");
+        if (bindMenuComp("wh-out", "StockOutManage")) {
+            return;
+        }
+        SysMenu whDir = menuMapper.selectOne(new QueryWrapper<SysMenu>().eq("menu_key", "warehouse").last("LIMIT 1"));
+        if (whDir == null) {
+            return;
+        }
+        int maxSort = 0;
+        for (SysMenu c : menuMapper.selectList(new QueryWrapper<SysMenu>().eq("parent_id", whDir.getId()))) {
+            maxSort = Math.max(maxSort, c.getSortNo() == null ? 0 : c.getSortNo());
+        }
+        SysMenu m = new SysMenu();
+        m.setParentId(whDir.getId());
+        m.setMenuKey("wh-out");
+        m.setMenuName("出库管理");
+        m.setMenuType(2);
+        m.setComp("StockOutManage");
+        m.setSortNo(maxSort + 1);
+        m.setVisible(1);
+        m.setStatus(1);
+        menuMapper.insert(m);
+        log.info("出库管理菜单已补充(wh-out/StockOutManage)");
+    }
+
+    /**
+     * 幂等绑定药房菜单组件(2026-09 药房前端上线): 待发药/调剂发药/退药绑定组件并清除建设中标记;
+     * 既有库 seedMenus 表非空即跳过, 故在此按 menu_key 原地更新(见 bindMenuComp)。
+     */
+    private void bindPharmacyMenus() {
+        bindMenuComp("dispense-todo", "DispenseTodo");
+        bindMenuComp("dispense", "DispenseRecord");
+        bindMenuComp("drug-return", "DrugReturn");
+    }
+
+    /**
+     * 幂等绑定收费结算菜单组件(2026-09 收费前端上线): 待收费/医保结算/退费绑定组件并清除建设中标记。
+     */
+    private void bindChargeMenus() {
+        bindMenuComp("charge-todo", "ChargeTodo");
+        bindMenuComp("charge-setl", "ChargeSetl");
+        bindMenuComp("charge-refund", "ChargeRefund");
+    }
+
+    /** 幂等绑定菜单组件并清除建设中标记(phase); 已绑定返回 true 表示无需补种。
+     * 注意: updateById 忽略 null 字段, 清 phase 须用 UpdateWrapper 显式 set null。 */
+    private boolean bindMenuComp(String menuKey, String comp) {
+        SysMenu m = menuMapper.selectOne(new QueryWrapper<SysMenu>().eq("menu_key", menuKey).last("LIMIT 1"));
+        if (m == null) {
+            return false;
+        }
+        if (comp.equals(m.getComp())) {
+            if (m.getPhase() == null) {
+                return true;
+            }
+            /* comp 已绑定但建设中标记残留(旧版迁移未清 phase): 仅补清 phase */
+            menuMapper.update(null, new UpdateWrapper<SysMenu>().eq("id", m.getId()).set("phase", null));
+            return true;
+        }
+        menuMapper.update(null, new UpdateWrapper<SysMenu>()
+                .eq("id", m.getId())
+                .set("comp", comp)
+                .set("phase", null));
+        log.info("菜单组件已绑定: {} -> {}", menuKey, comp);
+        return true;
     }
 
     /**
@@ -372,6 +566,27 @@ public class RbacInitializer implements ApplicationRunner {
         old.setComp("CatalogMap");
         menuMapper.updateById(old);
         log.info("目录对照菜单已迁移为三目录医保对照(catalog-map/CatalogMap)");
+    }
+
+    /**
+     * 幂等激活查询报表菜单(P1f 交付): 老库 rpt-setl/rpt-daily 仍为占位(comp=null/phase=P1f),
+     * 在此回填前端组件并清除 phase; 新库种子已直接携带 comp, 本方法检测到一致则跳过。
+     */
+    private void activateReportMenus() {
+        Map<String, String> comps = new HashMap<>();
+        comps.put("rpt-setl", "SettleRecords");
+        comps.put("rpt-daily", "DailySettle");
+        for (Map.Entry<String, String> e : comps.entrySet()) {
+            SysMenu m = menuMapper.selectOne(new QueryWrapper<SysMenu>().eq("menu_key", e.getKey()).last("LIMIT 1"));
+            if (m == null || e.getValue().equals(m.getComp())) {
+                continue;
+            }
+            menuMapper.update(null, new UpdateWrapper<SysMenu>()
+                    .eq("id", m.getId())
+                    .set("comp", e.getValue())
+                    .set("phase", null));
+            log.info("查询报表菜单已激活: {} -> {}", e.getKey(), e.getValue());
+        }
     }
 
     /** 幂等插入一个顶级菜单节点(menu_type=2, parent=0), 已存在则跳过 */
@@ -446,11 +661,16 @@ public class RbacInitializer implements ApplicationRunner {
         }
     }
 
-    /** 确保租户有默认县级(牵头)机构, 返回其 id */
+    /** 确保租户有默认县级牵头机构, 返回其 id */
     private Long ensureDefaultOrg(SysTenant t) {
         List<SysOrg> orgs = orgMapper.selectList(new QueryWrapper<SysOrg>().orderByAsc("id"));
         if (!orgs.isEmpty()) {
-            // 优先取县级机构作为默认归属
+            // 优先取牵头机构, 其次县级机构作为默认归属
+            for (SysOrg o : orgs) {
+                if (o.getIsLead() != null && o.getIsLead() == 1) {
+                    return o.getId();
+                }
+            }
             for (SysOrg o : orgs) {
                 if (o.getOrgLevel() != null && o.getOrgLevel() == 1) {
                     return o.getId();
@@ -462,6 +682,7 @@ public class RbacInitializer implements ApplicationRunner {
         o.setOrgCode(t.getTenantCode());
         o.setOrgName(t.getTenantName());
         o.setOrgLevel(1);
+        o.setIsLead(1);
         o.setParentId(0L);
         o.setOrgType("A100");
         o.setOrgTypeName("综合医院");
@@ -504,6 +725,44 @@ public class RbacInitializer implements ApplicationRunner {
                 .set("org_id", defaultOrgId).isNull("org_id"));
         deptMapper.update(null, new UpdateWrapper<HisDept>()
                 .set("org_id", defaultOrgId).isNull("org_id"));
+    }
+
+    /**
+     * 幂等保证 sys_org.is_lead 列存在并回填牵头标识(牵头与 org_level=县级 解耦: 县级可有多个成员机构, 牵头租户内唯一)。
+     * 回填规则: 机构编码=租户登录码(org_code=tenant_code, 与开通/种子路径一致)即牵头;
+     * 无匹配的租户退化取最小 id 的县级机构; 其余多余牵头(脏数据)清零只保留每租户最小 id 一条。
+     * 必须在任何 MyBatis-Plus 查询 sys_org 之前执行, 否则实体映射列缺失会报错。
+     */
+    private void ensureOrgLeadColumn() {
+        String check = "SELECT COUNT(*) FROM information_schema.columns "
+                + "WHERE table_schema = DATABASE() AND table_name = 'sys_org' AND column_name = 'is_lead'";
+        try (Connection conn = dataSource.getConnection()) {
+            boolean exists;
+            try (PreparedStatement ps = conn.prepareStatement(check); ResultSet rs = ps.executeQuery()) {
+                exists = rs.next() && rs.getInt(1) > 0;
+            }
+            if (!exists) {
+                try (Statement st = conn.createStatement()) {
+                    st.executeUpdate("ALTER TABLE sys_org ADD COLUMN is_lead TINYINT NOT NULL DEFAULT 0 "
+                            + "COMMENT '是否牵头机构:1-牵头(每医共体唯一) 0-成员' AFTER org_level");
+                }
+                log.info("sys_org 已追加 is_lead 牵头标识列");
+            }
+            try (Statement st = conn.createStatement()) {
+                int n1 = st.executeUpdate("UPDATE sys_org o JOIN sys_tenant t ON t.id = o.tenant_id "
+                        + "SET o.is_lead = 1 WHERE o.org_code = t.tenant_code AND o.deleted = 0 AND o.is_lead <> 1");
+                int n2 = st.executeUpdate("UPDATE sys_org o JOIN (SELECT m.tenant_id, MIN(m.id) mid FROM sys_org m "
+                        + "WHERE m.org_level = 1 AND m.deleted = 0 AND NOT EXISTS (SELECT 1 FROM (SELECT tenant_id FROM sys_org WHERE is_lead = 1 AND deleted = 0) x WHERE x.tenant_id = m.tenant_id) "
+                        + "GROUP BY m.tenant_id) z ON z.tenant_id = o.tenant_id AND z.mid = o.id SET o.is_lead = 1");
+                int n3 = st.executeUpdate("UPDATE sys_org o SET o.is_lead = 0 WHERE o.is_lead = 1 AND o.deleted = 0 "
+                        + "AND o.id <> (SELECT w.mid FROM (SELECT MIN(id) mid, tenant_id FROM sys_org WHERE is_lead = 1 AND deleted = 0 GROUP BY tenant_id) w WHERE w.tenant_id = o.tenant_id)");
+                if (n1 + n2 + n3 > 0) {
+                    log.info("sys_org 牵头标识回填: 按租户码匹配 {} 条, 兜底补齐 {} 条, 多余清零 {} 条", n1, n2, n3);
+                }
+            }
+        } catch (Exception e) {
+            log.warn("sys_org.is_lead 列迁移跳过: {}", e.getMessage());
+        }
     }
 
     /**

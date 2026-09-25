@@ -154,7 +154,8 @@ public class CatalogMapService {
             }
             IPage<HisDrugCatalog> p = q.orderByDesc(HisDrugCatalog::getId).page(new Page<>(page, size));
             return enrichYbInfo(catalog, mapView(p, e -> hosp(e.getId(), e.getDrugCode(), e.getGenericName(), e.getSpec(),
-                    e.getManufacturer(), "", e.getYbDrugCode(), e.getRetailPrice(), e.getPrevYbCode(), e.getYbMapEffTime())));
+                    e.getManufacturer(), "", e.getYbDrugCode(), e.getRetailPrice(), e.getPrevYbCode(), e.getYbMapEffTime(),
+                    firstNonEmpty(e.getChrgitmLvName(), e.getChrgitmLv()))));
         }
         if (CAT_CONS.equals(catalog)) {
             LambdaQueryChainWrapper<HisConsCatalog> q = consService.lambdaQuery();
@@ -167,7 +168,8 @@ public class CatalogMapService {
             }
             IPage<HisConsCatalog> p = q.orderByDesc(HisConsCatalog::getId).page(new Page<>(page, size));
             return enrichYbInfo(catalog, mapView(p, e -> hosp(e.getId(), e.getConsCode(), e.getName(), e.getSpecModel(),
-                    e.getManufacturer(), "", e.getYbConsCode(), e.getChargePrice(), e.getPrevYbCode(), e.getYbMapEffTime())));
+                    e.getManufacturer(), "", e.getYbConsCode(), e.getChargePrice(), e.getPrevYbCode(), e.getYbMapEffTime(),
+                    firstNonEmpty(e.getChrgitmLvName(), e.getChrgitmLv()))));
         }
         // charge
         LambdaQueryChainWrapper<HisChargeItem> q = chargeService.lambdaQuery()
@@ -180,7 +182,8 @@ public class CatalogMapService {
         }
         IPage<HisChargeItem> p = q.orderByDesc(HisChargeItem::getId).page(new Page<>(page, size));
         return enrichYbInfo(catalog, mapView(p, e -> hosp(e.getId(), e.getItemCode(), e.getItemName(), e.getSpec(),
-                "", e.getUnit(), e.getMedListCodg(), e.getPrice(), e.getPrevYbCode(), e.getYbMapEffTime())));
+                "", e.getUnit(), e.getMedListCodg(), e.getPrice(), e.getPrevYbCode(), e.getYbMapEffTime(),
+                e.getChrgitmLv())));
     }
 
     /** 左栏回显医保名称与有效性: 按已对照医保码批量查标准字典(一页一次),
@@ -307,6 +310,7 @@ public class CatalogMapService {
         m.put("price", h.price);
         m.put("prevYbCode", h.prevYbCode);
         m.put("mapEffTime", h.mapEffTime);
+        m.put("chrgitmLv", h.chrgitmLv);
         m.put("mapped", StringUtils.hasText(h.ybCode));
         return m;
     }
@@ -323,11 +327,12 @@ public class CatalogMapService {
         BigDecimal price;
         String prevYbCode;
         LocalDateTime mapEffTime;
+        String chrgitmLv;
     }
 
     private HospItem hosp(Long id, String code, String name, String spec,
                           String manufacturer, String unit, String ybCode, BigDecimal price,
-                          String prevYbCode, LocalDateTime mapEffTime) {
+                          String prevYbCode, LocalDateTime mapEffTime, String chrgitmLv) {
         HospItem h = new HospItem();
         h.id = id;
         h.code = code;
@@ -339,6 +344,7 @@ public class CatalogMapService {
         h.price = price;
         h.prevYbCode = prevYbCode;
         h.mapEffTime = mapEffTime;
+        h.chrgitmLv = chrgitmLv;
         return h;
     }
 
@@ -347,16 +353,16 @@ public class CatalogMapService {
         if (CAT_DRUG.equals(catalog)) {
             HisDrugCatalog e = drugService.getById(id);
             return e == null ? null : hosp(e.getId(), e.getDrugCode(), e.getGenericName(), e.getSpec(),
-                    e.getManufacturer(), "", e.getYbDrugCode(), e.getRetailPrice(), e.getPrevYbCode(), e.getYbMapEffTime());
+                    e.getManufacturer(), "", e.getYbDrugCode(), e.getRetailPrice(), e.getPrevYbCode(), e.getYbMapEffTime(), firstNonEmpty(e.getChrgitmLvName(), e.getChrgitmLv()));
         }
         if (CAT_CONS.equals(catalog)) {
             HisConsCatalog e = consService.getById(id);
             return e == null ? null : hosp(e.getId(), e.getConsCode(), e.getName(), e.getSpecModel(),
-                    e.getManufacturer(), "", e.getYbConsCode(), e.getChargePrice(), e.getPrevYbCode(), e.getYbMapEffTime());
+                    e.getManufacturer(), "", e.getYbConsCode(), e.getChargePrice(), e.getPrevYbCode(), e.getYbMapEffTime(), firstNonEmpty(e.getChrgitmLvName(), e.getChrgitmLv()));
         }
         HisChargeItem e = chargeService.getById(id);
         return e == null ? null : hosp(e.getId(), e.getItemCode(), e.getItemName(), e.getSpec(),
-                "", e.getUnit(), e.getMedListCodg(), e.getPrice(), e.getPrevYbCode(), e.getYbMapEffTime());
+                "", e.getUnit(), e.getMedListCodg(), e.getPrice(), e.getPrevYbCode(), e.getYbMapEffTime(), e.getChrgitmLv());
     }
 
     /* ================= 候选打分 ================= */
@@ -548,6 +554,99 @@ public class CatalogMapService {
         }
     }
 
+    /** 统一字典编辑手工填写/改动的医保码守卫: 非空则必须在标准字典存在且有效(与对照工作台同守卫) */
+    public void guardStdCode(String catalog, String code) {
+        if (!StringUtils.hasText(code)) {
+            return;
+        }
+        Map<String, Object> std = new java.util.HashMap<String, Object>();
+        std.put(stdCodeCol(catalog), code.trim());
+        guardStdValid(catalog, std);
+    }
+
+    /** 统一字典编辑手工改医保码留痕: 按新旧码归类新增/变更/清除, 未变化不记 */
+    public void logDictEditCodeChange(String catalog, Long itemId, String itemCode, String itemName, String oldCode, String newCode) {
+        String o = oldCode == null ? "" : oldCode.trim();
+        String n = newCode == null ? "" : newCode.trim();
+        if (o.equals(n)) {
+            return;
+        }
+        String type = o.isEmpty() ? HisYbMapLog.TYPE_MAP : (n.isEmpty() ? HisYbMapLog.TYPE_CLEAR : HisYbMapLog.TYPE_CHANGE);
+        logChange(catalog, itemId, itemCode, itemName, o, n, type, null, HisYbMapLog.SRC_MANUAL, "医共体统一字典手工编辑");
+    }
+
+    /** 按医保药品码回查 std_drug.chrgitm_lv 并归一为编码(1/2/3/4), 供统一字典建立/改动医保码时同步甲乙丙类; 无码或字典无值返回 "" */
+    public String drugChrgitmLvByCode(String drugCode) {
+        return normalizeChrgitmLvToCode(stdMaintain.valueByCode("drug", drugCode, "chrgitm_lv"));
+    }
+
+    /** 按医保服务项目码(nat_item_code)回查 std_med_service.policy_flag 并归一为 his_charge_item 自身码表(01甲/02乙/03丙),
+     *  供统一字典编辑弹窗改医保码时同步甲乙丙类(与 applyOne 对照路径行为一致); 无码或字典无值返回 "" */
+    public String chargeChrgitmLvByCode(String natItemCode) {
+        return normalizePolicyFlagToChargeLv(stdMaintain.valueByCode("med_service", natItemCode, "policy_flag"));
+    }
+
+    /** 按医保码回查标准字典的医保名称与医保甲乙分类(归一为 cv_code:chrgitm_lv 编码),
+     *  供统一字典编辑弹窗显示与保存前不一致提示; 分类来源列: 药品=chrgitm_lv, 耗材/医疗服务项目=policy_flag; 无码返回空 */
+    public Map<String, Object> ybClassInfoByCode(String catalog, String code) {
+        Map<String, Object> out = new LinkedHashMap<>();
+        out.put("name", "");
+        out.put("chrgitmLv", "");
+        if (!StringUtils.hasText(code)) {
+            return out;
+        }
+        String stdKey = stdKeyOf(catalog);
+        String c = code.trim();
+        Map<String, String> names = stdMaintain.namesByCode(stdKey, Collections.singletonList(c));
+        if (names != null && names.get(c) != null) {
+            out.put("name", names.get(c));
+        }
+        String col = CAT_DRUG.equals(catalog) ? "chrgitm_lv" : "policy_flag";
+        out.put("chrgitmLv", normalizeChrgitmLvToCode(stdMaintain.valueByCode(stdKey, c, col)));
+        return out;
+    }
+
+    /** 甲乙丙类文本(甲/乙/乙(单独支付)/丙) -> cv_code:chrgitm_lv 编码(1甲类/2乙类/3丙类/4可报丙类); 已是编码则原样透传 */
+    public static String normalizeChrgitmLvToCode(String stdVal) {
+        if (stdVal == null) {
+            return "";
+        }
+        String v = stdVal.trim();
+        if (v.isEmpty()) {
+            return "";
+        }
+        if (v.startsWith("甲")) {
+            return "1";
+        }
+        if (v.startsWith("乙")) {
+            return "2";
+        }
+        if (v.startsWith("丙")) {
+            return v.contains("可报") ? "4" : "3";
+        }
+        // 已是编码(1~4)或其他未知值: 原样透传
+        return v;
+    }
+
+    /** 标准字典政策标识文本(甲类/乙类/丙类) -> his_charge_item 自身码表 01甲/02乙/03丙; 空或未知返回 ""(可报丙归入丙) */
+    public static String normalizePolicyFlagToChargeLv(String stdVal) {
+        String code = normalizeChrgitmLvToCode(stdVal);
+        if (code.isEmpty()) {
+            return "";
+        }
+        switch (code) {
+            case "1":
+                return "01";
+            case "2":
+                return "02";
+            case "3":
+            case "4":
+                return "03";
+            default:
+                return "";
+        }
+    }
+
     /** 已对照条目换成不同医保码 => 变更对照, 必须显式确认, 避免误操作覆盖既有对照 */
     private void guardChange(String catalog, boolean force, String oldCode, String newCode, String itemName) {
         if (force || oldCode == null || oldCode.isEmpty() || oldCode.equals(newCode)) {
@@ -576,7 +675,8 @@ public class CatalogMapService {
             fillIfEmpty(e::setApprovalNo, e.getApprovalNo(), str(std.get("approval_no")));
             fillIfEmpty(e::setManufacturer, e.getManufacturer(), str(std.get("drug_entp")));
             fillIfEmpty(e::setSpec, e.getSpec(), str(std.get("act_spec")));
-            fillIfEmpty(e::setChrgitmLv, e.getChrgitmLv(), str(std.get("chrgitm_lv")));
+            // 甲乙丙类以标准字典为准强制覆盖(对照/改码即同步): std_drug.chrgitm_lv 存文本(甲/乙/乙(单独支付)), 归一为 cv_code:chrgitm_lv 编码(1/2/3/4)
+            e.setChrgitmLv(normalizeChrgitmLvToCode(str(std.get("chrgitm_lv"))));
             fillIfEmpty(e::setPayStdPrep, e.getPayStdPrep(), str(std.get("pay_std_prep")));
             fillIfEmpty(e::setTradeName, e.getTradeName(), str(std.get("trade_name")));
             fillIfEmpty(e::setMktHolder, e.getMktHolder(), str(std.get("mkt_holder")));
@@ -612,6 +712,8 @@ public class CatalogMapService {
             fillIfEmpty(e::setManufacturer, e.getManufacturer(), str(std.get("cons_entp")));
             fillIfEmpty(e::setRegCertNo, e.getRegCertNo(), str(std.get("reg_cert_no")));
             fillIfEmpty(e::setPayStd, e.getPayStd(), str(std.get("pay_std")));
+            // 甲乙丙类以标准字典为准强制覆盖(对照即同步): std_consumable.policy_flag 存文本(甲类/乙类), 归一为 cv_code:chrgitm_lv 编码(1/2/3/4), consService.updateById 负回填名称
+            e.setChrgitmLv(normalizeChrgitmLvToCode(str(std.get("policy_flag"))));
             e.setSrcType("consumable");
             e.setSrcCode(str(std.get("cons_code")));
             e.setSrcDoc(firstNonEmpty(str(std.get("src_doc")), "湖北省医用耗材(20位)编码数据库"));
@@ -641,6 +743,8 @@ public class CatalogMapService {
         fillIfEmpty(e::setUnit, e.getUnit(), str(std.get("prc_unit")));
         fillIfEmpty(e::setItemContent, e.getItemContent(), str(std.get("item_connotation")));
         fillIfEmpty(e::setItemExcluded, e.getItemExcluded(), str(std.get("item_excluded")));
+        // 甲乙丙类以标准字典为准强制覆盖(对照即同步): std_med_service.policy_flag 存文本(甲类/乙类/丙类), 服务项目自身码表为 01/02/03(非1/2/3/4)
+        e.setChrgitmLv(normalizePolicyFlagToChargeLv(str(std.get("policy_flag"))));
         e.setSrcType("med_service");
         e.setSrcCode(str(std.get("nat_item_code")));
         e.setSrcDoc(firstNonEmpty(str(std.get("src_doc")), "湖北省医疗服务项目编码数据库"));
@@ -749,7 +853,8 @@ public class CatalogMapService {
                     .in(itemIds != null && !itemIds.isEmpty(), HisDrugCatalog::getId, itemIds);
             for (HisDrugCatalog e : q.list()) {
                 out.add(hosp(e.getId(), e.getDrugCode(), e.getGenericName(), e.getSpec(),
-                        e.getManufacturer(), "", e.getYbDrugCode(), e.getRetailPrice(), e.getPrevYbCode(), e.getYbMapEffTime()));
+                        e.getManufacturer(), "", e.getYbDrugCode(), e.getRetailPrice(), e.getPrevYbCode(), e.getYbMapEffTime(),
+                        firstNonEmpty(e.getChrgitmLvName(), e.getChrgitmLv())));
             }
             return out;
         }
@@ -759,7 +864,8 @@ public class CatalogMapService {
                     .in(itemIds != null && !itemIds.isEmpty(), HisConsCatalog::getId, itemIds);
             for (HisConsCatalog e : q.list()) {
                 out.add(hosp(e.getId(), e.getConsCode(), e.getName(), e.getSpecModel(),
-                        e.getManufacturer(), "", e.getYbConsCode(), e.getChargePrice(), e.getPrevYbCode(), e.getYbMapEffTime()));
+                        e.getManufacturer(), "", e.getYbConsCode(), e.getChargePrice(), e.getPrevYbCode(), e.getYbMapEffTime(),
+                        firstNonEmpty(e.getChrgitmLvName(), e.getChrgitmLv())));
             }
             return out;
         }
@@ -768,7 +874,8 @@ public class CatalogMapService {
                 .in(itemIds != null && !itemIds.isEmpty(), HisChargeItem::getId, itemIds);
         for (HisChargeItem e : q.list()) {
             out.add(hosp(e.getId(), e.getItemCode(), e.getItemName(), e.getSpec(),
-                    "", e.getUnit(), e.getMedListCodg(), e.getPrice(), e.getPrevYbCode(), e.getYbMapEffTime()));
+                    "", e.getUnit(), e.getMedListCodg(), e.getPrice(), e.getPrevYbCode(), e.getYbMapEffTime(),
+                    e.getChrgitmLv()));
         }
         return out;
     }

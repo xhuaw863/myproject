@@ -18,9 +18,51 @@
   };
   HIS.logout = function () { HIS.setToken(null); HIS.setUser(null); };
 
+  /* 最近登录账号缓存(最多5个, 最近一次在前; 登录页默认选最近一条并回填)。
+   * 安全加固: 默认只缓存医院码+账号, 密码仅在用户显式勾选"记住密码"时才落地。
+   * v2 换键并清除旧版(曾明文存密码)缓存。 */
+  var RECENT_KEY = 'yb_his_recent_accounts_v2';
+  try { localStorage.removeItem('yb_his_recent_accounts'); } catch (e) { }
+  HIS.getRecentAccounts = function () {
+    try { var a = JSON.parse(localStorage.getItem(RECENT_KEY) || '[]'); return Array.isArray(a) ? a : []; } catch (e) { return []; }
+  };
+  HIS.rememberAccount = function (acc, rememberPwd) {
+    if (!acc || !acc.username) { return; }
+    try {
+      var list = HIS.getRecentAccounts().filter(function (x) {
+        return !(x.tenantCode === acc.tenantCode && x.username === acc.username);
+      });
+      list.unshift({ tenantCode: acc.tenantCode, username: acc.username, password: rememberPwd ? acc.password : null });
+      if (list.length > 5) { list = list.slice(0, 5); }
+      localStorage.setItem(RECENT_KEY, JSON.stringify(list));
+    } catch (e) { }
+  };
+
+  /* 是否牵头机构(org_level=1): 取自登录响应 leadOrg 字段;
+   * 牵头可维护全医共体基础数据, 非牵头仅本机构且只读(前端隐藏写按钮, 后端 403 兜底)。 */
+  HIS.isLead = function () {
+    var u = HIS.getUser();
+    return !!(u && u.leadOrg);
+  };
+
+  /* 当前登录机构ID(多点执业切换后即为目标机构) */
+  HIS.currentOrgId = function () {
+    var u = HIS.getUser();
+    return u ? u.orgId : null;
+  };
+
+  /* 是否可维护本机构级业务数据(排班号源): 本机构管理员 ADMIN/ORG_ADMIN 或平台超管。
+   * 排班为机构自己的业务过程, 不再限定牵头身份, 每个机构自治自己的号源。 */
+  HIS.canMaintainSelfOrg = function () {
+    var u = HIS.getUser();
+    if (!u) { return false; }
+    return u.role === 'ADMIN' || u.role === 'ORG_ADMIN' || u.role === 'SUPER_ADMIN';
+  };
+
   /* ===== 角色字典 ===== */
   HIS.ROLES = [
     { value: 'ADMIN', label: '系统管理员' },
+    { value: 'ORG_ADMIN', label: '机构系统管理员' },
     { value: 'REGISTRAR', label: '挂号员' },
     { value: 'DOCTOR', label: '医生' },
     { value: 'PHARMACIST', label: '药师' },
@@ -55,7 +97,7 @@
       (list || []).forEach(function (n) {
         var pad = '';
         for (var i = 0; i < depth; i++) { pad += '　'; }
-        out.push({ id: n.id, label: pad + n.orgName, orgLevel: n.orgLevel, orgCode: n.orgCode });
+        out.push({ id: n.id, label: pad + n.orgName, orgLevel: n.orgLevel, orgCode: n.orgCode, depth: depth, hasKids: !!(n.children && n.children.length) });
         if (n.children && n.children.length) { walk(n.children, depth + 1); }
       });
     })(nodes, 0);

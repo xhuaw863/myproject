@@ -12,15 +12,9 @@
     {
       group: '平台管理', children: [
         { key: 'tenant-info', label: '医院信息', comp: 'TenantInfo' },
-        { key: 'user-manage', label: '用户管理', comp: 'UserManage' }
-      ]
-    },
-    {
-      group: '基础数据', children: [
+        { key: 'user-manage', label: '用户管理', comp: 'UserManage' },
         { key: 'dept', label: '科室管理', comp: 'DeptManage' },
-        { key: 'staff', label: '职工管理', comp: 'StaffManage' },
-        { key: 'schedule', label: '排班号源', comp: 'ScheduleManage' },
-        { key: 'charge-item', label: '收费项目对照', comp: 'ChargeItemManage' }
+        { key: 'staff', label: '职工管理', comp: 'StaffManage' }
       ]
     },
     {
@@ -41,7 +35,8 @@
       group: '门诊挂号台', children: [
         { key: 'patient', label: '患者建档/查询', comp: 'PatientManage' },
         { key: 'register', label: '门诊挂号', comp: 'RegistrationDesk' },
-        { key: 'unregister', label: '退号', comp: 'UnregisterDesk' }
+        { key: 'unregister', label: '退号', comp: 'UnregisterDesk' },
+        { key: 'schedule', label: '排班号源', comp: 'ScheduleManage' }
       ]
     },
     {
@@ -52,30 +47,31 @@
     },
     {
       group: '药房', children: [
-        { key: 'dispense-todo', label: '待发药', phase: 'P1d' },
-        { key: 'dispense', label: '调剂发药', phase: 'P1d' },
-        { key: 'drug-return', label: '退药', phase: 'P1d' }
+        { key: 'dispense-todo', label: '待发药', comp: 'DispenseTodo' },
+        { key: 'dispense', label: '调剂发药', comp: 'DispenseRecord' },
+        { key: 'drug-return', label: '退药', comp: 'DrugReturn' }
       ]
     },
     {
       group: '药库', children: [
         { key: 'wh-drug', label: '药品目录', phase: 'P1d' },
-        { key: 'wh-in', label: '采购入库', phase: 'P1d' },
-        { key: 'wh-stock', label: '库存/流水', phase: 'P1d' },
+        { key: 'wh-in', label: '采购入库', comp: 'StockInManage' },
+        { key: 'wh-out', label: '出库管理', comp: 'StockOutManage' },
+        { key: 'wh-stock', label: '库存/流水', comp: 'DrugStock' },
         { key: 'wh-check', label: '盘点', phase: 'P1d' }
       ]
     },
     {
       group: '收费结算台', children: [
-        { key: 'charge-todo', label: '待收费', phase: 'P1e' },
-        { key: 'charge-setl', label: '医保结算', phase: 'P1e' },
-        { key: 'charge-refund', label: '退费', phase: 'P1e' }
+        { key: 'charge-todo', label: '待收费', comp: 'ChargeTodo' },
+        { key: 'charge-setl', label: '医保结算', comp: 'ChargeSetl' },
+        { key: 'charge-refund', label: '退费', comp: 'ChargeRefund' }
       ]
     },
     {
       group: '查询报表', children: [
-        { key: 'rpt-setl', label: '结算记录', phase: 'P1f' },
-        { key: 'rpt-daily', label: '门诊日结', phase: 'P1f' }
+        { key: 'rpt-setl', label: '结算记录', comp: 'SettleRecords' },
+        { key: 'rpt-daily', label: '门诊日结', comp: 'DailySettle' }
       ]
     },
     { key: 'community-dict', label: '医共体字典', comp: 'CommunityDict' },
@@ -136,10 +132,23 @@
     data: function () {
       return {
         loading: false,
+        recent: [],
+        recentIdx: 0,
+        rememberPwd: false,
         loginForm: { tenantCode: 'H42010000000', username: 'admin', password: 'admin123' }
       };
     },
+    created: function () {
+      this.recent = HIS.getRecentAccounts();
+      if (this.recent.length) { this.applyRecent(0); }
+    },
     methods: {
+      applyRecent: function (i) {
+        var a = this.recent[i];
+        if (!a) { return; }
+        this.recentIdx = i;
+        this.loginForm = { tenantCode: a.tenantCode, username: a.username, password: a.password || '' };
+      },
       doLogin: function () {
         var vm = this;
         if (!vm.loginForm.tenantCode || !vm.loginForm.username || !vm.loginForm.password) {
@@ -150,6 +159,7 @@
           .then(function (d) {
             HIS.setToken(d.token);
             HIS.setUser(d);
+            HIS.rememberAccount(vm.loginForm, vm.rememberPwd);
             HIS.notifySuccess('登录成功');
             vm.$emit('logged');
           })
@@ -163,9 +173,15 @@
       '    <h2>医保原生 HIS</h2>',
       '    <div class="sub">多租户 · 医院信息系统 · 医保接口原生对接</div>',
       '    <el-form :model="loginForm" label-width="80px" @submit.prevent>',
+      '      <el-form-item label="最近账号" v-if="recent.length">',
+      '        <el-select v-model="recentIdx" style="width:100%" placeholder="选择最近登录账号" @change="applyRecent">',
+      '          <el-option v-for="(a,i) in recent" :key="i" :label="a.username + \' @ \' + a.tenantCode" :value="i"></el-option>',
+      '        </el-select>',
+      '      </el-form-item>',
       '      <el-form-item label="医院码"><el-input v-model="loginForm.tenantCode" placeholder="医院登录码"></el-input></el-form-item>',
       '      <el-form-item label="账号"><el-input v-model="loginForm.username" placeholder="账号"></el-input></el-form-item>',
       '      <el-form-item label="密码"><el-input v-model="loginForm.password" type="password" show-password @keyup.enter="doLogin" placeholder="密码"></el-input></el-form-item>',
+      '      <div style="margin:-6px 0 12px 80px;"><el-checkbox v-model="rememberPwd">记住密码</el-checkbox><span style="color:#909399;font-size:12px;margin-left:8px;">默认不保存密码; 勾选后密码存于本机浏览器, 共享终端请勿勾选</span></div>',
       '      <el-button type="primary" style="width:100%" :loading="loading" @click="doLogin">登 录</el-button>',
       '      <div class="login-links"><span style="color:#909399;">医院管理员：H42010000000 / admin / admin123</span></div>',
       '      <div class="login-links"><span style="color:#909399;">平台超管(开通医院)：PLATFORM / superadmin / admin123</span></div>',
@@ -197,11 +213,25 @@
       roleName: function () {
         var u = this.user || {};
         return u.roleName || HIS.roleLabel(u.role);
-      }
+      },
+      /* 可登录机构(多点执业): >1 时顶栏展示"切换机构" */
+      allowedOrgs: function () { return (this.user || {}).allowedOrgs || []; }
     },
     methods: {
       onSelect: function (key) { this.activeKey = key; },
       onCmd: function (c) { if (c === 'logout') { this.$emit('logout'); } },
+      /* 切换活动机构: 重签令牌后整页重载(菜单/权限随新机构上下文重建) */
+      onSwitchOrg: function (orgId) {
+        if (!orgId || orgId === (this.user || {}).orgId) { return; }
+        HIS.post('/api/auth/switch-org', { orgId: orgId })
+          .then(function (d) {
+            HIS.setToken(d.token);
+            HIS.setUser(d);
+            HIS.notifySuccess('已切换到 ' + (d.orgName || '目标机构'));
+            setTimeout(function () { location.reload(); }, 300);
+          })
+          .catch(HIS.notifyError);
+      },
       toggleAside: function () {
         this.collapsed = !this.collapsed;
         localStorage.setItem('his-aside-collapsed', this.collapsed ? '1' : '0');
@@ -226,7 +256,13 @@
       '  <div class="layout-header">',
       '    <span class="logo">医保原生 HIS</span>',
       '    <span class="hosp">租户: {{ user.tenantName || "-" }}</span>',
-      '    <span class="hosp" v-if="user.orgName" style="opacity:.85;">机构: {{ user.orgName }}</span>',
+      '    <el-dropdown v-if="allowedOrgs.length > 1" @command="onSwitchOrg" style="margin:0 4px;">',
+      '      <span class="hosp" style="cursor:pointer;">机构: {{ user.orgName }} ▾</span>',
+      '      <template #dropdown><el-dropdown-menu>',
+      '        <el-dropdown-item v-for="o in allowedOrgs" :key="o.orgId" :command="o.orgId" :disabled="o.orgId === user.orgId">{{ o.orgName }}{{ o.home ? " (归属)" : "" }}</el-dropdown-item>',
+      '      </el-dropdown-menu></template>',
+      '    </el-dropdown>',
+      '    <span class="hosp" v-else-if="user.orgName" style="opacity:.85;">机构: {{ user.orgName }}</span>',
       '    <span class="spacer"></span>',
       '    <a class="hosp" href="/verify/index.html" target="_blank" style="text-decoration:none;cursor:pointer;">医保验证台</a>',
       '    <el-dropdown @command="onCmd">',
@@ -264,14 +300,13 @@
   /* ===== 根组件 ===== */
   var Root = {
     data: function () {
-      return { logged: !!(HIS.getToken() && HIS.getUser()) };
-    },
-    computed: {
-      user: function () { return HIS.getUser() || {}; }
+      /* user 存为 data 快照: computed 直接读 localStorage 无响应式依赖,
+       * 登出再登入同会话时会命中永久缓存(顶栏机构徽标显示上一个账号), 改在登录/登出时主动刷新 */
+      return { logged: !!(HIS.getToken() && HIS.getUser()), user: HIS.getUser() || {} };
     },
     methods: {
-      onLogged: function () { this.logged = true; },
-      onLogout: function () { HIS.logout(); this.logged = false; }
+      onLogged: function () { this.user = HIS.getUser() || {}; this.logged = true; },
+      onLogout: function () { HIS.logout(); this.user = {}; this.logged = false; }
     },
     components: { 'login-page': LoginPage, 'app-layout': AppLayout },
     template: [

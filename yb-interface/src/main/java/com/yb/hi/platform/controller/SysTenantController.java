@@ -8,6 +8,7 @@ import com.yb.hi.framework.tenant.UserContext;
 import com.yb.hi.platform.dto.TenantRegisterReq;
 import com.yb.hi.platform.entity.SysTenant;
 import com.yb.hi.platform.service.AuthService;
+import com.yb.hi.platform.service.OrgAccessGuard;
 import com.yb.hi.platform.service.SysTenantService;
 import org.springframework.web.bind.annotation.*;
 
@@ -23,10 +24,12 @@ public class SysTenantController {
 
     private final SysTenantService tenantService;
     private final AuthService authService;
+    private final OrgAccessGuard orgAccessGuard;
 
-    public SysTenantController(SysTenantService tenantService, AuthService authService) {
+    public SysTenantController(SysTenantService tenantService, AuthService authService, OrgAccessGuard orgAccessGuard) {
         this.tenantService = tenantService;
         this.authService = authService;
+        this.orgAccessGuard = orgAccessGuard;
     }
 
     /* ============ 平台超级管理员: 跨租户医院开通与管理 ============ */
@@ -75,9 +78,10 @@ public class SysTenantController {
         return R.ok(t);
     }
 
-    /** 更新当前医院的医保配置 */
+    /** 更新当前医院的医保配置(医共体默认): 仅牵头机构管理员或平台超管 */
     @PutMapping("/current")
     public R<Void> updateCurrent(@RequestBody SysTenant req) {
+        requireTenantConfigAdmin();
         Long tenantId = UserContext.get().getTenantId();
         SysTenant t = tenantService.getById(tenantId);
         if (t == null) {
@@ -111,6 +115,19 @@ public class SysTenantController {
         t.setAddress(req.getAddress());
         tenantService.updateById(t);
         return R.ok();
+    }
+
+    /** 仅牵头机构 ADMIN 或平台超管可维护医共体(租户)级默认医保配置 */
+    private void requireTenantConfigAdmin() {
+        LoginUser u = UserContext.get();
+        if (u == null) {
+            throw new BizException(401, "未登录");
+        }
+        boolean superAdmin = Roles.SUPER_ADMIN.equals(u.getRole());
+        boolean leadAdmin = Roles.ADMIN.equals(u.getRole()) && orgAccessGuard.isLead(u);
+        if (!superAdmin && !leadAdmin) {
+            throw new BizException(403, "仅牵头机构管理员或平台超管可维护医共体默认配置, 本机构配置请在\"本机构\"范围维护");
+        }
     }
 
     private String mask(String s) {

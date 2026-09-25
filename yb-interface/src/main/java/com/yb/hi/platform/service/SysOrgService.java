@@ -2,18 +2,26 @@ package com.yb.hi.platform.service;
 
 import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
 import com.yb.hi.framework.common.BizException;
+import com.yb.hi.framework.tenant.LoginUser;
+import com.yb.hi.framework.tenant.UserContext;
 import com.yb.hi.platform.dto.OrgNode;
 import com.yb.hi.platform.dto.OrgSaveReq;
 import com.yb.hi.platform.entity.SysOrg;
+import com.yb.hi.platform.entity.SysTenant;
 import com.yb.hi.platform.entity.SysUser;
 import com.yb.hi.platform.mapper.SysOrgMapper;
 import com.yb.hi.platform.mapper.SysUserMapper;
 import com.yb.hi.service.StdDictQueryService;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.StringUtils;
 
 import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Collections;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 
 /**
  * 机构服务(医共体内县/乡/村三级树)。
@@ -26,11 +34,14 @@ public class SysOrgService {
     private final SysOrgMapper orgMapper;
     private final SysUserMapper userMapper;
     private final StdDictQueryService stdDict;
+    private final SysTenantService tenantService;
 
-    public SysOrgService(SysOrgMapper orgMapper, SysUserMapper userMapper, StdDictQueryService stdDict) {
+    public SysOrgService(SysOrgMapper orgMapper, SysUserMapper userMapper, StdDictQueryService stdDict,
+                         SysTenantService tenantService) {
         this.orgMapper = orgMapper;
         this.userMapper = userMapper;
         this.stdDict = stdDict;
+        this.tenantService = tenantService;
     }
 
     /** 全部机构(当前租户, 按 sort_no,id) */
@@ -50,8 +61,96 @@ public class SysOrgService {
                 .eq("parent_id", pid).orderByAsc("sort_no", "id"));
     }
 
+    /** 指定机构的子树机构 id 集合(含自身), 用于按上级机构级联过滤业务数据(如职工) */
+    public List<Long> subtreeIds(Long rootId) {
+        List<Long> out = new ArrayList<>();
+        if (rootId == null) {
+            return out;
+        }
+        out.add(rootId);
+        List<SysOrg> all = listAll();
+        boolean grew = true;
+        while (grew) {
+            grew = false;
+            for (SysOrg o : all) {
+                if (o.getId() != null && o.getParentId() != null && out.contains(o.getParentId()) && !out.contains(o.getId())) {
+                    out.add(o.getId());
+                    grew = true;
+                }
+            }
+        }
+        return out;
+    }
+
     public SysOrg getById(Long id) {
         return orgMapper.selectById(id);
+    }
+
+    /** 导出机构列表(xlsx 行集): 层级树 DFS 摊平, 与页面查询同口径(名称/编码/负责人关键字 + 级别 + 状态) */
+    public Map<String, Object> exportRows(String keyword, Integer orgLevel, Integer status) {
+        List<List<String>> head = new ArrayList<>();
+        for (String h : new String[]{"机构名称", "机构编码", "上级机构", "级别", "牵头", "机构类型", "定点机构编号", "定点机构名称",
+                "统一社会信用代码", "医院等级", "负责人", "联系电话", "机构地址", "编制床位数", "排序号", "状态"}) {
+            head.add(Collections.singletonList(h));
+        }
+        String kw = StringUtils.hasText(keyword) ? keyword.trim().toLowerCase() : null;
+        List<List<Object>> rows = new ArrayList<>();
+        flattenForExport(tree(), null, rows, kw, orgLevel, status);
+        Map<String, Object> out = new LinkedHashMap<>();
+        out.put("head", head);
+        out.put("rows", rows);
+        out.put("total", rows.size());
+        return out;
+    }
+
+    /** DFS 摊平导出行: 命中才写入但仍递归子级(与前端树过滤保留层级上下文同口径) */
+    private void flattenForExport(List<OrgNode> nodes, String parentName, List<List<Object>> rows,
+                                  String kw, Integer orgLevel, Integer status) {
+        for (OrgNode n : nodes) {
+            if (matchExport(n, kw, orgLevel, status)) {
+                rows.add(Arrays.asList(
+                        nz(n.getOrgName()), nz(n.getOrgCode()), parentName == null ? "" : parentName,
+                        orgLevelText(n.getOrgLevel()),
+                        n.getIsLead() != null && n.getIsLead() == 1 ? "是" : "否",
+                        StringUtils.hasText(n.getOrgTypeName()) ? n.getOrgTypeName() : nz(n.getOrgType()),
+                        nz(n.getFixmedinsCode()), nz(n.getFixmedinsName()), nz(n.getUscc()),
+                        StringUtils.hasText(n.getHospLvName()) ? n.getHospLvName() : nz(n.getHospLv()),
+                        nz(n.getLeader()), nz(n.getPhone()), nz(n.getAddress()),
+                        n.getBedCnt(), n.getSortNo(),
+                        n.getStatus() != null && n.getStatus() == 1 ? "启用" : "停用"));
+            }
+            if (n.getChildren() != null && !n.getChildren().isEmpty()) {
+                flattenForExport(n.getChildren(), n.getOrgName(), rows, kw, orgLevel, status);
+            }
+        }
+    }
+
+    private static boolean matchExport(OrgNode n, String kw, Integer orgLevel, Integer status) {
+        if (kw != null && !nz(n.getOrgName()).toLowerCase().contains(kw)
+                && !nz(n.getOrgCode()).toLowerCase().contains(kw)
+                && !nz(n.getLeader()).toLowerCase().contains(kw)) {
+            return false;
+        }
+        if (orgLevel != null && !orgLevel.equals(n.getOrgLevel())) {
+            return false;
+        }
+        return status == null || status.equals(n.getStatus());
+    }
+
+    private static String orgLevelText(Integer lv) {
+        if (lv == null) {
+            return "";
+        }
+        switch (lv) {
+            case 1: return "县级";
+            case 2: return "乡镇";
+            case 3: return "村";
+            default: return String.valueOf(lv);
+        }
+    }
+
+    private static String nz(String s) {
+        return s == null ? "" : s;
     }
 
     private List<OrgNode> buildTree(List<SysOrg> orgs) {
@@ -79,6 +178,7 @@ public class SysOrgService {
         n.setOrgCode(o.getOrgCode());
         n.setOrgName(o.getOrgName());
         n.setOrgLevel(o.getOrgLevel());
+        n.setIsLead(o.getIsLead());
         n.setOrgType(o.getOrgType());
         n.setOrgTypeName(o.getOrgTypeName());
         n.setOrgTypeSrc(o.getOrgTypeSrc());
@@ -166,6 +266,10 @@ public class SysOrgService {
         o.setOrgCode(req.getOrgCode());
         o.setOrgName(req.getOrgName());
         o.setOrgLevel(req.getOrgLevel() == null ? 1 : req.getOrgLevel());
+        // 牵头标识: null=不变更(编辑表单未带时保留原值); 唯一性由 validate 保证
+        if (req.getIsLead() != null) {
+            o.setIsLead(req.getIsLead() == 1 ? 1 : 0);
+        }
         o.setParentId(req.getParentId() == null ? 0L : req.getParentId());
         o.setOrgType(req.getOrgType());
         if (StringUtils.hasText(req.getOrgType())) {
@@ -232,7 +336,17 @@ public class SysOrgService {
         }
         if (req.getOrgLevel() != null && req.getOrgLevel() == 1
                 && req.getParentId() != null && req.getParentId() != 0L) {
-            throw new BizException(400, "县级(牵头)机构上级必须为空");
+            throw new BizException(400, "县级机构上级必须为空");
+        }
+        // 牵头唯一性: is_lead=1 租户内唯一(县级机构可有多个成员, 牵头以 is_lead 标志区分)
+        if (req.getIsLead() != null && req.getIsLead() == 1) {
+            QueryWrapper<SysOrg> leadQ = new QueryWrapper<SysOrg>().eq("is_lead", 1);
+            if (!isCreate && req.getId() != null) {
+                leadQ.ne("id", req.getId());
+            }
+            if (orgMapper.selectCount(leadQ) > 0) {
+                throw new BizException("一个医共体(租户)内只能有一个牵头机构, 已存在牵头机构");
+            }
         }
         QueryWrapper<SysOrg> q = new QueryWrapper<SysOrg>().eq("org_code", req.getOrgCode());
         if (!isCreate && req.getId() != null) {
@@ -241,5 +355,100 @@ public class SysOrgService {
         if (orgMapper.selectCount(q) > 0) {
             throw new BizException("机构编码已存在: " + req.getOrgCode());
         }
+    }
+
+    /* ===================== 本机构医保接口配置 ===================== */
+
+    /**
+     * 当前登录机构的医保接口配置(供"医院信息/医保接口配置"页回显):
+     * 返回本机构自有值 + 机构/租户身份 + 租户级继承默认(inherited, 供前端空值占位提示)。
+     * 生效优先级仍为 全局<租户<机构(TenantYbConfigResolver), 此处仅回显存储值不做合并。
+     */
+    public Map<String, Object> currentYbConfig() {
+        SysOrg o = requireCurrentOrg();
+        LoginUser lu = UserContext.get();
+        SysTenant t = tenantService.getById(lu.getTenantId());
+        Map<String, Object> m = new LinkedHashMap<>();
+        m.put("orgId", o.getId());
+        m.put("orgName", o.getOrgName());
+        m.put("orgLevel", o.getOrgLevel());
+        m.put("tenantCode", t == null ? null : t.getTenantCode());
+        m.put("tenantName", t == null ? null : t.getTenantName());
+        m.put("leader", o.getLeader());
+        m.put("phone", o.getPhone());
+        m.put("address", o.getAddress());
+        m.put("fixmedinsCode", o.getFixmedinsCode());
+        m.put("fixmedinsName", o.getFixmedinsName());
+        m.put("mdtrtareaAdmvs", o.getMdtrtareaAdmvs());
+        m.put("insuplcAdmdvs", o.getInsuplcAdmdvs());
+        m.put("apiUrl", o.getApiUrl());
+        m.put("fileDownloadUrl", o.getFileDownloadUrl());
+        m.put("recerSysCode", o.getRecerSysCode());
+        m.put("infver", o.getInfver());
+        m.put("opterType", o.getOpterType());
+        m.put("opter", o.getOpter());
+        m.put("opterName", o.getOpterName());
+        m.put("signNo", o.getSignNo());
+        m.put("sm2PublicKey", o.getSm2PublicKey());
+        m.put("encType", o.getEncType());
+        m.put("mockEnabled", o.getMockEnabled());
+        // 租户级继承默认(本机构留空时运行时回落到这些值)
+        Map<String, Object> inh = new LinkedHashMap<>();
+        inh.put("fixmedinsCode", t == null ? null : t.getFixmedinsCode());
+        inh.put("fixmedinsName", t == null ? null : t.getFixmedinsName());
+        inh.put("mdtrtareaAdmvs", t == null ? null : t.getMdtrtareaAdmvs());
+        inh.put("insuplcAdmdvs", t == null ? null : t.getInsuplcAdmdvs());
+        inh.put("apiUrl", t == null ? null : t.getApiUrl());
+        inh.put("fileDownloadUrl", t == null ? null : t.getFileDownloadUrl());
+        inh.put("recerSysCode", t == null ? null : t.getRecerSysCode());
+        inh.put("infver", t == null ? null : t.getInfver());
+        inh.put("opterType", t == null ? null : t.getOpterType());
+        inh.put("opter", t == null ? null : t.getOpter());
+        inh.put("opterName", t == null ? null : t.getOpterName());
+        inh.put("signNo", t == null ? null : t.getSignNo());
+        inh.put("encType", t == null ? null : t.getEncType());
+        inh.put("mockEnabled", t == null ? null : t.getMockEnabled());
+        m.put("inherited", inh);
+        return m;
+    }
+
+    /** 维护当前登录机构的医保接口配置(仅写本机构 sys_org 字段, 不动医共体/租户默认) */
+    @Transactional(rollbackFor = Exception.class)
+    public void updateCurrentYbConfig(OrgSaveReq req) {
+        SysOrg o = requireCurrentOrg();
+        o.setFixmedinsCode(req.getFixmedinsCode());
+        o.setFixmedinsName(req.getFixmedinsName());
+        o.setMdtrtareaAdmvs(req.getMdtrtareaAdmvs());
+        o.setInsuplcAdmdvs(req.getInsuplcAdmdvs());
+        o.setApiUrl(req.getApiUrl());
+        o.setFileDownloadUrl(req.getFileDownloadUrl());
+        o.setRecerSysCode(req.getRecerSysCode());
+        o.setInfver(req.getInfver());
+        o.setOpterType(req.getOpterType());
+        o.setOpter(req.getOpter());
+        o.setOpterName(req.getOpterName());
+        o.setSignNo(req.getSignNo());
+        // SM2私钥只写: 仅当提交非空时覆盖, 留空=保留原值
+        if (StringUtils.hasText(req.getSm2PrivateKey())) {
+            o.setSm2PrivateKey(req.getSm2PrivateKey());
+        }
+        o.setSm2PublicKey(req.getSm2PublicKey());
+        o.setEncType(req.getEncType());
+        o.setMockEnabled(req.getMockEnabled());
+        o.setLeader(req.getLeader());
+        o.setPhone(req.getPhone());
+        o.setAddress(req.getAddress());
+        orgMapper.updateById(o);
+    }
+
+    /** 取当前登录用户绑定的机构, 未绑定抛错 */
+    private SysOrg requireCurrentOrg() {
+        LoginUser lu = UserContext.get();
+        Long orgId = lu == null ? null : lu.getOrgId();
+        SysOrg o = orgId == null ? null : orgMapper.selectById(orgId);
+        if (o == null) {
+            throw new BizException("当前用户未绑定机构, 无法维护本机构医保配置");
+        }
+        return o;
     }
 }

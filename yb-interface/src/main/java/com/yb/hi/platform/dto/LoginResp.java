@@ -2,6 +2,8 @@ package com.yb.hi.platform.dto;
 
 import lombok.Data;
 
+import java.util.List;
+
 /**
  * 登录响应
  */
@@ -23,6 +25,12 @@ public class LoginResp {
     private Long roleId;
     /** 归属机构名称(前端显示) */
     private String orgName;
+    /** 是否牵头机构(org_level=1): 前端据此渲染基础数据只读态 */
+    private Boolean leadOrg;
     /** 角色名称(支持租户自定义角色名, 前端显示) */
     private String roleName;
+    /** 归属机构ID(默认可登录机构) */
+    private Long homeOrgId;
+    /** 可登录机构列表(多点执业, 含归属机构); 前端据此渲染"切换机构" */
+    private List<OrgOption> allowedOrgs;
 }

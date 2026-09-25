@@ -7,10 +7,8 @@ import com.yb.hi.framework.tenant.LoginUser;
 import com.yb.hi.framework.tenant.TenantContext;
 import com.yb.hi.platform.dto.MenuNode;
 import com.yb.hi.platform.dto.RoleSaveReq;
-import com.yb.hi.platform.entity.SysOrg;
 import com.yb.hi.platform.entity.SysRole;
 import com.yb.hi.platform.entity.SysRoleMenu;
-import com.yb.hi.platform.mapper.SysOrgMapper;
 import com.yb.hi.platform.mapper.SysRoleMapper;
 import com.yb.hi.platform.mapper.SysRoleMenuMapper;
 import org.springframework.stereotype.Service;
@@ -19,7 +17,10 @@ import org.springframework.util.StringUtils;
 
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collections;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 
 /**
  * 角色服务: 全局预置角色(tenant_id=NULL, 只读) + 租户自定义角色(可增改删/授权)。
@@ -31,19 +32,21 @@ public class SysRoleService {
     private final SysRoleMapper roleMapper;
     private final SysRoleMenuMapper roleMenuMapper;
     private final SysMenuService menuService;
-    private final SysOrgMapper orgMapper;
+    private final OrgAccessGuard orgAccessGuard;
 
     /** 医院端不可见菜单: 平台级"医院管理"(顶级) + 标准字典"提取入库"/"字典维护" + "行政区划"(基础字典, 仅超管可见) */
     private static final List<String> HOSPITAL_EXCLUDED_MENUS = Arrays.asList("hospital-manage", "std-dict-import", "std-dict-maintain", "area-code");
     /** 超级管理员精简菜单: 工作台 + 医院管理 + 标准字典(浏览+维护) */
     private static final List<String> SUPER_ADMIN_MENUS = Arrays.asList("dashboard", "hospital-manage", "std-dict");
+    /** 机构系统管理员(ORG_ADMIN)额外排除: "系统管理"目录(机构管理/角色权限/菜单管理) */
+    private static final List<String> SYSTEM_MENUS = Arrays.asList("system", "org-manage", "role-manage", "menu-manage");
 
     public SysRoleService(SysRoleMapper roleMapper, SysRoleMenuMapper roleMenuMapper, SysMenuService menuService,
-                          SysOrgMapper orgMapper) {
+                          OrgAccessGuard orgAccessGuard) {
         this.roleMapper = roleMapper;
         this.roleMenuMapper = roleMenuMapper;
         this.menuService = menuService;
-        this.orgMapper = orgMapper;
+        this.orgAccessGuard = orgAccessGuard;
     }
 
     private Long currentTenant() {
@@ -66,6 +69,44 @@ public class SysRoleService {
 
     public SysRole getById(Long id) {
         return roleMapper.selectById(id);
+    }
+
+    /** 导出角色列表(xlsx 行集): 与页面查询同口径(编码/名称/备注关键字 + 类型 1全局预置/2租户自定义 + 状态) */
+    public Map<String, Object> exportRows(String keyword, Integer roleType, Integer status) {
+        List<List<String>> head = new ArrayList<>();
+        for (String h : new String[]{"角色编码", "角色名称", "类型", "菜单范围", "备注", "状态"}) {
+            head.add(Collections.singletonList(h));
+        }
+        String kw = StringUtils.hasText(keyword) ? keyword.trim().toLowerCase() : null;
+        List<List<Object>> rows = new ArrayList<>();
+        for (SysRole r : listVisible()) {
+            boolean global = r.getTenantId() == null || (r.getRoleType() != null && r.getRoleType() == 1);
+            if (kw != null && !nz(r.getRoleCode()).toLowerCase().contains(kw)
+                    && !nz(r.getRoleName()).toLowerCase().contains(kw)
+                    && !nz(r.getRemark()).toLowerCase().contains(kw)) {
+                continue;
+            }
+            if (roleType != null && (roleType == 1) != global) {
+                continue;
+            }
+            if (status != null && !status.equals(r.getStatus())) {
+                continue;
+            }
+            rows.add(Arrays.asList(nz(r.getRoleCode()), nz(r.getRoleName()),
+                    global ? "全局预置" : "租户自定义",
+                    r.getAllMenus() != null && r.getAllMenus() == 1 ? "全部菜单" : "按授权",
+                    nz(r.getRemark()),
+                    r.getStatus() != null && r.getStatus() == 1 ? "启用" : "停用"));
+        }
+        Map<String, Object> out = new LinkedHashMap<>();
+        out.put("head", head);
+        out.put("rows", rows);
+        out.put("total", rows.size());
+        return out;
+    }
+
+    private static String nz(String s) {
+        return s == null ? "" : s;
     }
 
     /** 按角色编码在可见范围内查找(优先本租户, 再全局) */
@@ -198,6 +239,9 @@ public class SysRoleService {
         if (Roles.ADMIN.equals(code)) {
             return menuService.treeExcludingKeys(adminExcludedMenus(lu));
         }
+        if (Roles.ORG_ADMIN.equals(code)) {
+            return menuService.treeExcludingKeys(orgAdminExcludedMenus(lu));
+        }
         SysRole role = null;
         if (lu.getRoleId() != null) {
             role = roleMapper.selectById(lu.getRoleId());
@@ -209,6 +253,9 @@ public class SysRoleService {
             return new ArrayList<>();
         }
         if (role.getAllMenus() != null && role.getAllMenus() == 1) {
+            if (Roles.ORG_ADMIN.equals(role.getRoleCode())) {
+                return menuService.treeExcludingKeys(orgAdminExcludedMenus(lu));
+            }
             return menuService.treeExcludingKeys(adminExcludedMenus(lu));
         }
         return menuService.treeByIds(getMenuIds(role.getId()));
@@ -228,10 +275,16 @@ public class SysRoleService {
 
     /** 当前登录用户是否归属牵头机构(org_level=1) */
     private boolean isLeadOrg(LoginUser lu) {
-        if (lu == null || lu.getOrgId() == null) {
-            return false;
-        }
-        SysOrg org = orgMapper.selectById(lu.getOrgId());
-        return org != null && org.getOrgLevel() != null && org.getOrgLevel() == 1;
+        return orgAccessGuard.isLead(lu);
+    }
+
+    /**
+     * 机构系统管理员(ORG_ADMIN, 非牵头医疗机构)排除集: 在 ADMIN 排除基础上追加"系统管理"目录
+     * 及其三子菜单(机构管理/角色权限/菜单管理), 即非牵头机构管理员不掌握全局机构/角色/菜单维护权。
+     */
+    private List<String> orgAdminExcludedMenus(LoginUser lu) {
+        List<String> ex = new ArrayList<>(adminExcludedMenus(lu));
+        ex.addAll(SYSTEM_MENUS);
+        return ex;
     }
 }

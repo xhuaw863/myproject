@@ -8,8 +8,10 @@ public final class Roles {
     private Roles() {
     }
 
-    /** 系统管理员(医院) */
+    /** 系统管理员(医共体牵头机构) */
     public static final String ADMIN = "ADMIN";
+    /** 机构系统管理员(非牵头医疗机构, 无系统管理菜单) */
+    public static final String ORG_ADMIN = "ORG_ADMIN";
     /** 挂号员 */
     public static final String REGISTRAR = "REGISTRAR";
     /** 医生 */

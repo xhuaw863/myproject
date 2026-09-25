@@ -23,6 +23,7 @@ import com.yb.hi.service.basedata.HisScheduleService;
 import com.yb.hi.service.basedata.HisStaffService;
 import com.yb.hi.service.doctor.HisVisitService;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.StringUtils;
@@ -46,16 +47,19 @@ public class HisRegistrationService extends ServiceImpl<HisRegistrationMapper, H
     private final HisDeptService deptService;
     private final OutpatientService outpatientService;
     private final HisVisitService visitService;
+    private final JdbcTemplate jdbcTemplate;
 
     public HisRegistrationService(HisPatientService patientService, HisScheduleService scheduleService,
                                   HisStaffService staffService, HisDeptService deptService,
-                                  OutpatientService outpatientService, HisVisitService visitService) {
+                                  OutpatientService outpatientService, HisVisitService visitService,
+                                  JdbcTemplate jdbcTemplate) {
         this.patientService = patientService;
         this.scheduleService = scheduleService;
         this.staffService = staffService;
         this.deptService = deptService;
         this.outpatientService = outpatientService;
         this.visitService = visitService;
+        this.jdbcTemplate = jdbcTemplate;
     }
 
     /** 分页查询挂号记录(按日期区间/状态/患者关键字) */
@@ -161,9 +165,13 @@ public class HisRegistrationService extends ServiceImpl<HisRegistrationMapper, H
         reg.setOperator(UserContext.username());
         save(reg);
 
-        // 扣减号源
-        schedule.setLeftNum(schedule.getLeftNum() - 1);
-        scheduleService.updateById(schedule);
+        // 扣减号源(原子UPDATE, 防并发超扣; affected=0 说明并发下号源已被抢完)
+        int affected = jdbcTemplate.update(
+                "UPDATE his_schedule SET left_num = left_num - 1, update_time = NOW() WHERE id = ? AND left_num > 0 AND deleted = 0",
+                scheduleId);
+        if (affected == 0) {
+            throw new BizException("号源已满或排班不存在");
+        }
 
         // 创建候诊就诊记录(医生站接诊来源)
         visitService.createFromRegistration(reg, patient);
@@ -203,13 +211,11 @@ public class HisRegistrationService extends ServiceImpl<HisRegistrationMapper, H
         // 取消候诊就诊记录
         visitService.cancelByRegistration(reg.getId());
 
-        // 回滚号源
+        // 回滚号源(原子UPDATE, 防并发重复回滚超过总号源)
         if (reg.getScheduleId() != null) {
-            HisSchedule schedule = scheduleService.getById(reg.getScheduleId());
-            if (schedule != null) {
-                schedule.setLeftNum((schedule.getLeftNum() == null ? 0 : schedule.getLeftNum()) + 1);
-                scheduleService.updateById(schedule);
-            }
+            jdbcTemplate.update(
+                    "UPDATE his_schedule SET left_num = left_num + 1, update_time = NOW() WHERE id = ? AND left_num < total_num AND deleted = 0",
+                    reg.getScheduleId());
         }
         log.info("退号成功: regNo={}, mdtrtId={}", reg.getRegNo(), reg.getMdtrtId());
     }

@@ -4,7 +4,7 @@
   HIS.views = HIS.views || {};
 
   var LEVELS = [
-    { v: 1, l: '县级(牵头)', t: 'danger' },
+    { v: 1, l: '县级', t: 'danger' },
     { v: 2, l: '乡镇', t: 'warning' },
     { v: 3, l: '村', t: 'success' }
   ];
@@ -30,10 +30,72 @@
         tree: [], flat: [], levelOpts: LEVELS, priceLvOpts: PRICE_LV,
         orgTypeOpts: [], orgTypeMap: {}, areaOpts: [], areaLoading: false,
         fixTypeOpts: [], fixTypeMap: {}, hospLvOpts: [], hospLvMap: {},
+        /* 查询条件(前端即时过滤) */
+        keyword: '', filterLevel: null, filterStatus: null,
+        exporting: false,
+        /* 显示模式: paged=true 分页 / false 全量(默认, localStorage 持久化) */
+        paged: (function () { try { return localStorage.getItem('his.orgPaged') === '1'; } catch (e) { return false; } })(),
+        page: 1, size: 20,
         dlg: false, editing: false, activeTab: 'basic', form: this.empty()
       };
     },
     created: function () { this.loadOrgTypes(); this.load(); },
+    computed: {
+      /* 查询过滤: 命中节点保留其全部子级(上下文), 未命中但有命中后代的节点仅保留命中分支 */
+      filteredTree: function () {
+        var vm = this;
+        var kw = (vm.keyword || '').trim().toLowerCase();
+        var lv = (vm.filterLevel === '' || vm.filterLevel == null) ? null : vm.filterLevel;
+        var st = (vm.filterStatus === '' || vm.filterStatus == null) ? null : vm.filterStatus;
+        if (!kw && lv === null && st === null) { return vm.tree; }
+        function match(n) {
+          if (kw && String(n.orgName || '').toLowerCase().indexOf(kw) < 0
+            && String(n.orgCode || '').toLowerCase().indexOf(kw) < 0
+            && String(n.leader || '').toLowerCase().indexOf(kw) < 0) { return false; }
+          if (lv !== null && Number(n.orgLevel) !== lv) { return false; }
+          if (st !== null && n.status !== st) { return false; }
+          return true;
+        }
+        function walk(nodes) {
+          var out = [];
+          (nodes || []).forEach(function (n) {
+            var self = match(n);
+            var kids = walk(n.children);
+            if (self || kids.length) {
+              var c = Object.assign({}, n);
+              c.children = self ? (n.children || []) : kids;
+              out.push(c);
+            }
+          });
+          return out;
+        }
+        return walk(vm.tree);
+      },
+      /* 过滤后机构总数(含各级节点) */
+      filteredCount: function () {
+        var n = 0;
+        (function walk(nodes) { (nodes || []).forEach(function (x) { n++; walk(x.children); }); })(this.filteredTree);
+        return n;
+      },
+      /* 分页模式按摊平后的明细行切片(DFS 序, 与树展开顺序一致); 全量模式直接返过滤树 */
+      pagedTree: function () {
+        if (!this.paged) { return this.filteredTree; }
+        return this.flatRows.slice((this.page - 1) * this.size, this.page * this.size);
+      },
+      /* 过滤树 DFS 摊平(去 children, 渲染为平面行); 层级信息由「级别/上级」列体现 */
+      flatRows: function () {
+        var out = [];
+        (function walk(nodes) {
+          (nodes || []).forEach(function (n) {
+            var c = Object.assign({}, n);
+            delete c.children;
+            out.push(c);
+            walk(n.children);
+          });
+        })(this.filteredTree);
+        return out;
+      }
+    },
     methods: {
       loadOrgTypes: function () {
         var vm = this;
@@ -57,7 +119,7 @@
       },
       empty: function () {
         return {
-          id: null, orgCode: '', orgName: '', orgLevel: 1, parentId: 0, orgType: '',
+          id: null, orgCode: '', orgName: '', orgLevel: 1, isLead: 0, parentId: 0, orgType: '',
           fixmedinsCode: '', fixmedinsName: '', uscc: '', fixmedinsType: '', hospLv: '',
           pdLicenseNo: '', bedCnt: null, priceLv: null, admvsCode: '', leader: '', phone: '', address: '',
           mdtrtareaAdmvs: '', insuplcAdmdvs: '', apiUrl: '', fileDownloadUrl: '', recerSysCode: '',
@@ -71,9 +133,32 @@
       load: function () {
         var vm = this; vm.loading = true;
         HIS.get('/api/sys/org/tree')
-          .then(function (d) { vm.tree = d || []; vm.flat = HIS.flattenOrgs(vm.tree); })
+          .then(function (d) { vm.tree = d || []; vm.flat = HIS.flattenOrgs(vm.tree); vm.page = 1; })
           .catch(HIS.notifyError)
           .finally(function () { vm.loading = false; });
+      },
+      /* 查询条件变化: 回第 1 页(过滤为计算属性即时生效) */
+      onQueryChange: function () { this.page = 1; },
+      /* 分页/全量模式切换(持久化)与翻页 */
+      onPagedToggle: function () {
+        this.page = 1;
+        try { localStorage.setItem('his.orgPaged', this.paged ? '1' : '0'); } catch (e) { }
+      },
+      /* 序号列: 分页模式跨页连续编号 */
+      seqNo: function (i) { return this.paged ? (this.page - 1) * this.size + i + 1 : i + 1; },
+      onPage: function (p) { this.page = p; },
+      onSize: function (s) { this.size = s; this.page = 1; },
+      /* 导出(xlsx): 沿用当前查询条件, 层级树摊平导出全部匹配行 */
+      exportRows: function () {
+        var vm = this;
+        var q = '/api/sys/org/export?1=1';
+        if (vm.keyword && vm.keyword.trim()) { q += '&keyword=' + encodeURIComponent(vm.keyword.trim()); }
+        if (vm.filterLevel !== '' && vm.filterLevel != null) { q += '&orgLevel=' + vm.filterLevel; }
+        if (vm.filterStatus !== '' && vm.filterStatus != null) { q += '&status=' + vm.filterStatus; }
+        vm.exporting = true;
+        HIS.download(q).then(function (name) {
+          HIS.notifySuccess('已导出: ' + name);
+        }).catch(HIS.notifyError).finally(function () { vm.exporting = false; });
       },
       openCreate: function (row) {
         this.editing = false;
@@ -91,7 +176,7 @@
         var vm = this;
         this.form = {
           id: row.id, orgCode: row.orgCode, orgName: row.orgName,
-          orgLevel: Number(row.orgLevel) || 1, parentId: row.parentId == null ? 0 : row.parentId,
+          orgLevel: Number(row.orgLevel) || 1, isLead: row.isLead == null ? 0 : Number(row.isLead), parentId: row.parentId == null ? 0 : row.parentId,
           orgType: row.orgType || '', fixmedinsCode: row.fixmedinsCode || '', admvsCode: row.admvsCode || '',
           fixmedinsName: row.fixmedinsName || '', uscc: row.uscc || '',
           fixmedinsType: row.fixmedinsType || '', hospLv: row.hospLv || '',
@@ -147,12 +232,21 @@
       '  <div class="toolbar">',
       '    <el-button type="primary" @click="openCreate(null)">新增县级机构</el-button>',
       '    <el-button @click="load">刷新</el-button>',
+      '    <el-input v-model="keyword" placeholder="机构名称/编码/负责人" clearable style="width:190px" @input="onQueryChange" @clear="onQueryChange"></el-input>',
+      '    <el-select v-model="filterLevel" placeholder="全部级别" clearable style="width:130px" @change="onQueryChange"><el-option v-for="o in levelOpts" :key="o.v" :label="o.l" :value="o.v"></el-option></el-select>',
+      '    <el-select v-model="filterStatus" placeholder="全部状态" clearable style="width:110px" @change="onQueryChange"><el-option label="启用" :value="1"></el-option><el-option label="停用" :value="0"></el-option></el-select>',
+      '    <el-button :loading="exporting" @click="exportRows">导出</el-button>',
+      '    <el-radio-group v-model="paged" size="small" @change="onPagedToggle" title="显示模式: 全量=树形展示所有行; 分页=按明细行分页平铺展示" style="margin-left:6px;">',
+      '      <el-radio-button :label="false">全量</el-radio-button>',
+      '      <el-radio-button :label="true">分页</el-radio-button>',
+      '    </el-radio-group>',
+      '    <span style="color:#909399;font-size:13px;">共 {{ filteredCount }} 个机构</span>',
       '  </div>',
-      '  <el-table :data="tree" v-loading="loading" border stripe size="small" row-key="id" :tree-props="{ children: \'children\' }" default-expand-all>',
-      '    <el-table-column type="index" label="序号" width="60"></el-table-column>',
+      '  <el-table :data="pagedTree" v-loading="loading" border stripe size="small" row-key="id" :tree-props="{ children: \'children\' }" default-expand-all>',
+      '    <el-table-column type="index" :index="seqNo" label="序号" width="60"></el-table-column>',
       '    <el-table-column prop="orgName" label="机构名称" min-width="220"></el-table-column>',
       '    <el-table-column prop="orgCode" label="机构编码" width="150"></el-table-column>',
-      '    <el-table-column label="级别" width="120"><template #default="s"><el-tag size="small" :type="levelTag(s.row.orgLevel)">{{ levelLabel(s.row.orgLevel) }}</el-tag></template></el-table-column>',
+      '    <el-table-column label="级别" width="150"><template #default="s"><el-tag size="small" :type="levelTag(s.row.orgLevel)">{{ levelLabel(s.row.orgLevel) }}</el-tag><el-tag v-if="s.row.isLead===1" size="small" type="danger" effect="dark" style="margin-left:4px;">牵头</el-tag></template></el-table-column>',
       '    <el-table-column label="机构类型" width="140"><template #default="s">{{ s.row.orgTypeName || orgTypeMap[s.row.orgType] || s.row.orgType || \'-\' }}</template></el-table-column>',
       '    <el-table-column prop="fixmedinsCode" label="定点机构编号" width="150"></el-table-column>',
       '    <el-table-column prop="leader" label="负责人" width="100"></el-table-column>',
@@ -166,6 +260,7 @@
       '      <el-button link type="danger" @click="del(s.row)">删除</el-button>',
       '    </template></el-table-column>',
       '  </el-table>',
+      '  <el-pagination v-if="paged" style="margin-top:10px;justify-content:flex-end;" background layout="total, sizes, prev, pager, next" :total="flatRows.length" :page-size="size" :page-sizes="[10,20,50,100]" :current-page="page" @current-change="onPage" @size-change="onSize"></el-pagination>',
       '  <el-dialog v-model="dlg" :title="editing?\'编辑机构\':\'新增机构\'" width="680px" top="6vh">',
       '    <el-form :model="form" label-width="110px">',
       '      <el-tabs v-model="activeTab">',
@@ -178,9 +273,12 @@
       '          <el-option v-for="o in levelOpts" :key="o.v" :label="o.l" :value="o.v"></el-option>',
       '        </el-select>',
       '      </el-form-item>',
+      '      <el-form-item label="牵头机构" title="每医共体仅一个牵头机构(如县人民医院); 中医院/妇幼等县级成员机构保持「成员」即可">',
+      '        <el-switch v-model="form.isLead" :active-value="1" :inactive-value="0" active-text="牵头" inactive-text="成员"></el-switch>',
+      '      </el-form-item>',
       '      <el-form-item label="上级机构">',
       '        <el-select v-model="form.parentId" style="width:100%" filterable>',
-      '          <el-option :value="0" label="无(顶级/县级牵头)"></el-option>',
+      '          <el-option :value="0" label="无(顶级/县级)"></el-option>',
       '          <el-option v-for="o in flat" :key="o.id" :label="o.label" :value="o.id" :disabled="editing && o.id === form.id"></el-option>',
       '        </el-select>',
       '      </el-form-item>',

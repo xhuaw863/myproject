@@ -9,11 +9,7 @@ import com.yb.hi.dto.community.CatalogMapEffReq;
 import com.yb.hi.entity.community.HisYbMapLog;
 import com.yb.hi.framework.common.BizException;
 import com.yb.hi.framework.common.R;
-import com.yb.hi.framework.common.Roles;
-import com.yb.hi.framework.tenant.LoginUser;
-import com.yb.hi.framework.tenant.UserContext;
-import com.yb.hi.platform.entity.SysOrg;
-import com.yb.hi.platform.mapper.SysOrgMapper;
+import com.yb.hi.platform.service.OrgAccessGuard;
 import com.yb.hi.service.community.CatalogMapService;
 import org.springframework.format.annotation.DateTimeFormat;
 import org.springframework.web.bind.annotation.*;
@@ -36,11 +32,11 @@ import java.util.Map;
 public class CatalogMapController {
 
     private final CatalogMapService catalogMapService;
-    private final SysOrgMapper orgMapper;
+    private final OrgAccessGuard guard;
 
-    public CatalogMapController(CatalogMapService catalogMapService, SysOrgMapper orgMapper) {
+    public CatalogMapController(CatalogMapService catalogMapService, OrgAccessGuard guard) {
         this.catalogMapService = catalogMapService;
-        this.orgMapper = orgMapper;
+        this.guard = guard;
     }
 
     /** 覆盖率看板: 每目录 {total, mapped, unmapped} */
@@ -183,20 +179,6 @@ public class CatalogMapController {
 
     /** 仅租户牵头机构(org_level=1)的 ADMIN 可写对照; 平台超管只读不参与写。 */
     private void requireLeadOrg() {
-        LoginUser lu = UserContext.get();
-        if (lu == null) {
-            throw new BizException(401, "未登录");
-        }
-        if (!Roles.ADMIN.equals(lu.getRole())) {
-            throw new BizException(403, "仅牵头机构管理员可维护医保目录对照");
-        }
-        Long orgId = lu.getOrgId();
-        if (orgId == null) {
-            throw new BizException(403, "当前用户未归属机构, 无法维护医保目录对照");
-        }
-        SysOrg org = orgMapper.selectById(orgId);
-        if (org == null || org.getOrgLevel() == null || org.getOrgLevel() != 1) {
-            throw new BizException(403, "仅牵头机构(县级)可维护医保目录对照");
-        }
+        guard.requireLeadOrg("仅牵头机构管理员可维护医保目录对照");
     }
 }

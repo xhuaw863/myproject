@@ -5,9 +5,11 @@ import com.yb.hi.framework.common.BizException;
 import com.yb.hi.framework.common.Roles;
 import com.yb.hi.framework.tenant.LoginUser;
 import com.yb.hi.framework.tenant.TenantContext;
+import com.yb.hi.framework.tenant.UserContext;
 import com.yb.hi.framework.util.JwtUtil;
 import com.yb.hi.platform.dto.LoginReq;
 import com.yb.hi.platform.dto.LoginResp;
+import com.yb.hi.platform.dto.OrgOption;
 import com.yb.hi.platform.dto.OrgSaveReq;
 import com.yb.hi.platform.dto.TenantRegisterReq;
 import com.yb.hi.platform.entity.SysOrg;
@@ -17,6 +19,9 @@ import com.yb.hi.platform.entity.SysUser;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+
+import java.util.ArrayList;
+import java.util.List;
 
 /**
  * 鉴权服务: 登录 / 医院注册
@@ -30,14 +35,17 @@ public class AuthService {
     private final SysRoleService roleService;
     private final SysOrgService orgService;
     private final JwtUtil jwtUtil;
+    private final SysUserOrgService userOrgService;
 
     public AuthService(SysTenantService tenantService, SysUserService userService,
-                       SysRoleService roleService, SysOrgService orgService, JwtUtil jwtUtil) {
+                       SysRoleService roleService, SysOrgService orgService, JwtUtil jwtUtil,
+                       SysUserOrgService userOrgService) {
         this.tenantService = tenantService;
         this.userService = userService;
         this.roleService = roleService;
         this.orgService = orgService;
         this.jwtUtil = jwtUtil;
+        this.userOrgService = userOrgService;
     }
 
     /** 登录 */
@@ -62,52 +70,18 @@ public class AuthService {
             if (user.getStatus() != null && user.getStatus() == 0) {
                 throw new BizException("账号已停用");
             }
-            // 解析权威角色: 优先 user.roleId, 为空则按 role 字符串回退匹配
-            SysRole role = null;
-            Long roleId = user.getRoleId();
-            if (roleId != null) {
-                role = roleService.getById(roleId);
+            // 多点执业: 归属机构为默认可登录机构; 解析本医共体内可登录机构集
+            Long homeOrgId = user.getOrgId();
+            List<SysOrg> allowed = userOrgService.resolveAllowedOrgs(user.getId(), homeOrgId);
+            Long sessionOrgId = homeOrgId;
+            if (req.getOrgId() != null) {
+                if (!containsOrg(allowed, req.getOrgId())) {
+                    throw new BizException(403, "无权登录该机构");
+                }
+                sessionOrgId = req.getOrgId();
             }
-            if (role == null) {
-                role = roleService.findByCode(user.getRole());
-                roleId = role == null ? null : role.getId();
-            }
-            String roleName = role != null ? role.getRoleName() : user.getRole();
-            Long orgId = user.getOrgId();
-            String orgName = null;
-            if (orgId != null) {
-                SysOrg org = orgService.getById(orgId);
-                orgName = org == null ? null : org.getOrgName();
-            }
-
-            LoginUser lu = new LoginUser();
-            lu.setUserId(user.getId());
-            lu.setTenantId(tenant.getId());
-            lu.setUsername(user.getUsername());
-            lu.setRealName(user.getRealName());
-            lu.setRole(user.getRole());
-            lu.setStaffId(user.getStaffId());
-            lu.setDeptId(user.getDeptId());
-            lu.setOrgId(orgId);
-            lu.setRoleId(roleId);
-            lu.setTenantName(tenant.getTenantName());
-
-            LoginResp resp = new LoginResp();
-            resp.setToken(jwtUtil.createToken(lu));
-            resp.setUserId(user.getId());
-            resp.setTenantId(tenant.getId());
-            resp.setTenantCode(tenant.getTenantCode());
-            resp.setTenantName(tenant.getTenantName());
-            resp.setUsername(user.getUsername());
-            resp.setRealName(user.getRealName());
-            resp.setRole(user.getRole());
-            resp.setStaffId(user.getStaffId());
-            resp.setDeptId(user.getDeptId());
-            resp.setOrgId(orgId);
-            resp.setRoleId(roleId);
-            resp.setOrgName(orgName);
-            resp.setRoleName(roleName);
-            log.info("登录成功: tenant={}, user={}", tenant.getTenantCode(), user.getUsername());
+            LoginResp resp = buildLoginResp(user, tenant, sessionOrgId, homeOrgId, allowed);
+            log.info("登录成功: tenant={}, user={}, org={}", tenant.getTenantCode(), user.getUsername(), sessionOrgId);
             return resp;
         } finally {
             TenantContext.set(prev);
@@ -152,11 +126,12 @@ public class AuthService {
         Long prev = TenantContext.get();
         try {
             TenantContext.set(tenantId);
-            // 默认县级(牵头)机构: 让新医院开通即有机构归属, 无需等待重启迁移
+            // 默认县级牵头机构: 让新医院开通即有机构归属, 无需等待重启迁移
             OrgSaveReq org = new OrgSaveReq();
             org.setOrgCode(tenant.getTenantCode());
             org.setOrgName(tenant.getTenantName());
             org.setOrgLevel(1);
+            org.setIsLead(1);
             org.setParentId(0L);
             org.setOrgType("A100");
             org.setFixmedinsCode(tenant.getFixmedinsCode());
@@ -180,6 +155,122 @@ public class AuthService {
         }
         log.info("医院开通成功: id={}, code={}, 管理员={}", tenantId, tenant.getTenantCode(), req.getAdminUsername());
         return tenantId;
+    }
+
+    /**
+     * 切换当前登录账号的活动机构(多点执业): 校验目标机构在可登录范围内, 重新签发令牌。
+     * 令牌身份取自当前 UserContext(拦截器已按 JWT 设置 TenantContext)。
+     */
+    public LoginResp switchOrg(Long orgId) {
+        LoginUser cur = UserContext.get();
+        if (cur == null) {
+            throw new BizException(401, "未登录");
+        }
+        if (orgId == null) {
+            throw new BizException(400, "目标机构不能为空");
+        }
+        Long prev = TenantContext.get();
+        try {
+            TenantContext.set(cur.getTenantId());
+            SysTenant tenant = tenantService.getById(cur.getTenantId());
+            SysUser user = userService.getByUsername(cur.getUsername());
+            if (tenant == null || user == null) {
+                throw new BizException("用户或医院不存在");
+            }
+            Long homeOrgId = user.getOrgId();
+            List<SysOrg> allowed = userOrgService.resolveAllowedOrgs(user.getId(), homeOrgId);
+            if (!containsOrg(allowed, orgId)) {
+                throw new BizException(403, "无权登录该机构");
+            }
+            LoginResp resp = buildLoginResp(user, tenant, orgId, homeOrgId, allowed);
+            log.info("切换机构: user={}, org={}", user.getUsername(), orgId);
+            return resp;
+        } finally {
+            TenantContext.set(prev);
+        }
+    }
+
+    /** 组装登录响应(含令牌): 登录与切换机构共用 */
+    private LoginResp buildLoginResp(SysUser user, SysTenant tenant, Long sessionOrgId, Long homeOrgId, List<SysOrg> allowed) {
+        SysRole role = resolveRole(user);
+        Long roleId = role == null ? null : role.getId();
+        String roleName = role != null ? role.getRoleName() : user.getRole();
+        SysOrg sessionOrg = sessionOrgId == null ? null : orgService.getById(sessionOrgId);
+        String orgName = sessionOrg == null ? null : sessionOrg.getOrgName();
+        boolean leadOrg = sessionOrg != null && sessionOrg.getIsLead() != null && sessionOrg.getIsLead() == 1;
+
+        LoginUser lu = new LoginUser();
+        lu.setUserId(user.getId());
+        lu.setTenantId(tenant.getId());
+        lu.setUsername(user.getUsername());
+        lu.setRealName(user.getRealName());
+        lu.setRole(user.getRole());
+        lu.setStaffId(user.getStaffId());
+        lu.setDeptId(user.getDeptId());
+        lu.setOrgId(sessionOrgId);
+        lu.setRoleId(roleId);
+        lu.setLeadOrg(leadOrg);
+        lu.setTenantName(tenant.getTenantName());
+
+        LoginResp resp = new LoginResp();
+        resp.setToken(jwtUtil.createToken(lu));
+        resp.setUserId(user.getId());
+        resp.setTenantId(tenant.getId());
+        resp.setTenantCode(tenant.getTenantCode());
+        resp.setTenantName(tenant.getTenantName());
+        resp.setUsername(user.getUsername());
+        resp.setRealName(user.getRealName());
+        resp.setRole(user.getRole());
+        resp.setStaffId(user.getStaffId());
+        resp.setDeptId(user.getDeptId());
+        resp.setOrgId(sessionOrgId);
+        resp.setRoleId(roleId);
+        resp.setOrgName(orgName);
+        resp.setLeadOrg(leadOrg);
+        resp.setRoleName(roleName);
+        resp.setHomeOrgId(homeOrgId);
+        resp.setAllowedOrgs(toOptions(allowed, homeOrgId));
+        return resp;
+    }
+
+    /** 解析权威角色: 优先 user.roleId, 为空则按 role 字符串回退匹配 */
+    private SysRole resolveRole(SysUser user) {
+        SysRole role = null;
+        if (user.getRoleId() != null) {
+            role = roleService.getById(user.getRoleId());
+        }
+        if (role == null) {
+            role = roleService.findByCode(user.getRole());
+        }
+        return role;
+    }
+
+    private boolean containsOrg(List<SysOrg> orgs, Long orgId) {
+        if (orgs == null || orgId == null) {
+            return false;
+        }
+        for (SysOrg o : orgs) {
+            if (orgId.equals(o.getId())) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private List<OrgOption> toOptions(List<SysOrg> orgs, Long homeOrgId) {
+        List<OrgOption> list = new ArrayList<>();
+        if (orgs == null) {
+            return list;
+        }
+        for (SysOrg o : orgs) {
+            OrgOption op = new OrgOption();
+            op.setOrgId(o.getId());
+            op.setOrgName(o.getOrgName());
+            op.setOrgLevel(o.getOrgLevel());
+            op.setHome(homeOrgId != null && homeOrgId.equals(o.getId()));
+            list.add(op);
+        }
+        return list;
     }
 
     private boolean isBlank(String s) {

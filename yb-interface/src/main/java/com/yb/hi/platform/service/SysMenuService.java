@@ -10,9 +10,13 @@ import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
 
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collection;
+import java.util.Collections;
 import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 
 /**
@@ -40,6 +44,56 @@ public class SysMenuService {
     /** 全量目录树 */
     public List<MenuNode> tree() {
         return buildTree(listAll(), null);
+    }
+
+    /** 导出菜单列表(xlsx 行集): 树 DFS 摊平, 与页面查询同口径(名称/键/组件关键字 + 类型 1目录/2菜单 + 状态) */
+    public Map<String, Object> exportRows(String keyword, Integer menuType, Integer status) {
+        List<List<String>> head = new ArrayList<>();
+        for (String h : new String[]{"菜单名称", "菜单键", "上级菜单", "类型", "组件", "阶段", "图标", "排序号", "显示", "状态"}) {
+            head.add(Collections.singletonList(h));
+        }
+        String kw = StringUtils.hasText(keyword) ? keyword.trim().toLowerCase() : null;
+        List<List<Object>> rows = new ArrayList<>();
+        flattenForExport(tree(), null, rows, kw, menuType, status);
+        Map<String, Object> out = new LinkedHashMap<>();
+        out.put("head", head);
+        out.put("rows", rows);
+        out.put("total", rows.size());
+        return out;
+    }
+
+    /** DFS 摊平导出行: 命中才写入但仍递归子级(与前端树过滤保留层级上下文同口径) */
+    private void flattenForExport(List<MenuNode> nodes, String parentName, List<List<Object>> rows,
+                                  String kw, Integer menuType, Integer status) {
+        for (MenuNode n : nodes) {
+            if (matchExport(n, kw, menuType, status)) {
+                rows.add(Arrays.asList(
+                        nz(n.getMenuName()), nz(n.getMenuKey()), parentName == null ? "" : parentName,
+                        n.getMenuType() != null && n.getMenuType() == 1 ? "目录" : "菜单",
+                        nz(n.getComp()), nz(n.getPhase()), nz(n.getIcon()), n.getSortNo(),
+                        n.getVisible() != null && n.getVisible() == 1 ? "是" : "否",
+                        n.getStatus() != null && n.getStatus() == 1 ? "启用" : "停用"));
+            }
+            if (n.getChildren() != null && !n.getChildren().isEmpty()) {
+                flattenForExport(n.getChildren(), n.getMenuName(), rows, kw, menuType, status);
+            }
+        }
+    }
+
+    private static boolean matchExport(MenuNode n, String kw, Integer menuType, Integer status) {
+        if (kw != null && !nz(n.getMenuName()).toLowerCase().contains(kw)
+                && !nz(n.getMenuKey()).toLowerCase().contains(kw)
+                && !nz(n.getComp()).toLowerCase().contains(kw)) {
+            return false;
+        }
+        if (menuType != null && !menuType.equals(n.getMenuType())) {
+            return false;
+        }
+        return status == null || status.equals(n.getStatus());
+    }
+
+    private static String nz(String s) {
+        return s == null ? "" : s;
     }
 
     /** 仅保留指定 menuKey 的顶级节点(及其子树); 用于平台超管精简菜单 */

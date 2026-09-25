@@ -52,7 +52,7 @@
   HIS.views.PatientManage = {
     data: function () {
       return {
-        loading: false, list: [], total: 0, page: 1, size: 15, keyword: '',
+        loading: false, list: [], total: 0, page: 1, size: 20, keyword: '',
         gendOpts: [], insutypeOpts: [], certTypeOpts: [],
         gendMap: {}, insutypeMap: {}, certTypeMap: {},
         /* A 身份人口学字典(医保 cv_code 优先, 其余湖北采集规范 hbvalue) */
@@ -413,11 +413,20 @@
       };
     },
     created: function () { this.loadRefs(); },
+    computed: {
+      /* 挂号科室下拉仅列科室级节点(deptLevel=2): 诊室(第3层)不作为科室可选;
+         depts 仍保留全量供 deptName(id) 解析历史号源的诊室科室 */
+      deptFilterOptions: function () {
+        return (this.depts || []).filter(function (d) { return Number(d.deptLevel) === 2; });
+      }
+    },
     methods: {
       loadRefs: function () {
         var vm = this;
-        HIS.get('/api/his/dept/enabled').then(function (d) { vm.depts = d || []; }).catch(HIS.notifyError);
-        HIS.get('/api/his/staff/list?staffType=' + encodeURIComponent('医师')).then(function (d) { vm.staffs = d || []; }).catch(HIS.notifyError);
+        /* 挂号科室仅本机构已开诊的门诊科室(后端硬限定登录机构) */
+        HIS.get('/api/his/dept/outpatient').then(function (d) { vm.depts = d || []; }).catch(HIS.notifyError);
+        var orgId = HIS.currentOrgId();
+        HIS.get('/api/his/staff/list?staffType=' + encodeURIComponent('医师') + '&withSubOrgs=false' + (orgId ? ('&orgId=' + orgId) : '')).then(function (d) { vm.staffs = d || []; }).catch(HIS.notifyError);
       },
       searchPatients: function () {
         var vm = this; vm.pLoading = true;
@@ -433,12 +442,32 @@
       staffName: function (id) { for (var i = 0; i < this.staffs.length; i++) { if (this.staffs[i].id === id) { return this.staffs[i].staffName; } } return '-'; },
       loadSchedules: function () {
         var vm = this; vm.sLoading = true; vm.selectedSchedule = null;
-        var q = '/api/his/schedule/list?1=1';
+        /* /schedule/list 为分页结构: 显式拉大页容量取全当日号源, 兼容数组/分页两种响应 */
+        var q = '/api/his/schedule/list?1=1&page=1&size=200';
         if (vm.filterDept) { q += '&deptId=' + vm.filterDept; }
         if (vm.filterDate) { q += '&from=' + vm.filterDate + '&to=' + vm.filterDate; }
         HIS.get(q).then(function (d) {
-          var all = d || [];
-          vm.schedules = all.filter(function (s) { return s.status === 1; });
+          var all = (d && d.records) ? d.records : (d || []);
+          /* /schedule/list 分页行是 JdbcTemplate 下划线列名: 归一化为驼峰供模板/挂号校验使用 */
+          vm.schedules = all.map(function (s) {
+            return {
+              id: s.id,
+              deptId: s.deptId != null ? s.deptId : s.dept_id,
+              /* 后端已回带科室/医师名: 历史脏数据(非门诊科室排班/跨机构医师)不在本地 refs 时兜底显示, 避免列展示"-" */
+              deptName: s.deptName || s.dept_name,
+              staffName: s.staffName || s.staff_name,
+              staffId: s.staffId != null ? s.staffId : s.staff_id,
+              workDate: s.workDate || s.work_date,
+              timeType: s.timeType || s.time_type,
+              regLevelCode: s.regLevelCode || s.reg_level_code,
+              regLevelName: s.regLevelName || s.reg_level_name,
+              regFee: s.regFee != null ? s.regFee : s.reg_fee,
+              totalNum: s.totalNum != null ? s.totalNum : s.total_num,
+              leftNum: s.leftNum != null ? s.leftNum : s.left_num,
+              status: s.status,
+              room: s.room
+            };
+          }).filter(function (s) { return s.status === 1; });
         }).catch(HIS.notifyError).finally(function () { vm.sLoading = false; });
       },
       chooseSchedule: function (row) { this.selectedSchedule = row; },
@@ -490,7 +519,7 @@
       /* ---- 第二步: 选择号源 ---- */
       '    <el-divider content-position="left">第二步 · 选择号源</el-divider>',
       '    <div class="toolbar">',
-      '      <el-select v-model="filterDept" placeholder="全部科室" clearable style="width:160px" @change="loadSchedules"><el-option v-for="d in depts" :key="d.id" :label="d.deptName" :value="d.id"></el-option></el-select>',
+      '      <el-select v-model="filterDept" placeholder="全部科室" clearable style="width:160px" @change="loadSchedules"><el-option v-for="d in deptFilterOptions" :key="d.id" :label="d.deptName" :value="d.id"></el-option></el-select>',
       '      <el-date-picker v-model="filterDate" type="date" value-format="YYYY-MM-DD" placeholder="出诊日期" style="width:160px" @change="loadSchedules"></el-date-picker>',
       '      <el-button @click="loadSchedules">查询号源</el-button>',
       '      <el-select v-model="medType" style="width:140px"><el-option label="11-普通门诊" value="11"></el-option><el-option label="92-门诊慢特病" value="92"></el-option></el-select>',
@@ -498,8 +527,8 @@
       '    </div>',
       '    <el-table :data="schedules" v-loading="sLoading" border stripe size="small" height="240" highlight-current-row @current-change="chooseSchedule">',
       '      <el-table-column type="index" label="序号" width="60"></el-table-column>',
-      '      <el-table-column label="科室" width="120"><template #default="s">{{ deptName(s.row.deptId) }}</template></el-table-column>',
-      '      <el-table-column label="医师" width="100"><template #default="s">{{ staffName(s.row.staffId) }}</template></el-table-column>',
+      '      <el-table-column label="科室" width="120"><template #default="s">{{ s.row.deptName || deptName(s.row.deptId) }}</template></el-table-column>',
+      '      <el-table-column label="医师" width="100"><template #default="s">{{ s.row.staffName || staffName(s.row.staffId) }}</template></el-table-column>',
       '      <el-table-column prop="workDate" label="出诊日期" width="120"></el-table-column>',
       '      <el-table-column label="时段" width="70"><template #default="s">{{ timeLabel(s.row.timeType) }}</template></el-table-column>',
       '      <el-table-column prop="regLevelName" label="号别" width="100"></el-table-column>',
@@ -518,7 +547,7 @@
   HIS.views.UnregisterDesk = {
     data: function () {
       return {
-        loading: false, list: [], total: 0, page: 1, size: 15,
+        loading: false, list: [], total: 0, page: 1, size: 20,
         range: [], status: 1, keyword: '', regStatus: REG_STATUS
       };
     },

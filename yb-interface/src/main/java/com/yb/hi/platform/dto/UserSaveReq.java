@@ -2,6 +2,8 @@ package com.yb.hi.platform.dto;
 
 import lombok.Data;
 
+import java.util.List;
+
 /**
  * 用户新增/修改请求
  */
@@ -23,4 +25,6 @@ public class UserSaveReq {
     private Long roleId;
     private String phone;
     private Integer status;
+    /** 可登录机构ID列表(多点执业); 归属机构 orgId 总是保留, null=不改动 */
+    private List<Long> loginOrgIds;
 }

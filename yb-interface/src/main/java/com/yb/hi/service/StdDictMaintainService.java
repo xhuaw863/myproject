@@ -200,6 +200,32 @@ public class StdDictMaintainService {
         return out;
     }
 
+    /** 按编码取标准字典指定列的原始值(列名经 information_schema 白名单校验, 防注入); 查不到返回 null。
+     *  同码多行(历史版本)时取任一行非空值, 全为空则返回空串对应的首个值。供业务侧按医保码回查附加属性(如甲乙丙类)。 */
+    public String valueByCode(String key, String code, String col) {
+        if (!StringUtils.hasText(code) || !StringUtils.hasText(col)) {
+            return null;
+        }
+        StdDict dict = requireDict(key);
+        if (!hasColumn(key, col)) {
+            log.warn("valueByCode: 字典[{}]无列[{}]", key, col);
+            return null;
+        }
+        String sql = "SELECT " + col + " AS v FROM " + dict.getTable() + " WHERE " + dict.getCodeCol() + " = ? LIMIT 1";
+        try (Connection conn = dataSource.getConnection();
+             PreparedStatement ps = conn.prepareStatement(sql)) {
+            ps.setString(1, code.trim());
+            try (ResultSet rs = ps.executeQuery()) {
+                if (rs.next()) {
+                    return rs.getString("v");
+                }
+            }
+        } catch (Exception e) {
+            log.warn("标准字典按编码取列失败 key={} col={}: {}", key, col, e.getMessage());
+        }
+        return null;
+    }
+
     /** 按名称模糊反查字典编码(供留痕按医保名称检索), 最多返回 limit 个码 */
     public List<String> codesByNameLike(String key, String kw, int limit) {
         List<String> out = new ArrayList<>();

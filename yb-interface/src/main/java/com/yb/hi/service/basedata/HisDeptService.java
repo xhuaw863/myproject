@@ -3,11 +3,15 @@ package com.yb.hi.service.basedata;
 import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
 import com.yb.hi.entity.basedata.HisDept;
 import com.yb.hi.mapper.basedata.HisDeptMapper;
+import com.yb.hi.platform.entity.SysOrg;
+import com.yb.hi.platform.service.SysOrgService;
 import com.yb.hi.service.StdDictQueryService;
 import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
 
 import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -18,10 +22,17 @@ import java.util.Map;
 @Service
 public class HisDeptService extends ServiceImpl<HisDeptMapper, HisDept> {
 
-    private final StdDictQueryService stdDict;
+    /** 可排班/可挂号的科室大类: 仅门诊科室(住院/医技/行政后勤不产生号源) */
+    public static final String CATEGORY_OUTPATIENT = "门诊科室";
+    /** 可对外挂号的层级: 2-科室 / 3-诊室(1-大类仅为导航节点, 窗口级挂号无意义) */
+    private static final List<Integer> SCHEDULE_LEVELS = Arrays.asList(2, 3);
 
-    public HisDeptService(StdDictQueryService stdDict) {
+    private final StdDictQueryService stdDict;
+    private final SysOrgService orgService;
+
+    public HisDeptService(StdDictQueryService stdDict, SysOrgService orgService) {
         this.stdDict = stdDict;
+        this.orgService = orgService;
     }
 
     /**
@@ -37,9 +48,29 @@ public class HisDeptService extends ServiceImpl<HisDeptMapper, HisDept> {
         }
     }
 
+    /**
+     * 可排班/可挂号科室(严格限机构): 本机构 dept_category=门诊科室 且层级为科室/诊室 且 启用+门诊开诊。
+     * orgId 为空则返回空集: 机构是排班的业务边界, 不允许退化为全医共体查询。
+     */
+    public List<HisDept> listSchedulable(Long orgId) {
+        if (orgId == null) {
+            return Collections.emptyList();
+        }
+        return lambdaQuery()
+                .eq(HisDept::getOrgId, orgId)
+                .eq(HisDept::getDeptCategory, CATEGORY_OUTPATIENT)
+                .in(HisDept::getDeptLevel, SCHEDULE_LEVELS)
+                .eq(HisDept::getStatus, 1)
+                .ne(HisDept::getOpenClinic, 0)
+                .orderByAsc(HisDept::getSortNo)
+                .orderByAsc(HisDept::getId)
+                .list();
+    }
+
     /** 新增科室(回填字典名称与来源标识) */
     public void saveDept(HisDept d) {
         normalizeLevel(d);
+        normalizeOpenClinic(d);
         enrichDict(d);
         save(d);
     }
@@ -47,6 +78,7 @@ public class HisDeptService extends ServiceImpl<HisDeptMapper, HisDept> {
     /** 修改科室(回填字典名称与来源标识) */
     public void updateDept(HisDept d) {
         normalizeLevel(d);
+        normalizeOpenClinic(d);
         enrichDict(d);
         updateById(d);
     }
@@ -60,6 +92,15 @@ public class HisDeptService extends ServiceImpl<HisDeptMapper, HisDept> {
         }
         if (d.getDeptLevel() == null) {
             d.setDeptLevel(d.getParentId() == 0L ? 1 : 2);
+        }
+    }
+
+    /**
+     * 规范化门诊开诊标志: 缺省视为开诊(1), 与建列 DEFAULT 1 一致; 非门诊科室大类不参与排班。
+     */
+    private void normalizeOpenClinic(HisDept d) {
+        if (d.getOpenClinic() == null) {
+            d.setOpenClinic(1);
         }
     }
 
@@ -121,5 +162,117 @@ public class HisDeptService extends ServiceImpl<HisDeptMapper, HisDept> {
     /** 科室层级树(可按归属机构过滤) */
     public List<HisDept> listTree(Long orgId) {
         return buildTree(listAll(orgId));
+    }
+
+    /** 科室层级树; withSubOrgs=true 且 orgId 非空时级联含下级机构(县→乡→村)的科室 */
+    public List<HisDept> listTree(Long orgId, boolean withSubOrgs) {
+        if (orgId == null || !withSubOrgs) {
+            return listTree(orgId);
+        }
+        List<Long> orgIds = orgService.subtreeIds(orgId);
+        return buildTree(lambdaQuery()
+                .in(HisDept::getOrgId, orgIds)
+                .orderByAsc(HisDept::getSortNo)
+                .orderByAsc(HisDept::getId)
+                .list());
+    }
+
+    /** 指定科室的子树 id 集合(含自身), 用于按上级科室级联过滤业务数据(如职工/排班) */
+    public List<Long> subtreeIds(Long rootId) {
+        List<Long> out = new ArrayList<>();
+        if (rootId == null) {
+            return out;
+        }
+        out.add(rootId);
+        List<HisDept> all = listAll();
+        boolean grew = true;
+        while (grew) {
+            grew = false;
+            for (HisDept d : all) {
+                if (d.getId() != null && d.getParentId() != null && out.contains(d.getParentId()) && !out.contains(d.getId())) {
+                    out.add(d.getId());
+                    grew = true;
+                }
+            }
+        }
+        return out;
+    }
+
+    /** 导出科室列表(head/rows/total): 与列表同筛选(机构/级联 + 名称编码关键字/大类/状态), 层级树 DFS 摊平保持大类→科室→窗口/诊室次序 */
+    public Map<String, Object> exportRows(Long orgId, boolean withSubOrgs, String keyword, String deptCategory, Integer status) {
+        List<HisDept> tree = listTree(orgId, withSubOrgs);
+        Map<Long, String> orgNames = new LinkedHashMap<>();
+        for (SysOrg o : orgService.listAll()) {
+            orgNames.put(o.getId(), o.getOrgName());
+        }
+        List<List<String>> head = new ArrayList<>();
+        for (String h : new String[]{"科室名称", "科室编码", "层级", "上级科室", "所属大类", "所属机构", "类型", "医保科别", "医保科室编码", "联系电话", "位置", "状态", "门诊开诊", "排序号"}) {
+            head.add(Collections.singletonList(h));
+        }
+        String kw = StringUtils.hasText(keyword) ? keyword.trim().toLowerCase() : null;
+        String cat = StringUtils.hasText(deptCategory) ? deptCategory : null;
+        List<List<Object>> rows = new ArrayList<>();
+        flattenForExport(tree, null, null, orgNames, rows, kw, cat, status);
+        Map<String, Object> out = new LinkedHashMap<>();
+        out.put("head", head);
+        out.put("rows", rows);
+        out.put("total", rows.size());
+        return out;
+    }
+
+    /** DFS 摊平导出行: rootName=链顶大类名, parentName=直接上级科室名; 带查询条件时仅导出命中行(仍递归子级) */
+    private void flattenForExport(List<HisDept> nodes, String parentName, String rootName, Map<Long, String> orgNames, List<List<Object>> rows,
+                                  String kw, String cat, Integer status) {
+        for (HisDept d : nodes) {
+            String root = rootName == null ? d.getDeptName() : rootName;
+            if (matchExport(d, kw, cat, status)) {
+                rows.add(Arrays.asList(
+                        d.getDeptName(), nz(d.getDeptCode()), levelText(d.getDeptLevel()),
+                        parentName == null ? "" : parentName, root,
+                        d.getOrgId() == null ? "" : nz(orgNames.get(d.getOrgId())), nz(d.getDeptType()),
+                        StringUtils.hasText(d.getDeptCatyName()) ? d.getDeptCatyName() : nz(d.getDeptCaty()),
+                        nz(d.getYbDeptCode()), nz(d.getPhone()), nz(d.getLocDesc()),
+                        d.getStatus() != null && d.getStatus() == 1 ? "启用" : "停用",
+                        openClinicText(d),
+                        d.getSortNo() == null ? "" : d.getSortNo()));
+            }
+            if (d.getChildren() != null && !d.getChildren().isEmpty()) {
+                flattenForExport(d.getChildren(), d.getDeptName(), root, orgNames, rows, kw, cat, status);
+            }
+        }
+    }
+
+    /** 导出行匹配: 关键字命中名称或编码(忽略大小写) + 大类精确 + 状态精确; 条件为空即不限 */
+    private static boolean matchExport(HisDept d, String kw, String cat, Integer status) {
+        if (kw != null) {
+            String name = d.getDeptName() == null ? "" : d.getDeptName().toLowerCase();
+            String code = d.getDeptCode() == null ? "" : d.getDeptCode().toLowerCase();
+            if (!name.contains(kw) && !code.contains(kw)) {
+                return false;
+            }
+        }
+        if (cat != null && !cat.equals(d.getDeptCategory())) {
+            return false;
+        }
+        return status == null || status.equals(d.getStatus());
+    }
+
+    private static String levelText(Integer lv) {
+        if (lv == null) {
+            return "";
+        }
+        return lv == 1 ? "大类" : (lv == 2 ? "科室" : (lv == 3 ? "窗口/诊室" : String.valueOf(lv)));
+    }
+
+    /** 导出用开诊文案: 非门诊科室大类不参与排班, 一律显示为“-” */
+    private static String openClinicText(HisDept d) {
+        if (!CATEGORY_OUTPATIENT.equals(d.getDeptCategory())) {
+            return "-";
+        }
+        return d.getOpenClinic() != null && d.getOpenClinic() == 0 ? "未开诊" : "开诊";
+    }
+
+    private static String nz(String s) {
+        return s == null ? "" : s;
     }
 }

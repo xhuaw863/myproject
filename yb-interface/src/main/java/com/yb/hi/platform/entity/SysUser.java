@@ -1,11 +1,14 @@
 package com.yb.hi.platform.entity;
 
 import com.baomidou.mybatisplus.annotation.IdType;
+import com.baomidou.mybatisplus.annotation.TableField;
 import com.baomidou.mybatisplus.annotation.TableId;
 import com.baomidou.mybatisplus.annotation.TableName;
 import com.yb.hi.framework.entity.BaseEntity;
 import lombok.Data;
 import lombok.EqualsAndHashCode;
+
+import java.util.List;
 
 /**
  * 用户(职工登录账号), 按租户隔离
@@ -40,4 +43,8 @@ public class SysUser extends BaseEntity {
     private String phone;
     /** 状态: 1-启用 0-停用 */
     private Integer status;
+
+    /** 可登录机构ID列表(多点执业, 含归属机构默认; 非DB列, 仅传输/回显) */
+    @TableField(exist = false)
+    private List<Long> loginOrgIds;
 }

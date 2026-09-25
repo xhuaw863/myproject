@@ -27,6 +27,7 @@ CREATE TABLE his_dept (
     loc_desc     VARCHAR(200) DEFAULT NULL COMMENT '位置描述',
     sort_no      INT          DEFAULT 0 COMMENT '排序号',
     status       TINYINT      DEFAULT 1 COMMENT '状态:1-启用 0-停用',
+    open_clinic  TINYINT      DEFAULT 1 COMMENT '门诊开诊:1-开诊 0-未开诊(仅门诊科室大类生效, 排班/挂号只列开诊科室)',
     memo         VARCHAR(500) DEFAULT NULL COMMENT '备注',
     create_by    VARCHAR(50)  DEFAULT NULL,
     create_time  DATETIME     DEFAULT NULL,

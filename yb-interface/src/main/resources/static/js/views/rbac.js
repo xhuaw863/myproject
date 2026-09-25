@@ -22,14 +22,64 @@
     data: function () {
       return {
         loading: false, saving: false, list: [],
+        /* 查询条件(前端即时过滤) */
+        keyword: '', filterType: null, filterStatus: null,
+        exporting: false,
+        /* 显示模式: paged=true 分页 / false 全量(默认, localStorage 持久化) */
+        paged: (function () { try { return localStorage.getItem('his.rolePaged') === '1'; } catch (e) { return false; } })(),
+        page: 1, size: 20,
         dlg: false, editing: false, form: this.emptyRole(),
         menuDlg: false, menuTree: [], checkedKeys: [], currentRole: null, treeProps: { label: 'menuName', children: 'children' }
       };
     },
     created: function () { this.load(); },
+    computed: {
+      /* 查询过滤: 关键字命中编码/名称/备注, 类型(1全局预置/2租户自定义)与状态精确匹配 */
+      filteredList: function () {
+        var vm = this;
+        var kw = (vm.keyword || '').trim().toLowerCase();
+        var ty = (vm.filterType === '' || vm.filterType == null) ? null : vm.filterType;
+        var st = (vm.filterStatus === '' || vm.filterStatus == null) ? null : vm.filterStatus;
+        if (!kw && ty === null && st === null) { return vm.list || []; }
+        return (vm.list || []).filter(function (r) {
+          if (kw && String(r.roleCode || '').toLowerCase().indexOf(kw) < 0
+            && String(r.roleName || '').toLowerCase().indexOf(kw) < 0
+            && String(r.remark || '').toLowerCase().indexOf(kw) < 0) { return false; }
+          if (ty !== null && ((ty === 1) !== vm.isGlobal(r))) { return false; }
+          if (st !== null && r.status !== st) { return false; }
+          return true;
+        });
+      },
+      /* 当前页数据: 全量模式直返过滤结果, 分页模式客户端切片 */
+      pagedList: function () {
+        if (!this.paged) { return this.filteredList; }
+        var s = (this.page - 1) * this.size;
+        return this.filteredList.slice(s, s + this.size);
+      }
+    },
     methods: {
       emptyRole: function () { return { id: null, roleCode: '', roleName: '', remark: '', status: 1 }; },
       isGlobal: function (row) { return row.tenantId == null || row.roleType === 1; },
+      seqNo: function (i) { return (this.page - 1) * this.size + i + 1; },
+      onQueryChange: function () { this.page = 1; },
+      onPagedToggle: function () {
+        this.page = 1;
+        try { localStorage.setItem('his.rolePaged', this.paged ? '1' : '0'); } catch (e) { }
+      },
+      onPage: function (p) { this.page = p; },
+      onSize: function (s) { this.size = s; this.page = 1; },
+      /* 导出(xlsx): 沿用当前查询条件导出全部匹配行 */
+      exportRows: function () {
+        var vm = this;
+        var q = '/api/sys/role/export?1=1';
+        if (vm.keyword && vm.keyword.trim()) { q += '&keyword=' + encodeURIComponent(vm.keyword.trim()); }
+        if (vm.filterType !== '' && vm.filterType != null) { q += '&roleType=' + vm.filterType; }
+        if (vm.filterStatus !== '' && vm.filterStatus != null) { q += '&status=' + vm.filterStatus; }
+        vm.exporting = true;
+        HIS.download(q).then(function (name) {
+          HIS.notifySuccess('已导出: ' + name);
+        }).catch(HIS.notifyError).finally(function () { vm.exporting = false; });
+      },
       load: function () {
         var vm = this; vm.loading = true;
         HIS.get('/api/sys/role/list')
@@ -88,9 +138,18 @@
       '  <div class="toolbar">',
       '    <el-button type="primary" @click="openCreate">新增角色</el-button>',
       '    <el-button @click="load">刷新</el-button>',
+      '    <el-input v-model="keyword" placeholder="编码/名称/备注" clearable style="width:170px" @input="onQueryChange" @clear="onQueryChange"></el-input>',
+      '    <el-select v-model="filterType" placeholder="全部类型" clearable style="width:130px" @change="onQueryChange"><el-option label="全局预置" :value="1"></el-option><el-option label="租户自定义" :value="2"></el-option></el-select>',
+      '    <el-select v-model="filterStatus" placeholder="全部状态" clearable style="width:110px" @change="onQueryChange"><el-option label="启用" :value="1"></el-option><el-option label="停用" :value="0"></el-option></el-select>',
+      '    <el-button :loading="exporting" @click="exportRows">导出</el-button>',
+      '    <el-radio-group v-model="paged" size="small" @change="onPagedToggle" title="显示模式: 全量=一次性展示所有行; 分页=按页展示" style="margin-left:6px;">',
+      '      <el-radio-button :label="false">全量</el-radio-button>',
+      '      <el-radio-button :label="true">分页</el-radio-button>',
+      '    </el-radio-group>',
+      '    <span style="color:#909399;font-size:13px;">共 {{ filteredList.length }} 个角色</span>',
       '  </div>',
-      '  <el-table :data="list" v-loading="loading" border stripe size="small">',
-      '    <el-table-column type="index" label="序号" width="60"></el-table-column>',
+      '  <el-table :data="pagedList" v-loading="loading" border stripe size="small">',
+      '    <el-table-column type="index" :index="seqNo" label="序号" width="60"></el-table-column>',
       '    <el-table-column prop="roleCode" label="角色编码" width="150"></el-table-column>',
       '    <el-table-column prop="roleName" label="角色名称" width="150"></el-table-column>',
       '    <el-table-column label="类型" width="120"><template #default="s">',
@@ -109,6 +168,7 @@
       '      <el-button link type="danger" @click="del(s.row)" :disabled="isGlobal(s.row)">删除</el-button>',
       '    </template></el-table-column>',
       '  </el-table>',
+      '  <el-pagination v-if="paged" style="margin-top:10px;justify-content:flex-end;" background layout="total, sizes, prev, pager, next" :total="filteredList.length" :page-size="size" :page-sizes="[10,20,50,100]" :current-page="page" @current-change="onPage" @size-change="onSize"></el-pagination>',
       '  <el-dialog v-model="dlg" :title="editing?\'编辑角色\':\'新增角色\'" width="460px">',
       '    <el-form :model="form" label-width="90px">',
       '      <el-form-item label="角色编码"><el-input v-model="form.roleCode" :disabled="editing" placeholder="如 WARD_ADMIN"></el-input></el-form-item>',
@@ -133,19 +193,102 @@
     data: function () {
       return {
         loading: false, saving: false, tree: [], flat: [],
+        /* 查询条件(前端即时过滤) */
+        keyword: '', filterType: null, filterStatus: null,
+        exporting: false,
+        /* 显示模式: paged=true 分页 / false 全量(默认, localStorage 持久化) */
+        paged: (function () { try { return localStorage.getItem('his.menuPaged') === '1'; } catch (e) { return false; } })(),
+        page: 1, size: 20,
         dlg: false, editing: false, form: this.empty()
       };
     },
     created: function () { this.load(); },
+    computed: {
+      /* 查询过滤: 命中节点保留其全部子级(上下文), 未命中但有命中后代的节点仅保留命中分支 */
+      filteredTree: function () {
+        var vm = this;
+        var kw = (vm.keyword || '').trim().toLowerCase();
+        var ty = (vm.filterType === '' || vm.filterType == null) ? null : vm.filterType;
+        var st = (vm.filterStatus === '' || vm.filterStatus == null) ? null : vm.filterStatus;
+        if (!kw && ty === null && st === null) { return vm.tree; }
+        function match(n) {
+          if (kw && String(n.menuName || '').toLowerCase().indexOf(kw) < 0
+            && String(n.menuKey || '').toLowerCase().indexOf(kw) < 0
+            && String(n.comp || '').toLowerCase().indexOf(kw) < 0) { return false; }
+          if (ty !== null && Number(n.menuType) !== ty) { return false; }
+          if (st !== null && n.status !== st) { return false; }
+          return true;
+        }
+        function walk(nodes) {
+          var out = [];
+          (nodes || []).forEach(function (n) {
+            var self = match(n);
+            var kids = walk(n.children);
+            if (self || kids.length) {
+              var c = Object.assign({}, n);
+              c.children = self ? (n.children || []) : kids;
+              out.push(c);
+            }
+          });
+          return out;
+        }
+        return walk(vm.tree);
+      },
+      /* 过滤后菜单总数(含各级节点) */
+      filteredCount: function () {
+        var n = 0;
+        (function walk(nodes) { (nodes || []).forEach(function (x) { n++; walk(x.children); }); })(this.filteredTree);
+        return n;
+      },
+      /* 分页模式按摊平后的明细行切片(DFS 序, 与树展开顺序一致); 全量模式直接返过滤树 */
+      pagedTree: function () {
+        if (!this.paged) { return this.filteredTree; }
+        return this.flatRows.slice((this.page - 1) * this.size, this.page * this.size);
+      },
+      /* 过滤树 DFS 摊平(去 children, 渲染为平面行); 层级信息由「类型/上级菜单」体现 */
+      flatRows: function () {
+        var out = [];
+        (function walk(nodes) {
+          (nodes || []).forEach(function (n) {
+            var c = Object.assign({}, n);
+            delete c.children;
+            out.push(c);
+            walk(n.children);
+          });
+        })(this.filteredTree);
+        return out;
+      }
+    },
     methods: {
       empty: function () {
         return { id: null, parentId: 0, menuKey: '', menuName: '', menuType: 2, comp: '', phase: '', icon: '', sortNo: 0, visible: 1, status: 1 };
       },
       typeLabel: function (t) { return Number(t) === 1 ? '目录' : '菜单'; },
+      onQueryChange: function () { this.page = 1; },
+      onPagedToggle: function () {
+        this.page = 1;
+        try { localStorage.setItem('his.menuPaged', this.paged ? '1' : '0'); } catch (e) { }
+      },
+      /* 序号列: 分页模式跨页连续编号 */
+      seqNo: function (i) { return this.paged ? (this.page - 1) * this.size + i + 1 : i + 1; },
+      onPage: function (p) { this.page = p; },
+      onSize: function (s) { this.size = s; this.page = 1; },
+      /* 导出(xlsx): 沿用当前查询条件, 树摊平导出全部匹配行 */
+      exportRows: function () {
+        var vm = this;
+        var q = '/api/sys/menu/export?1=1';
+        if (vm.keyword && vm.keyword.trim()) { q += '&keyword=' + encodeURIComponent(vm.keyword.trim()); }
+        if (vm.filterType !== '' && vm.filterType != null) { q += '&menuType=' + vm.filterType; }
+        if (vm.filterStatus !== '' && vm.filterStatus != null) { q += '&status=' + vm.filterStatus; }
+        vm.exporting = true;
+        HIS.download(q).then(function (name) {
+          HIS.notifySuccess('已导出: ' + name);
+        }).catch(HIS.notifyError).finally(function () { vm.exporting = false; });
+      },
       load: function () {
         var vm = this; vm.loading = true;
         HIS.get('/api/sys/menu/tree')
-          .then(function (d) { vm.tree = d || []; vm.flat = flattenMenus(vm.tree); })
+          .then(function (d) { vm.tree = d || []; vm.flat = flattenMenus(vm.tree); vm.page = 1; })
           .catch(HIS.notifyError)
           .finally(function () { vm.loading = false; });
       },
@@ -193,9 +336,18 @@
       '  <div class="toolbar">',
       '    <el-button type="primary" @click="openCreate(null)">新增顶级菜单</el-button>',
       '    <el-button @click="load">刷新</el-button>',
+      '    <el-input v-model="keyword" placeholder="菜单名称/键/组件" clearable style="width:180px" @input="onQueryChange" @clear="onQueryChange"></el-input>',
+      '    <el-select v-model="filterType" placeholder="全部类型" clearable style="width:110px" @change="onQueryChange"><el-option label="目录" :value="1"></el-option><el-option label="菜单" :value="2"></el-option></el-select>',
+      '    <el-select v-model="filterStatus" placeholder="全部状态" clearable style="width:110px" @change="onQueryChange"><el-option label="启用" :value="1"></el-option><el-option label="停用" :value="0"></el-option></el-select>',
+      '    <el-button :loading="exporting" @click="exportRows">导出</el-button>',
+      '    <el-radio-group v-model="paged" size="small" @change="onPagedToggle" title="显示模式: 全量=树形展示所有行; 分页=按明细行分页平铺展示" style="margin-left:6px;">',
+      '      <el-radio-button :label="false">全量</el-radio-button>',
+      '      <el-radio-button :label="true">分页</el-radio-button>',
+      '    </el-radio-group>',
+      '    <span style="color:#909399;font-size:13px;">共 {{ filteredCount }} 个菜单</span>',
       '  </div>',
-      '  <el-table :data="tree" v-loading="loading" border stripe size="small" row-key="id" :tree-props="{ children: \'children\' }" default-expand-all>',
-      '    <el-table-column type="index" label="序号" width="60"></el-table-column>',
+      '  <el-table :data="pagedTree" v-loading="loading" border stripe size="small" row-key="id" :tree-props="{ children: \'children\' }" default-expand-all>',
+      '    <el-table-column type="index" :index="seqNo" label="序号" width="60"></el-table-column>',
       '    <el-table-column prop="menuName" label="菜单名称" min-width="180"></el-table-column>',
       '    <el-table-column prop="menuKey" label="菜单键" width="150"></el-table-column>',
       '    <el-table-column label="类型" width="80"><template #default="s"><el-tag size="small" :type="s.row.menuType === 1 ? \'warning\' : \'\'">{{ typeLabel(s.row.menuType) }}</el-tag></template></el-table-column>',
@@ -209,6 +361,7 @@
       '      <el-button link type="danger" @click="del(s.row)">删除</el-button>',
       '    </template></el-table-column>',
       '  </el-table>',
+      '  <el-pagination v-if="paged" style="margin-top:10px;justify-content:flex-end;" background layout="total, sizes, prev, pager, next" :total="flatRows.length" :page-size="size" :page-sizes="[10,20,50,100]" :current-page="page" @current-change="onPage" @size-change="onSize"></el-pagination>',
       '  <el-dialog v-model="dlg" :title="editing?\'编辑菜单\':\'新增菜单\'" width="520px">',
       '    <el-form :model="form" label-width="100px">',
       '      <el-form-item label="上级菜单">',
