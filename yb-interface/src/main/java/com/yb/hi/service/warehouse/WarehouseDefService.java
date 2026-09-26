@@ -155,7 +155,7 @@ public class WarehouseDefService {
      * 默认药库自动创建: 指定机构无任何药库记录时补一条
      * (code=DEFAULT, name=默认药库, type=MIXED, status=1); 已有记录/并发撞唯一键均幂等跳过。
      * 创建成功后顺带把该机构存量未归属(warehouse_id IS NULL)的库存行回填到默认库,
-     * 保证老机构开箱即可按库过滤/盘点(回填仅首次触发, 幂等)。
+     * 回填条件自带幂等(仅命中未归属行), 并发撞键分支也补跑一次, 避免另一会话先建库导致回填丢失。
      */
     private void ensureDefault(Long orgId) {
         if (orgId == null) {
@@ -175,16 +175,28 @@ public class WarehouseDefService {
         def.setSortNo(0);
         try {
             defMapper.insert(def);
-            int migrated = stockMapper.update(null, new LambdaUpdateWrapper<HisDrugStock>()
-                    .eq(HisDrugStock::getOrgId, orgId)
-                    .isNull(HisDrugStock::getWarehouseId)
-                    .set(HisDrugStock::getWarehouseId, def.getId()));
-            if (migrated > 0) {
-                log.info("存量库存归属回填默认药库: orgId={}, warehouseId={}, rows={}", orgId, def.getId(), migrated);
-            }
+            backfillStockWarehouse(orgId, def.getId());
             log.info("自动创建默认药库: id={}, orgId={}", def.getId(), orgId);
         } catch (DuplicateKeyException e) {
-            // 并发首次访问撞唯一键: 另一会话已创建, 忽略
+            // 并发首次访问撞唯一键: 另一会话已创建(其事务可能尚未提交, 重试一次回填兼容已提交场景)
+            HisWarehouseDef other = defMapper.selectOne(new LambdaQueryWrapper<HisWarehouseDef>()
+                    .eq(HisWarehouseDef::getOrgId, orgId)
+                    .orderByAsc(HisWarehouseDef::getId)
+                    .last("LIMIT 1"));
+            if (other != null) {
+                backfillStockWarehouse(orgId, other.getId());
+            }
+        }
+    }
+
+    /** 存量未归属库存回填到指定药库(仅命中 warehouse_id IS NULL 行, 可重复执行) */
+    private void backfillStockWarehouse(Long orgId, Long warehouseId) {
+        int migrated = stockMapper.update(null, new LambdaUpdateWrapper<HisDrugStock>()
+                .eq(HisDrugStock::getOrgId, orgId)
+                .isNull(HisDrugStock::getWarehouseId)
+                .set(HisDrugStock::getWarehouseId, warehouseId));
+        if (migrated > 0) {
+            log.info("存量库存归属回填默认药库: orgId={}, warehouseId={}, rows={}", orgId, warehouseId, migrated);
         }
     }
 }

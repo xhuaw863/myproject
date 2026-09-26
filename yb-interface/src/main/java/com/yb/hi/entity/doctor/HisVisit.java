@@ -59,6 +59,8 @@ public class HisVisit extends BaseEntity {
     private LocalDate workDate;
     /** 就诊状态: 1-候诊 2-接诊中 3-已完成 4-已取消 */
     private Integer visitStatus;
+    /** 收费状态: 0-未收费 1-已收费 2-已退费(由收费结算台回写) */
+    private Integer chargeStatus;
     /** 候诊序号(自挂号记录同步, 科室简码+4位流水号) */
     private String queueNo;
     /** 主诉 */

@@ -335,7 +335,8 @@ public class HisVisitService extends ServiceImpl<HisVisitMapper, HisVisit> {
     }
 
     /**
-     * 就诊费用汇总: 处方(rx)与检查/治疗单(order)各自笔数与金额, 及总金额
+     * 就诊费用汇总: 处方(rx)与检查/治疗单(order)各自笔数与金额, 及总金额。
+     * 仅统计有效单(status>0): 医生已作废的处方/医嘱单不得计入费用(与收银、报表口径一致)。
      */
     public Map<String, Object> getFeeSummary(Long visitId) {
         if (visitId == null) {
@@ -343,10 +344,10 @@ public class HisVisitService extends ServiceImpl<HisVisitMapper, HisVisit> {
         }
         Map<String, Object> rx = aggFee(prescriptionMapper.selectMaps(new QueryWrapper<HisPrescription>()
                 .select("COUNT(*) AS cnt", "IFNULL(SUM(total_amount), 0) AS total")
-                .eq("visit_id", visitId)));
+                .eq("visit_id", visitId).gt("status", 0)));
         Map<String, Object> od = aggFee(orderMapper.selectMaps(new QueryWrapper<HisOrder>()
                 .select("COUNT(*) AS cnt", "IFNULL(SUM(total_amount), 0) AS total")
-                .eq("visit_id", visitId)));
+                .eq("visit_id", visitId).gt("status", 0)));
         Map<String, Object> result = new LinkedHashMap<>();
         result.put("rxTotal", rx.get("total"));
         result.put("orderTotal", od.get("total"));

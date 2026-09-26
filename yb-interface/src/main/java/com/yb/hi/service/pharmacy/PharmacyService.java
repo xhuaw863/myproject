@@ -84,7 +84,7 @@ public class PharmacyService {
     /* ================= 待发药 ================= */
 
     /**
-     * 待发药列表: dispense_status=0 的处方(先开先发), keyword 匹配患者姓名/处方号。
+     * 待发药列表: dispense_status=0 且未作废(status>0)的处方(先开先发), keyword 匹配患者姓名/处方号。
      * 处方/就诊为租户级表无 org_id, orgId 不参与过滤(租户内共享就诊数据)。
      * pharmacyId 非空时按药房类型过滤: 中药房(TCM)只看中药处方(rx_type含"中药");
      * 门诊/住院药房暂按门诊口径(不加过滤, 与默认行为一致)。
@@ -92,7 +92,8 @@ public class PharmacyService {
     public IPage<Map<String, Object>> todoPage(Long orgId, Long pharmacyId, String keyword, long page, long size) {
         long p = safePage(page);
         long s = safeSize(size);
-        StringBuilder where = new StringBuilder(" WHERE p.dispense_status = 0 AND p.deleted = 0 AND p.tenant_id = ?");
+        // p.status>0: 医生作废的处方(-1)不得进入发药环节
+        StringBuilder where = new StringBuilder(" WHERE p.dispense_status = 0 AND p.status > 0 AND p.deleted = 0 AND p.tenant_id = ?");
         List<Object> args = new ArrayList<>();
         args.add(tenantId());
         if (pharmacyId != null) {
@@ -209,15 +210,19 @@ public class PharmacyService {
         Long prescriptionId = req.getPrescriptionId();
         long tenantId = tenantId();
 
-        // 1. 查处方(快照患者/医生/科室/金额)
+        // 1. 查处方(快照患者/医生/科室/金额), 已作废处方不得发药
         List<Map<String, Object>> rows = jdbcTemplate.queryForList(
                 "SELECT id, visit_id, rx_no, patient_id, patient_name, dr_name AS doctor_name, dept_name,"
-                + " total_amount, dispense_status FROM his_prescription"
+                + " total_amount, dispense_status, status FROM his_prescription"
                 + " WHERE id = ? AND tenant_id = ? AND deleted = 0", prescriptionId, tenantId);
         if (rows.isEmpty()) {
             throw new BizException(400, "处方不存在");
         }
         Map<String, Object> pres = rows.get(0);
+        Number rxStatus = (Number) pres.get("status");
+        if (rxStatus != null && rxStatus.intValue() < 0) {
+            throw new BizException("该处方已作废, 不可发药");
+        }
 
         // 2. 乐观锁防重复发药: 0未发药 -> 1已发药, affected=0 说明已被并发发药/状态异常
         int affected = jdbcTemplate.update(
@@ -244,7 +249,7 @@ public class PharmacyService {
             throw new BizException(400, "机构不能为空");
         }
 
-        // 4.1 药房: 非空时校验归属机构/启停并解析关联药库(药库参数待药库单支持 warehouseId 后透传)
+        // 4.1 药房: 非空时校验归属机构/启停, 并解析关联药库(发药必须从该药房供药的药库扣减)
         Long pharmacyId = req.getPharmacyId();
         Long warehouseId = null;
         if (pharmacyId != null) {
@@ -254,6 +259,8 @@ public class PharmacyService {
         // 5. 创建处方发药出库单并确认: 确认时按有效期 FIFO 乐观扣减库存并回填批次, 单次扣减可追溯
         StockOutReq outReq = new StockOutReq();
         outReq.setOrgId(orgId);
+        // 透传药房关联药库: 为空时出库不限库(全院FIFO), 非空则仅从该药库批次扣减
+        outReq.setWarehouseId(warehouseId);
         outReq.setOutType(1);
         outReq.setRefId(prescriptionId);
         outReq.setRefNo(str(pres.get("rx_no")));

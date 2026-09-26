@@ -300,12 +300,40 @@ public class InvoiceService {
         n.setVoidTime(opTime);
         n.setOriginalInvoiceId(origin.getId());
         invoiceMapper.insert(n);
+        // 冲销后收费单不再持有有效发票号(避免单据仍显示已开票), 置回 NULL 须用 UpdateWrapper(null 不被字段更新策略忽略)
+        if (origin.getBillId() != null) {
+            billMapper.update(null, Wrappers.<HisChargeBill>lambdaUpdate()
+                    .set(HisChargeBill::getInvoiceNo, null)
+                    .eq(HisChargeBill::getId, origin.getBillId()));
+        }
         origin.setStatus(red ? 3 : 2);
         origin.setVoidReason(reason);
         origin.setVoidBy(opBy);
         origin.setVoidTime(opTime);
-        log.info("发票{}: invoiceNo={}, 原因={}, 操作人={}", red ? "红冲" : "作废", origin.getInvoiceNo(), reason, opBy);
+        log.info("发票{}: invoiceNo={}, 原因={}, 操作人={}", red ? "红冲" : "作废", n.getInvoiceNo(), reason, opBy);
+        // 返回给前端的原发票同步清空发票号展示(已冲销, 收费单也不再持有该号)
+        origin.setInvoiceNo(null);
         return origin;
+    }
+
+    /**
+     * 退费联动发票冲销: 收费单存在正常(status=1)发票时按红冲处理(退费场景标准做法, 保留票据 traces)。
+     * 无发票记录直接返回; 状态异常不抛错由调用方决定(退费主流程不应被发票状态阻塞)。
+     */
+    @Transactional(rollbackFor = Exception.class)
+    public void redFlushForBill(Long billId, String reason) {
+        if (billId == null) {
+            return;
+        }
+        HisInvoice inv = invoiceMapper.selectOne(Wrappers.<HisInvoice>lambdaQuery()
+                .eq(HisInvoice::getBillId, billId)
+                .eq(HisInvoice::getStatus, 1)
+                .orderByDesc(HisInvoice::getId)
+                .last("LIMIT 1"));
+        if (inv == null) {
+            return;
+        }
+        redInvoice(inv.getId(), reason);
     }
 
     // ==================== 发票记录 ====================
@@ -383,11 +411,17 @@ public class InvoiceService {
                 .eq(HisInvoicePool::getId, pool.getId())
                 .lt(HisInvoicePool::getCurrentNo, pool.getEndNo()));
         if (rows == 0) {
-            HisInvoicePool upd = new HisInvoicePool();
-            upd.setId(pool.getId());
-            upd.setStatus(2);
-            poolMapper.updateById(upd);
-            throw new BizException("发票号段已用完");
+            // 复读最新状态再判定: 可能已被并发用尽(置已用完), 也可能号段刚被停用/换段(误封会把可用号段永久封死)
+            HisInvoicePool latest = poolMapper.selectById(pool.getId());
+            if (latest != null && latest.getCurrentNo() != null && latest.getEndNo() != null
+                    && latest.getCurrentNo() >= latest.getEndNo()) {
+                HisInvoicePool upd = new HisInvoicePool();
+                upd.setId(pool.getId());
+                upd.setStatus(2);
+                poolMapper.updateById(upd);
+                throw new BizException("发票号段已用完");
+            }
+            throw new BizException("发票号段已变更(停用或换段), 请重试");
         }
         // 回读取号结果(同事务可见自身更新)
         HisInvoicePool after = poolMapper.selectById(pool.getId());

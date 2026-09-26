@@ -769,6 +769,8 @@
   HIS.views.InvoiceManage = {
     data: function () {
       return {
+        /* 发票号段/作废/红冲为财务票据维护: 后端 requireLeadWrite 仅牵头机构管理员可写, 前端同步隐藏写按钮 */
+        lead: HIS.isLead(),
         activeTab: 'pool',
         /* 号段管理 */
         poolLoading: false, pools: [], poolTotal: 0, poolPage: 1, poolSize: 20,
@@ -923,7 +925,7 @@
       '  <el-tabs v-model="activeTab">',
       '    <el-tab-pane label="号段管理" name="pool">',
       '      <div class="toolbar">',
-      '        <el-button type="primary" @click="openPoolAdd">新增号段</el-button>',
+      '        <el-button v-if="lead" type="primary" @click="openPoolAdd">新增号段</el-button>',
       '        <el-button @click="loadPools">刷新</el-button>',
       '        <span style="color:#909399;font-size:13px;">共 {{ poolTotal }} 个号段</span>',
       '        <span style="color:#909399;font-size:12px;margin-left:auto;">同机构同发票类型仅一个使用中号段; 取号=前缀+8位序号</span>',
@@ -940,8 +942,8 @@
       '        <el-table-column label="分配人" width="90"><template #default="s">{{ s.row.allocBy || \'--\' }}</template></el-table-column>',
       '        <el-table-column label="分配时间" width="150"><template #default="s">{{ fmtTime(s.row.allocTime) }}</template></el-table-column>',
       '        <el-table-column label="操作" width="130" fixed="right"><template #default="s">',
-      '          <el-button link type="primary" @click="openPoolEdit(s.row)">编辑</el-button>',
-      '          <el-button v-if="s.row.status===0" link type="success" @click="activatePool(s.row)">启用</el-button>',
+      '          <el-button v-if="lead" link type="primary" @click="openPoolEdit(s.row)">编辑</el-button>',
+      '          <el-button v-if="lead && s.row.status===0" link type="success" @click="activatePool(s.row)">启用</el-button>',
       '        </template></el-table-column>',
       '      </el-table>',
       '      <el-pagination style="margin-top:12px;justify-content:flex-end;" background layout="total, sizes, prev, pager, next" :total="poolTotal" :page-size="poolSize" :page-sizes="[10, 20, 50, 100]" :current-page="poolPage" @current-change="onPoolPage" @size-change="onPoolSize"></el-pagination>',
@@ -969,9 +971,9 @@
       '        <el-table-column label="操作人" width="90"><template #default="s">{{ s.row.voidBy || \'--\' }}</template></el-table-column>',
       '        <el-table-column label="创建时间" width="150"><template #default="s">{{ fmtTime(s.row.createTime) }}</template></el-table-column>',
       '        <el-table-column label="操作" width="120" fixed="right"><template #default="s">',
-      '          <el-button v-if="s.row.status===1 && s.row.invoiceType===\'NORMAL\'" link type="warning" @click="openInvAct(s.row, \'void\')">作废</el-button>',
-      '          <el-button v-if="s.row.status===1 && s.row.invoiceType===\'NORMAL\'" link type="danger" @click="openInvAct(s.row, \'red\')">红冲</el-button>',
-      '          <span v-if="s.row.status!==1 || s.row.invoiceType!==\'NORMAL\'" style="color:#c0c4cc;font-size:12px;">-</span>',
+      '          <el-button v-if="lead && s.row.status===1 && s.row.invoiceType===\'NORMAL\'" link type="warning" @click="openInvAct(s.row, \'void\')">作废</el-button>',
+      '          <el-button v-if="lead && s.row.status===1 && s.row.invoiceType===\'NORMAL\'" link type="danger" @click="openInvAct(s.row, \'red\')">红冲</el-button>',
+      '          <span v-if="!lead || s.row.status!==1 || s.row.invoiceType!==\'NORMAL\'" style="color:#c0c4cc;font-size:12px;">-</span>',
       '        </template></el-table-column>',
       '      </el-table>',
       '      <el-pagination style="margin-top:12px;justify-content:flex-end;" background layout="total, sizes, prev, pager, next" :total="invTotal" :page-size="invSize" :page-sizes="[10, 20, 50, 100]" :current-page="invPage" @current-change="onInvPage" @size-change="onInvSize"></el-pagination>',

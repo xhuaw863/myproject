@@ -88,7 +88,7 @@ public class HisMedicalCertService extends ServiceImpl<HisMedicalCertMapper, His
 
     /**
      * 机构归属: 优先取开具科室(就诊科室)归属机构(his_visit 无 org_id 列, 经 his_dept 关联);
-     * 科室缺失或未标注机构时回退登录会话机构。
+     * 科室缺失或未标注机构时回退登录会话机构(仍无法确定则拒绝, 不允许落 NULL 导致机构维度查询丢失)。
      */
     private Long resolveOrgId(HisVisit visit) {
         if (visit.getDeptId() != null) {
@@ -98,6 +98,9 @@ public class HisMedicalCertService extends ServiceImpl<HisMedicalCertMapper, His
             }
         }
         LoginUser u = UserContext.get();
-        return u == null ? null : u.getOrgId();
+        if (u == null || u.getOrgId() == null) {
+            throw new BizException(403, "无法确定文书归属机构, 请维护科室机构归属后重试");
+        }
+        return u.getOrgId();
     }
 }

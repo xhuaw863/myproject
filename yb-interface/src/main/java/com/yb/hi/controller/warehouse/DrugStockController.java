@@ -10,6 +10,7 @@ import com.yb.hi.entity.warehouse.HisStockCheck;
 import com.yb.hi.entity.warehouse.HisStockIn;
 import com.yb.hi.entity.warehouse.HisStockOut;
 import com.yb.hi.entity.warehouse.HisWarehouseDef;
+import com.yb.hi.framework.common.BizException;
 import com.yb.hi.framework.common.R;
 import com.yb.hi.framework.tenant.LoginUser;
 import com.yb.hi.framework.tenant.UserContext;
@@ -29,7 +30,7 @@ import java.util.Map;
 /**
  * 药库接口: 库存查询/预警/导出 + 入库单/出库单全流程 + 出入库流水
  * + 药库定义维护 + 盘点全流程(创建→录入→确认/作废) + 机构开展药品目录(入库选药)。
- * 读: 非牵头机构强制本院(scopeOrgId); 写: 仅牵头机构管理员(requireLeadWrite), orgId 空则默认当前机构。
+ * 读: 非牵头机构强制本院(scopeOrgId, 按ID直查的详情接口同样校验归属); 写: 仅牵头机构管理员(requireLeadWrite), orgId 空则默认当前机构。
  */
 @RestController
 @RequestMapping("/api/his/stock")
@@ -135,7 +136,9 @@ public class DrugStockController {
     /** 盘点单详情(主表+明细) */
     @GetMapping("/check/{id}")
     public R<Map<String, Object>> checkDetail(@PathVariable Long id) {
-        return R.ok(service.stockCheckDetail(id));
+        Map<String, Object> detail = service.stockCheckDetail(id);
+        checkOrgVisible(((HisStockCheck) detail.get("main")).getOrgId());
+        return R.ok(detail);
     }
 
     /* ================= 药品目录(入库选药, 只读) ================= */
@@ -247,7 +250,9 @@ public class DrugStockController {
     /** 入库单详情(主表+明细) */
     @GetMapping("/in/{id}")
     public R<Map<String, Object>> inDetail(@PathVariable Long id) {
-        return R.ok(service.stockInDetail(id));
+        Map<String, Object> detail = service.stockInDetail(id);
+        checkOrgVisible(((HisStockIn) detail.get("main")).getOrgId());
+        return R.ok(detail);
     }
 
     /* ================= 出库单 ================= */
@@ -296,6 +301,16 @@ public class DrugStockController {
     /** 出库单详情(主表+明细) */
     @GetMapping("/out/{id}")
     public R<Map<String, Object>> outDetail(@PathVariable Long id) {
-        return R.ok(service.stockOutDetail(id));
+        Map<String, Object> detail = service.stockOutDetail(id);
+        checkOrgVisible(((HisStockOut) detail.get("main")).getOrgId());
+        return R.ok(detail);
+    }
+
+    /** 按ID直查的详情接口机构隔离: 非牵头机构仅可看本机构单据(与分页口径 scopeOrgId 一致, 堵住绕过列表页直接猜ID穿透) */
+    private void checkOrgVisible(Long orgId) {
+        Long scoped = guard.scopeOrgId(null);
+        if (scoped != null && !scoped.equals(orgId)) {
+            throw new BizException(403, "仅可查看本机构单据");
+        }
     }
 }

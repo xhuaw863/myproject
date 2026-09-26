@@ -56,31 +56,48 @@ public class HisOrderService extends ServiceImpl<HisOrderMapper, HisOrder> {
                 .eq("order_id", orderId).eq("deleted", 0).orderByAsc("id"));
     }
 
-    /** 仅未收费医嘱单允许作废。 */
+    /** 仅未收费且未作废的医嘱单允许作废(收费状态取所属就诊 charge_status)。 */
     @Transactional(rollbackFor = Exception.class)
     public HisOrder cancel(Long id) {
         HisOrder order = getById(id);
         if (order == null) {
             throw new BizException(400, "医嘱单不存在");
         }
-        if (!Integer.valueOf(1).equals(order.getStatus())) {
-            throw new BizException("仅未收费医嘱单可作废(当前状态:" + order.getStatus() + ")");
+        if (order.getStatus() != null && order.getStatus() < 0) {
+            throw new BizException("该医嘱单已作废, 请勿重复操作");
+        }
+        // 医嘱单 status 仅在开立(1)/作废(-1)间变迁, 无中间态可用; 收费进度只能看就诊 charge_status
+        HisVisit visit = order.getVisitId() == null ? null : visitService.getById(order.getVisitId());
+        if (visit != null && visit.getChargeStatus() != null && visit.getChargeStatus() != 0) {
+            throw new BizException("该医嘱单所属就诊已收费或已退费(收费状态:" + visit.getChargeStatus() + "), 请先退费再作废");
         }
         order.setStatus(-1);
         updateById(order);
+        log.info("医嘱单作废: id={}, orderNo={}, visitId={}", order.getId(), order.getOrderNo(), order.getVisitId());
         return order;
     }
 
     /**
-     * 患者检查/检验/治疗报告(已执行, status>=2): 按开单时间倒序, 附单据明细
+     * 患者检查/检验/治疗报告: 本系统未建检查执行/报告回传链路, 因此口径为
+     * "已完成接诊且未作废的医嘱单"(而非依赖不存在的 status>=2 执行态, 那会导致报告页恒为空);
+     * 按开单时间倒序, 附单据明细。
      */
     public List<Map<String, Object>> listReports(Long patientId) {
         if (patientId == null) {
             throw new BizException(400, "患者ID不能为空");
         }
+        List<Long> finishedVisitIds = visitService.lambdaQuery()
+                .select(HisVisit::getId)
+                .eq(HisVisit::getPatientId, patientId)
+                .eq(HisVisit::getVisitStatus, 3)
+                .list().stream().map(HisVisit::getId).collect(Collectors.toList());
+        if (finishedVisitIds.isEmpty()) {
+            return new ArrayList<>();
+        }
         List<HisOrder> orders = lambdaQuery()
                 .eq(HisOrder::getPatientId, patientId)
-                .ge(HisOrder::getStatus, 2)
+                .in(HisOrder::getVisitId, finishedVisitIds)
+                .gt(HisOrder::getStatus, 0)
                 .orderByDesc(HisOrder::getCreateTime)
                 .orderByDesc(HisOrder::getId)
                 .list();

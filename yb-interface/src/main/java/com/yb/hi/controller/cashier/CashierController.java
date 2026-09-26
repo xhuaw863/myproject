@@ -25,6 +25,7 @@ import java.util.Map;
 /**
  * 收费结算接口(收费员工作台)
  * 读: 非牵头机构强制本院(scopeOrgId); 收费/退费/日结为日常业务不限牵头; 退费机构隔离在服务层守卫。
+ * 发票号段/开票冲销为财务票据管理, 仅牵头机构管理员可维护(requireLeadWrite)。
  */
 @RestController
 @RequestMapping("/api/his/cashier")
@@ -92,6 +93,7 @@ public class CashierController {
     /** 保存发票号段(新增/编辑; 编码同机构唯一, 区间不交叉) */
     @PostMapping("/invoice-pool")
     public R<HisInvoicePool> saveInvoicePool(@RequestBody HisInvoicePool pool) {
+        guard.requireLeadWrite();
         pool.setOrgId(guard.scopeOrgId(pool.getOrgId()));
         return R.ok(invoiceService.savePool(pool));
     }
@@ -99,18 +101,21 @@ public class CashierController {
     /** 启用号段(同机构同发票类型唯一使用中, 旧使用中号段自动让位) */
     @PostMapping("/invoice-pool/{id}/activate")
     public R<HisInvoicePool> activateInvoicePool(@PathVariable Long id) {
+        guard.requireLeadWrite();
         return R.ok(invoiceService.activatePool(id));
     }
 
     /** 发票作废(原号+"V"冲销记录, 金额取负) */
     @PostMapping("/invoice/{id}/void")
     public R<HisInvoice> voidInvoice(@PathVariable Long id, @RequestParam String reason) {
+        guard.requireLeadWrite();
         return R.ok(invoiceService.voidInvoice(id, reason));
     }
 
     /** 发票红冲(原号+"R"冲销记录, 金额取负) */
     @PostMapping("/invoice/{id}/red")
     public R<HisInvoice> redInvoice(@PathVariable Long id, @RequestParam String reason) {
+        guard.requireLeadWrite();
         return R.ok(invoiceService.redInvoice(id, reason));
     }
 

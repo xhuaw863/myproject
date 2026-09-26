@@ -43,30 +43,37 @@
     },
     {
       group: '医生站', children: [
-        { key: 'doctor-ws', label: '门诊医生站', comp: 'DoctorWorkstation' }
+        { key: 'doctor-ws', label: '门诊医生站', comp: 'DoctorWorkstation' },
+        { key: 'doctor-worklog', label: '医生工作日志', comp: 'DoctorWorklog' }
       ]
     },
     {
       group: '药房', children: [
         { key: 'dispense-todo', label: '待发药', comp: 'DispenseTodo' },
         { key: 'dispense', label: '调剂发药', comp: 'DispenseRecord' },
-        { key: 'drug-return', label: '退药', comp: 'DrugReturn' }
+        { key: 'drug-return', label: '退药', comp: 'DrugReturn' },
+        { key: 'pharmacy-def', label: '药房管理', comp: 'PharmacyDef' },
+        { key: 'pharmacy-rpt', label: '药房统计', comp: 'PharmacyReport' }
       ]
     },
     {
       group: '药库', children: [
-        { key: 'wh-drug', label: '药品目录', phase: 'P1d' },
+        { key: 'wh-drug', label: '药品目录', comp: 'DrugCatalogView' },
         { key: 'wh-in', label: '采购入库', comp: 'StockInManage' },
         { key: 'wh-out', label: '出库管理', comp: 'StockOutManage' },
         { key: 'wh-stock', label: '库存/流水', comp: 'DrugStock' },
-        { key: 'wh-check', label: '盘点', phase: 'P1d' }
+        { key: 'wh-check', label: '盘点', comp: 'StockCheck' },
+        { key: 'warehouse-def', label: '药库管理', comp: 'WarehouseDef' },
+        { key: 'warehouse-rpt', label: '药库统计', comp: 'WarehouseReport' }
       ]
     },
     {
       group: '收费结算台', children: [
         { key: 'charge-todo', label: '待收费', comp: 'ChargeTodo' },
         { key: 'charge-setl', label: '医保结算', comp: 'ChargeSetl' },
-        { key: 'charge-refund', label: '退费', comp: 'ChargeRefund' }
+        { key: 'charge-refund', label: '退费', comp: 'ChargeRefund' },
+        { key: 'invoice-mgr', label: '发票管理', comp: 'InvoiceManage' },
+        { key: 'charge-rpt', label: '收费统计', comp: 'ChargeReport' }
       ]
     },
     {

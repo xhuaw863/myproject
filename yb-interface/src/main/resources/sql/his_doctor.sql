@@ -2,6 +2,10 @@
 -- 医保原生多租户HIS - 医生站表(就诊/诊断/病历/处方/检查单)
 -- 数据库: yb_interface  字符集: utf8mb4
 -- 所有业务表含 tenant_id(租户隔离) + 审计字段 + 逻辑删除
+-- ⚠ 仅供查阅的参考快照, 不是运行时 DDL 入口: 真实建表/迁移由
+--   com.yb.hi.platform.DictSchemaMigration 启动时幂等执行(CREATE TABLE IF NOT EXISTS)。
+--   本文件含 DROP TABLE IF EXISTS, 对存活性库执行会清空医生站全部业务数据, 禁止手工执行;
+--   新增表/列请改 DictSchemaMigration, 并同步补录到本文件仅作快照参考。
 -- ============================================================
 USE yb_interface;
 

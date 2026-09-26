@@ -12,6 +12,8 @@ import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.Statement;
+import java.util.ArrayList;
+import java.util.List;
 
 /**
  * 字典化字段建列迁移(@Order(0), 早于所有演示/RBAC 初始化, 保证 MyBatis-Plus 查询/写入前列已存在)。
@@ -337,8 +339,101 @@ public class DictSchemaMigration implements ApplicationRunner {
             log.warn("字典化字段建列迁移跳过: {}", e.getMessage());
             return;
         }
+        try (Connection conn = dataSource.getConnection()) {
+            /* ---------- 关键结构迁移: 新表 + 存量表补列 + 库存唯一键重建 ----------
+             * 新增列被收费/发药/统计 SQL 直接引用, 一旦像上面那样静默跳过, 应用会"带病启动"、
+             * 运行期全线 Unknown column 报错。因此独立成段, 失败直接阻断启动。 */
+            ensureWarehouseDefTable(conn);
+            ensurePharmacyDefTable(conn);
+            ensureInvoicePoolTable(conn);
+            ensureInvoiceTable(conn);
+            ensurePaymentDetailTable(conn);
+            ensureStockCheckTables(conn);
+            alterExistingTables(conn);
+            // 库存唯一键重建依赖 his_warehouse_def 已存在(回填默认库), 因此必须排在补列之后
+            ensureStockWarehouseIsolation(conn);
+        } catch (Exception e) {
+            throw new IllegalStateException("HIS 门诊业务关键结构迁移失败, 拒绝启动(避免运行期缺列全线报错)", e);
+        }
         if (added > 0) {
             log.info("字典化字段建列迁移完成, 新增/变更 {} 列", added);
+        }
+    }
+
+    /**
+     * 库存按库房隔离的关键迁移: his_drug_stock 唯一键从 (tenant, org, 药品, 批次) 重建为
+     * (tenant, org, warehouse_id, 药品, 批次)。旧键不含药库会导致同一批次跨库合并到同一行,
+     * 第二个药库的入库量落到第一个药库名下, 分库库存/盘点全部失真。
+     * 步骤: 补列 -> 未归属行回填机构默认库 -> 合并同键重复行 -> 换索引; 全程幂等。
+     */
+    private void ensureStockWarehouseIsolation(Connection conn) throws Exception {
+        if (!tableExists(conn, "his_drug_stock")) {
+            return;
+        }
+        addColumnIfNotExists(conn, "his_drug_stock", "warehouse_id", "BIGINT DEFAULT NULL COMMENT '药库ID(his_warehouse_def.id)'");
+        if (!columnExists(conn, "his_warehouse_def", "is_default") && !tableExists(conn, "his_warehouse_def")) {
+            // 无药库主数据可回填(首次建表前), 本轮只补列, 唯一键待有默认库后再重建
+            return;
+        }
+        // 1. 存量未归属库存回填到该机构排序最早的药库(通常为 DEFAULT 默认药库)
+        try (Statement st = conn.createStatement()) {
+            st.executeUpdate("UPDATE his_drug_stock s JOIN (" + "SELECT org_id, MIN(id) AS wid FROM his_warehouse_def WHERE deleted = 0 GROUP BY org_id" + ") d ON d.org_id = s.org_id SET s.warehouse_id = d.wid WHERE s.warehouse_id IS NULL");
+        }
+        // 2. 换唯一键前先合并"同租户+机构+药库+药品+批次"的重复行(旧键按库合并遗留), 否则 ALTER 直接失败
+        mergeDuplicateStockRows(conn);
+        // 3. 唯一键重建(幂等: 新键已存在则跳过)
+        if (!indexExists(conn, "his_drug_stock", "uk_tenant_org_wh_drug_batch")) {
+            try (Statement st = conn.createStatement()) {
+                if (indexExists(conn, "his_drug_stock", "uk_tenant_org_drug_batch")) {
+                    st.executeUpdate("ALTER TABLE his_drug_stock DROP INDEX uk_tenant_org_drug_batch");
+                }
+                st.executeUpdate("ALTER TABLE his_drug_stock ADD UNIQUE KEY uk_tenant_org_wh_drug_batch "
+                        + "(tenant_id, org_id, warehouse_id, drug_catalog_id, batch_no)");
+            }
+            log.info("his_drug_stock 唯一键已重建为含药库维度(warehouse_id)");
+        }
+    }
+
+    /**
+     * 合并同 (tenant, org, warehouse, 药品, 批次) 的多条库存行: 数量并入最小 id 行, 其余物理删除。
+     * 物理删除而非逻辑删除, 因 MySQL 唯一索引不忽略 deleted=0 之外的行, 保留会与新建的库存行撞键。
+     */
+    private void mergeDuplicateStockRows(Connection conn) throws Exception {
+        String groupSql = "SELECT tenant_id, org_id, warehouse_id, drug_catalog_id, batch_no, COUNT(*) AS c" + " FROM his_drug_stock WHERE warehouse_id IS NOT NULL" + " GROUP BY tenant_id, org_id, warehouse_id, drug_catalog_id, batch_no HAVING COUNT(*) > 1";
+        List<String[]> groups = new ArrayList<String[]>();
+        try (Statement st = conn.createStatement(); ResultSet rs = st.executeQuery(groupSql)) {
+            while (rs.next()) {
+                groups.add(new String[]{rs.getString(1), rs.getString(2), rs.getString(3), rs.getString(4), rs.getString(5)});
+            }
+        }
+        for (String[] g : groups) {
+            String cond = "tenant_id = " + g[0] + " AND org_id = " + g[1] + " AND warehouse_id = " + g[2]
+                    + " AND drug_catalog_id = " + g[3] + " AND batch_no = '" + g[4].replace("'", "''") + "'";
+            long keepId;
+            try (Statement st = conn.createStatement();
+                 ResultSet rs = st.executeQuery("SELECT MIN(id) FROM his_drug_stock WHERE " + cond)) {
+                if (!rs.next() || (keepId = rs.getLong(1)) == 0) {
+                    continue;
+                }
+            }
+            try (Statement st = conn.createStatement()) {
+                st.executeUpdate("UPDATE his_drug_stock SET qty = (SELECT SUM(x.qty) FROM (" + "SELECT qty FROM his_drug_stock WHERE " + cond + ") x) WHERE id = " + keepId);
+                int removed = st.executeUpdate("DELETE FROM his_drug_stock WHERE " + cond + " AND id <> " + keepId);
+                log.info("合并重复库存批次行: keepId={}, removed={}, key=[{}/{}]", keepId, removed, g[3], g[4]);
+            }
+        }
+    }
+
+    /** 索引是否存在(information_schema.statistics)。 */
+    private boolean indexExists(Connection conn, String table, String index) throws Exception {
+        String sql = "SELECT COUNT(*) FROM information_schema.statistics "
+                + "WHERE table_schema = DATABASE() AND table_name = ? AND index_name = ?";
+        try (PreparedStatement ps = conn.prepareStatement(sql)) {
+            ps.setString(1, table);
+            ps.setString(2, index);
+            try (ResultSet rs = ps.executeQuery()) {
+                return rs.next() && rs.getInt(1) > 0;
+            }
         }
     }
 

@@ -42,6 +42,8 @@ public class HisPrescription extends BaseEntity {
     private String diagName;
     /** 处方金额 */
     private BigDecimal totalAmount;
-    /** 状态: 1-已开 2-已发药 3-已退药 */
+    /** 单据状态: 1-已开 -1-已作废(收费/发药进度看 dispenseStatus 与就诊 chargeStatus) */
     private Integer status;
+    /** 发药状态: 0-未发药 1-已发药 2-已退药(由药房发药/退药流程回写) */
+    private Integer dispenseStatus;
 }

@@ -60,18 +60,28 @@ public class HisPrescriptionService extends ServiceImpl<HisPrescriptionMapper, H
                 .eq("prescription_id", prescriptionId).eq("deleted", 0).orderByAsc("id"));
     }
 
-    /** 仅未收费处方允许作废。 */
+    /** 仅未收费且未发药的处方允许作废(收费/发药状态取所属就诊与处方实际链路字段)。 */
     @Transactional(rollbackFor = Exception.class)
     public HisPrescription cancel(Long id) {
         HisPrescription rx = getById(id);
         if (rx == null) {
             throw new BizException(400, "处方不存在");
         }
-        if (!Integer.valueOf(1).equals(rx.getStatus())) {
-            throw new BizException("仅未收费处方可作废(当前状态:" + rx.getStatus() + ")");
+        if (rx.getStatus() != null && rx.getStatus() < 0) {
+            throw new BizException("该处方已作废, 请勿重复操作");
+        }
+        // 处方自身 status 只在开立/作废间变迁, 不能用来判断收费; 收费看就诊 charge_status, 发药看 dispense_status
+        Integer dispenseStatus = rx.getDispenseStatus();
+        if (dispenseStatus != null && dispenseStatus != 0) {
+            throw new BizException("该处方已发药或已退药(发药状态:" + dispenseStatus + "), 不可作废");
+        }
+        HisVisit visit = rx.getVisitId() == null ? null : visitService.getById(rx.getVisitId());
+        if (visit != null && visit.getChargeStatus() != null && visit.getChargeStatus() != 0) {
+            throw new BizException("该处方所属就诊已收费或已退费(收费状态:" + visit.getChargeStatus() + "), 请先退费再作废");
         }
         rx.setStatus(-1);
         updateById(rx);
+        log.info("处方作废: id={}, rxNo={}, visitId={}", rx.getId(), rx.getRxNo(), rx.getVisitId());
         return rx;
     }
 

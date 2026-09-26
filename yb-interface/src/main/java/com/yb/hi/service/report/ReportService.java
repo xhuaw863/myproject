@@ -377,9 +377,8 @@ public class ReportService {
                 tid, range, staffId, deptId);
         // Java侧合并: 无匹配填0, 并补完成率(XX.X%)
         for (Map<String, Object> r : rows) {
-            long sid = ((Number) r.get("staffId")).longValue();
-            Map<String, Object> rxRow = rx.get(sid);
-            Map<String, Object> odRow = od.get(sid);
+            // 候诊/未分配医师的就诊 staff_id 为 NULL, 不能直接拆箱(否则整个接口 NPE)
+            Object sidObj = r.get("staffId");
             long visitCount = ((Number) r.get("visitCount")).longValue();
             long finishCount = r.get("finishCount") == null ? 0L : ((Number) r.get("finishCount")).longValue();
             r.put("visitCount", visitCount);
@@ -387,6 +386,16 @@ public class ReportService {
             r.put("finishRate", (visitCount == 0 ? BigDecimal.ZERO.setScale(1)
                     : BigDecimal.valueOf(finishCount).multiply(BigDecimal.valueOf(100))
                             .divide(BigDecimal.valueOf(visitCount), 1, RoundingMode.HALF_UP)).toPlainString() + "%");
+            if (sidObj == null) {
+                r.put("rxCount", 0L);
+                r.put("rxAmount", BigDecimal.ZERO);
+                r.put("orderCount", 0L);
+                r.put("orderAmount", BigDecimal.ZERO);
+                continue;
+            }
+            long sid = ((Number) sidObj).longValue();
+            Map<String, Object> rxRow = rx.get(sid);
+            Map<String, Object> odRow = od.get(sid);
             r.put("rxCount", rxRow == null ? 0L : ((Number) rxRow.get("rxCount")).longValue());
             r.put("rxAmount", rxRow == null ? BigDecimal.ZERO : rxRow.get("rxAmount"));
             r.put("orderCount", odRow == null ? 0L : ((Number) odRow.get("orderCount")).longValue());
@@ -538,14 +547,14 @@ public class ReportService {
 
     /**
      * 药库库存概况(his_drug_stock 批次级): 品种数/库存总金额(数量x零售价)/低库存批次数(qty>0且qty<=warn_qty)/
-     * 近效期批次数(qty>0且有效期30天内到期)。orgId=null 表示全医共体; warehouseId=null 表示机构下全部药库。
+     * 近效期批次数(qty>0且有效期在[今天,30天内]到期; 已过期批次不算"近效期", 归过期统计口径)。orgId=null 表示全医共体; warehouseId=null 表示机构下全部药库。
      */
     public Map<String, Object> warehouseStockSummary(Long orgId, Long warehouseId) {
         Long tid = TenantContext.require();
         StringBuilder sql = new StringBuilder("SELECT COUNT(DISTINCT drug_catalog_id) AS drugCount,")
                 .append(" IFNULL(SUM(qty * IFNULL(retail_price,0)),0) AS totalValue,")
                 .append(" IFNULL(SUM(CASE WHEN qty>0 AND qty<=warn_qty THEN 1 ELSE 0 END),0) AS lowStockCount,")
-                .append(" IFNULL(SUM(CASE WHEN qty>0 AND exp_date<=DATE_ADD(CURDATE(), INTERVAL 30 DAY)")
+                .append(" IFNULL(SUM(CASE WHEN qty>0 AND exp_date>=CURDATE() AND exp_date<=DATE_ADD(CURDATE(), INTERVAL 30 DAY)")
                 .append(" THEN 1 ELSE 0 END),0) AS nearExpCount")
                 .append(" FROM his_drug_stock WHERE tenant_id=? AND deleted=0");
         List<Object> args = new ArrayList<>(Collections.singletonList(tid));
@@ -814,9 +823,9 @@ public class ReportService {
     // ============================== 收费统计 ==============================
 
     /**
-     * 支付方式构成(已收费门诊单, 收费时间左闭右开): 优先按 his_payment_detail(混合支付逐笔)汇总;
-     * 该表无记录(老数据)时回退按 his_charge_bill.pay_method 汇总(空值视为CASH)。his_payment_detail 无 org_id,
-     * 机构过滤经 JOIN 收费单实现。返回 [{payMethod, payMethodName, cnt, amount}](按金额降序)。
+     * 支付方式构成(已收费门诊单, 收费时间左闭右开): 按 his_payment_detail(混合支付逐笔)汇总,
+     * 并逐单 UNION 回退——无支付明细的老单按主表 pay_method 计入(空值视为CASH), 同一单不会双计。
+     * his_payment_detail 无 org_id, 机构过滤经 JOIN 收费单实现。返回 [{payMethod, payMethodName, cnt, amount}](按金额降序)。
      */
     public List<Map<String, Object>> chargePayMethodStats(Long orgId, String startDate, String endDate) {
         Long tid = TenantContext.require();
@@ -834,26 +843,55 @@ public class ReportService {
             psql.append(" AND b.org_id=?");
             pargs.add(orgId);
         }
-        psql.append(" GROUP BY pd.pay_method ORDER BY amount DESC");
-        List<Map<String, Object>> rows = jdbc.queryForList(psql.toString(), pargs.toArray());
-        if (rows.isEmpty()) {
-            // 老数据回退: 支付明细无记录时按收费单主表 pay_method 汇总(空值视为CASH)
-            StringBuilder bsql = new StringBuilder("SELECT IFNULL(pay_method,'CASH') AS payMethod, COUNT(*) AS cnt,")
-                    .append(" IFNULL(SUM(total_amount),0) AS amount")
-                    .append(" FROM his_charge_bill WHERE tenant_id=? AND deleted=0 AND status=1 AND bill_type=1")
-                    .append(" AND charge_time>=? AND charge_time<?");
-            List<Object> bargs = new ArrayList<>(Arrays.asList(tid, start, end));
-            if (orgId != null) {
-                bsql.append(" AND org_id=?");
-                bargs.add(orgId);
-            }
-            bsql.append(" GROUP BY IFNULL(pay_method,'CASH') ORDER BY amount DESC");
-            rows = jdbc.queryForList(bsql.toString(), bargs.toArray());
+        psql.append(" GROUP BY pd.pay_method");
+        // 回退按单维度: 区间内无任何支付明细的收费单, 按主表 pay_method 归集(老数据兼容, 不再是整表判空才回退)
+        StringBuilder bsql = new StringBuilder("SELECT IFNULL(b.pay_method,'CASH') AS payMethod, COUNT(*) AS cnt,")
+                .append(" IFNULL(SUM(b.total_amount),0) AS amount")
+                .append(" FROM his_charge_bill b WHERE b.tenant_id=? AND b.deleted=0 AND b.status=1 AND b.bill_type=1")
+                .append(" AND b.charge_time>=? AND b.charge_time<?")
+                .append(" AND NOT EXISTS (SELECT 1 FROM his_payment_detail pd WHERE pd.bill_id=b.id AND pd.tenant_id=b.tenant_id AND pd.deleted=0)");
+        List<Object> bargs = new ArrayList<>(Arrays.asList(tid, start, end));
+        if (orgId != null) {
+            bsql.append(" AND b.org_id=?");
+            bargs.add(orgId);
         }
+        bsql.append(" GROUP BY IFNULL(b.pay_method,'CASH')");
+        // 两路结果在内存合并(同支付方式 cnt/amount 相加后按金额降序), 避免 UNION 外层再套子查询
+        Map<String, Map<String, Object>> merged = new LinkedHashMap<>();
+        for (Map<String, Object> r : jdbc.queryForList(psql.toString(), pargs.toArray())) {
+            mergePayStat(merged, r);
+        }
+        for (Map<String, Object> r : jdbc.queryForList(bsql.toString(), bargs.toArray())) {
+            mergePayStat(merged, r);
+        }
+        List<Map<String, Object>> rows = new ArrayList<>(merged.values());
+        rows.sort((x, y) -> toBigDecimal(y.get("amount")).compareTo(toBigDecimal(x.get("amount"))));
         for (Map<String, Object> r : rows) {
             r.put("payMethodName", payMethodText(r.get("payMethod")));
         }
         return rows;
+    }
+
+    /** 支付构成两路结果合并: 按支付方式累加 cnt/amount */
+    private static void mergePayStat(Map<String, Map<String, Object>> merged, Map<String, Object> r) {
+        String key = String.valueOf(r.get("payMethod"));
+        Map<String, Object> exist = merged.get(key);
+        if (exist == null) {
+            merged.put(key, r);
+            return;
+        }
+        exist.put("cnt", toBigDecimal(exist.get("cnt")).add(toBigDecimal(r.get("cnt"))));
+        exist.put("amount", toBigDecimal(exist.get("amount")).add(toBigDecimal(r.get("amount"))));
+    }
+
+    private static BigDecimal toBigDecimal(Object v) {
+        if (v == null) {
+            return BigDecimal.ZERO;
+        }
+        if (v instanceof BigDecimal) {
+            return (BigDecimal) v;
+        }
+        return new BigDecimal(String.valueOf(v));
     }
 
     /**

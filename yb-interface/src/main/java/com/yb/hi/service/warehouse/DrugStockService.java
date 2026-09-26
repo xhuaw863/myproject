@@ -58,7 +58,7 @@ import java.util.Set;
 
 /**
  * 药库服务(库存/入库/出库/流水/盘点/药品目录):
- * - 批次级库存记账, 确认入库按 (org+药品+批次) upsert 库存行(唯一键不含药库, 新行落 warehouse_id 归属);
+ * - 批次级库存记账, 确认入库按 (org+药库+药品+批次) upsert 库存行(与唯一键同维度, 不同药库各自成行);
  * - 扣减一律乐观锁 UPDATE ... WHERE qty >= ?, affected=0 即库存不足; FIFO 扣减可限定药库;
  * - 未指定批次的出库按有效期 FIFO(先到期先用)自动拆批扣减;
  * - 盘点: 快照整库有量批次 → 录实盘 → 确认时差异生成盘盈入库/盘亏出库单并自动确认;
@@ -458,8 +458,8 @@ public class DrugStockService {
     }
 
     /**
-     * 退药回库(可指定药库): 指定批次原子加量(定位键与唯一键一致不含药库);
-     * 批次行不存在时取同药品库存信息新建该批次行, 优先复制同药库行, 无则退化任一行。
+     * 退药回库(可指定药库): 按 org+药库+药品+批次 原子加量(与库存唯一键同维度);
+     * 目标药库下该批次行不存在时取同药品库存信息新建批次行, 优先复制同药库行, 无则退化任一行。
      */
     @Transactional(rollbackFor = Exception.class)
     public void returnStock(Long orgId, Long warehouseId, Long drugCatalogId, String batchNo, BigDecimal qty) {
@@ -472,7 +472,7 @@ public class DrugStockService {
         if (qty == null || qty.compareTo(BigDecimal.ZERO) <= 0) {
             throw new BizException(400, "回库数量必须大于0");
         }
-        int affected = stockMapper.addQty(orgId, drugCatalogId, batchNo.trim(), qty);
+        int affected = stockMapper.addQty(orgId, warehouseId, drugCatalogId, batchNo.trim(), qty);
         if (affected > 0) {
             log.info("退药回库: orgId={}, warehouseId={}, drugCatalogId={}, batchNo={}, qty={}",
                     orgId, warehouseId, drugCatalogId, batchNo, qty);
@@ -848,15 +848,17 @@ public class DrugStockService {
 
     /* ================= 内部实现 ================= */
 
-    /** 按批次 upsert 库存行: 存在原子加量; 不存在新建(新行落 warehouse_id 归属), 并发撞 uk_tenant_org_drug_batch 时转原子加量。定位键与唯一键一致(org+药品+批次, 不含药库): 同药品同批次在不同药库的入库合并到既有行, 归属保持不变 */
+    /** 按批次 upsert 库存行: 存在原子加量; 不存在新建, 并发撞唯一键时转原子加量。定位键与唯一键一致(org+药库+药品+批次): 同一批次在不同药库各自成行, 不再跨库合并 */
     private void upsertStock(Long orgId, Long warehouseId, HisStockInItem item) {
         HisDrugStock exist = stockMapper.selectOne(new LambdaQueryWrapper<HisDrugStock>()
                 .eq(HisDrugStock::getOrgId, orgId)
                 .eq(HisDrugStock::getDrugCatalogId, item.getDrugCatalogId())
                 .eq(HisDrugStock::getBatchNo, item.getBatchNo())
+                .eq(warehouseId != null, HisDrugStock::getWarehouseId, warehouseId)
+                .isNull(warehouseId == null, HisDrugStock::getWarehouseId)
                 .last("LIMIT 1"));
         if (exist != null) {
-            int affected = stockMapper.addQty(orgId, item.getDrugCatalogId(), item.getBatchNo(), item.getQty());
+            int affected = stockMapper.addQty(orgId, warehouseId, item.getDrugCatalogId(), item.getBatchNo(), item.getQty());
             if (affected == 0) {
                 throw new BizException("库存批次加量失败: " + item.getDrugName() + " 批号" + item.getBatchNo());
             }
@@ -881,7 +883,7 @@ public class DrugStockService {
             stockMapper.insert(stock);
         } catch (DuplicateKeyException e) {
             // 并发确认撞唯一键: 转原子加量
-            int affected = stockMapper.addQty(orgId, item.getDrugCatalogId(), item.getBatchNo(), item.getQty());
+            int affected = stockMapper.addQty(orgId, warehouseId, item.getDrugCatalogId(), item.getBatchNo(), item.getQty());
             if (affected == 0) {
                 throw new BizException("库存批次入库失败: " + item.getDrugName() + " 批号" + item.getBatchNo());
             }
