@@ -12,6 +12,8 @@ public class StockInReq {
 
     /** 机构ID(空则取当前登录用户机构) */
     private Long orgId;
+    /** 药库ID(his_warehouse_def.id, 空则不限库/默认库) */
+    private Long warehouseId;
     /** 入库类型: 1采购 2退药回库 3盘盈 4调拨入 */
     private Integer inType;
     /** 供应商 */

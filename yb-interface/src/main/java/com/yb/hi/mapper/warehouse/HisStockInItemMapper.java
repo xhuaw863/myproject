@@ -29,6 +29,7 @@ public interface HisStockInItemMapper extends BaseMapper<HisStockInItem> {
             + " FROM his_stock_in_item i JOIN his_stock_in m ON i.stock_in_id = m.id"
             + " WHERE m.status = 1"
             + " <if test='orgId != null'> AND m.org_id = #{orgId} </if>"
+            + " <if test='warehouseId != null'> AND m.warehouse_id = #{warehouseId} </if>"
             + " <if test='drugCatalogId != null'> AND i.drug_catalog_id = #{drugCatalogId} </if>"
             + " <if test='startDate != null and startDate != \"\"'> AND DATE(m.confirm_time) &gt;= #{startDate} </if>"
             + " <if test='endDate != null and endDate != \"\"'> AND DATE(m.confirm_time) &lt;= #{endDate} </if>"
@@ -40,6 +41,7 @@ public interface HisStockInItemMapper extends BaseMapper<HisStockInItem> {
             + " FROM his_stock_out_item o JOIN his_stock_out m2 ON o.stock_out_id = m2.id"
             + " WHERE m2.status = 1"
             + " <if test='orgId != null'> AND m2.org_id = #{orgId} </if>"
+            + " <if test='warehouseId != null'> AND m2.warehouse_id = #{warehouseId} </if>"
             + " <if test='drugCatalogId != null'> AND o.drug_catalog_id = #{drugCatalogId} </if>"
             + " <if test='startDate != null and startDate != \"\"'> AND DATE(m2.confirm_time) &gt;= #{startDate} </if>"
             + " <if test='endDate != null and endDate != \"\"'> AND DATE(m2.confirm_time) &lt;= #{endDate} </if>"
@@ -47,6 +49,7 @@ public interface HisStockInItemMapper extends BaseMapper<HisStockInItem> {
             + "</script>")
     IPage<Map<String, Object>> selectFlowPage(Page<Map<String, Object>> page,
                                               @Param("orgId") Long orgId,
+                                              @Param("warehouseId") Long warehouseId,
                                               @Param("drugCatalogId") Long drugCatalogId,
                                               @Param("startDate") String startDate,
                                               @Param("endDate") String endDate);

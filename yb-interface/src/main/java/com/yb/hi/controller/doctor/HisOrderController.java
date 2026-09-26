@@ -8,6 +8,7 @@ import com.yb.hi.service.doctor.HisOrderService;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.List;
+import java.util.Map;
 
 /**
  * 检查/检验/治疗单接口: 开单 / 查询就诊单据 / 查询明细
@@ -38,5 +39,17 @@ public class HisOrderController {
     @PostMapping("/create")
     public R<HisOrder> create(@RequestBody OrderReq req) {
         return R.ok(service.create(req));
+    }
+
+    /** 作废未收费医嘱单 */
+    @PostMapping("/cancel")
+    public R<HisOrder> cancel(@RequestParam Long id) {
+        return R.ok(service.cancel(id));
+    }
+
+    /** 患者检查/检验/治疗报告(已执行, 含单据明细) */
+    @GetMapping("/reports")
+    public R<List<Map<String, Object>>> reports(@RequestParam Long patientId) {
+        return R.ok(service.listReports(patientId));
     }
 }

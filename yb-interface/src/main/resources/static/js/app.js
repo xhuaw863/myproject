@@ -43,8 +43,7 @@
     },
     {
       group: '医生站', children: [
-        { key: 'doctor-queue', label: '候诊列表', comp: 'DoctorQueue' },
-        { key: 'doctor-work', label: '接诊工作台', comp: 'DoctorWork' }
+        { key: 'doctor-ws', label: '门诊医生站', comp: 'DoctorWorkstation' }
       ]
     },
     {

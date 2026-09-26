@@ -23,6 +23,8 @@ public class HisStockIn extends BaseEntity {
 
     /** 机构ID */
     private Long orgId;
+    /** 药库ID(his_warehouse_def.id) */
+    private Long warehouseId;
     /** 入库单号(RK+yyyyMMdd+4位序号) */
     private String inNo;
     /** 入库类型: 1采购 2退药回库 3盘盈 4调拨入 */

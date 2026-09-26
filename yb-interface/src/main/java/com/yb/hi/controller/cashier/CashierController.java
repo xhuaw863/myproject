@@ -3,12 +3,16 @@ package com.yb.hi.controller.cashier;
 import com.alibaba.excel.EasyExcel;
 import com.baomidou.mybatisplus.core.metadata.IPage;
 import com.yb.hi.dto.cashier.ChargeReq;
+import com.yb.hi.dto.cashier.PartialRefundReq;
 import com.yb.hi.dto.cashier.RefundReq;
 import com.yb.hi.entity.cashier.HisChargeBill;
 import com.yb.hi.entity.cashier.HisDailySettle;
+import com.yb.hi.entity.cashier.HisInvoice;
+import com.yb.hi.entity.cashier.HisInvoicePool;
 import com.yb.hi.framework.common.R;
 import com.yb.hi.platform.service.OrgAccessGuard;
 import com.yb.hi.service.cashier.CashierService;
+import com.yb.hi.service.cashier.InvoiceService;
 import org.springframework.web.bind.annotation.*;
 
 import javax.servlet.http.HttpServletResponse;
@@ -27,10 +31,12 @@ import java.util.Map;
 public class CashierController {
 
     private final CashierService cashierService;
+    private final InvoiceService invoiceService;
     private final OrgAccessGuard guard;
 
-    public CashierController(CashierService cashierService, OrgAccessGuard guard) {
+    public CashierController(CashierService cashierService, InvoiceService invoiceService, OrgAccessGuard guard) {
         this.cashierService = cashierService;
+        this.invoiceService = invoiceService;
         this.guard = guard;
     }
 
@@ -67,6 +73,56 @@ public class CashierController {
     @PostMapping("/refund")
     public R<HisChargeBill> refund(@RequestBody RefundReq req) {
         return R.ok(cashierService.refund(req));
+    }
+
+    /** 部分退费(按明细行退指定数量, 支持多次部分退; 全部退完原单自动转已退费) */
+    @PostMapping("/partial-refund")
+    public R<HisChargeBill> partialRefund(@RequestBody PartialRefundReq req) {
+        return R.ok(cashierService.partialRefund(req));
+    }
+
+    /** 发票号段分页(按分配时间降序) */
+    @GetMapping("/invoice-pool")
+    public R<IPage<HisInvoicePool>> invoicePools(@RequestParam(required = false) Long orgId,
+                                                 @RequestParam(defaultValue = "1") long page,
+                                                 @RequestParam(defaultValue = "20") long size) {
+        return R.ok(invoiceService.poolPage(guard.scopeOrgId(orgId), page, size));
+    }
+
+    /** 保存发票号段(新增/编辑; 编码同机构唯一, 区间不交叉) */
+    @PostMapping("/invoice-pool")
+    public R<HisInvoicePool> saveInvoicePool(@RequestBody HisInvoicePool pool) {
+        pool.setOrgId(guard.scopeOrgId(pool.getOrgId()));
+        return R.ok(invoiceService.savePool(pool));
+    }
+
+    /** 启用号段(同机构同发票类型唯一使用中, 旧使用中号段自动让位) */
+    @PostMapping("/invoice-pool/{id}/activate")
+    public R<HisInvoicePool> activateInvoicePool(@PathVariable Long id) {
+        return R.ok(invoiceService.activatePool(id));
+    }
+
+    /** 发票作废(原号+"V"冲销记录, 金额取负) */
+    @PostMapping("/invoice/{id}/void")
+    public R<HisInvoice> voidInvoice(@PathVariable Long id, @RequestParam String reason) {
+        return R.ok(invoiceService.voidInvoice(id, reason));
+    }
+
+    /** 发票红冲(原号+"R"冲销记录, 金额取负) */
+    @PostMapping("/invoice/{id}/red")
+    public R<HisInvoice> redInvoice(@PathVariable Long id, @RequestParam String reason) {
+        return R.ok(invoiceService.redInvoice(id, reason));
+    }
+
+    /** 发票记录分页(状态/创建日期区间过滤) */
+    @GetMapping("/invoices")
+    public R<IPage<HisInvoice>> invoices(@RequestParam(required = false) Long orgId,
+                                         @RequestParam(required = false) Integer status,
+                                         @RequestParam(required = false) String startDate,
+                                         @RequestParam(required = false) String endDate,
+                                         @RequestParam(defaultValue = "1") long page,
+                                         @RequestParam(defaultValue = "20") long size) {
+        return R.ok(invoiceService.invoicePage(guard.scopeOrgId(orgId), status, startDate, endDate, page, size));
     }
 
     /** 收费记录分页(billType: 1收费/2退费, 可选) */
@@ -122,6 +178,26 @@ public class CashierController {
         EasyExcel.write(resp.getOutputStream())
                 .head((List<List<String>>) data.get("head"))
                 .sheet("收费记录")
+                .doWrite((List<List<Object>>) data.get("rows"));
+    }
+
+    /** 发票记录导出(xlsx): 与发票列表同一机构/日期口径 */
+    @GetMapping("/export/invoices")
+    @SuppressWarnings("unchecked")
+    public void exportInvoices(@RequestParam(required = false) Long orgId,
+                               @RequestParam(required = false) String startDate,
+                               @RequestParam(required = false) String endDate,
+                               HttpServletResponse resp) throws IOException {
+        Map<String, Object> data = invoiceService.exportInvoices(guard.scopeOrgId(orgId), startDate, endDate);
+        String fname = "发票记录_" + LocalDate.now() + ".xlsx";
+        String enc = URLEncoder.encode(fname, "UTF-8").replace("+", "%20");
+        resp.setContentType("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+        resp.setCharacterEncoding("UTF-8");
+        resp.setHeader("Content-Disposition", "attachment; filename=\"" + enc + "\"; filename*=UTF-8''" + enc);
+        resp.setHeader("Access-Control-Expose-Headers", "Content-Disposition");
+        EasyExcel.write(resp.getOutputStream())
+                .head((List<List<String>>) data.get("head"))
+                .sheet("发票记录")
                 .doWrite((List<List<Object>>) data.get("rows"));
     }
 }

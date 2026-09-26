@@ -230,6 +230,7 @@ public class DictSchemaMigration implements ApplicationRunner {
                 {"his_prescription_item", "unit_dose", "DECIMAL(12,4) NULL COMMENT '每最小包装单位含药量(换算快照)'"},
                 {"his_prescription_item", "pack_ratio", "INT NULL COMMENT '包装换算比(大包装→最小单位, 快照)'"},
                 {"his_prescription_item", "round_rule", "TINYINT NULL COMMENT '发药取整规则快照:1向上 2向下 3四舍五入'"},
+                {"his_prescription_item", "group_no", "VARCHAR(20) NULL COMMENT '用药组号'"},
                 /* ---------- 医保对照变更留痕: 生效时间 + 变更前医保码(三目录统一) ---------- */
                 {"his_drug_catalog", "prev_yb_code", "VARCHAR(64) NULL COMMENT '变更前医保码(上一次对照的医保编码)'"},
                 {"his_drug_catalog", "yb_map_eff_time", "DATETIME NULL COMMENT '医保对照生效时间(当前医保码开始生效时刻)'"},
@@ -274,6 +275,17 @@ public class DictSchemaMigration implements ApplicationRunner {
                 {"his_registration", "queue_no", "VARCHAR(20) NULL COMMENT '候诊序号(科室简码+4位流水号)'"},
                 /* ---------- 就诊增强: 候诊序号(自挂号记录同步) ---------- */
                 {"his_visit", "queue_no", "VARCHAR(20) NULL COMMENT '候诊序号(自挂号记录同步)'"},
+                /* ---------- 医生站增强: 医疗类别自挂号同步 + 2203病种/计划生育字段 + 病历补充(过敏史/辅助检查) + 随访 ---------- */
+                {"his_visit", "med_type", "VARCHAR(10) NULL COMMENT '医疗类别(2203 medType, 自挂号同步: 11普通门诊 14急诊)'"},
+                {"his_visit", "allergy_history", "VARCHAR(500) NULL COMMENT '过敏史'"},
+                {"his_visit", "aux_exam", "VARCHAR(1000) NULL COMMENT '辅助检查'"},
+                {"his_visit", "dise_type_code", "VARCHAR(20) NULL COMMENT '病种类型代码(2203 mdtrtinfo.dise_type_code)'"},
+                {"his_visit", "birctrl_type", "VARCHAR(10) NULL COMMENT '计划生育手术类别(2203 mdtrtinfo.birctrl_type)'"},
+                {"his_visit", "birctrl_matn_date", "DATE NULL COMMENT '计划生育手术或生育日期(2203 mdtrtinfo.birctrl_matn_date)'"},
+                {"his_visit", "followup_date", "DATE NULL COMMENT '随访日期'"},
+                {"his_visit", "followup_note", "VARCHAR(500) NULL COMMENT '随访备注'"},
+                {"his_medical_record", "allergy_history", "VARCHAR(500) NULL COMMENT '过敏史'"},
+                {"his_medical_record", "aux_exam", "VARCHAR(1000) NULL COMMENT '辅助检查'"},
         };
         int added = 0;
         try (Connection conn = dataSource.getConnection()) {
@@ -287,6 +299,8 @@ public class DictSchemaMigration implements ApplicationRunner {
             ensureYbMapLogTable(conn);
             ensureDictEditLogTable(conn);
             ensureScheduleTemplateTables(conn);
+            ensureDoctorDocTables(conn);
+            ensureMedicalTemplateTable(conn);
             ensureCommunityDictSeeds(conn);
             seedRegLevelDict(conn);
             for (String[] c : cols) {
@@ -310,6 +324,15 @@ public class DictSchemaMigration implements ApplicationRunner {
                     added++;
                 }
             }
+            /* ---------- 多库房/多药房/发票/混合支付/盘点: 幂等建表(表已存在则跳过) ---------- */
+            ensureWarehouseDefTable(conn);
+            ensurePharmacyDefTable(conn);
+            ensureInvoicePoolTable(conn);
+            ensureInvoiceTable(conn);
+            ensurePaymentDetailTable(conn);
+            ensureStockCheckTables(conn);
+            // 存量表补列: 药库/药房归属 + 混合支付/发票号/退费关联/部分退费已退数量(幂等, 列已存在则跳过)
+            alterExistingTables(conn);
         } catch (Exception e) {
             log.warn("字典化字段建列迁移跳过: {}", e.getMessage());
             return;
@@ -366,6 +389,28 @@ public class DictSchemaMigration implements ApplicationRunner {
             try (ResultSet rs = ps.executeQuery()) {
                 return rs.next() && rs.getInt(1) > 0;
             }
+        }
+    }
+
+    /** 幂等建表: 医生工作站医疗模板(个人/科室/全院三级)。 */
+    private void ensureMedicalTemplateTable(Connection conn) throws Exception {
+        try (Statement st = conn.createStatement()) {
+            st.executeUpdate("CREATE TABLE IF NOT EXISTS his_medical_template ("
+                    + "id BIGINT NOT NULL AUTO_INCREMENT,"
+                    + "tenant_id BIGINT NOT NULL,"
+                    + "template_type VARCHAR(20) NOT NULL COMMENT 'soap/rx_set/order_set/fragment',"
+                    + "name VARCHAR(100) NOT NULL,"
+                    + "dept_id BIGINT DEFAULT NULL COMMENT '科室级(null=全院)',"
+                    + "staff_id BIGINT DEFAULT NULL COMMENT '个人级(null=科室/全院)',"
+                    + "content TEXT NOT NULL COMMENT 'JSON',"
+                    + "sort_order INT DEFAULT 0,"
+                    + "status TINYINT DEFAULT 1,"
+                    + "create_by VARCHAR(50), update_by VARCHAR(50),"
+                    + "create_time DATETIME, update_time DATETIME,"
+                    + "deleted TINYINT DEFAULT 0,"
+                    + "PRIMARY KEY (id),"
+                    + "KEY idx_template_scope (tenant_id, template_type, staff_id, dept_id, status)"
+                    + ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='医生工作站医疗模板'");
         }
     }
 
@@ -452,6 +497,93 @@ public class DictSchemaMigration implements ApplicationRunner {
                     + "KEY idx_tenant (tenant_id),"
                     + "KEY idx_dept_staff (tenant_id, dept_id, staff_id)"
                     + ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='周排班模板'");
+        }
+    }
+
+    /**
+     * 幂等建表: 医生站业务单据三表(住院证/会诊申请/诊断证明, 门诊医生开具)。
+     * DDL 与 sql/his_doctor.sql 末尾追加段保持同步, 保证存量库启动时自动获得新表(表已存在则跳过)。
+     */
+    private void ensureDoctorDocTables(Connection conn) throws Exception {
+        try (Statement st = conn.createStatement()) {
+            st.executeUpdate("CREATE TABLE IF NOT EXISTS his_admission_cert ("
+                    + "id BIGINT NOT NULL AUTO_INCREMENT COMMENT '住院证ID',"
+                    + "tenant_id BIGINT NOT NULL COMMENT '租户ID',"
+                    + "visit_id BIGINT NOT NULL COMMENT '就诊ID',"
+                    + "patient_id BIGINT DEFAULT NULL COMMENT '患者ID',"
+                    + "patient_name VARCHAR(50) DEFAULT NULL COMMENT '患者姓名',"
+                    + "admit_dept_id BIGINT DEFAULT NULL COMMENT '拟收治科室ID',"
+                    + "admit_dept_name VARCHAR(100) DEFAULT NULL COMMENT '拟收治科室名称',"
+                    + "admit_diagnosis VARCHAR(500) DEFAULT NULL COMMENT '入院诊断',"
+                    + "condition_summary VARCHAR(1000) DEFAULT NULL COMMENT '病情摘要',"
+                    + "admit_purpose VARCHAR(500) DEFAULT NULL COMMENT '入院目的',"
+                    + "urgency TINYINT DEFAULT 1 COMMENT '紧急程度:1-普通 2-急 3-危急',"
+                    + "status TINYINT DEFAULT 1 COMMENT '状态:1-已开具 2-已入院 3-已作废',"
+                    + "apply_dr_id BIGINT DEFAULT NULL COMMENT '开具医师ID',"
+                    + "apply_dr_name VARCHAR(50) DEFAULT NULL COMMENT '开具医师姓名',"
+                    + "apply_time DATETIME DEFAULT NULL COMMENT '开具时间',"
+                    + "org_id BIGINT DEFAULT NULL COMMENT '机构ID(开具时就诊科室归属机构)',"
+                    + "create_by VARCHAR(50) DEFAULT NULL,"
+                    + "create_time DATETIME DEFAULT NULL,"
+                    + "update_by VARCHAR(50) DEFAULT NULL,"
+                    + "update_time DATETIME DEFAULT NULL,"
+                    + "deleted TINYINT DEFAULT 0,"
+                    + "PRIMARY KEY (id),"
+                    + "KEY idx_tenant (tenant_id),"
+                    + "KEY idx_visit (visit_id)"
+                    + ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='住院证'");
+            st.executeUpdate("CREATE TABLE IF NOT EXISTS his_consult_request ("
+                    + "id BIGINT NOT NULL AUTO_INCREMENT COMMENT '会诊申请ID',"
+                    + "tenant_id BIGINT NOT NULL COMMENT '租户ID',"
+                    + "visit_id BIGINT NOT NULL COMMENT '就诊ID',"
+                    + "patient_id BIGINT DEFAULT NULL COMMENT '患者ID',"
+                    + "patient_name VARCHAR(50) DEFAULT NULL COMMENT '患者姓名',"
+                    + "apply_dept_id BIGINT DEFAULT NULL COMMENT '申请科室ID',"
+                    + "apply_dept_name VARCHAR(100) DEFAULT NULL COMMENT '申请科室名称',"
+                    + "apply_dr_id BIGINT DEFAULT NULL COMMENT '申请医师ID',"
+                    + "apply_dr_name VARCHAR(50) DEFAULT NULL COMMENT '申请医师姓名',"
+                    + "consult_dept_id BIGINT DEFAULT NULL COMMENT '受邀会诊科室ID',"
+                    + "consult_dept_name VARCHAR(100) DEFAULT NULL COMMENT '受邀会诊科室名称',"
+                    + "consult_purpose VARCHAR(500) DEFAULT NULL COMMENT '会诊目的',"
+                    + "condition_summary VARCHAR(1000) DEFAULT NULL COMMENT '病情摘要',"
+                    + "urgency TINYINT DEFAULT 1 COMMENT '紧急程度:1-普通 2-急 3-紧急',"
+                    + "expected_time DATETIME DEFAULT NULL COMMENT '期望会诊时间',"
+                    + "status TINYINT DEFAULT 1 COMMENT '状态:1-已申请 2-已接受 3-已完成 4-已拒绝',"
+                    + "consult_opinion VARCHAR(1000) DEFAULT NULL COMMENT '会诊意见(受邀科室反馈)',"
+                    + "org_id BIGINT DEFAULT NULL COMMENT '机构ID(申请科室归属机构)',"
+                    + "create_by VARCHAR(50) DEFAULT NULL,"
+                    + "create_time DATETIME DEFAULT NULL,"
+                    + "update_by VARCHAR(50) DEFAULT NULL,"
+                    + "update_time DATETIME DEFAULT NULL,"
+                    + "deleted TINYINT DEFAULT 0,"
+                    + "PRIMARY KEY (id),"
+                    + "KEY idx_tenant (tenant_id),"
+                    + "KEY idx_visit (visit_id)"
+                    + ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='会诊申请'");
+            st.executeUpdate("CREATE TABLE IF NOT EXISTS his_medical_cert ("
+                    + "id BIGINT NOT NULL AUTO_INCREMENT COMMENT '证明ID',"
+                    + "tenant_id BIGINT NOT NULL COMMENT '租户ID',"
+                    + "visit_id BIGINT NOT NULL COMMENT '就诊ID',"
+                    + "patient_id BIGINT DEFAULT NULL COMMENT '患者ID',"
+                    + "patient_name VARCHAR(50) DEFAULT NULL COMMENT '患者姓名',"
+                    + "cert_type TINYINT DEFAULT 1 COMMENT '证明类型:1-诊断证明 2-病假条 3-转诊证明',"
+                    + "diagnosis VARCHAR(500) DEFAULT NULL COMMENT '诊断',"
+                    + "cert_content VARCHAR(2000) DEFAULT NULL COMMENT '证明内容',"
+                    + "sick_leave_days INT DEFAULT NULL COMMENT '建议病假天数',"
+                    + "remark VARCHAR(500) DEFAULT NULL COMMENT '备注',"
+                    + "issue_dr_id BIGINT DEFAULT NULL COMMENT '开具医师ID',"
+                    + "issue_dr_name VARCHAR(50) DEFAULT NULL COMMENT '开具医师姓名',"
+                    + "issue_time DATETIME DEFAULT NULL COMMENT '开具时间',"
+                    + "org_id BIGINT DEFAULT NULL COMMENT '机构ID(开具科室归属机构)',"
+                    + "create_by VARCHAR(50) DEFAULT NULL,"
+                    + "create_time DATETIME DEFAULT NULL,"
+                    + "update_by VARCHAR(50) DEFAULT NULL,"
+                    + "update_time DATETIME DEFAULT NULL,"
+                    + "deleted TINYINT DEFAULT 0,"
+                    + "PRIMARY KEY (id),"
+                    + "KEY idx_tenant (tenant_id),"
+                    + "KEY idx_visit (visit_id)"
+                    + ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='诊断证明'");
         }
     }
 
@@ -963,6 +1095,199 @@ public class DictSchemaMigration implements ApplicationRunner {
                     + "UNIQUE KEY uk_tenant_org_date (tenant_id, org_id, settle_date),"
                     + "KEY idx_tenant (tenant_id)"
                     + ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='门诊日结'");
+        }
+    }
+
+    /** 幂等建表: 药库定义表(机构级多药库, 药库库存/入出库按库房独立记账; UNIQUE tenant_id+org_id+code)。 */
+    private void ensureWarehouseDefTable(Connection conn) throws Exception {
+        try (Statement st = conn.createStatement()) {
+            st.executeUpdate("CREATE TABLE IF NOT EXISTS his_warehouse_def ("
+                    + "id BIGINT NOT NULL AUTO_INCREMENT COMMENT '主键',"
+                    + "tenant_id BIGINT NOT NULL COMMENT '租户ID',"
+                    + "org_id BIGINT NOT NULL COMMENT '机构ID',"
+                    + "code VARCHAR(40) NOT NULL COMMENT '仓库编码(如WH-WEST-01)',"
+                    + "name VARCHAR(100) NOT NULL COMMENT '仓库名称(如西药库)',"
+                    + "warehouse_type VARCHAR(20) DEFAULT NULL COMMENT '仓库类型:WESTERN/TCM/MIXED',"
+                    + "location VARCHAR(200) DEFAULT NULL COMMENT '库房位置',"
+                    + "manager VARCHAR(50) DEFAULT NULL COMMENT '负责人',"
+                    + "status TINYINT DEFAULT 1 COMMENT '状态:1启用 0停用',"
+                    + "sort_no INT DEFAULT 0 COMMENT '排序号',"
+                    + "create_by VARCHAR(50) DEFAULT NULL, create_time DATETIME DEFAULT NULL,"
+                    + "update_by VARCHAR(50) DEFAULT NULL, update_time DATETIME DEFAULT NULL, deleted TINYINT DEFAULT 0,"
+                    + "PRIMARY KEY (id),"
+                    + "UNIQUE KEY uk_tenant_org_code (tenant_id, org_id, code),"
+                    + "KEY idx_tenant (tenant_id),"
+                    + "KEY idx_org (tenant_id, org_id)"
+                    + ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='药库定义(机构级多药库)'");
+        }
+    }
+
+    /** 幂等建表: 药房定义表(机构级多药房, 发药记录按药房归属; UNIQUE tenant_id+org_id+code)。 */
+    private void ensurePharmacyDefTable(Connection conn) throws Exception {
+        try (Statement st = conn.createStatement()) {
+            st.executeUpdate("CREATE TABLE IF NOT EXISTS his_pharmacy_def ("
+                    + "id BIGINT NOT NULL AUTO_INCREMENT COMMENT '主键',"
+                    + "tenant_id BIGINT NOT NULL COMMENT '租户ID',"
+                    + "org_id BIGINT NOT NULL COMMENT '机构ID',"
+                    + "code VARCHAR(40) NOT NULL COMMENT '药房编码',"
+                    + "name VARCHAR(100) NOT NULL COMMENT '药房名称(门诊药房/住院药房/中药房)',"
+                    + "pharmacy_type VARCHAR(20) DEFAULT NULL COMMENT '药房类型:OUTPATIENT/INPATIENT/TCM',"
+                    + "warehouse_id BIGINT DEFAULT NULL COMMENT '关联药库ID(his_warehouse_def.id)',"
+                    + "location VARCHAR(200) DEFAULT NULL COMMENT '药房位置',"
+                    + "status TINYINT DEFAULT 1 COMMENT '状态:1启用 0停用',"
+                    + "sort_no INT DEFAULT 0 COMMENT '排序号',"
+                    + "create_by VARCHAR(50) DEFAULT NULL, create_time DATETIME DEFAULT NULL,"
+                    + "update_by VARCHAR(50) DEFAULT NULL, update_time DATETIME DEFAULT NULL, deleted TINYINT DEFAULT 0,"
+                    + "PRIMARY KEY (id),"
+                    + "UNIQUE KEY uk_tenant_org_code (tenant_id, org_id, code),"
+                    + "KEY idx_tenant (tenant_id),"
+                    + "KEY idx_org (tenant_id, org_id)"
+                    + ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='药房定义(机构级多药房)'");
+        }
+    }
+
+    /** 幂等建表: 发票号池表(机构级发票号段, 收费时按池顺序取号; UNIQUE tenant_id+org_id+pool_code)。 */
+    private void ensureInvoicePoolTable(Connection conn) throws Exception {
+        try (Statement st = conn.createStatement()) {
+            st.executeUpdate("CREATE TABLE IF NOT EXISTS his_invoice_pool ("
+                    + "id BIGINT NOT NULL AUTO_INCREMENT COMMENT '主键',"
+                    + "tenant_id BIGINT NOT NULL COMMENT '租户ID',"
+                    + "org_id BIGINT NOT NULL COMMENT '机构ID',"
+                    + "pool_code VARCHAR(40) NOT NULL COMMENT '号池编码',"
+                    + "invoice_type VARCHAR(20) NOT NULL COMMENT '发票类型:NORMAL纸质/ELECTRONIC电子',"
+                    + "prefix VARCHAR(20) DEFAULT NULL COMMENT '发票号前缀',"
+                    + "start_no BIGINT NOT NULL COMMENT '起始号',"
+                    + "end_no BIGINT NOT NULL COMMENT '结束号',"
+                    + "current_no BIGINT NOT NULL DEFAULT 0 COMMENT '当前已用号(下一个待取号=currentNo+1)',"
+                    + "status TINYINT DEFAULT 0 COMMENT '状态:0未启用 1使用中 2已用完',"
+                    + "alloc_by VARCHAR(50) DEFAULT NULL COMMENT '分配人',"
+                    + "alloc_time DATETIME DEFAULT NULL COMMENT '分配时间',"
+                    + "create_by VARCHAR(50) DEFAULT NULL, create_time DATETIME DEFAULT NULL,"
+                    + "update_by VARCHAR(50) DEFAULT NULL, update_time DATETIME DEFAULT NULL, deleted TINYINT DEFAULT 0,"
+                    + "PRIMARY KEY (id),"
+                    + "UNIQUE KEY uk_tenant_org_pool (tenant_id, org_id, pool_code),"
+                    + "KEY idx_tenant (tenant_id)"
+                    + ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='发票号池(机构级发票号段)'");
+        }
+    }
+
+    /** 幂等建表: 发票表(开票记录, 作废/红冲指向原发票不物理删除; UNIQUE tenant_id+org_id+invoice_no)。 */
+    private void ensureInvoiceTable(Connection conn) throws Exception {
+        try (Statement st = conn.createStatement()) {
+            st.executeUpdate("CREATE TABLE IF NOT EXISTS his_invoice ("
+                    + "id BIGINT NOT NULL AUTO_INCREMENT COMMENT '主键',"
+                    + "tenant_id BIGINT NOT NULL COMMENT '租户ID',"
+                    + "org_id BIGINT NOT NULL COMMENT '机构ID',"
+                    + "invoice_no VARCHAR(50) NOT NULL COMMENT '发票号(前缀+号池序号)',"
+                    + "pool_id BIGINT DEFAULT NULL COMMENT '发票号池ID(his_invoice_pool.id)',"
+                    + "bill_id BIGINT DEFAULT NULL COMMENT '关联收费单ID(his_charge_bill.id)',"
+                    + "invoice_type VARCHAR(20) DEFAULT 'NORMAL' COMMENT '发票类型:NORMAL/VOID/RED',"
+                    + "amount DECIMAL(12,2) DEFAULT 0 COMMENT '开票金额',"
+                    + "patient_name VARCHAR(50) DEFAULT NULL COMMENT '患者姓名',"
+                    + "status TINYINT DEFAULT 1 COMMENT '状态:1正常 2已作废 3已红冲',"
+                    + "void_reason VARCHAR(500) DEFAULT NULL COMMENT '作废/红冲原因',"
+                    + "void_by VARCHAR(50) DEFAULT NULL COMMENT '作废/红冲操作人',"
+                    + "void_time DATETIME DEFAULT NULL COMMENT '作废/红冲时间',"
+                    + "original_invoice_id BIGINT DEFAULT NULL COMMENT '原发票ID(作废/红冲时指向原发票)',"
+                    + "create_by VARCHAR(50) DEFAULT NULL, create_time DATETIME DEFAULT NULL,"
+                    + "update_by VARCHAR(50) DEFAULT NULL, update_time DATETIME DEFAULT NULL, deleted TINYINT DEFAULT 0,"
+                    + "PRIMARY KEY (id),"
+                    + "UNIQUE KEY uk_tenant_org_invoice_no (tenant_id, org_id, invoice_no),"
+                    + "KEY idx_tenant (tenant_id),"
+                    + "KEY idx_bill (bill_id),"
+                    + "KEY idx_pool (pool_id)"
+                    + ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='发票(开票记录)'");
+        }
+    }
+
+    /** 幂等建表: 支付明细表(收费单混合支付逐笔记录; 无 org_id, 机构归属随收费单)。 */
+    private void ensurePaymentDetailTable(Connection conn) throws Exception {
+        try (Statement st = conn.createStatement()) {
+            st.executeUpdate("CREATE TABLE IF NOT EXISTS his_payment_detail ("
+                    + "id BIGINT NOT NULL AUTO_INCREMENT COMMENT '主键',"
+                    + "tenant_id BIGINT NOT NULL COMMENT '租户ID',"
+                    + "bill_id BIGINT NOT NULL COMMENT '收费单ID(his_charge_bill.id)',"
+                    + "pay_method VARCHAR(20) NOT NULL COMMENT '支付方式:CASH/WECHAT/ALIPAY/CARD/INSURANCE/FREE',"
+                    + "amount DECIMAL(12,2) NOT NULL COMMENT '支付金额',"
+                    + "pay_ref VARCHAR(100) DEFAULT NULL COMMENT '支付流水号',"
+                    + "pay_time DATETIME DEFAULT NULL COMMENT '支付时间',"
+                    + "create_by VARCHAR(50) DEFAULT NULL, create_time DATETIME DEFAULT NULL,"
+                    + "update_by VARCHAR(50) DEFAULT NULL, update_time DATETIME DEFAULT NULL, deleted TINYINT DEFAULT 0,"
+                    + "PRIMARY KEY (id),"
+                    + "KEY idx_tenant (tenant_id),"
+                    + "KEY idx_bill (bill_id)"
+                    + ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='支付明细(收费单混合支付)'");
+        }
+    }
+
+    /** 幂等建表: 盘点两表(盘点单主表 + 逐批次明细, 确认后按差异生成盘盈入库/盘亏出库)。 */
+    private void ensureStockCheckTables(Connection conn) throws Exception {
+        try (Statement st = conn.createStatement()) {
+            st.executeUpdate("CREATE TABLE IF NOT EXISTS his_stock_check ("
+                    + "id BIGINT NOT NULL AUTO_INCREMENT COMMENT '主键',"
+                    + "tenant_id BIGINT NOT NULL COMMENT '租户ID',"
+                    + "org_id BIGINT NOT NULL COMMENT '机构ID',"
+                    + "warehouse_id BIGINT DEFAULT NULL COMMENT '药库ID(his_warehouse_def.id)',"
+                    + "check_no VARCHAR(30) NOT NULL COMMENT '盘点单号(PD+yyyyMMdd+4位)',"
+                    + "check_date DATE DEFAULT NULL COMMENT '盘点日期',"
+                    + "status TINYINT DEFAULT 0 COMMENT '状态:0进行中 1已完成 2已作废',"
+                    + "check_by VARCHAR(50) DEFAULT NULL COMMENT '盘点人',"
+                    + "confirm_by VARCHAR(50) DEFAULT NULL COMMENT '确认人',"
+                    + "confirm_time DATETIME DEFAULT NULL COMMENT '确认时间',"
+                    + "profit_amount DECIMAL(12,2) DEFAULT 0 COMMENT '盘盈金额合计',"
+                    + "loss_amount DECIMAL(12,2) DEFAULT 0 COMMENT '盘亏金额合计',"
+                    + "remark VARCHAR(500) DEFAULT NULL COMMENT '备注',"
+                    + "create_by VARCHAR(50) DEFAULT NULL, create_time DATETIME DEFAULT NULL,"
+                    + "update_by VARCHAR(50) DEFAULT NULL, update_time DATETIME DEFAULT NULL, deleted TINYINT DEFAULT 0,"
+                    + "PRIMARY KEY (id),"
+                    + "UNIQUE KEY uk_tenant_check_no (tenant_id, check_no),"
+                    + "KEY idx_tenant (tenant_id),"
+                    + "KEY idx_org_status (tenant_id, org_id, status)"
+                    + ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='盘点单'");
+            st.executeUpdate("CREATE TABLE IF NOT EXISTS his_stock_check_item ("
+                    + "id BIGINT NOT NULL AUTO_INCREMENT COMMENT '主键',"
+                    + "tenant_id BIGINT NOT NULL COMMENT '租户ID',"
+                    + "stock_check_id BIGINT NOT NULL COMMENT '盘点单ID',"
+                    + "drug_stock_id BIGINT DEFAULT NULL COMMENT '库存批次ID(his_drug_stock.id)',"
+                    + "drug_catalog_id BIGINT DEFAULT NULL COMMENT '药品目录ID',"
+                    + "drug_name VARCHAR(200) DEFAULT NULL COMMENT '药品名称(快照)',"
+                    + "spec VARCHAR(200) DEFAULT NULL COMMENT '规格(快照)',"
+                    + "batch_no VARCHAR(50) DEFAULT NULL COMMENT '批次号(快照)',"
+                    + "system_qty DECIMAL(12,2) DEFAULT 0 COMMENT '系统账面数量',"
+                    + "actual_qty DECIMAL(12,2) DEFAULT NULL COMMENT '实盘数量',"
+                    + "diff_qty DECIMAL(12,2) DEFAULT NULL COMMENT '差异数量(实盘-账面; 正=盘盈 负=盘亏)',"
+                    + "cost_price DECIMAL(12,4) DEFAULT NULL COMMENT '进价(快照)',"
+                    + "remark VARCHAR(500) DEFAULT NULL COMMENT '备注',"
+                    + "create_by VARCHAR(50) DEFAULT NULL, create_time DATETIME DEFAULT NULL,"
+                    + "update_by VARCHAR(50) DEFAULT NULL, update_time DATETIME DEFAULT NULL, deleted TINYINT DEFAULT 0,"
+                    + "PRIMARY KEY (id),"
+                    + "KEY idx_tenant (tenant_id),"
+                    + "KEY idx_stock_check (stock_check_id)"
+                    + ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='盘点明细'");
+        }
+    }
+
+    /**
+     * 幂等补列: 多库房/多药房/发票/混合支付/部分退费改造涉及的 6 张存量表新增列
+     * (药库归属/药房归属/支付方式/发票号/退费关联原单/已退数量), 列已存在则跳过。
+     */
+    private void alterExistingTables(Connection conn) throws Exception {
+        addColumnIfNotExists(conn, "his_drug_stock", "warehouse_id", "BIGINT DEFAULT NULL COMMENT '药库ID(his_warehouse_def.id)'");
+        addColumnIfNotExists(conn, "his_stock_in", "warehouse_id", "BIGINT DEFAULT NULL COMMENT '药库ID(his_warehouse_def.id)'");
+        addColumnIfNotExists(conn, "his_stock_out", "warehouse_id", "BIGINT DEFAULT NULL COMMENT '药库ID(his_warehouse_def.id)'");
+        addColumnIfNotExists(conn, "his_dispense", "pharmacy_id", "BIGINT DEFAULT NULL COMMENT '药房ID(his_pharmacy_def.id)'");
+        addColumnIfNotExists(conn, "his_charge_bill", "pay_method", "VARCHAR(20) DEFAULT NULL COMMENT '主要支付方式:CASH/WECHAT/ALIPAY/CARD/INSURANCE/FREE'");
+        addColumnIfNotExists(conn, "his_charge_bill", "origin_bill_id", "BIGINT DEFAULT NULL COMMENT '退费关联原单ID(退费单指向原收费单)'");
+        addColumnIfNotExists(conn, "his_charge_bill", "invoice_no", "VARCHAR(50) DEFAULT NULL COMMENT '发票号'");
+        addColumnIfNotExists(conn, "his_charge_bill_item", "refunded_qty", "DECIMAL(12,4) DEFAULT 0 COMMENT '已退数量(部分退费追踪)'");
+    }
+
+    /** 幂等补列: 表存在且列不存在时 ALTER TABLE ADD COLUMN(与 cols 循环同语义, 供建表后存量表补列使用)。 */
+    private void addColumnIfNotExists(Connection conn, String table, String column, String definition) throws Exception {
+        if (tableExists(conn, table) && !columnExists(conn, table, column)) {
+            try (Statement st = conn.createStatement()) {
+                st.executeUpdate("ALTER TABLE " + table + " ADD COLUMN " + column + " " + definition);
+            }
         }
     }
 

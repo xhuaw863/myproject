@@ -6,8 +6,12 @@ import com.yb.hi.dto.pharmacy.DispenseReq;
 import com.yb.hi.dto.pharmacy.DrugReturnReq;
 import com.yb.hi.entity.pharmacy.HisDispense;
 import com.yb.hi.entity.pharmacy.HisDrugReturn;
+import com.yb.hi.entity.pharmacy.HisPharmacyDef;
 import com.yb.hi.framework.common.R;
+import com.yb.hi.framework.tenant.LoginUser;
+import com.yb.hi.framework.tenant.UserContext;
 import com.yb.hi.platform.service.OrgAccessGuard;
+import com.yb.hi.service.pharmacy.PharmacyDefService;
 import com.yb.hi.service.pharmacy.PharmacyService;
 import org.springframework.web.bind.annotation.*;
 
@@ -19,28 +23,33 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * 药房接口(药房工作站): 待发药/发药/发药记录/退药申请与审批/退药记录。
- * 读: 非牵头机构强制本院(scopeOrgId); 发药/退药为日常业务不限牵头(机构隔离由 scopeOrgId 保证)。
+ * 药房接口(药房工作站): 待发药/发药/发药记录/退药申请与审批/退药记录 + 药房定义维护。
+ * 读: 非牵头机构强制本院(scopeOrgId); 发药/退药为日常业务不限牵头(机构隔离由 scopeOrgId 保证);
+ * 药房定义写(保存/启停): 仅牵头机构管理员(requireLeadWrite)。
  */
 @RestController
 @RequestMapping("/api/his/pharmacy")
 public class PharmacyController {
 
     private final PharmacyService pharmacyService;
+    private final PharmacyDefService pharmacyDefService;
     private final OrgAccessGuard guard;
 
-    public PharmacyController(PharmacyService pharmacyService, OrgAccessGuard guard) {
+    public PharmacyController(PharmacyService pharmacyService, PharmacyDefService pharmacyDefService,
+                              OrgAccessGuard guard) {
         this.pharmacyService = pharmacyService;
+        this.pharmacyDefService = pharmacyDefService;
         this.guard = guard;
     }
 
-    /** 待发药列表(dispense_status=0 的处方, 先开先发) */
+    /** 待发药列表(dispense_status=0 的处方, 先开先发; pharmacyId 中药房只看中药处方) */
     @GetMapping("/todo")
     public R<IPage<Map<String, Object>>> todo(@RequestParam(required = false) Long orgId,
+                                              @RequestParam(required = false) Long pharmacyId,
                                               @RequestParam(required = false) String keyword,
                                               @RequestParam(defaultValue = "1") long page,
                                               @RequestParam(defaultValue = "20") long size) {
-        return R.ok(pharmacyService.todoPage(guard.scopeOrgId(orgId), keyword, page, size));
+        return R.ok(pharmacyService.todoPage(guard.scopeOrgId(orgId), pharmacyId, keyword, page, size));
     }
 
     /** 发药详情(处方信息+药品明细+库存匹配, 供发药前核对) */
@@ -56,26 +65,28 @@ public class PharmacyController {
         return R.ok(pharmacyService.doDispense(req));
     }
 
-    /** 发药记录分页(机构/状态/发药日期区间/单号或患者关键字) */
+    /** 发药记录分页(机构/药房/状态/发药日期区间/单号或患者关键字) */
     @GetMapping("/records")
     public R<IPage<HisDispense>> records(@RequestParam(required = false) Long orgId,
+                                         @RequestParam(required = false) Long pharmacyId,
                                          @RequestParam(required = false) Integer status,
                                          @RequestParam(required = false) String startDate,
                                          @RequestParam(required = false) String endDate,
                                          @RequestParam(required = false) String keyword,
                                          @RequestParam(defaultValue = "1") long page,
                                          @RequestParam(defaultValue = "20") long size) {
-        return R.ok(pharmacyService.dispensePage(guard.scopeOrgId(orgId), status, startDate, endDate, keyword, page, size));
+        return R.ok(pharmacyService.dispensePage(guard.scopeOrgId(orgId), pharmacyId, status, startDate, endDate, keyword, page, size));
     }
 
-    /** 发药记录导出(xlsx): 与列表同一机构/日期口径 */
+    /** 发药记录导出(xlsx): 与列表同一机构/药房/日期口径 */
     @GetMapping("/export")
     @SuppressWarnings("unchecked")
     public void export(@RequestParam(required = false) Long orgId,
+                       @RequestParam(required = false) Long pharmacyId,
                        @RequestParam(required = false) String startDate,
                        @RequestParam(required = false) String endDate,
                        HttpServletResponse resp) throws IOException {
-        Map<String, Object> data = pharmacyService.exportDispense(guard.scopeOrgId(orgId), startDate, endDate);
+        Map<String, Object> data = pharmacyService.exportDispense(guard.scopeOrgId(orgId), pharmacyId, startDate, endDate);
         String fname = "发药记录_" + LocalDate.now() + ".xlsx";
         String enc = URLEncoder.encode(fname, "UTF-8").replace("+", "%20");
         resp.setContentType("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
@@ -109,5 +120,38 @@ public class PharmacyController {
                                            @RequestParam(defaultValue = "1") long page,
                                            @RequestParam(defaultValue = "20") long size) {
         return R.ok(pharmacyService.returnPage(guard.scopeOrgId(orgId), status, startDate, endDate, page, size));
+    }
+
+    /* ================= 药房定义 ================= */
+
+    /** 药房定义列表(机构启用中的药房, 按 sortNo 排序; 机构首次访问自动创建默认门诊药房) */
+    @GetMapping("/pharmacy-def")
+    public R<List<HisPharmacyDef>> pharmacyDefList(@RequestParam(required = false) Long orgId) {
+        return R.ok(pharmacyDefService.list(resolveOrgId(orgId)));
+    }
+
+    /** 保存药房定义(新增/编辑; code 同机构唯一, 关联药库须存在且启用) */
+    @PostMapping("/pharmacy-def")
+    public R<HisPharmacyDef> pharmacyDefSave(@RequestBody HisPharmacyDef def) {
+        guard.requireLeadWrite();
+        def.setOrgId(resolveOrgId(def.getOrgId()));
+        return R.ok(pharmacyDefService.save(def));
+    }
+
+    /** 药房启停(enabled=true 启用 / false 停用) */
+    @PostMapping("/pharmacy-def/{id}/toggle")
+    public R<HisPharmacyDef> pharmacyDefToggle(@PathVariable Long id, @RequestParam boolean enabled) {
+        guard.requireLeadWrite();
+        return R.ok(pharmacyDefService.toggle(id, enabled));
+    }
+
+    /** 机构作用域: 牵头可取入参, 非牵头强制本机构; 入参为空回退当前登录机构 */
+    private Long resolveOrgId(Long requested) {
+        Long oid = guard.scopeOrgId(requested);
+        if (oid != null) {
+            return oid;
+        }
+        LoginUser lu = UserContext.get();
+        return lu == null ? null : lu.getOrgId();
     }
 }

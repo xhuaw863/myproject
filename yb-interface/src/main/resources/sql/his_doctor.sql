@@ -227,3 +227,93 @@ CREATE TABLE his_order_item (
     KEY idx_tenant (tenant_id),
     KEY idx_order (order_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='检查检验治疗单明细表';
+
+-- ------------------------------------------------------------
+-- 住院证(门诊医生开具, 患者持证办理入院)
+-- ------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS his_admission_cert (
+    id                BIGINT        NOT NULL AUTO_INCREMENT COMMENT '住院证ID',
+    tenant_id         BIGINT        NOT NULL COMMENT '租户ID',
+    visit_id          BIGINT        NOT NULL COMMENT '就诊ID',
+    patient_id        BIGINT        DEFAULT NULL COMMENT '患者ID',
+    patient_name      VARCHAR(50)   DEFAULT NULL COMMENT '患者姓名',
+    admit_dept_id     BIGINT        DEFAULT NULL COMMENT '拟收治科室ID',
+    admit_dept_name   VARCHAR(100)  DEFAULT NULL COMMENT '拟收治科室名称',
+    admit_diagnosis   VARCHAR(500)  DEFAULT NULL COMMENT '入院诊断',
+    condition_summary VARCHAR(1000) DEFAULT NULL COMMENT '病情摘要',
+    admit_purpose     VARCHAR(500)  DEFAULT NULL COMMENT '入院目的',
+    urgency           TINYINT       DEFAULT 1 COMMENT '紧急程度:1-普通 2-急 3-危急',
+    status            TINYINT       DEFAULT 1 COMMENT '状态:1-已开具 2-已入院 3-已作废',
+    apply_dr_id       BIGINT        DEFAULT NULL COMMENT '开具医师ID',
+    apply_dr_name     VARCHAR(50)   DEFAULT NULL COMMENT '开具医师姓名',
+    apply_time        DATETIME      DEFAULT NULL COMMENT '开具时间',
+    org_id            BIGINT        DEFAULT NULL COMMENT '机构ID(开具时就诊科室归属机构)',
+    create_by         VARCHAR(50)   DEFAULT NULL,
+    create_time       DATETIME      DEFAULT NULL,
+    update_by         VARCHAR(50)   DEFAULT NULL,
+    update_time       DATETIME      DEFAULT NULL,
+    deleted           TINYINT       DEFAULT 0,
+    PRIMARY KEY (id),
+    KEY idx_tenant (tenant_id),
+    KEY idx_visit (visit_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='住院证';
+
+-- ------------------------------------------------------------
+-- 会诊申请(申请科室发起, 受邀科室接受/完成/拒绝并反馈会诊意见)
+-- ------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS his_consult_request (
+    id                BIGINT        NOT NULL AUTO_INCREMENT COMMENT '会诊申请ID',
+    tenant_id         BIGINT        NOT NULL COMMENT '租户ID',
+    visit_id          BIGINT        NOT NULL COMMENT '就诊ID',
+    patient_id        BIGINT        DEFAULT NULL COMMENT '患者ID',
+    patient_name      VARCHAR(50)   DEFAULT NULL COMMENT '患者姓名',
+    apply_dept_id     BIGINT        DEFAULT NULL COMMENT '申请科室ID',
+    apply_dept_name   VARCHAR(100)  DEFAULT NULL COMMENT '申请科室名称',
+    apply_dr_id       BIGINT        DEFAULT NULL COMMENT '申请医师ID',
+    apply_dr_name     VARCHAR(50)   DEFAULT NULL COMMENT '申请医师姓名',
+    consult_dept_id   BIGINT        DEFAULT NULL COMMENT '受邀会诊科室ID',
+    consult_dept_name VARCHAR(100)  DEFAULT NULL COMMENT '受邀会诊科室名称',
+    consult_purpose   VARCHAR(500)  DEFAULT NULL COMMENT '会诊目的',
+    condition_summary VARCHAR(1000) DEFAULT NULL COMMENT '病情摘要',
+    urgency           TINYINT       DEFAULT 1 COMMENT '紧急程度:1-普通 2-急 3-紧急',
+    expected_time     DATETIME      DEFAULT NULL COMMENT '期望会诊时间',
+    status            TINYINT       DEFAULT 1 COMMENT '状态:1-已申请 2-已接受 3-已完成 4-已拒绝',
+    consult_opinion   VARCHAR(1000) DEFAULT NULL COMMENT '会诊意见(受邀科室反馈)',
+    org_id            BIGINT        DEFAULT NULL COMMENT '机构ID(申请科室归属机构)',
+    create_by         VARCHAR(50)   DEFAULT NULL,
+    create_time       DATETIME      DEFAULT NULL,
+    update_by         VARCHAR(50)   DEFAULT NULL,
+    update_time       DATETIME      DEFAULT NULL,
+    deleted           TINYINT       DEFAULT 0,
+    PRIMARY KEY (id),
+    KEY idx_tenant (tenant_id),
+    KEY idx_visit (visit_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='会诊申请';
+
+-- ------------------------------------------------------------
+-- 诊断证明(诊断证明/病假条/转诊证明)
+-- ------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS his_medical_cert (
+    id              BIGINT        NOT NULL AUTO_INCREMENT COMMENT '证明ID',
+    tenant_id       BIGINT        NOT NULL COMMENT '租户ID',
+    visit_id        BIGINT        NOT NULL COMMENT '就诊ID',
+    patient_id      BIGINT        DEFAULT NULL COMMENT '患者ID',
+    patient_name    VARCHAR(50)   DEFAULT NULL COMMENT '患者姓名',
+    cert_type       TINYINT       DEFAULT 1 COMMENT '证明类型:1-诊断证明 2-病假条 3-转诊证明',
+    diagnosis       VARCHAR(500)  DEFAULT NULL COMMENT '诊断',
+    cert_content    VARCHAR(2000) DEFAULT NULL COMMENT '证明内容',
+    sick_leave_days INT           DEFAULT NULL COMMENT '建议病假天数',
+    remark          VARCHAR(500)  DEFAULT NULL COMMENT '备注',
+    issue_dr_id     BIGINT        DEFAULT NULL COMMENT '开具医师ID',
+    issue_dr_name   VARCHAR(50)   DEFAULT NULL COMMENT '开具医师姓名',
+    issue_time      DATETIME      DEFAULT NULL COMMENT '开具时间',
+    org_id          BIGINT        DEFAULT NULL COMMENT '机构ID(开具科室归属机构)',
+    create_by       VARCHAR(50)   DEFAULT NULL,
+    create_time     DATETIME      DEFAULT NULL,
+    update_by       VARCHAR(50)   DEFAULT NULL,
+    update_time     DATETIME      DEFAULT NULL,
+    deleted         TINYINT       DEFAULT 0,
+    PRIMARY KEY (id),
+    KEY idx_tenant (tenant_id),
+    KEY idx_visit (visit_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='诊断证明';

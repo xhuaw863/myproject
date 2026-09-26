@@ -8,19 +8,29 @@ import com.yb.hi.dto.warehouse.StockInItemReq;
 import com.yb.hi.dto.warehouse.StockInReq;
 import com.yb.hi.dto.warehouse.StockOutItemReq;
 import com.yb.hi.dto.warehouse.StockOutReq;
+import com.yb.hi.entity.community.HisDrugCatalog;
+import com.yb.hi.entity.community.HisOrgCatalog;
 import com.yb.hi.entity.warehouse.HisDrugStock;
+import com.yb.hi.entity.warehouse.HisStockCheck;
+import com.yb.hi.entity.warehouse.HisStockCheckItem;
 import com.yb.hi.entity.warehouse.HisStockIn;
 import com.yb.hi.entity.warehouse.HisStockInItem;
 import com.yb.hi.entity.warehouse.HisStockOut;
 import com.yb.hi.entity.warehouse.HisStockOutItem;
+import com.yb.hi.entity.warehouse.HisWarehouseDef;
 import com.yb.hi.framework.common.BizException;
 import com.yb.hi.framework.tenant.LoginUser;
 import com.yb.hi.framework.tenant.UserContext;
+import com.yb.hi.mapper.community.HisDrugCatalogMapper;
+import com.yb.hi.mapper.community.HisOrgCatalogMapper;
 import com.yb.hi.mapper.warehouse.HisDrugStockMapper;
+import com.yb.hi.mapper.warehouse.HisStockCheckItemMapper;
+import com.yb.hi.mapper.warehouse.HisStockCheckMapper;
 import com.yb.hi.mapper.warehouse.HisStockInItemMapper;
 import com.yb.hi.mapper.warehouse.HisStockInMapper;
 import com.yb.hi.mapper.warehouse.HisStockOutItemMapper;
 import com.yb.hi.mapper.warehouse.HisStockOutMapper;
+import com.yb.hi.mapper.warehouse.HisWarehouseDefMapper;
 import com.yb.hi.platform.entity.SysOrg;
 import com.yb.hi.platform.mapper.SysOrgMapper;
 import lombok.extern.slf4j.Slf4j;
@@ -39,17 +49,20 @@ import java.time.format.DateTimeParseException;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 
 /**
- * 药库服务(库存/入库/出库/流水):
- * - 批次级库存记账, 确认入库按 (org+药品+批次) upsert 库存行;
- * - 扣减一律乐观锁 UPDATE ... WHERE qty >= ?, affected=0 即库存不足;
+ * 药库服务(库存/入库/出库/流水/盘点/药品目录):
+ * - 批次级库存记账, 确认入库按 (org+药品+批次) upsert 库存行(唯一键不含药库, 新行落 warehouse_id 归属);
+ * - 扣减一律乐观锁 UPDATE ... WHERE qty >= ?, affected=0 即库存不足; FIFO 扣减可限定药库;
  * - 未指定批次的出库按有效期 FIFO(先到期先用)自动拆批扣减;
- * - 单号 前缀+yyyyMMdd+4位序号, synchronized 生成 + DB 回读当日最大序号兜底重启防撞号;
+ * - 盘点: 快照整库有量批次 → 录实盘 → 确认时差异生成盘盈入库/盘亏出库单并自动确认;
+ * - 单号 前缀+yyyyMMdd+4位序号(RK入库/CK出库/PD盘点), synchronized 生成 + DB 回读当日最大序号兑底重启防撞号;
  * - tenant_id 由租户插件自动注入/过滤, 本类不显式处理租户。
  */
 @Slf4j
@@ -62,6 +75,11 @@ public class DrugStockService {
     private final HisStockOutMapper stockOutMapper;
     private final HisStockOutItemMapper stockOutItemMapper;
     private final SysOrgMapper orgMapper;
+    private final HisWarehouseDefMapper warehouseDefMapper;
+    private final HisStockCheckMapper stockCheckMapper;
+    private final HisStockCheckItemMapper stockCheckItemMapper;
+    private final HisDrugCatalogMapper drugCatalogMapper;
+    private final HisOrgCatalogMapper orgCatalogMapper;
 
     /** 单号内存序号(synchronized 保证唯一; 跨日重置时从DB回读当日最大序号) */
     private String seqDate;
@@ -69,21 +87,30 @@ public class DrugStockService {
 
     public DrugStockService(HisDrugStockMapper stockMapper, HisStockInMapper stockInMapper,
                             HisStockInItemMapper stockInItemMapper, HisStockOutMapper stockOutMapper,
-                            HisStockOutItemMapper stockOutItemMapper, SysOrgMapper orgMapper) {
+                            HisStockOutItemMapper stockOutItemMapper, SysOrgMapper orgMapper,
+                            HisWarehouseDefMapper warehouseDefMapper, HisStockCheckMapper stockCheckMapper,
+                            HisStockCheckItemMapper stockCheckItemMapper, HisDrugCatalogMapper drugCatalogMapper,
+                            HisOrgCatalogMapper orgCatalogMapper) {
         this.stockMapper = stockMapper;
         this.stockInMapper = stockInMapper;
         this.stockInItemMapper = stockInItemMapper;
         this.stockOutMapper = stockOutMapper;
         this.stockOutItemMapper = stockOutItemMapper;
         this.orgMapper = orgMapper;
+        this.warehouseDefMapper = warehouseDefMapper;
+        this.stockCheckMapper = stockCheckMapper;
+        this.stockCheckItemMapper = stockCheckItemMapper;
+        this.drugCatalogMapper = drugCatalogMapper;
+        this.orgCatalogMapper = orgCatalogMapper;
     }
 
     /* ================= 库存管理 ================= */
 
-    /** 库存分页查询(keyword: 名称/编码/批号/厂家; lowStock=true 时 qty<=warn_qty) */
-    public IPage<HisDrugStock> stockPage(Long orgId, String keyword, Boolean lowStock, long page, long size) {
+    /** 库存分页查询(keyword: 名称/编码/批号/厂家; lowStock=true 时 qty<=warn_qty; warehouseId 可选按库过滤) */
+    public IPage<HisDrugStock> stockPage(Long orgId, Long warehouseId, String keyword, Boolean lowStock, long page, long size) {
         LambdaQueryWrapper<HisDrugStock> w = new LambdaQueryWrapper<>();
-        w.eq(orgId != null, HisDrugStock::getOrgId, orgId);
+        w.eq(orgId != null, HisDrugStock::getOrgId, orgId)
+                .eq(warehouseId != null, HisDrugStock::getWarehouseId, warehouseId);
         if (StringUtils.hasText(keyword)) {
             String kw = keyword.trim();
             w.and(q -> q.like(HisDrugStock::getDrugName, kw)
@@ -98,20 +125,22 @@ public class DrugStockService {
         return stockMapper.selectPage(new Page<>(page, size), w);
     }
 
-    /** 低库存预警列表(qty<=warn_qty 且未停用) */
-    public List<HisDrugStock> lowStockAlert(Long orgId) {
+    /** 低库存预警列表(qty<=warn_qty 且未停用; warehouseId 可选按库过滤) */
+    public List<HisDrugStock> lowStockAlert(Long orgId, Long warehouseId) {
         LambdaQueryWrapper<HisDrugStock> w = new LambdaQueryWrapper<>();
         w.eq(orgId != null, HisDrugStock::getOrgId, orgId)
+                .eq(warehouseId != null, HisDrugStock::getWarehouseId, warehouseId)
                 .eq(HisDrugStock::getStatus, 1)
                 .apply("qty <= warn_qty")
                 .orderByAsc(HisDrugStock::getDrugName);
         return stockMapper.selectList(w);
     }
 
-    /** 库存导出数据 {head, rows}: 与列表同口径, 机构名列映射机构名 */
-    public Map<String, Object> exportStock(Long orgId) {
+    /** 库存导出数据 {head, rows}: 与列表同口径, 机构名列映射机构名; warehouseId 可选按库过滤 */
+    public Map<String, Object> exportStock(Long orgId, Long warehouseId) {
         LambdaQueryWrapper<HisDrugStock> w = new LambdaQueryWrapper<>();
         w.eq(orgId != null, HisDrugStock::getOrgId, orgId)
+                .eq(warehouseId != null, HisDrugStock::getWarehouseId, warehouseId)
                 .orderByAsc(HisDrugStock::getOrgId)
                 .orderByAsc(HisDrugStock::getDrugName)
                 .orderByAsc(HisDrugStock::getExpDate);
@@ -148,10 +177,11 @@ public class DrugStockService {
 
     /* ================= 入库管理 ================= */
 
-    /** 入库单分页(status; 单据创建日期范围 yyyy-MM-dd) */
-    public IPage<HisStockIn> stockInPage(Long orgId, Integer status, String startDate, String endDate, long page, long size) {
+    /** 入库单分页(status; 单据创建日期范围 yyyy-MM-dd; warehouseId 可选按库过滤) */
+    public IPage<HisStockIn> stockInPage(Long orgId, Long warehouseId, Integer status, String startDate, String endDate, long page, long size) {
         LambdaQueryWrapper<HisStockIn> w = new LambdaQueryWrapper<>();
         w.eq(orgId != null, HisStockIn::getOrgId, orgId)
+                .eq(warehouseId != null, HisStockIn::getWarehouseId, warehouseId)
                 .eq(status != null, HisStockIn::getStatus, status);
         LocalDateTime[] range = parseDateRange(startDate, endDate);
         if (range[0] != null) {
@@ -190,6 +220,7 @@ public class DrugStockService {
         }
         HisStockIn main = new HisStockIn();
         main.setOrgId(req.getOrgId());
+        main.setWarehouseId(req.getWarehouseId());
         main.setInNo(generateNo("RK"));
         main.setInType(req.getInType());
         main.setSupplier(req.getSupplier());
@@ -230,7 +261,7 @@ public class DrugStockService {
         }
         List<HisStockInItem> items = listInItems(id);
         for (HisStockInItem item : items) {
-            upsertStock(main.getOrgId(), item);
+            upsertStock(main.getOrgId(), main.getWarehouseId(), item);
         }
         HisStockIn upd = new HisStockIn();
         upd.setId(id);
@@ -260,10 +291,11 @@ public class DrugStockService {
 
     /* ================= 出库管理 ================= */
 
-    /** 出库单分页(status; 单据创建日期范围 yyyy-MM-dd) */
-    public IPage<HisStockOut> stockOutPage(Long orgId, Integer status, String startDate, String endDate, long page, long size) {
+    /** 出库单分页(status; 单据创建日期范围 yyyy-MM-dd; warehouseId 可选按库过滤) */
+    public IPage<HisStockOut> stockOutPage(Long orgId, Long warehouseId, Integer status, String startDate, String endDate, long page, long size) {
         LambdaQueryWrapper<HisStockOut> w = new LambdaQueryWrapper<>();
         w.eq(orgId != null, HisStockOut::getOrgId, orgId)
+                .eq(warehouseId != null, HisStockOut::getWarehouseId, warehouseId)
                 .eq(status != null, HisStockOut::getStatus, status);
         LocalDateTime[] range = parseDateRange(startDate, endDate);
         if (range[0] != null) {
@@ -303,6 +335,7 @@ public class DrugStockService {
         }
         HisStockOut main = new HisStockOut();
         main.setOrgId(req.getOrgId());
+        main.setWarehouseId(req.getWarehouseId());
         main.setOutNo(generateNo("CK"));
         main.setOutType(req.getOutType());
         main.setRefId(req.getRefId());
@@ -350,7 +383,7 @@ public class DrugStockService {
                 confirmDeductBatch(item);
                 total = total.add(nvl(item.getAmount()));
             } else {
-                List<StockDeductResult> deducts = deductFifo(main.getOrgId(), item.getDrugCatalogId(), item.getQty());
+                List<StockDeductResult> deducts = deductFifo(main.getOrgId(), main.getWarehouseId(), item.getDrugCatalogId(), item.getQty());
                 StockDeductResult first = deducts.get(0);
                 item.setDrugStockId(first.getStockId());
                 item.setBatchNo(first.getBatchNo());
@@ -409,23 +442,27 @@ public class DrugStockService {
     /* ================= 核心扣减/回库(供药房调用) ================= */
 
     /**
-     * FIFO 扣减库存: 按有效期升序逐批扣减(MySQL ASC 排序 NULL 在前, 无效期批次优先出),
+     * FIFO 扣减库存(可限定药库): 按有效期升序逐批扣减(MySQL ASC 排序 NULL 在前, 无效期批次优先出),
      * 每批乐观锁 UPDATE, 返回各批次扣减明细供出库明细/发药追溯落库; 不足抛"库存不足"。
+     * warehouseId 为 null 时不限库(老调用方兼容), 非空则只在指定药库的批次行内扣减。
      */
     @Transactional(rollbackFor = Exception.class)
-    public List<StockDeductResult> deductStock(Long orgId, Long drugCatalogId, BigDecimal qty) {
+    public List<StockDeductResult> deductStock(Long orgId, Long warehouseId, Long drugCatalogId, BigDecimal qty) {
         if (orgId == null || drugCatalogId == null) {
             throw new BizException(400, "扣减库存缺少机构或药品参数");
         }
         if (qty == null || qty.compareTo(BigDecimal.ZERO) <= 0) {
             throw new BizException(400, "扣减数量必须大于0");
         }
-        return deductFifo(orgId, drugCatalogId, qty);
+        return deductFifo(orgId, warehouseId, drugCatalogId, qty);
     }
 
-    /** 退药回库: 指定批次原子加量; 批次行不存在时按同药品库存信息新建该批次 */
+    /**
+     * 退药回库(可指定药库): 指定批次原子加量(定位键与唯一键一致不含药库);
+     * 批次行不存在时取同药品库存信息新建该批次行, 优先复制同药库行, 无则退化任一行。
+     */
     @Transactional(rollbackFor = Exception.class)
-    public void returnStock(Long orgId, Long drugCatalogId, String batchNo, BigDecimal qty) {
+    public void returnStock(Long orgId, Long warehouseId, Long drugCatalogId, String batchNo, BigDecimal qty) {
         if (orgId == null || drugCatalogId == null) {
             throw new BizException(400, "回库缺少机构或药品参数");
         }
@@ -437,19 +474,31 @@ public class DrugStockService {
         }
         int affected = stockMapper.addQty(orgId, drugCatalogId, batchNo.trim(), qty);
         if (affected > 0) {
-            log.info("退药回库: orgId={}, drugCatalogId={}, batchNo={}, qty={}", orgId, drugCatalogId, batchNo, qty);
+            log.info("退药回库: orgId={}, warehouseId={}, drugCatalogId={}, batchNo={}, qty={}",
+                    orgId, warehouseId, drugCatalogId, batchNo, qty);
             return;
         }
-        // 批次行不存在: 取同药品任一库存行复制药品信息新建该批次(退药批次此前必有出库记录, 同药品必有库存行)
-        HisDrugStock template = stockMapper.selectOne(new LambdaQueryWrapper<HisDrugStock>()
-                .eq(HisDrugStock::getOrgId, orgId)
-                .eq(HisDrugStock::getDrugCatalogId, drugCatalogId)
-                .last("LIMIT 1"));
+        // 批次行不存在: 优先取同药库的库存行复制药品信息, 无则退化取任一行(退药批次此前必有出库记录)
+        HisDrugStock template = null;
+        if (warehouseId != null) {
+            template = stockMapper.selectOne(new LambdaQueryWrapper<HisDrugStock>()
+                    .eq(HisDrugStock::getOrgId, orgId)
+                    .eq(HisDrugStock::getDrugCatalogId, drugCatalogId)
+                    .eq(HisDrugStock::getWarehouseId, warehouseId)
+                    .last("LIMIT 1"));
+        }
+        if (template == null) {
+            template = stockMapper.selectOne(new LambdaQueryWrapper<HisDrugStock>()
+                    .eq(HisDrugStock::getOrgId, orgId)
+                    .eq(HisDrugStock::getDrugCatalogId, drugCatalogId)
+                    .last("LIMIT 1"));
+        }
         if (template == null) {
             throw new BizException(400, "该药品无库存记录, 无法回库: drugCatalogId=" + drugCatalogId);
         }
         HisDrugStock stock = new HisDrugStock();
         stock.setOrgId(orgId);
+        stock.setWarehouseId(warehouseId != null ? warehouseId : template.getWarehouseId());
         stock.setDrugCatalogId(drugCatalogId);
         stock.setDrugCode(template.getDrugCode());
         stock.setDrugName(template.getDrugName());
@@ -472,16 +521,335 @@ public class DrugStockService {
 
     /* ================= 出入库流水 ================= */
 
-    /** 出入库流水(已确认单据明细 UNION, 确认时间倒序): {itemId,billId,billNo,flowType,flowTypeName,billType,drug*,qty,prices,amount,opTime} */
-    public IPage<Map<String, Object>> stockFlow(Long orgId, Long drugCatalogId, String startDate, String endDate, long page, long size) {
-        return stockInItemMapper.selectFlowPage(new Page<>(page, size), orgId, drugCatalogId,
+    /** 出入库流水(已确认单据明细 UNION, 确认时间倒序; warehouseId 可选按库过滤): {itemId,billId,billNo,flowType,flowTypeName,billType,drug*,qty,prices,amount,opTime} */
+    public IPage<Map<String, Object>> stockFlow(Long orgId, Long warehouseId, Long drugCatalogId, String startDate, String endDate, long page, long size) {
+        return stockInItemMapper.selectFlowPage(new Page<>(page, size), orgId, warehouseId, drugCatalogId,
                 blankToNull(startDate), blankToNull(endDate));
+    }
+
+    /* ================= 盘点管理 ================= */
+
+    /**
+     * 创建盘点单: 快照指定药库当前所有 qty>0 的库存批次为盘点明细(system_qty=当前qty)。
+     * checkNo=PD+yyyyMMdd+4位序号; 同药库已有进行中的盘点单时拒绝(避免同一批库存被重复盘点)。
+     */
+    @Transactional(rollbackFor = Exception.class)
+    public HisStockCheck createStockCheck(Long orgId, Long warehouseId) {
+        if (orgId == null) {
+            throw new BizException(400, "机构不能为空");
+        }
+        HisWarehouseDef wh = warehouseDefMapper.selectById(warehouseId);
+        if (wh == null || !orgId.equals(wh.getOrgId())) {
+            throw new BizException(400, "药库不存在或不属于本机构: warehouseId=" + warehouseId);
+        }
+        Long proceeding = stockCheckMapper.selectCount(new LambdaQueryWrapper<HisStockCheck>()
+                .eq(HisStockCheck::getOrgId, orgId)
+                .eq(HisStockCheck::getWarehouseId, warehouseId)
+                .eq(HisStockCheck::getStatus, 0));
+        if (proceeding != null && proceeding > 0) {
+            throw new BizException(400, "该药库存在进行中的盘点单, 请先确认或作废后再开新盘点");
+        }
+        HisStockCheck main = new HisStockCheck();
+        main.setOrgId(orgId);
+        main.setWarehouseId(warehouseId);
+        main.setCheckNo(generateNo("PD"));
+        main.setCheckDate(LocalDate.now());
+        main.setStatus(0);
+        main.setCheckBy(currentUserName());
+        main.setProfitAmount(BigDecimal.ZERO);
+        main.setLossAmount(BigDecimal.ZERO);
+        stockCheckMapper.insert(main);
+
+        List<HisDrugStock> stocks = stockMapper.selectList(new LambdaQueryWrapper<HisDrugStock>()
+                .eq(HisDrugStock::getOrgId, orgId)
+                .eq(HisDrugStock::getWarehouseId, warehouseId)
+                .gt(HisDrugStock::getQty, BigDecimal.ZERO)
+                .orderByAsc(HisDrugStock::getDrugName)
+                .orderByAsc(HisDrugStock::getExpDate)
+                .orderByAsc(HisDrugStock::getId));
+        for (HisDrugStock s : stocks) {
+            HisStockCheckItem item = new HisStockCheckItem();
+            item.setStockCheckId(main.getId());
+            item.setDrugStockId(s.getId());
+            item.setDrugCatalogId(s.getDrugCatalogId());
+            item.setDrugName(s.getDrugName());
+            item.setSpec(s.getSpec());
+            item.setBatchNo(s.getBatchNo());
+            item.setSystemQty(s.getQty());
+            item.setCostPrice(s.getCostPrice());
+            stockCheckItemMapper.insert(item);
+        }
+        log.info("创建盘点单: id={}, checkNo={}, orgId={}, warehouseId={}, snapshotItems={}",
+                main.getId(), main.getCheckNo(), orgId, warehouseId, stocks.size());
+        return main;
+    }
+
+    /** 录入实盘数量: 自动算差异 diff_qty=actual_qty-system_qty; 仅进行中的盘点单可录入, 且明细须属于该盘点单 */
+    @Transactional(rollbackFor = Exception.class)
+    public void updateCheckItem(Long checkId, Long itemId, BigDecimal actualQty) {
+        if (actualQty == null || actualQty.compareTo(BigDecimal.ZERO) < 0) {
+            throw new BizException(400, "实盘数量不能为空且不能为负数");
+        }
+        HisStockCheckItem item = stockCheckItemMapper.selectById(itemId);
+        if (item == null || !Objects.equals(item.getStockCheckId(), checkId)) {
+            throw new BizException(400, "盘点明细不存在或不属于该盘点单: itemId=" + itemId);
+        }
+        HisStockCheck check = stockCheckMapper.selectById(item.getStockCheckId());
+        if (check == null) {
+            throw new BizException(400, "盘点单不存在");
+        }
+        if (check.getStatus() == null || check.getStatus() != 0) {
+            throw new BizException("盘点单已确认或已作废, 不可录入实盘: " + check.getCheckNo());
+        }
+        HisStockCheckItem upd = new HisStockCheckItem();
+        upd.setId(itemId);
+        upd.setActualQty(actualQty);
+        upd.setDiffQty(actualQty.subtract(nvl(item.getSystemQty())));
+        stockCheckItemMapper.updateById(upd);
+    }
+
+    /**
+     * 确认盘点: 差异>0 生成盘盈入库单(in_type=3)并确认, 差异<0 生成盘亏出库单(out_type=3, 指定批次直扣)并确认;
+     * 未录入实盘的明细视为账实相符跳过; 汇总盘盈/亏金额(按进价)到主表, 状态置已完成。
+     * 整体事务: 盘亏扣减失败(如盘点期间发生出库)则全部回滚。
+     */
+    @Transactional(rollbackFor = Exception.class)
+    public void confirmStockCheck(Long checkId) {
+        HisStockCheck main = stockCheckMapper.selectById(checkId);
+        if (main == null) {
+            throw new BizException(400, "盘点单不存在");
+        }
+        if (main.getStatus() == null || main.getStatus() != 0) {
+            throw new BizException("仅进行中的盘点单可确认: " + main.getCheckNo());
+        }
+        List<HisStockCheckItem> items = stockCheckItemMapper.selectList(new LambdaQueryWrapper<HisStockCheckItem>()
+                .eq(HisStockCheckItem::getStockCheckId, checkId).orderByAsc(HisStockCheckItem::getId));
+        Map<Long, HisDrugStock> stockMap = loadStocks(items);
+        List<HisStockCheckItem> profits = new ArrayList<>();
+        List<HisStockCheckItem> losses = new ArrayList<>();
+        BigDecimal profitAmount = BigDecimal.ZERO;
+        BigDecimal lossAmount = BigDecimal.ZERO;
+        for (HisStockCheckItem it : items) {
+            if (it.getDiffQty() == null || it.getDiffQty().compareTo(BigDecimal.ZERO) == 0) {
+                continue;
+            }
+            if (it.getDrugStockId() == null || !stockMap.containsKey(it.getDrugStockId())) {
+                log.warn("盘点明细库存行已不存在, 跳过: checkItemId={}, drugStockId={}", it.getId(), it.getDrugStockId());
+                continue;
+            }
+            BigDecimal amount = it.getDiffQty().abs().multiply(nvl(it.getCostPrice())).setScale(2, RoundingMode.HALF_UP);
+            if (it.getDiffQty().compareTo(BigDecimal.ZERO) > 0) {
+                profits.add(it);
+                profitAmount = profitAmount.add(amount);
+            } else {
+                losses.add(it);
+                lossAmount = lossAmount.add(amount);
+            }
+        }
+        if (!profits.isEmpty()) {
+            confirmProfitIn(main, profits);
+        }
+        if (!losses.isEmpty()) {
+            confirmLossOut(main, losses);
+        }
+        HisStockCheck upd = new HisStockCheck();
+        upd.setId(checkId);
+        upd.setStatus(1);
+        upd.setConfirmBy(currentUserName());
+        upd.setConfirmTime(LocalDateTime.now());
+        upd.setProfitAmount(profitAmount);
+        upd.setLossAmount(lossAmount);
+        stockCheckMapper.updateById(upd);
+        log.info("确认盘点: id={}, checkNo={}, profits={}, losses={}, profitAmount={}, lossAmount={}",
+                checkId, main.getCheckNo(), profits.size(), losses.size(), profitAmount, lossAmount);
+    }
+
+    /** 作废盘点单: 仅进行中可作废(确认后已生成盘盈亏单据不可作废) */
+    @Transactional(rollbackFor = Exception.class)
+    public void voidStockCheck(Long checkId) {
+        HisStockCheck main = stockCheckMapper.selectById(checkId);
+        if (main == null) {
+            throw new BizException(400, "盘点单不存在");
+        }
+        if (main.getStatus() == null || main.getStatus() != 0) {
+            throw new BizException("仅进行中的盘点单可作废: " + main.getCheckNo());
+        }
+        HisStockCheck upd = new HisStockCheck();
+        upd.setId(checkId);
+        upd.setStatus(2);
+        stockCheckMapper.updateById(upd);
+        log.info("作废盘点单: id={}, checkNo={}", checkId, main.getCheckNo());
+    }
+
+    /** 盘点单分页(warehouseId 可选; 盘点日期 check_date 范围 yyyy-MM-dd) */
+    public IPage<HisStockCheck> stockCheckPage(Long orgId, Long warehouseId, String startDate, String endDate, long page, long size) {
+        LambdaQueryWrapper<HisStockCheck> w = new LambdaQueryWrapper<>();
+        w.eq(orgId != null, HisStockCheck::getOrgId, orgId)
+                .eq(warehouseId != null, HisStockCheck::getWarehouseId, warehouseId);
+        LocalDateTime[] range = parseDateRange(startDate, endDate);
+        if (range[0] != null) {
+            w.ge(HisStockCheck::getCheckDate, range[0].toLocalDate());
+        }
+        if (range[1] != null) {
+            w.lt(HisStockCheck::getCheckDate, range[1].toLocalDate());
+        }
+        w.orderByDesc(HisStockCheck::getId);
+        return stockCheckMapper.selectPage(new Page<>(page, size), w);
+    }
+
+    /** 盘点单详情 {main, items} */
+    public Map<String, Object> stockCheckDetail(Long checkId) {
+        HisStockCheck main = stockCheckMapper.selectById(checkId);
+        if (main == null) {
+            throw new BizException(400, "盘点单不存在");
+        }
+        Map<String, Object> out = new LinkedHashMap<>();
+        out.put("main", main);
+        out.put("items", stockCheckItemMapper.selectList(new LambdaQueryWrapper<HisStockCheckItem>()
+                .eq(HisStockCheckItem::getStockCheckId, checkId).orderByAsc(HisStockCheckItem::getId)));
+        return out;
+    }
+
+    /** 盘盈差异生成入库单(in_type=3盘盈)并确认: 按库存行回查组装明细, upsert 加回对应批次 */
+    private void confirmProfitIn(HisStockCheck check, List<HisStockCheckItem> profits) {
+        Map<Long, HisDrugStock> stockMap = loadStocks(profits);
+        List<StockInItemReq> items = new ArrayList<>();
+        for (HisStockCheckItem it : profits) {
+            HisDrugStock s = stockMap.get(it.getDrugStockId());
+            if (s == null) {
+                log.warn("盘盈明细库存行已不存在, 跳过: checkItemId={}, drugStockId={}", it.getId(), it.getDrugStockId());
+                continue;
+            }
+            StockInItemReq r = new StockInItemReq();
+            r.setDrugCatalogId(it.getDrugCatalogId());
+            r.setDrugCode(s.getDrugCode());
+            r.setDrugName(it.getDrugName());
+            r.setSpec(it.getSpec());
+            r.setBatchNo(it.getBatchNo());
+            r.setManufacturer(s.getManufacturer());
+            r.setQty(it.getDiffQty());
+            r.setCostPrice(it.getCostPrice());
+            items.add(r);
+        }
+        if (items.isEmpty()) {
+            return;
+        }
+        StockInReq req = new StockInReq();
+        req.setOrgId(check.getOrgId());
+        req.setWarehouseId(check.getWarehouseId());
+        req.setInType(3);
+        req.setRemark("盘盈入库, 盘点单号" + check.getCheckNo());
+        req.setItems(items);
+        HisStockIn in = createStockIn(req);
+        confirmStockIn(in.getId());
+    }
+
+    /** 盘亏差异生成出库单(out_type=3盘亏, 指定批次直扣非FIFO)并确认 */
+    private void confirmLossOut(HisStockCheck check, List<HisStockCheckItem> losses) {
+        Map<Long, HisDrugStock> stockMap = loadStocks(losses);
+        List<StockOutItemReq> items = new ArrayList<>();
+        for (HisStockCheckItem it : losses) {
+            HisDrugStock s = stockMap.get(it.getDrugStockId());
+            if (s == null) {
+                log.warn("盘亏明细库存行已不存在, 跳过: checkItemId={}, drugStockId={}", it.getId(), it.getDrugStockId());
+                continue;
+            }
+            StockOutItemReq r = new StockOutItemReq();
+            r.setDrugStockId(it.getDrugStockId());
+            r.setQty(it.getDiffQty().abs());
+            items.add(r);
+        }
+        if (items.isEmpty()) {
+            return;
+        }
+        StockOutReq req = new StockOutReq();
+        req.setOrgId(check.getOrgId());
+        req.setWarehouseId(check.getWarehouseId());
+        req.setOutType(3);
+        req.setRefId(check.getId());
+        req.setRefNo(check.getCheckNo());
+        req.setRemark("盘亏出库, 盘点单号" + check.getCheckNo());
+        req.setItems(items);
+        HisStockOut out = createStockOut(req);
+        confirmStockOut(out.getId());
+    }
+
+    /** 按批次行ID批量回查库存行(组装盘盈/亏明细时补药品编码/厂家等快照外字段) */
+    private Map<Long, HisDrugStock> loadStocks(List<HisStockCheckItem> items) {
+        Set<Long> ids = new HashSet<>();
+        for (HisStockCheckItem it : items) {
+            if (it.getDrugStockId() != null) {
+                ids.add(it.getDrugStockId());
+            }
+        }
+        Map<Long, HisDrugStock> map = new LinkedHashMap<>();
+        if (!ids.isEmpty()) {
+            for (HisDrugStock s : stockMapper.selectBatchIds(ids)) {
+                map.put(s.getId(), s);
+            }
+        }
+        return map;
+    }
+
+    /* ================= 药品目录(入库选药, 只读) ================= */
+
+    /**
+     * 机构开展的药品目录分页(入库选药用):
+     * - 限定 his_org_catalog 中本机构 enabled=1 的 drug 目录(与医生站可开药口径一致);
+     * - warehouseType: WESTERN 排除中药/中成药, TCM 仅中药/中成药, MIXED/null 全部
+     *   (综合 major_class/drug_class_name 按名称含"中药"/"中成药"识别, COALESCE 空值视为非中药);
+     * - keyword 匹配通用名/商品名/院内编码/拼音简码。
+     * orgId 为 null(牵头跨机构)时不做开展过滤。
+     */
+    public IPage<HisDrugCatalog> drugCatalogPage(Long orgId, String warehouseType, String keyword, long page, long size) {
+        Set<Long> enabled = enabledDrugIds(orgId);
+        LambdaQueryWrapper<HisDrugCatalog> w = new LambdaQueryWrapper<>();
+        w.eq(HisDrugCatalog::getStatus, 1);
+        if (StringUtils.hasText(keyword)) {
+            String kw = keyword.trim();
+            w.and(q -> q.like(HisDrugCatalog::getGenericName, kw)
+                    .or().like(HisDrugCatalog::getTradeName, kw)
+                    .or().like(HisDrugCatalog::getDrugCode, kw)
+                    .or().like(HisDrugCatalog::getPyCode, kw));
+        }
+        String tcmCond = "(COALESCE(major_class,'') LIKE '%中药%' OR COALESCE(major_class,'') LIKE '%中成药%'"
+                + " OR COALESCE(drug_class_name,'') LIKE '%中药%' OR COALESCE(drug_class_name,'') LIKE '%中成药%')";
+        if ("WESTERN".equals(warehouseType)) {
+            w.apply("NOT " + tcmCond);
+        } else if ("TCM".equals(warehouseType)) {
+            w.apply(tcmCond);
+        }
+        if (enabled == null) {
+            // orgId 为空(牵头跨机构): 不限开展
+        } else if (enabled.isEmpty()) {
+            w.apply("1 = 0");
+        } else {
+            w.in(HisDrugCatalog::getId, enabled);
+        }
+        w.orderByDesc(HisDrugCatalog::getId);
+        return drugCatalogMapper.selectPage(new Page<>(page, size), w);
+    }
+
+    /** 本机构已开展(enabled=1)的药品目录ID集合; orgId 为空返回 null 表示不过滤 */
+    private Set<Long> enabledDrugIds(Long orgId) {
+        if (orgId == null) {
+            return null;
+        }
+        List<HisOrgCatalog> list = orgCatalogMapper.selectList(new LambdaQueryWrapper<HisOrgCatalog>()
+                .eq(HisOrgCatalog::getOrgId, orgId)
+                .eq(HisOrgCatalog::getCatalogType, "drug")
+                .eq(HisOrgCatalog::getEnabled, 1));
+        Set<Long> ids = new HashSet<>();
+        for (HisOrgCatalog oc : list) {
+            ids.add(oc.getCatalogId());
+        }
+        return ids;
     }
 
     /* ================= 内部实现 ================= */
 
-    /** 按批次 upsert 库存行: 存在原子加量; 不存在新建, 并发撞 uk_tenant_org_drug_batch 时转原子加量 */
-    private void upsertStock(Long orgId, HisStockInItem item) {
+    /** 按批次 upsert 库存行: 存在原子加量; 不存在新建(新行落 warehouse_id 归属), 并发撞 uk_tenant_org_drug_batch 时转原子加量。定位键与唯一键一致(org+药品+批次, 不含药库): 同药品同批次在不同药库的入库合并到既有行, 归属保持不变 */
+    private void upsertStock(Long orgId, Long warehouseId, HisStockInItem item) {
         HisDrugStock exist = stockMapper.selectOne(new LambdaQueryWrapper<HisDrugStock>()
                 .eq(HisDrugStock::getOrgId, orgId)
                 .eq(HisDrugStock::getDrugCatalogId, item.getDrugCatalogId())
@@ -496,6 +864,7 @@ public class DrugStockService {
         }
         HisDrugStock stock = new HisDrugStock();
         stock.setOrgId(orgId);
+        stock.setWarehouseId(warehouseId);
         stock.setDrugCatalogId(item.getDrugCatalogId());
         stock.setDrugCode(item.getDrugCode());
         stock.setDrugName(item.getDrugName());
@@ -520,25 +889,26 @@ public class DrugStockService {
     }
 
     /**
-     * FIFO 扣减核心: 查可用批次(status=1且qty>0, exp_date ASC)逐批乐观锁扣减;
+     * FIFO 扣减核心(可限定药库): 查可用批次(status=1且qty>0, exp_date ASC, warehouseId 非空则限定该库)逐批乐观锁扣减;
      * affected=0(批次被并发抢先扣减)时重查重试, 上限3轮防死循环。
      */
-    private List<StockDeductResult> deductFifo(Long orgId, Long drugCatalogId, BigDecimal qty) {
+    private List<StockDeductResult> deductFifo(Long orgId, Long warehouseId, Long drugCatalogId, BigDecimal qty) {
         List<StockDeductResult> results = new ArrayList<>();
         BigDecimal need = qty;
         for (int attempt = 0; need.compareTo(BigDecimal.ZERO) > 0; attempt++) {
             if (attempt >= 3) {
-                throw new BizException("库存不足: " + drugNameOf(orgId, drugCatalogId) + ", 需 " + qty + " (并发扣减冲突)");
+                throw new BizException("库存不足: " + drugNameOf(orgId, warehouseId, drugCatalogId) + ", 需 " + qty + " (并发扣减冲突)");
             }
             List<HisDrugStock> batches = stockMapper.selectList(new LambdaQueryWrapper<HisDrugStock>()
                     .eq(HisDrugStock::getOrgId, orgId)
+                    .eq(warehouseId != null, HisDrugStock::getWarehouseId, warehouseId)
                     .eq(HisDrugStock::getDrugCatalogId, drugCatalogId)
                     .eq(HisDrugStock::getStatus, 1)
                     .gt(HisDrugStock::getQty, BigDecimal.ZERO)
                     .orderByAsc(HisDrugStock::getExpDate)
                     .orderByAsc(HisDrugStock::getId));
             if (CollectionUtils.isEmpty(batches)) {
-                throw new BizException("库存不足: " + drugNameOf(orgId, drugCatalogId));
+                throw new BizException("库存不足: " + drugNameOf(orgId, warehouseId, drugCatalogId));
             }
             boolean progressed = false;
             for (HisDrugStock b : batches) {
@@ -557,7 +927,7 @@ public class DrugStockService {
                 }
             }
             if (!progressed) {
-                throw new BizException("库存不足: " + drugNameOf(orgId, drugCatalogId) + ", 需 " + qty);
+                throw new BizException("库存不足: " + drugNameOf(orgId, warehouseId, drugCatalogId) + ", 需 " + qty);
             }
         }
         return results;
@@ -627,6 +997,11 @@ public class DrugStockService {
             if (stock == null || !Objects.equals(stock.getOrgId(), main.getOrgId())) {
                 throw new BizException(400, "库存批次不存在或不属于本机构: drugStockId=" + it.getDrugStockId());
             }
+            if (main.getWarehouseId() != null && stock.getWarehouseId() != null
+                    && !main.getWarehouseId().equals(stock.getWarehouseId())) {
+                throw new BizException(400, "库存批次不属于该药库: " + stock.getDrugName()
+                        + " 批号" + stock.getBatchNo());
+            }
             item.setDrugStockId(stock.getId());
             item.setDrugCatalogId(stock.getDrugCatalogId());
             item.setDrugCode(stock.getDrugCode());
@@ -665,7 +1040,7 @@ public class DrugStockService {
         return no;
     }
 
-    /** 查当日已有单号最大序号(重启后防撞号) */
+    /** 查当日已有单号最大序号(重启后防撞号; RK入库/CK出库/PD盘点) */
     private int maxSeqFromDb(String prefix, String today) {
         String like = prefix + today + "%";
         String maxNo;
@@ -675,6 +1050,12 @@ public class DrugStockService {
                     .orderByDesc(HisStockIn::getInNo)
                     .last("LIMIT 1"));
             maxNo = one == null ? null : one.getInNo();
+        } else if ("PD".equals(prefix)) {
+            HisStockCheck one = stockCheckMapper.selectOne(new LambdaQueryWrapper<HisStockCheck>()
+                    .likeRight(HisStockCheck::getCheckNo, like)
+                    .orderByDesc(HisStockCheck::getCheckNo)
+                    .last("LIMIT 1"));
+            maxNo = one == null ? null : one.getCheckNo();
         } else {
             HisStockOut one = stockOutMapper.selectOne(new LambdaQueryWrapper<HisStockOut>()
                     .likeRight(HisStockOut::getOutNo, like)
@@ -692,10 +1073,13 @@ public class DrugStockService {
         }
     }
 
-    /** 单号是否已存在(RK查入库单, 其余查出库单) */
+    /** 单号是否已存在(RK查入库单, PD查盘点单, 其余查出库单) */
     private boolean noExists(String prefix, String no) {
         if ("RK".equals(prefix)) {
             return stockInMapper.selectCount(new LambdaQueryWrapper<HisStockIn>().eq(HisStockIn::getInNo, no)) > 0;
+        }
+        if ("PD".equals(prefix)) {
+            return stockCheckMapper.selectCount(new LambdaQueryWrapper<HisStockCheck>().eq(HisStockCheck::getCheckNo, no)) > 0;
         }
         return stockOutMapper.selectCount(new LambdaQueryWrapper<HisStockOut>().eq(HisStockOut::getOutNo, no)) > 0;
     }
@@ -746,10 +1130,11 @@ public class DrugStockService {
         return new LocalDateTime[]{start, end};
     }
 
-    /** 药品名称(库存行取, 用于异常提示; 无库存行时退化为目录ID表述) */
-    private String drugNameOf(Long orgId, Long drugCatalogId) {
+    /** 药品名称(库存行取, 用于异常提示; 可限定药库, 无库存行时退化为目录ID表述) */
+    private String drugNameOf(Long orgId, Long warehouseId, Long drugCatalogId) {
         HisDrugStock one = stockMapper.selectOne(new LambdaQueryWrapper<HisDrugStock>()
                 .eq(HisDrugStock::getOrgId, orgId)
+                .eq(warehouseId != null, HisDrugStock::getWarehouseId, warehouseId)
                 .eq(HisDrugStock::getDrugCatalogId, drugCatalogId)
                 .last("LIMIT 1"));
         return one == null ? ("药品#" + drugCatalogId) : one.getDrugName();

@@ -24,6 +24,8 @@ public class HisDispense extends BaseEntity {
 
     /** 机构ID */
     private Long orgId;
+    /** 药房ID(his_pharmacy_def.id) */
+    private Long pharmacyId;
     /** 发药单号(FY+yyyyMMdd+4位序号) */
     private String dispenseNo;
     /** 就诊ID */

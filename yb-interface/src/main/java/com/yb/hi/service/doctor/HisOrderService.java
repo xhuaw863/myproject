@@ -18,7 +18,10 @@ import org.springframework.util.CollectionUtils;
 import org.springframework.util.StringUtils;
 
 import java.math.BigDecimal;
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.stream.Collectors;
 
@@ -51,6 +54,44 @@ public class HisOrderService extends ServiceImpl<HisOrderMapper, HisOrder> {
     public List<HisOrderItem> listItems(Long orderId) {
         return itemMapper.selectList(new QueryWrapper<HisOrderItem>()
                 .eq("order_id", orderId).eq("deleted", 0).orderByAsc("id"));
+    }
+
+    /** 仅未收费医嘱单允许作废。 */
+    @Transactional(rollbackFor = Exception.class)
+    public HisOrder cancel(Long id) {
+        HisOrder order = getById(id);
+        if (order == null) {
+            throw new BizException(400, "医嘱单不存在");
+        }
+        if (!Integer.valueOf(1).equals(order.getStatus())) {
+            throw new BizException("仅未收费医嘱单可作废(当前状态:" + order.getStatus() + ")");
+        }
+        order.setStatus(-1);
+        updateById(order);
+        return order;
+    }
+
+    /**
+     * 患者检查/检验/治疗报告(已执行, status>=2): 按开单时间倒序, 附单据明细
+     */
+    public List<Map<String, Object>> listReports(Long patientId) {
+        if (patientId == null) {
+            throw new BizException(400, "患者ID不能为空");
+        }
+        List<HisOrder> orders = lambdaQuery()
+                .eq(HisOrder::getPatientId, patientId)
+                .ge(HisOrder::getStatus, 2)
+                .orderByDesc(HisOrder::getCreateTime)
+                .orderByDesc(HisOrder::getId)
+                .list();
+        List<Map<String, Object>> result = new ArrayList<>();
+        for (HisOrder o : orders) {
+            Map<String, Object> row = new LinkedHashMap<>();
+            row.put("order", o);
+            row.put("items", listItems(o.getId()));
+            result.add(row);
+        }
+        return result;
     }
 
     /**

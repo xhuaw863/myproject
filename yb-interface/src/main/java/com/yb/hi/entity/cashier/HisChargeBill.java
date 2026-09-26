@@ -48,6 +48,12 @@ public class HisChargeBill extends BaseEntity {
     private BigDecimal acctPay;
     /** 医保结算ID */
     private String setlId;
+    /** 主要支付方式: CASH/WECHAT/ALIPAY/CARD/INSURANCE/FREE */
+    private String payMethod;
+    /** 退费关联原单ID(退费单指向原收费单) */
+    private Long originBillId;
+    /** 发票号(开票后回填) */
+    private String invoiceNo;
     /** 状态: 0待收费 1已收费 2已退费 */
     private Integer status;
     /** 收费员 */

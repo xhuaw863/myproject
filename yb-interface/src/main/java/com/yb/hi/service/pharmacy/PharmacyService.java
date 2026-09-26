@@ -12,6 +12,7 @@ import com.yb.hi.dto.warehouse.StockOutItemReq;
 import com.yb.hi.dto.warehouse.StockOutReq;
 import com.yb.hi.entity.pharmacy.HisDispense;
 import com.yb.hi.entity.pharmacy.HisDrugReturn;
+import com.yb.hi.entity.pharmacy.HisPharmacyDef;
 import com.yb.hi.entity.warehouse.HisStockIn;
 import com.yb.hi.entity.warehouse.HisStockOut;
 import com.yb.hi.framework.common.BizException;
@@ -50,7 +51,9 @@ import java.util.Map;
  *      实扣批次/价格回填出库明细(his_stock_out_item), 不再额外调用 deductStock(避免双重扣减);
  *    - 退药回库 = 按发药出库明细批次创建入库单(in_type=2退药回库)并确认, 确认时按批次 upsert 库存加量,
  *      不再额外调用 returnStock(避免双重加量);
- * 4) 单号: FY(发药)/TY(退药) + yyyyMMdd + 4位序号, synchronized 生成 + DB 回读当日最大序号兜底重启防撞号。
+ * 4) 药房维度: 发药记录落 pharmacy_id; 关联药库(his_pharmacy_def.warehouse_id)待药库单支持 warehouseId 后透传,
+ *    当前保持既有 createStockOut/createStockIn 调用签名不变(双重扣减/加量防护逻辑不受影响);
+ * 5) 单号: FY(发药)/TY(退药) + yyyyMMdd + 4位序号, synchronized 生成 + DB 回读当日最大序号兜底重启防撞号。
  */
 @Slf4j
 @Service
@@ -61,6 +64,7 @@ public class PharmacyService {
     private final HisDispenseMapper dispenseMapper;
     private final HisDrugReturnMapper returnMapper;
     private final DrugStockService drugStockService;
+    private final PharmacyDefService pharmacyDefService;
     private final JdbcTemplate jdbcTemplate;
 
     /** 单号内存序号(synchronized 唯一; 跨日重置时从DB回读当日最大序号) */
@@ -68,10 +72,12 @@ public class PharmacyService {
     private int seqNo = 0;
 
     public PharmacyService(HisDispenseMapper dispenseMapper, HisDrugReturnMapper returnMapper,
-                           DrugStockService drugStockService, JdbcTemplate jdbcTemplate) {
+                           DrugStockService drugStockService, PharmacyDefService pharmacyDefService,
+                           JdbcTemplate jdbcTemplate) {
         this.dispenseMapper = dispenseMapper;
         this.returnMapper = returnMapper;
         this.drugStockService = drugStockService;
+        this.pharmacyDefService = pharmacyDefService;
         this.jdbcTemplate = jdbcTemplate;
     }
 
@@ -80,13 +86,22 @@ public class PharmacyService {
     /**
      * 待发药列表: dispense_status=0 的处方(先开先发), keyword 匹配患者姓名/处方号。
      * 处方/就诊为租户级表无 org_id, orgId 不参与过滤(租户内共享就诊数据)。
+     * pharmacyId 非空时按药房类型过滤: 中药房(TCM)只看中药处方(rx_type含"中药");
+     * 门诊/住院药房暂按门诊口径(不加过滤, 与默认行为一致)。
      */
-    public IPage<Map<String, Object>> todoPage(Long orgId, String keyword, long page, long size) {
+    public IPage<Map<String, Object>> todoPage(Long orgId, Long pharmacyId, String keyword, long page, long size) {
         long p = safePage(page);
         long s = safeSize(size);
         StringBuilder where = new StringBuilder(" WHERE p.dispense_status = 0 AND p.deleted = 0 AND p.tenant_id = ?");
         List<Object> args = new ArrayList<>();
         args.add(tenantId());
+        if (pharmacyId != null) {
+            HisPharmacyDef def = pharmacyDefService.requireEnabled(pharmacyId, orgId);
+            if (PharmacyDefService.TYPE_TCM.equalsIgnoreCase(def.getPharmacyType())) {
+                where.append(" AND p.rx_type LIKE ?");
+                args.add("%中药%");
+            }
+        }
         if (StringUtils.hasText(keyword)) {
             where.append(" AND (v.patient_name LIKE ? OR p.rx_no LIKE ?)");
             String kw = "%" + keyword.trim() + "%";
@@ -229,6 +244,13 @@ public class PharmacyService {
             throw new BizException(400, "机构不能为空");
         }
 
+        // 4.1 药房: 非空时校验归属机构/启停并解析关联药库(药库参数待药库单支持 warehouseId 后透传)
+        Long pharmacyId = req.getPharmacyId();
+        Long warehouseId = null;
+        if (pharmacyId != null) {
+            warehouseId = pharmacyDefService.requireEnabled(pharmacyId, orgId).getWarehouseId();
+        }
+
         // 5. 创建处方发药出库单并确认: 确认时按有效期 FIFO 乐观扣减库存并回填批次, 单次扣减可追溯
         StockOutReq outReq = new StockOutReq();
         outReq.setOrgId(orgId);
@@ -254,6 +276,7 @@ public class PharmacyService {
         // 6. 落发药记录(一步发药到位: status=2已发药, 双签发药人/核对时间)
         HisDispense dispense = new HisDispense();
         dispense.setOrgId(orgId);
+        dispense.setPharmacyId(pharmacyId);
         dispense.setDispenseNo(generateNo("FY"));
         dispense.setVisitId(toLong(pres.get("visit_id")));
         dispense.setPrescriptionId(prescriptionId);
@@ -273,19 +296,20 @@ public class PharmacyService {
         dispense.setRemark(req.getRemark());
         dispenseMapper.insert(dispense);
 
-        log.info("发药完成: dispenseNo={}, prescriptionId={}, patient={}, items={}, total={}",
+        log.info("发药完成: dispenseNo={}, prescriptionId={}, patient={}, items={}, total={}, pharmacyId={}, warehouseId={}",
                 dispense.getDispenseNo(), prescriptionId, dispense.getPatientName(),
-                items.size(), dispense.getTotalAmount());
+                items.size(), dispense.getTotalAmount(), pharmacyId, warehouseId);
         return dispense;
     }
 
     /* ================= 发药记录 ================= */
 
-    /** 发药记录分页(机构/状态/发药日期区间/发药单号或患者关键字) */
-    public IPage<HisDispense> dispensePage(Long orgId, Integer status, String startDate, String endDate,
+    /** 发药记录分页(机构/药房/状态/发药日期区间/发药单号或患者关键字) */
+    public IPage<HisDispense> dispensePage(Long orgId, Long pharmacyId, Integer status, String startDate, String endDate,
                                            String keyword, long page, long size) {
         LambdaQueryWrapper<HisDispense> w = Wrappers.<HisDispense>lambdaQuery()
                 .eq(orgId != null, HisDispense::getOrgId, orgId)
+                .eq(pharmacyId != null, HisDispense::getPharmacyId, pharmacyId)
                 .eq(status != null, HisDispense::getStatus, status);
         LocalDateTime from = parseStart(startDate);
         LocalDateTime to = parseEnd(endDate);
@@ -299,10 +323,11 @@ public class PharmacyService {
         return dispenseMapper.selectPage(new Page<>(safePage(page), safeSize(size)), w);
     }
 
-    /** 发药记录导出数据 {head, rows}: 与列表同机构/日期口径, 上限5000行 */
-    public Map<String, Object> exportDispense(Long orgId, String startDate, String endDate) {
+    /** 发药记录导出数据 {head, rows}: 与列表同机构/药房/日期口径, 上限5000行 */
+    public Map<String, Object> exportDispense(Long orgId, Long pharmacyId, String startDate, String endDate) {
         LambdaQueryWrapper<HisDispense> w = Wrappers.<HisDispense>lambdaQuery()
-                .eq(orgId != null, HisDispense::getOrgId, orgId);
+                .eq(orgId != null, HisDispense::getOrgId, orgId)
+                .eq(pharmacyId != null, HisDispense::getPharmacyId, pharmacyId);
         LocalDateTime from = parseStart(startDate);
         LocalDateTime to = parseEnd(endDate);
         w.ge(from != null, HisDispense::getDispenseTime, from)
@@ -361,7 +386,8 @@ public class PharmacyService {
         dr.setStatus(0);
         dr.setReturnAmount(dispense.getTotalAmount() == null ? BigDecimal.ZERO : dispense.getTotalAmount());
         returnMapper.insert(dr);
-        log.info("退药申请: returnNo={}, dispenseId={}, patient={}", dr.getReturnNo(), dr.getDispenseId(), dr.getPatientName());
+        log.info("退药申请: returnNo={}, dispenseId={}, patient={}, pharmacyId={}",
+                dr.getReturnNo(), dr.getDispenseId(), dr.getPatientName(), dispense.getPharmacyId());
         return dr;
     }
 
@@ -397,6 +423,12 @@ public class PharmacyService {
         }
         if (dispense.getPrescriptionId() == null) {
             throw new BizException("原发药记录缺少处方关联, 无法回库");
+        }
+        // 原发药药房关联药库(药库参数待药库单支持 warehouseId 后透传; 药房已停用不影响历史单据回溯)
+        Long warehouseId = null;
+        HisPharmacyDef pharmacyDef = pharmacyDefService.find(dispense.getPharmacyId());
+        if (pharmacyDef != null) {
+            warehouseId = pharmacyDef.getWarehouseId();
         }
         List<Map<String, Object>> outItems = dispenseOutItems(dispense.getPrescriptionId());
         if (outItems.isEmpty()) {
@@ -451,8 +483,9 @@ public class PharmacyService {
         dr.setApproveTime(LocalDateTime.now());
         returnMapper.updateById(dr);
 
-        log.info("退药回库完成: returnNo={}, dispenseNo={}, items={}, returnAmount={}",
-                dr.getReturnNo(), dispense.getDispenseNo(), outItems.size(), dr.getReturnAmount());
+        log.info("退药回库完成: returnNo={}, dispenseNo={}, items={}, returnAmount={}, pharmacyId={}, warehouseId={}",
+                dr.getReturnNo(), dispense.getDispenseNo(), outItems.size(), dr.getReturnAmount(),
+                dispense.getPharmacyId(), warehouseId);
         return dr;
     }
 

@@ -30,6 +30,10 @@ public class HisMedicalRecord extends BaseEntity {
     private String assessment;
     /** P-计划(处理) */
     private String plan;
+    /** 过敏史 */
+    private String allergyHistory;
+    /** 辅助检查 */
+    private String auxExam;
     /** 书写医师 */
     private String drName;
     /** 医师签名 */

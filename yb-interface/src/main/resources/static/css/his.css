@@ -359,3 +359,282 @@ body { font-family: "Microsoft YaHei", "PingFang SC", sans-serif; background: #f
   .reg-ticket-preview, .reg-ticket-preview * { visibility: visible; }
   .reg-ticket-preview { position: absolute; left: 0; top: 0; width: 80mm; }
 }
+
+/* ================= 门诊医生工作站(三栏) =================
+ * 顶栏操作条 + 左候诊队列(220px, 可收起) + 中电子病历(flex) + 右医嘱处置(440px) + 底部快捷键条
+ * 高度口径: layout-header 56px + layout-main 上下 padding 16px×2
+ * 注: 遵循项目规范不做 width 过渡(后台标签页下 CSS 过渡会暂停卡住) */
+:root {
+  --dw-primary: #1565C0;
+  --dw-primary-dark: #0D47A1;
+  --dw-primary-light: #E3F2FD;
+  --dw-success: #2E7D32;
+  --dw-success-light: #E8F5E9;
+  --dw-warning: #E65100;
+  --dw-warning-light: #FFF3E0;
+  --dw-danger: #C62828;
+  --dw-danger-light: #FFEBEE;
+  --dw-bg: #F5F5F5;
+  --dw-card: #FFFFFF;
+  --dw-card-muted: #FAFAFA;
+  --dw-border: #E0E0E0;
+  --dw-text: #212121;
+  --dw-text-secondary: #757575;
+  --dw-text-hint: #9E9E9E;
+  --dw-fee: #BF360C;
+  --dw-rx-west: #1565C0;
+  --dw-rx-tcm: #6D4C41;
+  --dw-rx-ext: #2E7D32;
+  --dw-rx-nar: #C62828;
+  --dw-header-start: #0D47A1;
+  --dw-header-end: #1565C0;
+  --dw-header-text: #FFFFFF;
+  --dw-hover: #E3F2FD;
+  --dw-disabled: #BDBDBD;
+  --dw-table-stripe: #F7FAFC;
+  --dw-rx-emergency: #FFFDE7;
+  --dw-shadow: rgba(13, 71, 161, .14);
+  --dw-danger-shadow: rgba(198, 40, 40, .4);
+  --dw-danger-clear: rgba(198, 40, 40, 0);
+  --dw-header-control: rgba(255, 255, 255, .14);
+  --dw-header-control-hover: rgba(255, 255, 255, .24);
+}
+
+/* ===== 医生站骨架: 48px顶栏 + 三栏工作区 + 28px快捷键栏 ===== */
+.dw-wrap {
+  display: flex; flex-direction: column; width: 100%; height: calc(100vh - 88px); min-height: 520px;
+  overflow: hidden; background: var(--dw-bg); color: var(--dw-text); border-radius: 4px;
+  font-size: 13px; line-height: 1.5;
+}
+.dw-wrap .dim { color: var(--dw-text-hint); font-size: 12px; }
+.dw-header {
+  flex: 0 0 48px; min-height: 48px; display: flex; align-items: center; gap: 12px; padding: 0 16px;
+  color: var(--dw-header-text); background: linear-gradient(100deg, var(--dw-header-start), var(--dw-header-end));
+  box-shadow: 0 2px 8px var(--dw-shadow); overflow: hidden;
+}
+.dw-header .dw-actions { display: flex; align-items: center; gap: 8px; flex: none; }
+.dw-header .dw-actions .el-button { border-color: var(--dw-header-control); }
+.dw-header .dw-actions .el-button:not(.is-disabled):hover { border-color: var(--dw-header-control-hover); }
+.dw-header .dw-patient-summary { flex: 1; min-width: 0; display: flex; align-items: center; gap: 12px; color: var(--dw-header-text); white-space: nowrap; overflow: hidden; }
+.dw-header .dw-patient-summary .name { font-size: 16px; font-weight: 700; letter-spacing: .04em; }
+.dw-header .dw-patient-summary .dim { color: var(--dw-primary-light); }
+.dw-header .dw-fee-badge { flex: none; padding: 3px 12px; color: var(--dw-header-text); background: var(--dw-header-control); border: 1px solid var(--dw-header-control-hover); border-radius: 4px; font-size: 14px; font-weight: 700; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.dw-body { position: relative; flex: 1; min-height: 0; display: flex; overflow: hidden; background: var(--dw-bg); }
+.dw-left { width: 240px; flex: 0 0 240px; display: flex; flex-direction: column; overflow: hidden; background: var(--dw-card); border-right: 1px solid var(--dw-border); }
+.dw-left.is-collapsed { width: 40px; flex-basis: 40px; }
+.dw-left.is-collapsed .dw-queue-content, .dw-left.is-collapsed .dw-queue-footer { display: none; }
+.dw-left.is-collapsed .dw-queue-title { justify-content: center; }
+.dw-left.is-collapsed .dw-qt-text { display: none; }
+.dw-center { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; overflow-y: auto; padding: 12px 16px; background: var(--dw-bg); }
+.dw-right { width: 480px; flex: 0 0 480px; display: flex; flex-direction: column; overflow-y: auto; padding: 12px 14px; background: var(--dw-card); border-left: 1px solid var(--dw-border); }
+.dw-footer, .dw-shortcut-bar { flex: 0 0 28px; min-height: 28px; display: flex; align-items: center; gap: 16px; padding: 0 16px; color: var(--dw-text-secondary); background: var(--dw-card-muted); border-top: 1px solid var(--dw-border); font-size: 11px; }
+.dw-footer kbd, .dw-shortcut-bar kbd { padding: 1px 5px; color: var(--dw-primary-dark); background: var(--dw-primary-light); border: 1px solid var(--dw-border); border-radius: 3px; font-family: Consolas, monospace; font-size: 11px; }
+
+/* ===== 通用面板与图标按钮 ===== */
+.dw-panel { position: relative; background: var(--dw-card); border: 1px solid var(--dw-border); border-radius: 4px; overflow: hidden; }
+.dw-panel.is-expanded { position: absolute; top: 0; right: 0; bottom: 0; left: 0; z-index: 100; overflow-y: auto; padding: 16px; background: var(--dw-card); border-radius: 0; transition: all .2s ease; }
+.dw-panel-header { display: flex; align-items: center; justify-content: space-between; min-height: 38px; padding: 8px 12px; color: var(--dw-text); border-bottom: 1px solid var(--dw-border); font-weight: 600; }
+.dw-panel-header .dw-expand-btn { cursor: pointer; font-size: 14px; }
+.dw-btn-icon { display: inline-flex; align-items: center; justify-content: center; width: 28px; height: 28px; padding: 0; color: var(--dw-text-secondary); background: transparent; border: 0; border-radius: 4px; cursor: pointer; }
+.dw-btn-icon:hover { color: var(--dw-primary); background: var(--dw-primary-light); }
+.dw-btn-icon:focus-visible { outline: 2px solid var(--dw-primary); outline-offset: 1px; }
+
+/* ===== 患者Banner: 四行身份/就诊/医保/过敏信息 ===== */
+.dw-banner, .dw-patient-card { position: relative; display: grid; gap: 2px 16px; margin-bottom: 12px; padding: 10px 14px; color: var(--dw-text); background: var(--dw-card); border: 1px solid var(--dw-border); border-left: 4px solid var(--dw-text-hint); border-radius: 4px; }
+.dw-banner { grid-template-rows: repeat(4, minmax(20px, auto)); }
+.dw-patient-card { grid-template: repeat(4, minmax(20px, auto)) / repeat(2, minmax(0, 1fr)); }
+.dw-banner--insured, .dw-patient-card--insu { border-left-color: var(--dw-success); }
+.dw-banner--selfpay { border-left-color: var(--dw-text-hint); }
+.dw-banner--emergency { border-left-color: var(--dw-danger); }
+.dw-banner-row { min-width: 0; display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.dw-banner-main, .dw-patient-card .pc-name { color: var(--dw-text); font-size: 18px; font-weight: 700; }
+.dw-banner-meta, .dw-patient-card .pc-info { color: var(--dw-text-secondary); font-size: 13px; }
+.dw-banner-allergy, .dw-patient-card .pc-allergy { display: flex; align-items: center; gap: 6px; padding: 3px 8px; color: var(--dw-danger); background: var(--dw-danger-light); border-radius: 3px; font-weight: 700; }
+.dw-banner-allergy .warning-icon { animation: dw-blink 1.5s ease-in-out infinite; }
+
+/* ===== 候诊队列 ===== */
+.dw-left .dw-queue-header { flex: none; display: flex; flex-direction: column; gap: 6px; padding: 8px 10px; border-bottom: 1px solid var(--dw-border); }
+.dw-left .dw-queue-title { display: flex; align-items: center; justify-content: space-between; color: var(--dw-text); font-weight: 600; }
+.dw-left .dw-queue-content { flex: 1; min-height: 0; overflow-y: auto; }
+.dw-left .dw-queue-footer { flex: none; display: flex; justify-content: center; gap: 10px; padding: 6px 10px; color: var(--dw-text-hint); border-top: 1px solid var(--dw-border); font-size: 11px; }
+.dw-queue-group { padding: 2px 0; }
+.dw-queue-group-title { display: flex; align-items: center; justify-content: space-between; padding: 5px 12px; color: var(--dw-text-secondary); background: var(--dw-card-muted); border-bottom: 1px solid var(--dw-border); font-size: 11px; font-weight: 700; }
+.dw-queue-group-title .badge { min-width: 18px; padding: 0 6px; color: var(--dw-header-text); background: var(--dw-primary); border-radius: 9px; font-size: 10px; line-height: 18px; text-align: center; }
+.dw-queue-group-title .badge.orange { background: var(--dw-warning); }
+.dw-queue-group-title .badge.green { background: var(--dw-success); }
+.dw-qi, .dw-queue-item { min-height: 42px; display: flex; align-items: center; gap: 6px; padding: 8px 12px 8px 9px; color: var(--dw-text); border-bottom: 1px solid var(--dw-border); border-left: 3px solid transparent; cursor: pointer; line-height: 1.35; }
+.dw-qi:hover, .dw-queue-item:hover { background: var(--dw-primary-light); }
+.dw-qi.is-active, .dw-queue-item.active { color: var(--dw-primary-dark); background: var(--dw-primary-light); border-left-color: var(--dw-primary); font-weight: 600; }
+.dw-qi.is-consulting, .dw-queue-item.status-2 { background: var(--dw-warning-light); border-left-color: var(--dw-warning); }
+.dw-qi.is-completed, .dw-queue-item.status-3 { color: var(--dw-text-hint); background: var(--dw-card-muted); filter: saturate(.35); }
+.dw-queue-item.status-1 { border-left-color: var(--dw-primary); }
+.dw-qi-name, .dw-queue-item .qi-name { min-width: 48px; font-weight: 600; }
+.dw-qi-meta, .dw-queue-item .qi-meta { flex: 1; min-width: 0; overflow: hidden; color: var(--dw-text-hint); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+.dw-wait-time { color: var(--dw-text-secondary); font-size: 11px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.dw-tag-insured { display: inline-flex; align-items: center; padding: 1px 5px; color: var(--dw-success); background: var(--dw-success-light); border-radius: 3px; font-size: 10px; font-weight: 600; }
+.dw-queue-empty { padding: 24px 10px; color: var(--dw-text-hint); font-size: 12px; text-align: center; }
+
+/* ===== 表单、病历与报告 ===== */
+.dw-tpl-bar { display: flex; align-items: center; gap: 6px; margin-bottom: 10px; flex-wrap: wrap; }
+.dw-tpl-bar .dw-tpl-label { color: var(--dw-text-hint); font-size: 12px; }
+.dw-tpl-bar .el-button { font-size: 12px; }
+.dw-section { display: flex; align-items: center; gap: 6px; margin: 12px 0 8px; color: var(--dw-text); font-size: 13px; font-weight: 600; }
+.dw-section::before { content: ''; width: 3px; height: 14px; background: var(--dw-primary); border-radius: 2px; }
+.dw-section .dw-section-extra { margin-left: auto; color: var(--dw-text-hint); font-size: 11px; font-weight: 400; letter-spacing: .08em; }
+.dw-emr-form .el-form-item { margin-bottom: 8px; }
+.dw-emr-form .el-form-item__label { padding-bottom: 0; color: var(--dw-text-secondary); font-size: 12px; line-height: 1.4; }
+.dw-form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 0 12px; }
+.dw-collapse { margin-top: 14px; }
+.dw-collapse .el-collapse-item__header { color: var(--dw-text); font-size: 13px; font-weight: 600; }
+.dw-collapse .dw-collapse-count { margin-left: 6px; color: var(--dw-text-hint); font-size: 11px; font-weight: 400; }
+.dw-collapse .el-collapse-item__content { padding-bottom: 4px; }
+.dw-collapse-empty { padding: 14px 0; color: var(--dw-text-hint); font-size: 12px; text-align: center; }
+.dw-history-item, .dw-report-item { margin-bottom: 8px; padding: 8px 12px; color: var(--dw-text-secondary); background: var(--dw-card); border: 1px solid var(--dw-border); border-radius: 4px; font-size: 12px; }
+.dw-report-item { cursor: pointer; }
+.dw-report-item:hover { background: var(--dw-primary-light); border-color: var(--dw-primary); }
+.dw-history-item .hi-head, .dw-report-item .ri-head { display: flex; align-items: center; gap: 8px; margin-bottom: 4px; flex-wrap: wrap; }
+.dw-history-item .hi-head b { color: var(--dw-text); }
+.dw-history-item .hi-dept { flex: 1; min-width: 0; overflow: hidden; color: var(--dw-text-hint); text-overflow: ellipsis; white-space: nowrap; }
+.dw-history-item .hi-line { display: flex; gap: 6px; color: var(--dw-text-secondary); line-height: 1.7; }
+.dw-history-item .hi-line .k { flex: none; color: var(--dw-text-hint); }
+.dw-report-item .ri-head b { font-family: Consolas, monospace; font-weight: 600; }
+.dw-report-item .ri-amount { margin-left: auto; color: var(--dw-fee); font-weight: 700; font-variant-numeric: tabular-nums; }
+.dw-report-item .ri-items { margin-top: 4px; line-height: 1.6; }
+.dw-empty { min-height: 320px; height: 100%; display: flex; align-items: center; justify-content: center; }
+
+/* ===== 医保提示与医嘱卡片 ===== */
+.dw-insu-card { margin-bottom: 12px; padding: 10px 14px; background: var(--dw-success-light); border: 1px solid var(--dw-success); border-radius: 4px; font-size: 12px; }
+.dw-insu-card .insu-title { margin-bottom: 6px; color: var(--dw-success); font-size: 13px; font-weight: 600; }
+.dw-insu-card .insu-row { display: flex; gap: 14px; color: var(--dw-text-secondary); line-height: 1.8; flex-wrap: wrap; }
+.dw-insu-card .insu-row b { color: var(--dw-text); font-variant-numeric: tabular-nums; }
+.dw-insu-card .st-stop { color: var(--dw-danger); }
+.dw-insu-chronic, .dw-insu-birth { margin-bottom: 10px; padding: 8px 12px; border-radius: 4px; }
+.dw-insu-chronic { background: var(--dw-warning-light); border: 1px solid var(--dw-warning); }
+.dw-insu-birth { background: var(--dw-danger-light); border: 1px solid var(--dw-danger); }
+.dw-mini-title { margin-bottom: 6px; font-size: 12px; font-weight: 600; }
+.dw-insu-chronic .dw-mini-title { color: var(--dw-warning); }
+.dw-insu-birth .dw-mini-title { color: var(--dw-danger); }
+.dw-field-row { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
+.dw-field-row .k { color: var(--dw-text-secondary); font-size: 12px; white-space: nowrap; }
+.dw-search-row { margin-bottom: 8px; }
+.dw-rx-item, .dw-od-item { margin-bottom: 6px; padding: 6px 8px; color: var(--dw-text-secondary); background: var(--dw-card-muted); border: 1px solid var(--dw-border); border-radius: 4px; font-size: 12px; }
+.dw-rx-item .row1, .dw-od-item .row1, .dw-rx-item .row2, .dw-rx-item .row3, .dw-od-item .row2 { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.dw-rx-item .row2, .dw-rx-item .row3, .dw-od-item .row2 { margin-top: 6px; }
+.dw-rx-item .row1 .nm, .dw-od-item .row1 .nm { flex: 1; min-width: 0; overflow: hidden; color: var(--dw-text); font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
+.dw-rx-item .row1 .spec, .dw-od-item .row1 .spec { max-width: 96px; overflow: hidden; color: var(--dw-text-hint); text-overflow: ellipsis; white-space: nowrap; }
+.dw-rx-item .row1 .amt, .dw-od-item .row1 .amt, .dw-done-item .amt { color: var(--dw-fee); font-weight: 700; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.dw-rx-item .lb, .dw-od-item .lb { color: var(--dw-text-hint); white-space: nowrap; }
+
+/* ===== 处方分组与处方笺语义色 ===== */
+.dw-rx-group { position: relative; margin: 0 0 4px 12px; padding: 0 0 4px 12px; border-left: 2px solid var(--dw-rx-west); border-bottom: 1px dashed var(--dw-border); }
+.dw-rx-group:last-child { border-bottom: 0; }
+.dw-rx-group-label { position: absolute; top: 7px; left: -13px; min-width: 42px; padding: 1px 5px; color: var(--dw-header-text); background: var(--dw-rx-west); border-radius: 3px; font-size: 11px; font-weight: 700; text-align: center; }
+.dw-rx-group-header { display: flex; align-items: center; gap: 12px; min-height: 30px; margin-bottom: 2px; padding: 5px 8px 5px 38px; color: var(--dw-primary-dark); background: var(--dw-primary-light); font-size: 11px; }
+.dw-rx-group .dw-rx-item { margin-bottom: 0; border-bottom: 0; border-radius: 0; }
+.dw-rx-group--tcm { border-left-color: var(--dw-rx-tcm); }
+.dw-rx-group--tcm .dw-rx-group-label { background: var(--dw-rx-tcm); }
+.dw-rx-group--external { border-left-color: var(--dw-rx-ext); }
+.dw-rx-group--external .dw-rx-group-label { background: var(--dw-rx-ext); }
+.dw-rx-group--narcotic { border-left-color: var(--dw-rx-nar); }
+.dw-rx-group--narcotic .dw-rx-group-label { background: var(--dw-rx-nar); }
+.rx-normal { background: var(--dw-card); }
+.rx-emergency { background: var(--dw-rx-emergency); }
+.rx-pediatric { background: var(--dw-success-light); }
+.rx-narcotic { background: var(--dw-danger-light); }
+
+/* ===== 紧凑表格 ===== */
+.dw-wrap .el-table, .dw-table { --el-table-row-hover-bg-color: var(--dw-primary-light); --el-table-header-bg-color: var(--dw-primary-light); color: var(--dw-text); font-size: 12px; }
+.dw-wrap .el-table th.el-table__cell, .dw-table th { height: 30px; padding: 0; color: var(--dw-primary-dark); background: var(--dw-primary-light); font-weight: 600; }
+.dw-wrap .el-table td.el-table__cell, .dw-table td { height: 32px; padding: 0; border-color: var(--dw-border); }
+.dw-wrap .el-table .cell, .dw-table th, .dw-table td { line-height: 18px; }
+.dw-wrap .el-table--striped .el-table__body tr.el-table__row--striped td.el-table__cell, .dw-table tbody tr:nth-child(even) { background: var(--dw-table-stripe); }
+
+/* ===== 标签、状态、告警 ===== */
+.dw-tag { display: inline-flex; align-items: center; min-height: 20px; padding: 1px 6px; border: 1px solid currentColor; border-radius: 3px; font-size: 11px; line-height: 16px; white-space: nowrap; }
+.dw-tag--success { color: var(--dw-success); background: var(--dw-success-light); }
+.dw-tag--warning { color: var(--dw-warning); background: var(--dw-warning-light); }
+.dw-tag--danger { color: var(--dw-danger); background: var(--dw-danger-light); }
+.dw-tag--info { color: var(--dw-primary); background: var(--dw-primary-light); }
+.dw-status-dot { display: inline-block; width: 8px; height: 8px; background: var(--dw-text-hint); border-radius: 50%; }
+.dw-status-dot--info { background: var(--dw-primary); }
+.dw-status-dot--success { background: var(--dw-success); }
+.dw-status-dot--warning { background: var(--dw-warning); }
+.dw-status-dot--danger { background: var(--dw-danger); }
+@keyframes dw-blink { 0%, 100% { opacity: 1; } 50% { opacity: .5; } }
+.dw-allergy-alert { color: var(--dw-danger); background: var(--dw-danger-light); animation: dw-blink 1.5s ease-in-out infinite; }
+@keyframes dw-pulse { 0% { box-shadow: 0 0 0 0 var(--dw-danger-shadow); } 70% { box-shadow: 0 0 0 8px var(--dw-danger-clear); } 100% { box-shadow: 0 0 0 0 var(--dw-danger-clear); } }
+.dw-critical { border: 2px solid var(--dw-danger); animation: dw-pulse 1.5s infinite; }
+
+/* ===== 开立结果、费用汇总与时间线 ===== */
+.dw-foot-bar { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin: 8px 0; padding: 6px 10px; color: var(--dw-text-secondary); background: var(--dw-primary-light); border: 1px solid var(--dw-primary); border-radius: 4px; font-size: 12px; }
+.dw-foot-bar b { color: var(--dw-fee); font-size: 13px; font-variant-numeric: tabular-nums; }
+.dw-done-list { display: flex; flex-direction: column; gap: 4px; margin-top: 6px; }
+.dw-done-item { display: flex; align-items: center; gap: 8px; padding: 4px 8px; color: var(--dw-text-secondary); background: var(--dw-bg); border-radius: 4px; font-size: 12px; }
+.dw-done-item .no { flex: 1; min-width: 0; overflow: hidden; color: var(--dw-text-hint); font-family: Consolas, monospace; text-overflow: ellipsis; white-space: nowrap; }
+.dw-fee-summary { margin-top: 12px; padding: 10px 14px; background: var(--dw-card); border: 1px solid var(--dw-border); border-top: 3px solid var(--dw-fee); border-radius: 4px; }
+.dw-fee-summary .fs-row { display: flex; justify-content: space-between; color: var(--dw-text-secondary); font-size: 12px; line-height: 2; }
+.dw-fee-summary .fs-row b { color: var(--dw-fee); font-variant-numeric: tabular-nums; }
+.dw-fee-summary .fs-row.total { margin-top: 5px; padding-top: 6px; border-top: 1px dashed var(--dw-border); font-size: 14px; }
+.dw-fee-summary .fs-row.total span { color: var(--dw-text); font-weight: 600; }
+.dw-fee-summary .fs-row.total b { color: var(--dw-fee); font-size: 20px; line-height: 1.4; }
+.dw-fee-chart { display: flex; height: 8px; margin-top: 8px; overflow: hidden; background: var(--dw-bg); border-radius: 4px; }
+.dw-fee-chart .fs-bar { min-width: 2px; height: 100%; background: var(--dw-primary); }
+.dw-fee-chart .fs-bar--fund { background: var(--dw-success); }
+.dw-fee-chart .fs-bar--self { background: var(--dw-warning); }
+.dw-fee-chart .fs-bar--other { background: var(--dw-text-hint); }
+.dw-timeline { position: relative; margin: 8px 0; padding-left: 22px; }
+.dw-timeline::before { content: ''; position: absolute; top: 8px; bottom: 8px; left: 7px; width: 1px; background: var(--dw-border); }
+.dw-timeline-item { position: relative; padding: 0 0 14px 8px; color: var(--dw-text-secondary); }
+.dw-timeline-item::before { content: ''; position: absolute; top: 5px; left: -19px; width: 8px; height: 8px; background: var(--dw-card); border: 2px solid var(--dw-primary); border-radius: 50%; }
+.dw-timeline-time { color: var(--dw-text-hint); font-size: 11px; }
+.dw-action-group { display: flex; gap: 8px; margin-top: 12px; padding-top: 12px; border-top: 1px dashed var(--dw-border); flex-wrap: wrap; }
+
+/* ===== 无障碍动效与打印 ===== */
+@media (prefers-reduced-motion: reduce) { .dw-panel.is-expanded, .dw-allergy-alert, .dw-banner-allergy .warning-icon, .dw-critical { transition: none; animation: none; } }
+@media print {
+  .dw-wrap, .dw-wrap *, .print-rx, .print-rx *, .print-order, .print-order * { visibility: visible !important; }
+  .dw-wrap { position: absolute; inset: 0; display: block !important; width: auto; height: auto; min-height: 0; overflow: visible; color: var(--dw-text); background: var(--dw-card); }
+  .dw-header, .dw-footer, .dw-shortcut-bar, .dw-left, .dw-right { display: none !important; }
+  .dw-body, .dw-center { display: block; overflow: visible; padding: 0; background: var(--dw-card); }
+  .dw-panel { border: 0; box-shadow: none; }
+  .print-rx, .print-order { box-sizing: border-box; margin: 0 auto; padding: 10mm; color: var(--dw-text); background: var(--dw-card); box-shadow: none; break-after: page; page-break-after: always; }
+  .print-rx { width: 148mm; min-height: 210mm; }
+  .print-order { width: 176mm; min-height: 250mm; }
+  .print-rx:last-child, .print-order:last-child { break-after: auto; page-break-after: auto; }
+  .dw-btn-icon, .dw-expand-btn, .no-print { display: none !important; }
+}
+
+/* ================= 药房/药库定义管理与业务统计(P2) ================= */
+/* 定义维护卡片: 药房管理/药库管理页(el-card + 顶部启停开关) */
+.def-card { margin-bottom: 16px; }
+.def-card .el-switch { margin-left: 8px; }
+
+/* 多支付方式行: 发票管理/收费结算的支付方式明细(方式下拉 + 金额 + 删除) */
+.payment-row { display: flex; align-items: center; gap: 12px; margin-bottom: 8px; }
+.payment-row .el-select { width: 140px; }
+.payment-row .el-input-number { width: 160px; }
+.payment-row .payment-del { color: var(--el-color-danger); cursor: pointer; }
+.payment-total { text-align: right; font-weight: 600; font-size: 15px; padding: 8px 0; border-top: 1px solid var(--el-border-color-light); }
+
+/* 发票标签: 正常(默认) / 作废(删除线) / 红冲(红字) */
+.invoice-tag-normal { }
+.invoice-tag-void { text-decoration: line-through; color: var(--el-color-warning); }
+.invoice-tag-red { color: var(--el-color-danger); }
+
+/* 盘点差异三档色: 盘盈/盘亏/一致 */
+.stock-check-diff-pos { color: var(--el-color-success); font-weight: 600; }
+.stock-check-diff-neg { color: var(--el-color-danger); font-weight: 600; }
+.stock-check-diff-zero { color: var(--el-text-color-secondary); }
+
+/* 统计卡片: 药库/药房/收费统计页概况数字卡 */
+.stats-card { display: inline-flex; flex-direction: column; align-items: center; justify-content: center; min-width: 140px; padding: 16px 24px; background: var(--el-fill-color-light); border-radius: 8px; margin-right: 16px; margin-bottom: 16px; }
+.stats-card .stats-value { font-size: 28px; font-weight: 700; color: var(--el-color-primary); line-height: 1.2; }
+.stats-card .stats-label { font-size: 13px; color: var(--el-text-color-secondary); margin-top: 6px; }
+.stats-row { display: flex; flex-wrap: wrap; margin-bottom: 16px; }
+
+/* 打印适配: 打印时隐藏操作按钮/删除入口/盘点操作条 */
+@media print {
+  .def-card .el-button, .payment-row .payment-del,
+  .stock-check-actions { display: none !important; }
+}
+

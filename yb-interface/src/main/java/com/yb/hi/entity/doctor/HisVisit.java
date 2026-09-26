@@ -71,6 +71,22 @@ public class HisVisit extends BaseEntity {
     private String physicalExam;
     /** 处理意见 */
     private String treatmentOpinion;
+    /** 医疗类别(2203 medType, 自挂号同步: 11普通门诊 14急诊) */
+    private String medType;
+    /** 过敏史 */
+    private String allergyHistory;
+    /** 辅助检查 */
+    private String auxExam;
+    /** 病种类型代码(2203 mdtrtinfo.dise_type_code) */
+    private String diseTypeCode;
+    /** 计划生育手术类别(2203 mdtrtinfo.birctrl_type) */
+    private String birctrlType;
+    /** 计划生育手术或生育日期(2203 mdtrtinfo.birctrl_matn_date) */
+    private LocalDate birctrlMatnDate;
+    /** 随访日期 */
+    private LocalDate followupDate;
+    /** 随访备注 */
+    private String followupNote;
     /** 接诊时间 */
     private LocalDateTime visitTime;
     /** 完成时间 */

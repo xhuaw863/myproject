@@ -31,12 +31,27 @@ perm_verify_*.png
 _tmp_*.png
 test_avatar.png
 
+# ===== Python cache =====
+__pycache__/
+*.pyc
+
+# ===== Scratch / command outputs =====
+/yb-interface/*.txt
+/yb-interface/*.err
+/yb-interface/q.sql
+/tools/_like_scan.txt
+/tools/_multi_slot_out.txt
+
 # ===== Database backups =====
 /backup/
 
 # ===== Extraction outputs =====
 *.out
 /extract_*.txt
+
+# ===== Test run outputs & commit scratch =====
+/*_output.txt
+/_commitmsg*.txt
 
 # ===== Reference material (large binaries, not part of program) =====
 /字典标准/

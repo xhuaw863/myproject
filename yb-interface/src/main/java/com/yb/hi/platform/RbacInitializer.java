@@ -104,8 +104,13 @@ public class RbacInitializer implements ApplicationRunner {
             bindWarehouseMenus();
             bindPharmacyMenus();
             bindChargeMenus();
+            ensureNewPharmacyMenus(menuIds);
+            ensureNewWarehouseMenus(menuIds);
+            ensureNewChargeMenus(menuIds);
             migrateDictMapToCatalogMap();
             activateReportMenus();
+            mergeDoctorMenus(menuIds);
+            ensureDoctorWorklogMenu(menuIds);
             Map<String, Long> roleIds = seedGlobalRoles();
             ensureOrgAdminRole();
             seedRoleMenus(menuIds, roleIds);
@@ -158,27 +163,33 @@ public class RbacInitializer implements ApplicationRunner {
         ids.put("schedule", menuK("schedule", "排班号源", "ScheduleManage", null, g5, ++sort[0]));
         ids.put("reg_stats", menuK("reg_stats", "挂号统计", "RegStatistics", null, g5, ++sort[0]));
         ids.put("reg_detail", menuK("reg_detail", "挂号明细", "RegDetailQuery", null, g5, ++sort[0]));
-        // 医生站
+        // 医生站(候诊列表+接诊工作台合并为单一门诊医生站)
         long g6 = dir("doctor", "医生站", 0L, ++sort[0]);
-        ids.put("doctor-queue", menuK("doctor-queue", "候诊列表", "DoctorQueue", null, g6, ++sort[0]));
-        ids.put("doctor-work", menuK("doctor-work", "接诊工作台", "DoctorWork", null, g6, ++sort[0]));
-        // 药房(2026-09 P1d 交付: 待发药/调剂发药/退药前端已上线)
+        ids.put("doctor-ws", menuK("doctor-ws", "门诊医生站", "DoctorWorkstation", null, g6, ++sort[0]));
+        ids.put("doctor-worklog", menuK("doctor-worklog", "医生工作日志", "DoctorWorklog", null, g6, ++sort[0]));
+        // 药房(2026-09 P1d 交付: 待发药/调剂发药/退药前端已上线; P2 药房管理/药房统计上线)
         long g7 = dir("pharmacy", "药房", 0L, ++sort[0]);
         ids.put("dispense-todo", menuK("dispense-todo", "待发药", "DispenseTodo", null, g7, ++sort[0]));
         ids.put("dispense", menuK("dispense", "调剂发药", "DispenseRecord", null, g7, ++sort[0]));
         ids.put("drug-return", menuK("drug-return", "退药", "DrugReturn", null, g7, ++sort[0]));
-        // 药库(采购入库/出库管理/库存流水已上线, 药品目录/盘点建设中)
+        ids.put("pharmacy-def", menuK("pharmacy-def", "药房管理", "PharmacyDef", null, g7, ++sort[0]));
+        ids.put("pharmacy-rpt", menuK("pharmacy-rpt", "药房统计", "PharmacyReport", null, g7, ++sort[0]));
+        // 药库(采购入库/出库管理/库存流水已上线; P2 药品目录/盘点绑定组件, 药库管理/药库统计上线)
         long g8 = dir("warehouse", "药库", 0L, ++sort[0]);
-        ids.put("wh-drug", menuK("wh-drug", "药品目录", null, "P1d", g8, ++sort[0]));
+        ids.put("wh-drug", menuK("wh-drug", "药品目录", "DrugCatalogView", null, g8, ++sort[0]));
         ids.put("wh-in", menuK("wh-in", "采购入库", "StockInManage", null, g8, ++sort[0]));
         ids.put("wh-out", menuK("wh-out", "出库管理", "StockOutManage", null, g8, ++sort[0]));
         ids.put("wh-stock", menuK("wh-stock", "库存/流水", "DrugStock", null, g8, ++sort[0]));
-        ids.put("wh-check", menuK("wh-check", "盘点", null, "P1d", g8, ++sort[0]));
-        // 收费结算台(2026-09 P1e 交付: 待收费/医保结算/退费前端已上线)
+        ids.put("wh-check", menuK("wh-check", "盘点", "StockCheck", null, g8, ++sort[0]));
+        ids.put("warehouse-def", menuK("warehouse-def", "药库管理", "WarehouseDef", null, g8, ++sort[0]));
+        ids.put("warehouse-rpt", menuK("warehouse-rpt", "药库统计", "WarehouseReport", null, g8, ++sort[0]));
+        // 收费结算台(2026-09 P1e 交付: 待收费/医保结算/退费前端已上线; P2 发票管理/收费统计上线)
         long g9 = dir("charge", "收费结算台", 0L, ++sort[0]);
         ids.put("charge-todo", menuK("charge-todo", "待收费", "ChargeTodo", null, g9, ++sort[0]));
         ids.put("charge-setl", menuK("charge-setl", "医保结算", "ChargeSetl", null, g9, ++sort[0]));
         ids.put("charge-refund", menuK("charge-refund", "退费", "ChargeRefund", null, g9, ++sort[0]));
+        ids.put("invoice-mgr", menuK("invoice-mgr", "发票管理", "InvoiceManage", null, g9, ++sort[0]));
+        ids.put("charge-rpt", menuK("charge-rpt", "收费统计", "ChargeReport", null, g9, ++sort[0]));
         // 查询报表(2026-09 P1f 交付: 结算记录/门诊日结前端已上线)
         long g10 = dir("report", "查询报表", 0L, ++sort[0]);
         ids.put("rpt-setl", menuK("rpt-setl", "结算记录", "SettleRecords", null, g10, ++sort[0]));
@@ -192,8 +203,10 @@ public class RbacInitializer implements ApplicationRunner {
         return ids;
     }
 
-    /** 已下线菜单(功能移除, 不再种子): 清理其角色授权与菜单行, 幂等; charge-item=收费项目对照(与三目录医保对照重复, 2026-09 下线) */
-    private static final String[] RETIRED_MENU_KEYS = {"charge-item"};
+    /** 已下线菜单(功能移除或合并, 不再种子): 清理其角色授权与菜单行, 幂等;
+     *  charge-item=收费项目对照(与三目录医保对照重复, 2026-09 下线);
+     *  doctor-queue/doctor-work=候诊列表/接诊工作台(合并为门诊医生站 doctor-ws, 2026-09 合并) */
+    private static final String[] RETIRED_MENU_KEYS = {"charge-item", "doctor-queue", "doctor-work"};
 
     private void pruneRetiredMenus() {
         for (String key : RETIRED_MENU_KEYS) {
@@ -301,10 +314,10 @@ public class RbacInitializer implements ApplicationRunner {
         // ADMIN/SUPER_ADMIN 走 all_menus 免配置; 其余角色给"工作台+本职能相关菜单"最小子集
         Map<String, String[]> grants = new HashMap<>();
         grants.put(Roles.REGISTRAR, new String[]{"dashboard", "patient", "register", "unregister", "reg_stats", "reg_detail"});
-        grants.put(Roles.DOCTOR, new String[]{"dashboard", "doctor-queue", "doctor-work", "patient"});
-        grants.put(Roles.PHARMACIST, new String[]{"dashboard", "dispense-todo", "dispense", "drug-return", "wh-stock", "wh-in", "wh-out"});
-        grants.put(Roles.CASHIER, new String[]{"dashboard", "charge-todo", "charge-setl", "charge-refund", "rpt-setl", "rpt-daily"});
-        grants.put(Roles.NURSE, new String[]{"dashboard", "patient", "doctor-queue"});
+        grants.put(Roles.DOCTOR, new String[]{"dashboard", "doctor-ws", "patient", "doctor-worklog"});
+        grants.put(Roles.PHARMACIST, new String[]{"dashboard", "dispense-todo", "dispense", "drug-return", "pharmacy-def", "pharmacy-rpt", "wh-stock", "wh-in", "wh-out", "warehouse-def", "warehouse-rpt", "wh-check"});
+        grants.put(Roles.CASHIER, new String[]{"dashboard", "charge-todo", "charge-setl", "charge-refund", "invoice-mgr", "charge-rpt", "rpt-setl", "rpt-daily"});
+        grants.put(Roles.NURSE, new String[]{"dashboard", "patient", "doctor-ws", "doctor-worklog"});
         for (Map.Entry<String, String[]> e : grants.entrySet()) {
             Long roleId = roleIds.get(e.getKey());
             if (roleId == null) {
@@ -321,15 +334,17 @@ public class RbacInitializer implements ApplicationRunner {
     }
 
     /**
-     * 幂等补充业务角色新菜单授权(2026-09 药库/收费/报表上线): 既有库 seedRoleMenus 表非空即跳过,
-     * 老库药师(PHARMACIST)缺药库菜单、收费员(CASHIER)缺报表菜单, 在此按 role+menu 判存补授;
-     * ADMIN/ORG_ADMIN/SUPER_ADMIN 走 all_menus 免配置, 新菜单自动可见。
+     * 幂等补充业务角色新菜单授权(2026-09 药库/收费/报表 + 药房药库管理统计/盘点/发票管理上线):
+     * 既有库 seedRoleMenus 表非空即跳过, 老库药师(PHARMACIST)缺药库菜单、收费员(CASHIER)缺报表菜单,
+     * 在此按 role+menu 判存补授; ADMIN/ORG_ADMIN/SUPER_ADMIN 走 all_menus 免配置, 新菜单自动可见。
      */
     private void ensureBizRoleGrants(Map<String, Long> menuIds, Map<String, Long> roleIds) {
         Map<String, String[]> grants = new HashMap<>();
-        grants.put(Roles.PHARMACIST, new String[]{"wh-stock", "wh-in", "wh-out"});
-        grants.put(Roles.CASHIER, new String[]{"rpt-setl", "rpt-daily"});
+        grants.put(Roles.PHARMACIST, new String[]{"wh-stock", "wh-in", "wh-out", "wh-check", "pharmacy-def", "pharmacy-rpt", "warehouse-def", "warehouse-rpt"});
+        grants.put(Roles.CASHIER, new String[]{"rpt-setl", "rpt-daily", "invoice-mgr", "charge-rpt"});
         grants.put(Roles.REGISTRAR, new String[]{"reg_stats", "reg_detail"});
+        grants.put(Roles.DOCTOR, new String[]{"doctor-ws", "doctor-worklog"});
+        grants.put(Roles.NURSE, new String[]{"doctor-ws", "doctor-worklog"});
         int added = 0;
         for (Map.Entry<String, String[]> e : grants.entrySet()) {
             Long roleId = roleIds.get(e.getKey());
@@ -350,7 +365,7 @@ public class RbacInitializer implements ApplicationRunner {
             }
         }
         if (added > 0) {
-            log.info("业务角色新菜单授权已补充: 药师(药库)/收费员(报表)/挂号员(挂号统计/挂号明细) 共 {} 条", added);
+            log.info("业务角色新菜单授权已补充: 药师(药库+管理统计+盘点)/收费员(报表+发票管理收费统计)/挂号员(挂号统计与明细)/医生护士(门诊医生站+医生工作日志) 共 {} 条", added);
         }
     }
 
@@ -669,6 +684,132 @@ public class RbacInitializer implements ApplicationRunner {
                     .set("phase", null));
             log.info("查询报表菜单已激活: {} -> {}", e.getKey(), e.getValue());
         }
+    }
+
+    /**
+     * 幂等合并医生站菜单(候诊列表+接诊工作台 -> 单一门诊医生站 DoctorWorkstation):
+     * 新库种子已直接种 doctor-ws; 既有库 seedMenus 表非空即跳过, 在此按 menu_key 判存补种
+     * (挂 doctor 目录, sort_no 续接), 并将 id 回填 menuIds 供角色补授权(ensureBizRoleGrants)。
+     * 旧 doctor-queue/doctor-work 菜单及授权由 RETIRED_MENU_KEYS 清理(幂等)。
+     */
+    private void mergeDoctorMenus(Map<String, Long> menuIds) {
+        SysMenu ws = menuMapper.selectOne(new QueryWrapper<SysMenu>().eq("menu_key", "doctor-ws").last("LIMIT 1"));
+        if (ws == null) {
+            SysMenu doctorDir = menuMapper.selectOne(new QueryWrapper<SysMenu>().eq("menu_key", "doctor").last("LIMIT 1"));
+            if (doctorDir == null) {
+                return;
+            }
+            int maxSort = 0;
+            for (SysMenu c : menuMapper.selectList(new QueryWrapper<SysMenu>().eq("parent_id", doctorDir.getId()))) {
+                maxSort = Math.max(maxSort, c.getSortNo() == null ? 0 : c.getSortNo());
+            }
+            ws = new SysMenu();
+            ws.setParentId(doctorDir.getId());
+            ws.setMenuKey("doctor-ws");
+            ws.setMenuName("门诊医生站");
+            ws.setMenuType(2);
+            ws.setComp("DoctorWorkstation");
+            ws.setSortNo(maxSort + 1);
+            ws.setVisible(1);
+            ws.setStatus(1);
+            menuMapper.insert(ws);
+            log.info("门诊医生站菜单已补充(doctor-ws/DoctorWorkstation)");
+        }
+        menuIds.put("doctor-ws", ws.getId());
+    }
+
+    /**
+     * 幂等确保“医生工作日志”菜单存在(医生站工作量查询页, 排在门诊医生站之后): 挂 doctor 目录,
+     * sort_no 续接目录现有子项最大值。既有库 seedMenus 表非空即跳过, 故在此按 menu_key 判存补种,
+     * 并将 id 回填 menuIds 供角色补授权(ensureBizRoleGrants 给医生/护士)。
+     */
+    private void ensureDoctorWorklogMenu(Map<String, Long> menuIds) {
+        SysMenu m = menuMapper.selectOne(new QueryWrapper<SysMenu>().eq("menu_key", "doctor-worklog").last("LIMIT 1"));
+        if (m == null) {
+            SysMenu doctorDir = menuMapper.selectOne(new QueryWrapper<SysMenu>().eq("menu_key", "doctor").last("LIMIT 1"));
+            if (doctorDir == null) {
+                return;
+            }
+            int maxSort = 0;
+            for (SysMenu c : menuMapper.selectList(new QueryWrapper<SysMenu>().eq("parent_id", doctorDir.getId()))) {
+                maxSort = Math.max(maxSort, c.getSortNo() == null ? 0 : c.getSortNo());
+            }
+            m = new SysMenu();
+            m.setParentId(doctorDir.getId());
+            m.setMenuKey("doctor-worklog");
+            m.setMenuName("医生工作日志");
+            m.setMenuType(2);
+            m.setComp("DoctorWorklog");
+            m.setSortNo(maxSort + 1);
+            m.setVisible(1);
+            m.setStatus(1);
+            menuMapper.insert(m);
+            log.info("医生工作日志菜单已补充(doctor-worklog/DoctorWorklog)");
+        }
+        menuIds.put("doctor-worklog", m.getId());
+    }
+
+    /**
+     * 幂等补种药房目录新菜单(2026-09 药房管理/药房统计上线): 药房管理(PharmacyDef, 药房定义维护)与
+     * 药房统计(PharmacyReport)。既有库 seedMenus 表非空即跳过, 故在此按 menu_key 判存补种
+     * (挂 pharmacy 目录, sort_no 续接), 并将 id 回填 menuIds 供角色补授权(ensureBizRoleGrants 给药师)。
+     */
+    private void ensureNewPharmacyMenus(Map<String, Long> menuIds) {
+        ensureChildMenu(menuIds, "pharmacy", "pharmacy-def", "药房管理", "PharmacyDef");
+        ensureChildMenu(menuIds, "pharmacy", "pharmacy-rpt", "药房统计", "PharmacyReport");
+    }
+
+    /**
+     * 幂等补种药库目录新菜单(2026-09 药库管理/药库统计上线)并激活既有占位菜单: 药库管理
+     * (WarehouseDef, 药库定义维护)与药库统计(WarehouseReport); wh-drug/wh-check 为既有占位菜单
+     * (comp=null/phase=P1d), 在此绑定 DrugCatalogView/StockCheck 并清除建设中标记(见 bindMenuComp)。
+     */
+    private void ensureNewWarehouseMenus(Map<String, Long> menuIds) {
+        bindMenuComp("wh-drug", "DrugCatalogView");
+        bindMenuComp("wh-check", "StockCheck");
+        ensureChildMenu(menuIds, "warehouse", "warehouse-def", "药库管理", "WarehouseDef");
+        ensureChildMenu(menuIds, "warehouse", "warehouse-rpt", "药库统计", "WarehouseReport");
+    }
+
+    /**
+     * 幂等补种收费结算台目录新菜单(2026-09 发票管理/收费统计上线): 发票管理(InvoiceManage)与
+     * 收费统计(ChargeReport)。既有库 seedMenus 表非空即跳过, 故在此按 menu_key 判存补种
+     * (挂 charge 目录, sort_no 续接), 并将 id 回填 menuIds 供角色补授权(ensureBizRoleGrants 给收费员)。
+     */
+    private void ensureNewChargeMenus(Map<String, Long> menuIds) {
+        ensureChildMenu(menuIds, "charge", "invoice-mgr", "发票管理", "InvoiceManage");
+        ensureChildMenu(menuIds, "charge", "charge-rpt", "收费统计", "ChargeReport");
+    }
+
+    /**
+     * 幂等确保目录下叶子菜单存在(新库种子已含, 老库补种): 按 menu_key 判存, 不存在则挂指定目录
+     * (sort_no 续接目录现有子项最大值); 存在或补种后将 id 回填 menuIds 供角色补授权。
+     * 目录不存在(异常库)则跳过不补种, 不拖垮后续初始化。
+     */
+    private void ensureChildMenu(Map<String, Long> menuIds, String dirKey, String key, String name, String comp) {
+        SysMenu m = menuMapper.selectOne(new QueryWrapper<SysMenu>().eq("menu_key", key).last("LIMIT 1"));
+        if (m == null) {
+            SysMenu dir = menuMapper.selectOne(new QueryWrapper<SysMenu>().eq("menu_key", dirKey).last("LIMIT 1"));
+            if (dir == null) {
+                return;
+            }
+            int maxSort = 0;
+            for (SysMenu c : menuMapper.selectList(new QueryWrapper<SysMenu>().eq("parent_id", dir.getId()))) {
+                maxSort = Math.max(maxSort, c.getSortNo() == null ? 0 : c.getSortNo());
+            }
+            m = new SysMenu();
+            m.setParentId(dir.getId());
+            m.setMenuKey(key);
+            m.setMenuName(name);
+            m.setMenuType(2);
+            m.setComp(comp);
+            m.setSortNo(maxSort + 1);
+            m.setVisible(1);
+            m.setStatus(1);
+            menuMapper.insert(m);
+            log.info("菜单已补充: {}({}/{})", name, key, comp);
+        }
+        menuIds.put(key, m.getId());
     }
 
     /** 幂等插入一个顶级菜单节点(menu_type=2, parent=0), 已存在则跳过 */

@@ -1,6 +1,7 @@
 package com.yb.hi.controller.doctor;
 
 import com.baomidou.mybatisplus.core.metadata.IPage;
+import com.yb.hi.dto.doctor.VisitDraftReq;
 import com.yb.hi.dto.doctor.VisitFinishReq;
 import com.yb.hi.entity.doctor.HisVisit;
 import com.yb.hi.framework.common.R;
@@ -14,6 +15,7 @@ import org.springframework.web.bind.annotation.*;
 
 import java.time.LocalDate;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 
 /**
@@ -73,5 +75,30 @@ public class HisVisitController {
     @PostMapping("/finish")
     public R<HisVisit> finish(@RequestBody VisitFinishReq req) {
         return R.ok(visitService.finishVisit(req));
+    }
+
+    /** 保存病历草稿: 回写病历/医保扩展字段, 不改变就诊状态 */
+    @PostMapping("/save-draft")
+    public R<Void> saveDraft(@RequestBody VisitDraftReq req) {
+        visitService.saveDraft(req);
+        return R.ok();
+    }
+
+    /** 患者历史就诊(已完成, 含主诊断), 默认最近5次 */
+    @GetMapping("/history")
+    public R<List<?>> history(@RequestParam Long patientId, @RequestParam(defaultValue = "5") int limit) {
+        return R.ok(visitService.listHistory(patientId, limit));
+    }
+
+    /** 就诊费用汇总: 处方/检查治疗单笔数与金额 */
+    @GetMapping("/fee-summary")
+    public R<Map<String, Object>> feeSummary(@RequestParam Long visitId) {
+        return R.ok(visitService.getFeeSummary(visitId));
+    }
+
+    /** 患者医保参保信息(可多条) */
+    @GetMapping("/insu-info")
+    public R<List<?>> insuInfo(@RequestParam Long patientId) {
+        return R.ok(visitService.getInsuInfo(patientId));
     }
 }

@@ -24,6 +24,8 @@ public class HisDrugStock extends BaseEntity {
 
     /** 机构ID */
     private Long orgId;
+    /** 药库ID(his_warehouse_def.id) */
+    private Long warehouseId;
     /** 药品目录ID */
     private Long drugCatalogId;
     /** 药品编码 */

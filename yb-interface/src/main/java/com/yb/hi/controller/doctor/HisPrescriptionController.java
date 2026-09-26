@@ -8,6 +8,7 @@ import com.yb.hi.service.doctor.HisPrescriptionService;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.List;
+import java.util.Map;
 
 /**
  * 处方接口: 开方 / 查询就诊处方 / 查询明细
@@ -38,5 +39,17 @@ public class HisPrescriptionController {
     @PostMapping("/create")
     public R<HisPrescription> create(@RequestBody PrescriptionReq req) {
         return R.ok(service.create(req));
+    }
+
+    /** 作废未收费处方 */
+    @PostMapping("/cancel")
+    public R<HisPrescription> cancel(@RequestParam Long id) {
+        return R.ok(service.cancel(id));
+    }
+
+    /** 获取处方笺打印数据 */
+    @GetMapping("/print-data")
+    public R<Map<String, Object>> printData(@RequestParam Long id) {
+        return R.ok(service.printData(id));
     }
 }

@@ -7,9 +7,13 @@ import com.yb.hi.entity.doctor.HisDiagnosis;
 import com.yb.hi.entity.doctor.HisPrescription;
 import com.yb.hi.entity.doctor.HisPrescriptionItem;
 import com.yb.hi.entity.doctor.HisVisit;
+import com.yb.hi.entity.outpatient.HisPatient;
 import com.yb.hi.framework.common.BizException;
+import com.yb.hi.framework.tenant.LoginUser;
+import com.yb.hi.framework.tenant.UserContext;
 import com.yb.hi.mapper.doctor.HisPrescriptionItemMapper;
 import com.yb.hi.mapper.doctor.HisPrescriptionMapper;
+import com.yb.hi.mapper.outpatient.HisPatientMapper;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -17,7 +21,9 @@ import org.springframework.util.CollectionUtils;
 import org.springframework.util.StringUtils;
 
 import java.math.BigDecimal;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.stream.Collectors;
 
@@ -33,12 +39,14 @@ public class HisPrescriptionService extends ServiceImpl<HisPrescriptionMapper, H
     private final HisVisitService visitService;
     private final HisDiagnosisService diagnosisService;
     private final HisPrescriptionItemMapper itemMapper;
+    private final HisPatientMapper patientMapper;
 
     public HisPrescriptionService(HisVisitService visitService, HisDiagnosisService diagnosisService,
-                                  HisPrescriptionItemMapper itemMapper) {
+                                  HisPrescriptionItemMapper itemMapper, HisPatientMapper patientMapper) {
         this.visitService = visitService;
         this.diagnosisService = diagnosisService;
         this.itemMapper = itemMapper;
+        this.patientMapper = patientMapper;
     }
 
     /** 查询某次就诊的处方列表 */
@@ -50,6 +58,60 @@ public class HisPrescriptionService extends ServiceImpl<HisPrescriptionMapper, H
     public List<HisPrescriptionItem> listItems(Long prescriptionId) {
         return itemMapper.selectList(new com.baomidou.mybatisplus.core.conditions.query.QueryWrapper<HisPrescriptionItem>()
                 .eq("prescription_id", prescriptionId).eq("deleted", 0).orderByAsc("id"));
+    }
+
+    /** 仅未收费处方允许作废。 */
+    @Transactional(rollbackFor = Exception.class)
+    public HisPrescription cancel(Long id) {
+        HisPrescription rx = getById(id);
+        if (rx == null) {
+            throw new BizException(400, "处方不存在");
+        }
+        if (!Integer.valueOf(1).equals(rx.getStatus())) {
+            throw new BizException("仅未收费处方可作废(当前状态:" + rx.getStatus() + ")");
+        }
+        rx.setStatus(-1);
+        updateById(rx);
+        return rx;
+    }
+
+    /**
+     * 处方笺打印数据: 前记(医院/患者/诊断)、正文(处方明细)、后记(医师/金额)，
+     * 同时保留各原始对象字段，便于不同打印模板按需排版。
+     */
+    public Map<String, Object> printData(Long id) {
+        HisPrescription rx = getById(id);
+        if (rx == null) {
+            throw new BizException(400, "处方不存在");
+        }
+        List<HisPrescriptionItem> items = listItems(id);
+        HisPatient patient = rx.getPatientId() == null ? null : patientMapper.selectById(rx.getPatientId());
+        List<HisDiagnosis> diagnoses = diagnosisService.listByVisit(rx.getVisitId());
+        LoginUser user = UserContext.get();
+        String hospitalName = user == null ? null : user.getTenantName();
+
+        Map<String, Object> preface = new LinkedHashMap<>();
+        preface.put("hospitalName", hospitalName);
+        preface.put("prescription", rx);
+        preface.put("patient", patient);
+        preface.put("diagnoses", diagnoses);
+
+        Map<String, Object> postscript = new LinkedHashMap<>();
+        postscript.put("deptName", rx.getDeptName());
+        postscript.put("doctorName", rx.getDrName());
+        postscript.put("totalAmount", rx.getTotalAmount());
+        postscript.put("createTime", rx.getCreateTime());
+
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("hospitalName", hospitalName);
+        result.put("prescription", rx);
+        result.put("items", items);
+        result.put("patient", patient);
+        result.put("diagnoses", diagnoses);
+        result.put("preface", preface);
+        result.put("body", items);
+        result.put("postscript", postscript);
+        return result;
     }
 
     /**

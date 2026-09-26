@@ -23,6 +23,8 @@ public class HisStockOut extends BaseEntity {
 
     /** 机构ID */
     private Long orgId;
+    /** 药库ID(his_warehouse_def.id) */
+    private Long warehouseId;
     /** 出库单号(CK+yyyyMMdd+4位序号) */
     private String outNo;
     /** 出库类型: 1处方发药 2报损 3盘亏 4调拨出 */

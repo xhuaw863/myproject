@@ -36,6 +36,8 @@ public class HisChargeBillItem extends BaseEntity {
     private String spec;
     /** 数量 */
     private BigDecimal qty;
+    /** 已退数量(部分退费追踪, 默认0) */
+    private BigDecimal refundedQty;
     /** 单价 */
     private BigDecimal price;
     /** 金额 */
