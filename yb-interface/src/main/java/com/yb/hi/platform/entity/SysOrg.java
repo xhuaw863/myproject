@@ -108,4 +108,7 @@ public class SysOrg extends BaseEntity {
     private Integer sortNo;
     /** 状态: 1-启用 0-停用 */
     private Integer status;
+
+    /** 拼音简码(机构名称首字母, 保存时自动生成只读) */
+    private String pyCode;
 }

@@ -10,6 +10,7 @@ import com.yb.hi.entity.basedata.AreaCode;
 import com.yb.hi.entity.outpatient.HisPatient;
 import com.yb.hi.entity.outpatient.HisPatientChangeLog;
 import com.yb.hi.framework.common.BizException;
+import com.yb.hi.framework.util.PinyinUtil;
 import com.yb.hi.framework.tenant.LoginUser;
 import com.yb.hi.framework.tenant.UserContext;
 import com.yb.hi.mapper.outpatient.HisPatientChangeLogMapper;
@@ -107,6 +108,10 @@ public class HisPatientService extends ServiceImpl<HisPatientMapper, HisPatient>
     public void enrichDict(HisPatient p) {
         if (p == null) {
             return;
+        }
+        // 拼音简码随患者姓名自动重算(只读)
+        if (StringUtils.hasText(p.getName())) {
+            p.setPyCode(PinyinUtil.initials(p.getName()));
         }
         if (StringUtils.hasText(p.getGender())) {
             p.setGenderName(stdDict.nameOf("cv_code", "gend", p.getGender()));
@@ -218,7 +223,8 @@ public class HisPatientService extends ServiceImpl<HisPatientMapper, HisPatient>
                     .or().like(HisPatient::getPatientNo, keyword)
                     .or().like(HisPatient::getIdCard, keyword)
                     .or().like(HisPatient::getPsnNo, keyword)
-                    .or().like(HisPatient::getPhone, keyword));
+                    .or().like(HisPatient::getPhone, keyword)
+                    .or().like(HisPatient::getPyCode, keyword));
         }
         return q.orderByDesc(HisPatient::getId).page(new Page<>(page, size));
     }

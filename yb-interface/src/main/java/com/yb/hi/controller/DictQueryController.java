@@ -62,7 +62,7 @@ public class DictQueryController {
                 if (hasKw) {
                     // 展示列: 编码/名称(商品名或通用名)/规格/生产企业, 均可检索
                     qw.and(w -> w.like("drug_prodname", keyword).or().like("drug_genname", keyword).or().like("med_list_codg", keyword)
-                            .or().like("drug_spec", keyword).or().like("prod_entp_name", keyword));
+                            .or().like("drug_spec", keyword).or().like("prod_entp_name", keyword).or().like("pinyin", keyword));
                 }
                 qw.orderByDesc("id");
                 return R.ok(convert(drugCatalogMapper.selectPage(new Page<>(page, size), qw), e -> row(
@@ -74,7 +74,7 @@ public class DictQueryController {
                 if (hasKw) {
                     // 展示列: 编码/项目名称/计价单位/项目类别, 均可检索
                     qw.and(w -> w.like("item_name", keyword).or().like("med_list_codg", keyword)
-                            .or().like("prcunt_name", keyword).or().like("item_cat", keyword));
+                            .or().like("prcunt_name", keyword).or().like("item_cat", keyword).or().like("py_code", keyword));
                 }
                 qw.orderByDesc("id");
                 return R.ok(convert(medServiceCatalogMapper.selectPage(new Page<>(page, size), qw), e -> row(
@@ -86,7 +86,7 @@ public class DictQueryController {
                 if (hasKw) {
                     // 展示列: 编码/耗材名称/规格/产品型号, 均可检索
                     qw.and(w -> w.like("cons_name", keyword).or().like("med_list_codg", keyword)
-                            .or().like("spec", keyword).or().like("prod_model", keyword));
+                            .or().like("spec", keyword).or().like("prod_model", keyword).or().like("py_code", keyword));
                 }
                 qw.orderByDesc("id");
                 return R.ok(convert(consumableCatalogMapper.selectPage(new Page<>(page, size), qw), e -> row(
@@ -98,7 +98,7 @@ public class DictQueryController {
                 if (hasKw) {
                     // 展示列: 诊断代码/诊断名称/疾病ID/类目名称, 均可检索
                     qw.and(w -> w.like("diag_name", keyword).or().like("diag_code", keyword).or().like("dise_code", keyword)
-                            .or().like("cat_name", keyword));
+                            .or().like("cat_name", keyword).or().like("py_code", keyword));
                 }
                 qw.orderByDesc("id");
                 return R.ok(convert(diseaseCatalogMapper.selectPage(new Page<>(page, size), qw), e -> row(

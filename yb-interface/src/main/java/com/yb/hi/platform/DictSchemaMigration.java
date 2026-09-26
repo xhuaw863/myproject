@@ -244,6 +244,36 @@ public class DictSchemaMigration implements ApplicationRunner {
                 {"his_schedule", "room", "VARCHAR(50) DEFAULT NULL COMMENT '诊室'"},
                 {"his_schedule", "template_id", "BIGINT DEFAULT NULL COMMENT '来源模板ID'"},
                 {"his_schedule", "stop_reason", "VARCHAR(200) DEFAULT NULL COMMENT '停诊原因'"},
+                /* ---------- 字典简码(拼音首字母 py_code + 自定义码 abbr_code): 院内可维护字典两列, 机构/患者/区划/医保目录仅 py_code ---------- */
+                {"his_staff", "py_code", "VARCHAR(64) NULL COMMENT '拼音简码(姓名首字母, 自动生成只读)'"},
+                {"his_staff", "abbr_code", "VARCHAR(64) NULL COMMENT '自定义简码(人工维护, 选填)'"},
+                {"his_dept", "py_code", "VARCHAR(64) NULL COMMENT '拼音简码(名称首字母, 自动生成只读)'"},
+                {"his_dept", "abbr_code", "VARCHAR(64) NULL COMMENT '自定义简码(人工维护, 选填)'"},
+                {"his_drug_catalog", "py_code", "VARCHAR(64) NULL COMMENT '拼音简码(通用名首字母, 自动生成只读)'"},
+                {"his_drug_catalog", "abbr_code", "VARCHAR(64) NULL COMMENT '自定义简码(人工维护, 选填)'"},
+                {"his_charge_item", "py_code", "VARCHAR(64) NULL COMMENT '拼音简码(项目名称首字母, 自动生成只读)'"},
+                {"his_charge_item", "abbr_code", "VARCHAR(64) NULL COMMENT '自定义简码(人工维护, 选填)'"},
+                {"his_cons_catalog", "py_code", "VARCHAR(64) NULL COMMENT '拼音简码(耗材名称首字母, 自动生成只读)'"},
+                {"his_cons_catalog", "abbr_code", "VARCHAR(64) NULL COMMENT '自定义简码(人工维护, 选填)'"},
+                {"his_med_dict", "py_code", "VARCHAR(64) NULL COMMENT '拼音简码(名称首字母, 自动生成只读)'"},
+                {"his_med_dict", "abbr_code", "VARCHAR(64) NULL COMMENT '自定义简码(人工维护, 选填)'"},
+                {"sys_org", "py_code", "VARCHAR(64) NULL COMMENT '拼音简码(机构名称首字母, 自动生成只读)'"},
+                {"his_patient", "py_code", "VARCHAR(64) NULL COMMENT '拼音简码(患者姓名首字母, 自动生成只读)'"},
+                {"area_code_2021", "py_code", "VARCHAR(64) NULL COMMENT '拼音简码(区划名称首字母, 自动生成只读)'"},
+                {"med_service_catalog", "py_code", "VARCHAR(64) NULL COMMENT '拼音简码(项目名称首字母, 自动生成只读)'"},
+                {"consumable_catalog", "py_code", "VARCHAR(64) NULL COMMENT '拼音简码(耗材名称首字母, 自动生成只读)'"},
+                {"disease_catalog", "py_code", "VARCHAR(64) NULL COMMENT '拼音简码(诊断名称首字母, 自动生成只读)'"},
+                /* ---------- 挂号增强: 费别/减免/实收/支付方式/候诊序号 ---------- */
+                {"his_registration", "fee_type", "VARCHAR(10) NULL COMMENT '费别编码'"},
+                {"his_registration", "discount_type", "VARCHAR(20) NULL COMMENT '减免类型编码(none/age70free等)'"},
+                {"his_registration", "discount_reason", "VARCHAR(200) NULL COMMENT '减免原因说明'"},
+                {"his_registration", "discount_amount", "DECIMAL(10,2) DEFAULT 0 COMMENT '减免金额'"},
+                {"his_registration", "actual_fee", "DECIMAL(10,2) NULL COMMENT '实收金额(挂号费-减免金额)'"},
+                {"his_registration", "pay_method", "VARCHAR(20) NULL COMMENT '支付方式(free=免费)'"},
+                {"his_registration", "pay_detail", "VARCHAR(500) NULL COMMENT '混合支付明细JSON'"},
+                {"his_registration", "queue_no", "VARCHAR(20) NULL COMMENT '候诊序号(科室简码+4位流水号)'"},
+                /* ---------- 就诊增强: 候诊序号(自挂号记录同步) ---------- */
+                {"his_visit", "queue_no", "VARCHAR(20) NULL COMMENT '候诊序号(自挂号记录同步)'"},
         };
         int added = 0;
         try (Connection conn = dataSource.getConnection()) {
@@ -271,6 +301,8 @@ public class DictSchemaMigration implements ApplicationRunner {
             ensureOrgPriceLv(conn);
             // open_clinic 新增列对存量行会落 NULL, 统一按开诊回填(保持既有科室可见行为不变)
             normalizeDeptOpenClinic(conn);
+            // 标准字典大表(16 张 std_*)幂等补 py_code 列(drug_catalog 已有源 pinyin 列, 不加)
+            ensureStdPyCodeColumns(conn);
             // 患者出生日期精度升级: DATE -> DATETIME(新生儿需精确到时分秒; 幂等, 仅当前类型为 date 时 MODIFY)
             if ("date".equalsIgnoreCase(columnDataType(conn, "his_patient", "birth_date"))) {
                 try (Statement st = conn.createStatement()) {
@@ -296,6 +328,44 @@ public class DictSchemaMigration implements ApplicationRunner {
             st.executeUpdate("UPDATE his_dept SET open_clinic = 1 WHERE open_clinic IS NULL");
         } catch (Exception e) {
             log.warn("his_dept.open_clinic 回填跳过: {}", e.getMessage());
+        }
+    }
+
+    /**
+     * 标准字典大表幂等补 py_code 列: 遍历 StdDictRegistry 去重表名(drug_catalog 已有源 pinyin 列, 跳过),
+     * 表存在且未建列时 ALTER ADD py_code。回填见 PyCodeBackfillService。
+     */
+    private void ensureStdPyCodeColumns(Connection conn) {
+        java.util.Set<String> done = new java.util.LinkedHashSet<>();
+        for (com.yb.hi.stddict.StdDict d : com.yb.hi.stddict.StdDictRegistry.build().values()) {
+            String table = d.getTable();
+            if (table == null || !done.add(table)) {
+                continue;
+            }
+            if ("drug_catalog".equals(table)) {
+                continue;
+            }
+            try {
+                if (tableExists(conn, table) && !columnExists(conn, table, "py_code")) {
+                    try (Statement st = conn.createStatement()) {
+                        st.executeUpdate("ALTER TABLE " + table
+                                + " ADD COLUMN py_code VARCHAR(64) NULL COMMENT '拼音简码(名称首字母, 自动生成只读)'");
+                    }
+                }
+            } catch (Exception e) {
+                log.warn("std 表 {} py_code 建列跳过: {}", table, e.getMessage());
+            }
+        }
+    }
+
+    private boolean tableExists(Connection conn, String table) throws Exception {
+        String sql = "SELECT COUNT(*) FROM information_schema.tables "
+                + "WHERE table_schema = DATABASE() AND table_name = ?";
+        try (PreparedStatement ps = conn.prepareStatement(sql)) {
+            ps.setString(1, table);
+            try (ResultSet rs = ps.executeQuery()) {
+                return rs.next() && rs.getInt(1) > 0;
+            }
         }
     }
 

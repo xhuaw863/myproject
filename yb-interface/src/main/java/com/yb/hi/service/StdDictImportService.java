@@ -34,11 +34,14 @@ public class StdDictImportService {
 
     private final StdDictProperties props;
     private final DataSource dataSource;
+    private final com.yb.hi.platform.PyCodeBackfillService pyBackfill;
     private final Map<String, StdDict> registry = StdDictRegistry.build();
 
-    public StdDictImportService(StdDictProperties props, DataSource dataSource) {
+    public StdDictImportService(StdDictProperties props, DataSource dataSource,
+                               com.yb.hi.platform.PyCodeBackfillService pyBackfill) {
         this.props = props;
         this.dataSource = dataSource;
+        this.pyBackfill = pyBackfill;
     }
 
     /** 全部字典标识(有序) */
@@ -122,6 +125,8 @@ public class StdDictImportService {
             r.put("status", "SUCCESS");
             r.put("rows", total);
             r.put("message", String.join("; ", sourceMsgs));
+            // 重导为 TRUNCATE 重写, 立即按名称回填 py_code(drug_catalog 无该列则内部跳过), 免等下次重启
+            pyBackfill.backfillOne(dict.getTable(), "id", dict.getNameCol());
         } catch (Exception e) {
             log.error("标准字典[{}]导入失败", key, e);
             r.put("status", "FAIL");

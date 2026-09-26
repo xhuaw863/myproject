@@ -218,7 +218,9 @@ public class OrgCatalogService {
         if (StringUtils.hasText(keyword)) {
             q.and(w -> w.like(HisDrugCatalog::getGenericName, keyword)
                     .or().like(HisDrugCatalog::getTradeName, keyword)
-                    .or().like(HisDrugCatalog::getDrugCode, keyword));
+                    .or().like(HisDrugCatalog::getDrugCode, keyword)
+                    .or().like(HisDrugCatalog::getPyCode, keyword)
+                    .or().like(HisDrugCatalog::getAbbrCode, keyword));
         }
         applyEnabled(q, enabled);
         IPage<HisDrugCatalog> r = q.orderByDesc(HisDrugCatalog::getId).page(new Page<>(page, size));
@@ -235,7 +237,9 @@ public class OrgCatalogService {
                 .eq(StringUtils.hasText(itemType), HisChargeItem::getItemType, itemType);
         if (StringUtils.hasText(keyword)) {
             q.and(w -> w.like(HisChargeItem::getItemName, keyword)
-                    .or().like(HisChargeItem::getItemCode, keyword));
+                    .or().like(HisChargeItem::getItemCode, keyword)
+                    .or().like(HisChargeItem::getPyCode, keyword)
+                    .or().like(HisChargeItem::getAbbrCode, keyword));
         }
         applyEnabledCharge(q, enabled);
         IPage<HisChargeItem> r = q.orderByDesc(HisChargeItem::getId).page(new Page<>(page, size));
@@ -345,6 +349,8 @@ public class OrgCatalogService {
                 put(out, "批准文号", d.getApprovalNo());
                 put(out, "通用名", d.getGenericName());
                 put(out, "商品名", d.getTradeName());
+                put(out, "拼音简码", d.getPyCode());
+                put(out, "自定义码", d.getAbbrCode());
                 put(out, "大类", d.getMajorClass());
                 put(out, "剂型", d.getDosformName() != null ? d.getDosformName() : d.getDosform());
                 put(out, "规格", d.getSpec());
@@ -392,6 +398,8 @@ public class OrgCatalogService {
                 put(out, "医保耗材码", c.getYbConsCode());
                 put(out, "注册证号", c.getRegCertNo());
                 put(out, "耗材名称", c.getName());
+                put(out, "拼音简码", c.getPyCode());
+                put(out, "自定义码", c.getAbbrCode());
                 put(out, "一级分类", c.getCat1());
                 put(out, "二级分类", c.getCat2());
                 put(out, "三级分类", c.getCat3());
@@ -427,6 +435,8 @@ public class OrgCatalogService {
                 }
                 put(out, "院内编码", it.getItemCode());
                 put(out, "项目名称", it.getItemName());
+                put(out, "拼音简码", it.getPyCode());
+                put(out, "自定义码", it.getAbbrCode());
                 put(out, "项目大类", it.getItemType());
                 put(out, "细分类别", it.getItemCat());
                 put(out, "规格", it.getSpec());
@@ -465,6 +475,8 @@ public class OrgCatalogService {
                 put(out, "字典类型", "freq".equals(m.getDictType()) ? "用药频次" : "用法(给药途径)");
                 put(out, "院内编码", m.getCode());
                 put(out, "名称", m.getName());
+                put(out, "拼音简码", m.getPyCode());
+                put(out, "自定义码", m.getAbbrCode());
                 put(out, "医保值域码", m.getYbCode());
                 if ("freq".equals(m.getDictType())) {
                     put(out, "每日次数", dec(m.getDailyTimes()));
@@ -578,7 +590,9 @@ public class OrgCatalogService {
             q.and(w -> w.like(HisDrugCatalog::getGenericName, keyword)
                     .or().like(HisDrugCatalog::getTradeName, keyword)
                     .or().like(HisDrugCatalog::getDrugCode, keyword)
-                    .or().like(HisDrugCatalog::getYbDrugCode, keyword));
+                    .or().like(HisDrugCatalog::getYbDrugCode, keyword)
+                    .or().like(HisDrugCatalog::getPyCode, keyword)
+                    .or().like(HisDrugCatalog::getAbbrCode, keyword));
         }
         applyEnabledFilter(q, ef, enabled, HisDrugCatalog::getId);
         return q.orderByDesc(HisDrugCatalog::getId);
@@ -589,7 +603,9 @@ public class OrgCatalogService {
         if (StringUtils.hasText(keyword)) {
             q.and(w -> w.like(HisConsCatalog::getName, keyword)
                     .or().like(HisConsCatalog::getConsCode, keyword)
-                    .or().like(HisConsCatalog::getYbConsCode, keyword));
+                    .or().like(HisConsCatalog::getYbConsCode, keyword)
+                    .or().like(HisConsCatalog::getPyCode, keyword)
+                    .or().like(HisConsCatalog::getAbbrCode, keyword));
         }
         applyEnabledFilter(q, ef, enabled, HisConsCatalog::getId);
         return q.orderByDesc(HisConsCatalog::getId);
@@ -600,7 +616,9 @@ public class OrgCatalogService {
         if (StringUtils.hasText(keyword)) {
             q.and(w -> w.like(HisChargeItem::getItemName, keyword)
                     .or().like(HisChargeItem::getItemCode, keyword)
-                    .or().like(HisChargeItem::getMedListCodg, keyword));
+                    .or().like(HisChargeItem::getMedListCodg, keyword)
+                    .or().like(HisChargeItem::getPyCode, keyword)
+                    .or().like(HisChargeItem::getAbbrCode, keyword));
         }
         applyEnabledFilter(q, ef, enabled, HisChargeItem::getId);
         return q.orderByDesc(HisChargeItem::getId);
@@ -612,7 +630,9 @@ public class OrgCatalogService {
         if (StringUtils.hasText(keyword)) {
             q.and(w -> w.like(HisMedDict::getName, keyword)
                     .or().like(HisMedDict::getCode, keyword)
-                    .or().like(HisMedDict::getYbCode, keyword));
+                    .or().like(HisMedDict::getYbCode, keyword)
+                    .or().like(HisMedDict::getPyCode, keyword)
+                    .or().like(HisMedDict::getAbbrCode, keyword));
         }
         applyEnabledFilter(q, ef, enabled, HisMedDict::getId);
         return q.orderByAsc(HisMedDict::getSortNo).orderByAsc(HisMedDict::getId);

@@ -6,6 +6,7 @@ import com.yb.hi.entity.basedata.HisStaff;
 import com.yb.hi.mapper.basedata.HisStaffMapper;
 import com.yb.hi.platform.entity.SysOrg;
 import com.yb.hi.platform.service.SysOrgService;
+import com.yb.hi.framework.util.PinyinUtil;
 import com.yb.hi.service.StdDictQueryService;
 import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
@@ -41,6 +42,8 @@ public class HisStaffService extends ServiceImpl<HisStaffMapper, HisStaff> {
         if (s == null) {
             return;
         }
+        // 拼音简码随姓名自动重算(只读); 自定义码 abbr_code 由维护页透传不覆盖
+        s.setPyCode(PinyinUtil.initials(s.getStaffName()));
         if (StringUtils.hasText(s.getGender())) {
             s.setGenderName(stdDict.nameOf("cv_code", "gend", s.getGender()));
             s.setGenderSrc("cv_code:gend");
@@ -137,7 +140,9 @@ public class HisStaffService extends ServiceImpl<HisStaffMapper, HisStaff> {
                 .eq(StringUtils.hasText(staffType), HisStaff::getStaffType, staffType)
                 .and(StringUtils.hasText(keyword), w -> w
                         .like(HisStaff::getStaffName, keyword)
-                        .or().like(HisStaff::getStaffNo, keyword))
+                        .or().like(HisStaff::getStaffNo, keyword)
+                        .or().like(HisStaff::getPyCode, keyword)
+                        .or().like(HisStaff::getAbbrCode, keyword))
                 .orderByAsc(HisStaff::getSortNo)
                 .orderByAsc(HisStaff::getId)
                 .list();

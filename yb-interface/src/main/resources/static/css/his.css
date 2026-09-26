@@ -272,3 +272,90 @@ body { font-family: "Microsoft YaHei", "PingFang SC", sans-serif; background: #f
 
 /* 列表视图批量操作条 */
 .sched-batchbar { margin-bottom: 10px; display: flex; align-items: center; gap: 10px; }
+
+/* ================= 挂号工作站 ================= */
+.reg-workstation { display: flex; flex-direction: column; height: 100%; background: #fff; border-radius: 6px; overflow: hidden; }
+.reg-summary-bar { display: flex; gap: 12px; padding: 12px 16px; background: #f5f7fa; border-bottom: 1px solid #ebeef5; flex: none; }
+.reg-summary-card { flex: 1; background: #fff; border-radius: 8px; padding: 12px 16px; display: flex; align-items: center; gap: 12px; box-shadow: 0 1px 3px rgba(0,0,0,.08); min-width: 0; }
+.reg-summary-card .icon { width: 40px; height: 40px; border-radius: 8px; display: flex; align-items: center; justify-content: center; font-size: 20px; color: #fff; flex: none; }
+.reg-summary-card .icon--blue { background: #409eff; }
+.reg-summary-card .icon--red { background: #f56c6c; }
+.reg-summary-card .icon--orange { background: #e6a23c; }
+.reg-summary-card .icon--green { background: #67c23a; }
+.reg-summary-card .icon--purple { background: #9b59b6; }
+.reg-summary-card .icon--gold { background: #f39c12; }
+.reg-summary-card .num { font-size: 24px; font-weight: 700; color: #303133; font-variant-numeric: tabular-nums; line-height: 1.1; }
+.reg-summary-card .label { font-size: 12px; color: #909399; }
+.reg-summary-card .sub { font-size: 11px; color: #c0c4cc; }
+
+.reg-body { display: flex; flex: 1; overflow: hidden; }
+.reg-left { width: 380px; min-width: 380px; border-right: 1px solid #ebeef5; padding: 16px; overflow-y: auto; display: flex; flex-direction: column; gap: 12px; }
+.reg-right { flex: 1; display: flex; flex-direction: column; overflow: hidden; min-width: 0; }
+.reg-right-top { flex: 0 0 auto; border-bottom: 1px solid #ebeef5; padding: 12px 16px; }
+.reg-right-bottom { flex: 1; overflow: hidden; padding: 12px 16px; display: flex; flex-direction: column; }
+.reg-section-title { font-size: 13px; font-weight: 600; color: #303133; margin-bottom: 10px; display: flex; align-items: center; gap: 6px; }
+.reg-section-title::before { content: ''; width: 3px; height: 12px; background: #1a5fb4; border-radius: 2px; }
+
+/* 患者检索下拉候选 */
+.reg-search-box { position: relative; }
+.reg-search-drop { position: absolute; top: calc(100% + 4px); left: 0; right: 0; z-index: 30; background: #fff; border: 1px solid #ebeef5; border-radius: 6px; box-shadow: 0 6px 20px rgba(0,0,0,.12); max-height: 260px; overflow-y: auto; }
+.reg-search-item { padding: 8px 12px; cursor: pointer; border-bottom: 1px dashed #f2f3f5; font-size: 13px; color: #303133; line-height: 1.6; }
+.reg-search-item:last-child { border-bottom: none; }
+.reg-search-item:hover { background: #ecf5ff; }
+.reg-search-item .nm { font-weight: 700; margin-right: 8px; }
+.reg-search-item .meta { color: #909399; font-size: 12px; }
+.reg-search-empty { padding: 12px; text-align: center; color: #909399; font-size: 12px; }
+
+.reg-patient-card { border-left: 4px solid #409eff; background: #fafbfc; border-radius: 6px; padding: 12px 16px; position: relative; }
+.reg-patient-card--insurance { border-left-color: #67c23a; }
+.reg-patient-card--self { border-left-color: #e6a23c; }
+.reg-patient-card--discount { border-left-color: #9b59b6; }
+.reg-patient-card .patient-name { font-size: 18px; font-weight: 700; color: #303133; }
+.reg-patient-card .patient-info { font-size: 13px; color: #606266; line-height: 1.8; }
+.reg-patient-card .patient-last-visit { font-size: 11px; color: #c0c4cc; margin-top: 4px; }
+.reg-patient-card .badge-age70 { display: inline-block; background: #9b59b6; color: #fff; font-size: 11px; padding: 2px 8px; border-radius: 10px; vertical-align: 2px; margin-left: 6px; font-weight: normal; }
+.reg-patient-card .clear-btn { position: absolute; top: 8px; right: 8px; }
+
+/* 挂号表单: label 置顶紧凑两列 */
+.reg-form .el-form-item { margin-bottom: 10px; }
+.reg-form .el-form-item__label { line-height: 1.4; margin-bottom: 2px; font-size: 12px; color: #606266; }
+
+.reg-fee-summary { background: #f5f7fa; border-radius: 6px; padding: 12px 16px; margin-top: 8px; }
+.reg-fee-summary .fee-row { display: flex; justify-content: space-between; font-size: 13px; color: #606266; line-height: 2; }
+.reg-fee-summary .fee-row--discount { color: #f56c6c; }
+.reg-fee-summary .fee-row--total { font-size: 18px; font-weight: 700; color: #303133; }
+.reg-fee-summary .fee-src { font-size: 12px; color: #909399; margin-bottom: 4px; }
+
+/* 号源表格行样式 */
+.reg-source-row--full { background: #f5f5f5 !important; }
+.reg-source-row--full td { text-decoration: line-through; color: #c0c4cc !important; }
+.reg-source-row--warning { background: #fdf6ec !important; }
+.reg-source-row--stop { background: #fef0f0 !important; }
+/* 时段标签 night(紫色, 非EP默认色系) */
+.reg-tag--night { --el-tag-bg-color: #f4edfb; --el-tag-border-color: #d7bee9; --el-tag-text-color: #9b59b6; }
+
+/* 挂号凭条 */
+.reg-ticket-preview { font-family: 'Courier New', monospace; font-size: 13px; line-height: 1.6; padding: 16px; background: #fff; border: 1px dashed #dcdfe6; border-radius: 4px; }
+.reg-ticket-preview .ticket-title { text-align: center; font-weight: bold; font-size: 15px; }
+.reg-ticket-preview .ticket-divider { border-top: 1px dashed #909399; margin: 8px 0; }
+.reg-ticket-preview .ticket-queue { text-align: center; font-size: 28px; font-weight: 900; color: #303133; margin: 8px 0; letter-spacing: 2px; }
+.reg-ticket-preview .ticket-footer { text-align: center; color: #909399; font-size: 12px; margin-top: 8px; }
+
+/* 快捷键提示条 */
+.reg-shortcut-bar { background: #f5f7fa; border-top: 1px solid #ebeef5; padding: 4px 16px; font-size: 11px; color: #909399; display: flex; gap: 16px; flex: none; }
+.reg-shortcut-bar kbd { background: #ebeef5; border-radius: 3px; padding: 1px 5px; font-family: monospace; font-size: 11px; }
+
+/* ================= 挂号明细查询 / 退号页 ================= */
+/* 金色汇总卡(ds-card tone-gold): 合计实收金额 SUM(actual_fee) */
+.ds-card.tone-gold::before { background: #b88230; }
+.ds-card.tone-gold .ds-ico { background: #fdf6ec; }
+
+/* 退号确认对话框摘要区标题(el-descriptions title 默认偏大) */
+.el-dialog .el-descriptions__title { font-size: 13px; font-weight: 600; color: #303133; }
+
+/* 打印样式 */
+@media print {
+  body * { visibility: hidden; }
+  .reg-ticket-preview, .reg-ticket-preview * { visibility: visible; }
+  .reg-ticket-preview { position: absolute; left: 0; top: 0; width: 80mm; }
+}

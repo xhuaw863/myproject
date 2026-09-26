@@ -61,4 +61,10 @@ public class HisDept extends BaseEntity {
     /** 子科室(层级树形结构, 非持久化) */
     @TableField(exist = false)
     private List<HisDept> children;
+
+    /** 拼音简码(名称首字母, 保存时自动生成只读) */
+    private String pyCode;
+
+    /** 自定义简码(维护页可编辑, 选填) */
+    private String abbrCode;
 }

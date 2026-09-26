@@ -6,6 +6,7 @@ import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
 import com.yb.hi.entity.community.HisDrugCatalog;
 import com.yb.hi.mapper.community.HisDrugCatalogMapper;
+import com.yb.hi.framework.util.PinyinUtil;
 import com.yb.hi.service.StdDictQueryService;
 import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
@@ -37,7 +38,9 @@ public class HisDrugCatalogService extends ServiceImpl<HisDrugCatalogMapper, His
             q.and(w -> w.like(HisDrugCatalog::getGenericName, keyword)
                     .or().like(HisDrugCatalog::getTradeName, keyword)
                     .or().like(HisDrugCatalog::getDrugCode, keyword)
-                    .or().like(HisDrugCatalog::getYbDrugCode, keyword));
+                    .or().like(HisDrugCatalog::getYbDrugCode, keyword)
+                    .or().like(HisDrugCatalog::getPyCode, keyword)
+                    .or().like(HisDrugCatalog::getAbbrCode, keyword));
         }
         IPage<HisDrugCatalog> r = q.orderByDesc(HisDrugCatalog::getId).page(new Page<>(page, size));
         r.getRecords().forEach(this::derivePackPrice);
@@ -67,6 +70,10 @@ public class HisDrugCatalogService extends ServiceImpl<HisDrugCatalogMapper, His
     public void backfillDict(HisDrugCatalog e) {
         if (e == null) {
             return;
+        }
+        // 拼音简码随通用名自动重算(只读); 自定义码 abbr_code 由维护页透传不覆盖
+        if (StringUtils.hasText(e.getGenericName())) {
+            e.setPyCode(PinyinUtil.initials(e.getGenericName()));
         }
         fillCv(e.getDosform(), "dosform", e::setDosformName, e::setDosformSrc);
         fillCv(e.getChrgitmLv(), "chrgitm_lv", e::setChrgitmLvName, e::setChrgitmLvSrc);

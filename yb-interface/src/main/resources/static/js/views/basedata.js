@@ -90,7 +90,7 @@
         var st = (vm.filterStatus === '' || vm.filterStatus == null) ? null : vm.filterStatus;
         if (!kw && !cat && st === null) { return vm.tree; }
         function match(n) {
-          if (kw && String(n.deptName || '').toLowerCase().indexOf(kw) < 0 && String(n.deptCode || '').toLowerCase().indexOf(kw) < 0) { return false; }
+          if (kw && !HIS.kwMatch(n, kw, ['deptName', 'deptCode', 'pyCode', 'abbrCode'])) { return false; }
           if (cat && n.deptCategory !== cat) { return false; }
           if (st !== null && n.status !== st) { return false; }
           return true;
@@ -132,7 +132,7 @@
     },
     methods: {
       empty: function () {
-        return { id: null, orgId: null, parentId: 0, deptCategory: '', deptLevel: 1, deptCode: '', deptName: '', deptType: '临床', deptCaty: '', ybDeptCode: '', phone: '', locDesc: '', sortNo: 0, status: 1, openClinic: 1, memo: '' };
+        return { id: null, orgId: null, parentId: 0, deptCategory: '', deptLevel: 1, deptCode: '', deptName: '', pyCode: '', abbrCode: '', deptType: '临床', deptCaty: '', ybDeptCode: '', phone: '', locDesc: '', sortNo: 0, status: 1, openClinic: 1, memo: '' };
       },
       loadOrgs: function () {
         var vm = this;
@@ -255,7 +255,7 @@
       '    <div class="dept-main">',
       '  <div class="toolbar">',
       '    <el-button v-if="lead" type="primary" @click="add">新增大类/科室</el-button><el-button @click="load">刷新</el-button>',
-      '    <el-input v-model="keyword" placeholder="科室名称/编码" clearable style="width:160px" @input="onQueryChange" @clear="onQueryChange"></el-input>',
+      '    <el-input v-model="keyword" placeholder="名称/编码/拼音简码" clearable style="width:170px" @input="onQueryChange" @clear="onQueryChange"></el-input>',
       '    <el-select v-model="filterCategory" placeholder="全部大类" clearable style="width:130px" @change="onQueryChange"><el-option v-for="c in deptCategories" :key="c" :label="c" :value="c"></el-option></el-select>',
       '    <el-select v-model="filterStatus" placeholder="全部状态" clearable style="width:100px" @change="onQueryChange"><el-option label="启用" :value="1"></el-option><el-option label="停用" :value="0"></el-option></el-select>',
       '    <el-checkbox v-if="lead" v-model="withSubOrgs" @change="load" title="勾选后选中机构时级联显示下级机构的科室; 默认仅显示选中机构本身的科室" style="margin-left:4px;">含下级机构</el-checkbox>',
@@ -270,6 +270,8 @@
       '    <el-table-column type="index" :index="seqNo" label="序号" width="60"></el-table-column>',
       '    <el-table-column prop="deptName" label="科室名称" min-width="200"></el-table-column>',
       '    <el-table-column prop="deptCode" label="编码" width="90"></el-table-column>',
+      '    <el-table-column prop="pyCode" label="拼音码" width="90"><template #default="s">{{ s.row.pyCode || \'-\' }}</template></el-table-column>',
+      '    <el-table-column prop="abbrCode" label="自定义码" width="90"><template #default="s">{{ s.row.abbrCode || \'-\' }}</template></el-table-column>',
       '    <el-table-column label="层级" width="90"><template #default="s"><el-tag size="small" :type="levelTagType(s.row.deptLevel)">{{ levelLabel(s.row.deptLevel) }}</el-tag></template></el-table-column>',
       '    <el-table-column prop="deptCategory" label="所属大类" width="110"></el-table-column>',
       '    <el-table-column label="所属机构" min-width="140" show-overflow-tooltip><template #default="s">{{ orgName(s.row.orgId) }}</template></el-table-column>',
@@ -298,9 +300,11 @@
       '      <el-form-item label="所属机构"><el-select v-model="form.orgId" clearable filterable style="width:100%" placeholder="医共体内机构(可选)"><el-option v-for="o in orgs" :key="o.id" :label="o.label" :value="o.id"></el-option></el-select></el-form-item>',
       '      <el-form-item label="科室编码"><el-input v-model="form.deptCode"></el-input></el-form-item>',
       '      <el-form-item label="科室名称"><el-input v-model="form.deptName"></el-input></el-form-item>',
+      '      <el-form-item label="拼音码"><el-input v-model="form.pyCode" disabled placeholder="保存时按名称自动生成"></el-input></el-form-item>',
+      '      <el-form-item label="自定义码"><el-input v-model="form.abbrCode" maxlength="64" placeholder="选填, 人工简码(多音字纠正等)"></el-input></el-form-item>',
       '      <el-form-item label="科室类型"><el-select v-model="form.deptType" style="width:100%"><el-option v-for="t in deptTypes" :key="t" :label="t" :value="t"></el-option></el-select></el-form-item>',
       '      <el-form-item label="医保科别"><el-select v-model="form.deptCaty" filterable clearable style="width:100%" placeholder="选择医保字典 caty(2201/2203必填)"><el-option v-for="o in catyOpts" :key="o.code" :label="o.name + \' (\' + o.code + \')\'" :value="o.code"></el-option></el-select></el-form-item>',
-      '      <el-form-item label="医保科室编码"><el-input v-model="form.ybDeptCode"></el-input></el-form-item>',
+      '      <el-form-item label="医保科室编码"><el-select v-model="form.ybDeptCode" filterable clearable style="width:100%" placeholder="从医保标准字典选择科室代码(caty)"><el-option v-for="o in catyOpts" :key="o.code" :label="o.name + \' (\' + o.code + \')\'" :value="o.code"></el-option></el-select></el-form-item>',
       '      <el-form-item label="联系电话"><el-input v-model="form.phone"></el-input></el-form-item>',
       '      <el-form-item label="位置描述"><el-input v-model="form.locDesc"></el-input></el-form-item>',
       '      <el-form-item label="排序号"><el-input v-model.number="form.sortNo" type="number"></el-input></el-form-item>',
@@ -404,7 +408,7 @@
         }).catch(HIS.notifyError);
       },
       empty: function () {
-        return { id: null, staffNo: '', staffName: '', staffType: '医师', gender: '1', titleCode: '', titleName: '', deptId: null, orgId: null, atddrNo: '', diseDorNo: '', idCard: '', birthDate: '', medInsurCode: '', pracCate: '', drQualCertNo: '', pracCertNo: '', phone: '', canRegister: 0, regFee: 0, sortNo: 0, status: 1, memo: '', avatarUrl: '', signImgUrl: '', rxRight: 0, narcoticRight: 0, psych1Right: 0, psych2Right: 0, antibioticLevel: '', surgeryLevel: '', rxAuthOrg: '', rxAuthNo: '', rxAuthDate: '', rxValidUntil: '' };
+        return { id: null, staffNo: '', staffName: '', pyCode: '', abbrCode: '', staffType: '医师', gender: '1', titleCode: '', titleName: '', deptId: null, orgId: null, atddrNo: '', diseDorNo: '', idCard: '', birthDate: '', medInsurCode: '', pracCate: '', drQualCertNo: '', pracCertNo: '', phone: '', canRegister: 0, regFee: 0, sortNo: 0, status: 1, memo: '', avatarUrl: '', signImgUrl: '', rxRight: 0, narcoticRight: 0, psych1Right: 0, psych2Right: 0, antibioticLevel: '', surgeryLevel: '', rxAuthOrg: '', rxAuthNo: '', rxAuthDate: '', rxValidUntil: '' };
       },
       loadDepts: function () { var vm = this; HIS.get('/api/his/dept/enabled').then(function (d) { vm.depts = d || []; }).catch(HIS.notifyError); },
       onOrgChange: function () {
@@ -559,7 +563,7 @@
       '    <div class="dept-main">',
       '  <div class="toolbar">',
       '    <el-select v-model="filterType" placeholder="全部类别" clearable style="width:130px" @change="load"><el-option v-for="t in staffTypes" :key="t" :label="t" :value="t"></el-option></el-select>',
-      '    <el-input v-model="keyword" placeholder="工号/姓名" clearable style="width:160px" @keyup.enter="load"></el-input>',
+      '    <el-input v-model="keyword" placeholder="工号/姓名/拼音简码" clearable style="width:170px" @keyup.enter="load"></el-input>',
       '    <el-checkbox v-if="lead" v-model="withSubOrgs" @change="load" title="选上级机构时级联显示下级机构人员; 取消勾选仅显示选中机构本身的人员" style="margin-left:4px;">含下级机构</el-checkbox>',
       '    <el-checkbox v-model="withKids" @change="load" title="选上级科室时级联显示下级科室人员; 取消勾选仅显示选中科室本身的人员" style="margin-left:4px;">含下级科室</el-checkbox>',
       '    <el-button @click="load">查询</el-button>',
@@ -576,6 +580,8 @@
       '    <el-table-column type="index" :index="seqNo" label="序号" width="60"></el-table-column>',
       '    <el-table-column prop="staffNo" label="工号" width="90"></el-table-column>',
       '    <el-table-column prop="staffName" label="姓名" width="100"></el-table-column>',
+      '    <el-table-column prop="pyCode" label="拼音码" width="80"><template #default="s">{{ s.row.pyCode || \'-\' }}</template></el-table-column>',
+      '    <el-table-column prop="abbrCode" label="自定义码" width="90"><template #default="s">{{ s.row.abbrCode || \'-\' }}</template></el-table-column>',
       '    <el-table-column prop="staffType" label="类别" width="80"></el-table-column>',
       '    <el-table-column prop="titleName" label="职称" width="110"></el-table-column>',
       '    <el-table-column label="科室" width="110"><template #default="s">{{ deptName(s.row.deptId) }}</template></el-table-column>',
@@ -604,6 +610,8 @@
       '      <el-row :gutter="12">',
       '        <el-col :span="12"><el-form-item label="工号"><el-input v-model="form.staffNo"></el-input></el-form-item></el-col>',
       '        <el-col :span="12"><el-form-item label="姓名"><el-input v-model="form.staffName"></el-input></el-form-item></el-col>',
+      '        <el-col :span="12"><el-form-item label="拼音码"><el-input v-model="form.pyCode" disabled placeholder="保存时按姓名自动生成"></el-input></el-form-item></el-col>',
+      '        <el-col :span="12"><el-form-item label="自定义码"><el-input v-model="form.abbrCode" maxlength="64" placeholder="选填, 人工简码"></el-input></el-form-item></el-col>',
       '        <el-col :span="12"><el-form-item label="类别"><el-select v-model="form.staffType" style="width:100%"><el-option v-for="t in staffTypes" :key="t" :label="t" :value="t"></el-option></el-select></el-form-item></el-col>',
       '        <el-col :span="12"><el-form-item label="性别"><el-select v-model="form.gender" style="width:100%"><el-option v-for="o in gendOpts" :key="o.code" :label="o.name" :value="o.code"></el-option></el-select></el-form-item></el-col>',
       '        <el-col :span="12"><el-form-item label="职称"><el-select v-model="form.titleCode" style="width:100%" clearable placeholder="专业技术职务类别(CV08.30.005)"><el-option v-for="o in titleOpts" :key="o.code" :label="o.name" :value="o.code"></el-option></el-select></el-form-item></el-col>',
@@ -650,14 +658,13 @@
       '          </template>',
       '        </el-form>',
       '      </el-tab-pane>',
-      '      <el-tab-pane label="医保信息" name="insur">',
+      '      <el-tab-pane label="从业资质" name="insur">',
       '        <el-form :model="form" label-width="110px">',
       '      <el-row :gutter="12">',
       '        <el-col :span="12"><el-form-item label="主治医师编码"><el-input v-model="form.atddrNo" placeholder="医保 atddr_no"></el-input></el-form-item></el-col>',
-      '        <el-col :span="12"><el-form-item label="诊断医师编码"><el-input v-model="form.diseDorNo" placeholder="医保 dise_dor_no"></el-input></el-form-item></el-col>',
       '        <el-col :span="12"><el-form-item label="医保业务编码"><el-input v-model="form.medInsurCode" placeholder="国家医保业务编码(医师/药师/护士)"></el-input></el-form-item></el-col>',
       '        <el-col :span="12"><el-form-item label="执业类别"><el-select v-model="form.pracCate" style="width:100%" clearable filterable placeholder="医师执业类别(CT98.00.024)"><el-option v-for="o in pracCateOpts" :key="o.code" :label="o.name + \' (\' + o.code + \')\'" :value="o.code"></el-option></el-select></el-form-item></el-col>',
-      '        <el-col :span="12"><el-form-item label="医师资格证号"><el-input v-model="form.drQualCertNo"></el-input></el-form-item></el-col>',
+      '        <el-col :span="12"><el-form-item label="医护资格证号"><el-input v-model="form.drQualCertNo" placeholder="医师/护士资格证号"></el-input></el-form-item></el-col>',
       '        <el-col :span="12"><el-form-item label="执业证书编码"><el-input v-model="form.pracCertNo" placeholder="医师执业证书编码"></el-input></el-form-item></el-col>',
       '      </el-row>',
       '        </el-form>',
@@ -684,6 +691,7 @@
   var WEEK_LABELS = ['周一', '周二', '周三', '周四', '周五', '周六', '周日'];
 
   HIS.views.ScheduleManage = {
+    mixins: [HIS.kwSelectMixin],
     data: function () {
       return {
         /* 视图模式: week=周视图矩阵 / list=列表视图 */
@@ -1238,8 +1246,8 @@
       '      <el-radio-button label="week">周视图</el-radio-button>',
       '      <el-radio-button label="list">列表视图</el-radio-button>',
       '    </el-radio-group>',
-      '    <el-select v-model="filterDeptId" placeholder="全部科室" clearable filterable size="small" style="width:150px" @change="onDeptChange"><el-option v-for="d in depts" :key="d.id" :label="d.deptName" :value="d.id"></el-option></el-select>',
-      '    <el-select v-model="filterStaffId" placeholder="全部医师" clearable filterable size="small" :disabled="viewMode===\'week\'" style="width:170px" title="周视图按医师分行展示, 医师筛选仅在列表视图生效"><el-option v-for="s in staffs" :key="s.id" :label="s.staffName+\'(\'+s.staffNo+\')\'" :value="s.id"></el-option></el-select>',
+      '    <el-select v-model="filterDeptId" placeholder="科室/拼音简码" clearable filterable size="small" style="width:150px" :filter-method="kwFilter(\'fDept\')" @change="onDeptChange"><el-option v-for="d in kwOptions(\'fDept\', depts, [\'deptName\',\'deptCode\',\'pyCode\',\'abbrCode\'])" :key="d.id" :label="d.deptName" :value="d.id"></el-option></el-select>',
+      '    <el-select v-model="filterStaffId" placeholder="医师/拼音简码" clearable filterable size="small" :disabled="viewMode===\'week\'" :filter-method="kwFilter(\'fStaff\')" style="width:170px" title="周视图按医师分行展示, 医师筛选仅在列表视图生效"><el-option v-for="s in kwOptions(\'fStaff\', staffs, [\'staffName\',\'staffNo\',\'pyCode\',\'abbrCode\'])" :key="s.id" :label="s.staffName+\'(\'+s.staffNo+\')\'" :value="s.id"></el-option></el-select>',
       '    <template v-if="viewMode===\'week\'">',
       '      <el-button size="small" @click="prevWeek">&lt; 上一周</el-button>',
       '      <span class="sched-week-label">{{ weekLabel }}</span>',
@@ -1329,10 +1337,10 @@
       '  <el-dialog v-model="formVisible" :title="editing?\'编辑排班\':\'新增排班\'" width="560px">',
       '    <el-form :model="form" label-width="100px">',
       '      <el-form-item label="出诊医师">',
-      '        <el-select v-model="form.staffId" filterable style="width:100%" placeholder="选择医师" @change="onFormStaffChange"><el-option v-for="s in staffs" :key="s.id" :label="s.staffName+\'(\'+s.staffNo+\')\'" :value="s.id"></el-option></el-select>',
+      '        <el-select v-model="form.staffId" filterable style="width:100%" placeholder="选择医师(可输拼音简码)" :filter-method="kwFilter(\'formStaff\')" @change="onFormStaffChange"><el-option v-for="s in kwOptions(\'formStaff\', staffs, [\'staffName\',\'staffNo\',\'pyCode\',\'abbrCode\'])" :key="s.id" :label="s.staffName+\'(\'+s.staffNo+\')\'" :value="s.id"></el-option></el-select>',
       '      </el-form-item>',
       '      <el-form-item label="挂号科室" title="本机构已开诊的门诊科室; 可与出诊医师行政所属科室不同(支持跨科室/院外专家出诊)">',
-      '        <el-select v-model="form.deptId" filterable clearable style="width:100%" placeholder="选择本机构开诊门诊科室" @change="onFormDeptChange"><el-option v-for="d in formDeptOptions" :key="d.id" :label="d.deptName" :value="d.id"></el-option></el-select>',
+      '        <el-select v-model="form.deptId" filterable clearable style="width:100%" placeholder="选择本机构开诊门诊科室(可输拼音简码)" :filter-method="kwFilter(\'formDept\')" @change="onFormDeptChange"><el-option v-for="d in kwOptions(\'formDept\', formDeptOptions, [\'deptName\',\'deptCode\',\'pyCode\',\'abbrCode\'])" :key="d.id" :label="d.deptName" :value="d.id"></el-option></el-select>',
       '      </el-form-item>',
       '      <el-row :gutter="12">',
       '        <el-col :span="12"><el-form-item label="出诊日期">',
@@ -1360,7 +1368,7 @@
       '          <el-input-number v-model="form.totalNum" :min="editing?(form.usedNum||0):0" :max="999" controls-position="right" style="width:100%"></el-input-number>',
       '        </el-form-item></el-col>',
       '        <el-col :span="12"><el-form-item label="诊室" title="诊室为挂号科室的子级, 先选挂号科室后联动带出其下诊室; 可不选">',
-      '          <el-select v-model="form.room" clearable filterable allow-create default-first-option style="width:100%" :disabled="!form.deptId" placeholder="选择本科室诊室(可留空)"><el-option v-for="r in formRoomOptions" :key="r.id" :label="r.deptName" :value="r.deptName"></el-option></el-select>',
+      '          <el-select v-model="form.room" clearable filterable allow-create default-first-option style="width:100%" :disabled="!form.deptId" placeholder="选择本科室诊室(可留空, 可输拼音简码)" :filter-method="kwFilter(\'formRoom\')"><el-option v-for="r in kwOptions(\'formRoom\', formRoomOptions, [\'deptName\',\'deptCode\',\'pyCode\',\'abbrCode\'])" :key="r.id" :label="r.deptName" :value="r.deptName"></el-option></el-select>',
       '        </el-form-item></el-col>',
       '      </el-row>',
       '      <el-form-item v-if="editing" label="已挂号数"><span style="color:#606266;">{{ form.usedNum }} 人(总号源不得低于已挂号数)</span></el-form-item>',
@@ -1409,7 +1417,7 @@
       /* ---- 模板管理抽屉 ---- */
       '  <el-drawer v-model="drawerVisible" title="排班模板管理" size="880px">',
       '    <div class="toolbar">',
-      '      <el-select v-model="tplFilterDeptId" placeholder="全部科室" clearable filterable size="small" style="width:150px" @change="onTplFilterChange"><el-option v-for="d in depts" :key="d.id" :label="d.deptName" :value="d.id"></el-option></el-select>',
+      '      <el-select v-model="tplFilterDeptId" placeholder="科室/拼音简码" clearable filterable size="small" style="width:150px" :filter-method="kwFilter(\'tDept\')" @change="onTplFilterChange"><el-option v-for="d in kwOptions(\'tDept\', depts, [\'deptName\',\'deptCode\',\'pyCode\',\'abbrCode\'])" :key="d.id" :label="d.deptName" :value="d.id"></el-option></el-select>',
       '      <el-button type="primary" size="small" @click="addTpl">新增模板</el-button>',
       '      <el-button type="success" size="small" @click="openBatchTpl">批量创建</el-button>',
       '      <span style="color:#909399;font-size:12px;">共 {{ tplTotal }} 条 · 同一医师同星期同时段仅一条模板</span>',
@@ -1435,10 +1443,10 @@
       '    <el-dialog v-model="tplFormVisible" :title="tplEditing?\'编辑模板\':\'新增模板\'" width="540px" append-to-body>',
       '      <el-form :model="tplForm" label-width="100px">',
       '        <el-form-item label="出诊医师">',
-      '          <el-select v-model="tplForm.staffId" filterable style="width:100%" placeholder="选择医师" @change="onTplStaffChange"><el-option v-for="s in allStaffs" :key="s.id" :label="s.staffName+\'(\'+s.staffNo+\')\'" :value="s.id"></el-option></el-select>',
+      '          <el-select v-model="tplForm.staffId" filterable style="width:100%" placeholder="选择医师(可输拼音简码)" :filter-method="kwFilter(\'tplStaff\')" @change="onTplStaffChange"><el-option v-for="s in kwOptions(\'tplStaff\', allStaffs, [\'staffName\',\'staffNo\',\'pyCode\',\'abbrCode\'])" :key="s.id" :label="s.staffName+\'(\'+s.staffNo+\')\'" :value="s.id"></el-option></el-select>',
       '        </el-form-item>',
       '        <el-form-item label="挂号科室" title="本机构已开诊的门诊科室; 模板生成排班时按此科室落库">',
-      '          <el-select v-model="tplForm.deptId" filterable clearable style="width:100%" placeholder="选择本机构开诊门诊科室" @change="onTplDeptChange"><el-option v-for="d in tplDeptOptions" :key="d.id" :label="d.deptName" :value="d.id"></el-option></el-select>',
+      '          <el-select v-model="tplForm.deptId" filterable clearable style="width:100%" placeholder="选择本机构开诊门诊科室(可输拼音简码)" :filter-method="kwFilter(\'tplDept\')" @change="onTplDeptChange"><el-option v-for="d in kwOptions(\'tplDept\', tplDeptOptions, [\'deptName\',\'deptCode\',\'pyCode\',\'abbrCode\'])" :key="d.id" :label="d.deptName" :value="d.id"></el-option></el-select>',
       '        </el-form-item>',
       '        <el-row :gutter="12">',
       '          <el-col :span="12"><el-form-item label="星期">',
@@ -1461,7 +1469,7 @@
       '            <el-input-number v-model="tplForm.totalNum" :min="1" :max="999" controls-position="right" style="width:100%"></el-input-number>',
       '          </el-form-item></el-col>',
       '          <el-col :span="12"><el-form-item label="诊室" title="诊室为挂号科室的子级, 随挂号科室联动; 可不选">',
-      '            <el-select v-model="tplForm.room" clearable filterable allow-create default-first-option style="width:100%" :disabled="!tplForm.deptId" placeholder="选择本科室诊室(可留空)"><el-option v-for="r in tplRoomOptions" :key="r.id" :label="r.deptName" :value="r.deptName"></el-option></el-select>',
+      '            <el-select v-model="tplForm.room" clearable filterable allow-create default-first-option style="width:100%" :disabled="!tplForm.deptId" placeholder="选择本科室诊室(可留空, 可输拼音简码)" :filter-method="kwFilter(\'tplRoom\')"><el-option v-for="r in kwOptions(\'tplRoom\', tplRoomOptions, [\'deptName\',\'deptCode\',\'pyCode\',\'abbrCode\'])" :key="r.id" :label="r.deptName" :value="r.deptName"></el-option></el-select>',
       '          </el-form-item></el-col>',
       '        </el-row>',
       '        <el-form-item label="状态">',
@@ -1474,10 +1482,10 @@
       '    <el-dialog v-model="batchTplVisible" title="批量创建排班模板" width="880px" top="5vh" append-to-body>',
       '      <el-form label-width="90px">',
       '        <el-form-item label="科室">',
-      '          <el-select v-model="batchTplForm.deptId" clearable filterable style="width:100%" placeholder="选择本科室级挂号科室(不选则逐医师回退其行政科室, 非开诊门诊科室会被跳过)" @change="onBatchDeptChange"><el-option v-for="d in batchDeptOptions" :key="d.id" :label="d.deptName" :value="d.id"></el-option></el-select>',
+      '          <el-select v-model="batchTplForm.deptId" clearable filterable style="width:100%" placeholder="选择本科室级挂号科室(不选则逐医师回退其行政科室, 非开诊门诊科室会被跳过; 可输拼音简码)" :filter-method="kwFilter(\'bDept\')" @change="onBatchDeptChange"><el-option v-for="d in kwOptions(\'bDept\', batchDeptOptions, [\'deptName\',\'deptCode\',\'pyCode\',\'abbrCode\'])" :key="d.id" :label="d.deptName" :value="d.id"></el-option></el-select>',
       '        </el-form-item>',
       '        <el-form-item label="医师(多选)">',
-      '          <el-select v-model="batchTplForm.staffIds" multiple filterable collapse-tags collapse-tags-tooltip :max-collapse-tags="8" style="width:100%" placeholder="勾选需生成排班模板的医师"><el-option v-for="s in batchStaffOptions" :key="s.id" :label="s.staffName+\'(\'+s.staffNo+\')\'" :value="s.id"></el-option></el-select>',
+      '          <el-select v-model="batchTplForm.staffIds" multiple filterable collapse-tags collapse-tags-tooltip :max-collapse-tags="8" style="width:100%" placeholder="勾选需生成排班模板的医师(可输拼音简码)" :filter-method="kwFilter(\'bStaff\')"><el-option v-for="s in kwOptions(\'bStaff\', batchStaffOptions, [\'staffName\',\'staffNo\',\'pyCode\',\'abbrCode\'])" :key="s.id" :label="s.staffName+\'(\'+s.staffNo+\')\'" :value="s.id"></el-option></el-select>',
       '        </el-form-item>',
       '      </el-form>',
       '      <el-divider content-position="left">排班规律(每周固定时段, 选中医师共用: {{ batchTplForm.staffIds.length }} 人 × {{ batchTplForm.slots.length }} 时段)</el-divider>',
@@ -1499,7 +1507,7 @@
       '          <template #default="s"><el-input-number v-model="s.row.totalNum" :min="1" size="small" controls-position="right" style="width:92px;"></el-input-number></template>',
       '        </el-table-column>',
       '        <el-table-column label="诊室" min-width="130">',
-      '          <template #default="s"><el-select v-model="s.row.room" size="small" clearable filterable allow-create default-first-option style="width:100%" :disabled="!batchTplForm.deptId" placeholder="随科室联动"><el-option v-for="r in batchRoomOptions" :key="r.id" :label="r.deptName" :value="r.deptName"></el-option></el-select></template>',
+      '          <template #default="s"><el-select v-model="s.row.room" size="small" clearable filterable allow-create default-first-option style="width:100%" :disabled="!batchTplForm.deptId" placeholder="随科室联动" :filter-method="kwFilter(\'slotRoom\'+s.$index)"><el-option v-for="r in kwOptions(\'slotRoom\'+s.$index, batchRoomOptions, [\'deptName\',\'deptCode\',\'pyCode\',\'abbrCode\'])" :key="r.id" :label="r.deptName" :value="r.deptName"></el-option></el-select></template>',
       '        </el-table-column>',
       '        <el-table-column label="操作" width="60" align="center">',
       '          <template #default="s"><el-button link type="danger" size="small" @click="removeSlot(s.$index)">移除</el-button></template>',

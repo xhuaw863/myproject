@@ -87,6 +87,13 @@
             <version>3.3.4</version>
         </dependency>
 
+        <!-- pinyin4j: 字典简码(拼音首字母)生成, 本地m2仓库已有满足离线构建 -->
+        <dependency>
+            <groupId>com.belerweb</groupId>
+            <artifactId>pinyin4j</artifactId>
+            <version>2.5.0</version>
+        </dependency>
+
         <!-- Spring Boot Test -->
         <dependency>
             <groupId>org.springframework.boot</groupId>

@@ -97,6 +97,9 @@ public class RbacInitializer implements ApplicationRunner {
             moveAreaCodeMenuToStdDict();
             mergeBasedataIntoPlatform();
             moveScheduleToOutpatient();
+            ensureRegStatsMenu(menuIds);
+            ensureRegDetailMenu(menuIds);
+            renameUnregisterMenu();
             ensureCommunityDictMenus();
             bindWarehouseMenus();
             bindPharmacyMenus();
@@ -151,8 +154,10 @@ public class RbacInitializer implements ApplicationRunner {
         long g5 = dir("outpatient", "门诊挂号台", 0L, ++sort[0]);
         ids.put("patient", menuK("patient", "患者建档/查询", "PatientManage", null, g5, ++sort[0]));
         ids.put("register", menuK("register", "门诊挂号", "RegistrationDesk", null, g5, ++sort[0]));
-        ids.put("unregister", menuK("unregister", "退号", "UnregisterDesk", null, g5, ++sort[0]));
+        ids.put("unregister", menuK("unregister", "退号换号", "UnregisterDesk", null, g5, ++sort[0]));
         ids.put("schedule", menuK("schedule", "排班号源", "ScheduleManage", null, g5, ++sort[0]));
+        ids.put("reg_stats", menuK("reg_stats", "挂号统计", "RegStatistics", null, g5, ++sort[0]));
+        ids.put("reg_detail", menuK("reg_detail", "挂号明细", "RegDetailQuery", null, g5, ++sort[0]));
         // 医生站
         long g6 = dir("doctor", "医生站", 0L, ++sort[0]);
         ids.put("doctor-queue", menuK("doctor-queue", "候诊列表", "DoctorQueue", null, g6, ++sort[0]));
@@ -295,7 +300,7 @@ public class RbacInitializer implements ApplicationRunner {
         }
         // ADMIN/SUPER_ADMIN 走 all_menus 免配置; 其余角色给"工作台+本职能相关菜单"最小子集
         Map<String, String[]> grants = new HashMap<>();
-        grants.put(Roles.REGISTRAR, new String[]{"dashboard", "patient", "register", "unregister"});
+        grants.put(Roles.REGISTRAR, new String[]{"dashboard", "patient", "register", "unregister", "reg_stats", "reg_detail"});
         grants.put(Roles.DOCTOR, new String[]{"dashboard", "doctor-queue", "doctor-work", "patient"});
         grants.put(Roles.PHARMACIST, new String[]{"dashboard", "dispense-todo", "dispense", "drug-return", "wh-stock", "wh-in", "wh-out"});
         grants.put(Roles.CASHIER, new String[]{"dashboard", "charge-todo", "charge-setl", "charge-refund", "rpt-setl", "rpt-daily"});
@@ -324,6 +329,7 @@ public class RbacInitializer implements ApplicationRunner {
         Map<String, String[]> grants = new HashMap<>();
         grants.put(Roles.PHARMACIST, new String[]{"wh-stock", "wh-in", "wh-out"});
         grants.put(Roles.CASHIER, new String[]{"rpt-setl", "rpt-daily"});
+        grants.put(Roles.REGISTRAR, new String[]{"reg_stats", "reg_detail"});
         int added = 0;
         for (Map.Entry<String, String[]> e : grants.entrySet()) {
             Long roleId = roleIds.get(e.getKey());
@@ -344,7 +350,7 @@ public class RbacInitializer implements ApplicationRunner {
             }
         }
         if (added > 0) {
-            log.info("业务角色新菜单授权已补充: 药师(药库)/收费员(报表) 共 {} 条", added);
+            log.info("业务角色新菜单授权已补充: 药师(药库)/收费员(报表)/挂号员(挂号统计/挂号明细) 共 {} 条", added);
         }
     }
 
@@ -440,7 +446,83 @@ public class RbacInitializer implements ApplicationRunner {
     }
 
     /**
-     * 幂等将"基础数据"目录并入"平台管理"(两组菜单合并):
+     * 幂等将"退号"菜单更名为"退号换号"(2026-09 换号能力同时提供于挂号工作站与本页, 菜单名随之修订):
+     * 仅当现名仍为旧名"退号"时更新, 避免误写自定义名称; 菜单 id 不变, 角色授权不受影响。
+     */
+    private void renameUnregisterMenu() {
+        SysMenu m = menuMapper.selectOne(new QueryWrapper<SysMenu>().eq("menu_key", "unregister").last("LIMIT 1"));
+        if (m == null || !"退号".equals(m.getMenuName())) {
+            return;
+        }
+        m.setMenuName("退号换号");
+        menuMapper.updateById(m);
+        log.info("退号菜单已更名为退号换号");
+    }
+
+    /**
+     * 幂等确保"挂号统计"菜单存在(2026-09 挂号统计查询页上线): 挂门诊挂号台目录,
+     * sort_no 续接目录现有子项最大值(即排在排班号源之后)。既有库 seedMenus 表非空即跳过,
+     * 故在此按 menu_key 判存补种, 并将 id 回填 menuIds 供角色补授权(ensureBizRoleGrants 给挂号员)。
+     */
+    private void ensureRegStatsMenu(Map<String, Long> menuIds) {
+        SysMenu m = menuMapper.selectOne(new QueryWrapper<SysMenu>().eq("menu_key", "reg_stats").last("LIMIT 1"));
+        if (m == null) {
+            SysMenu outpatient = menuMapper.selectOne(new QueryWrapper<SysMenu>().eq("menu_key", "outpatient").last("LIMIT 1"));
+            if (outpatient == null) {
+                return;
+            }
+            int maxSort = 0;
+            for (SysMenu c : menuMapper.selectList(new QueryWrapper<SysMenu>().eq("parent_id", outpatient.getId()))) {
+                maxSort = Math.max(maxSort, c.getSortNo() == null ? 0 : c.getSortNo());
+            }
+            m = new SysMenu();
+            m.setParentId(outpatient.getId());
+            m.setMenuKey("reg_stats");
+            m.setMenuName("挂号统计");
+            m.setMenuType(2);
+            m.setComp("RegStatistics");
+            m.setSortNo(maxSort + 1);
+            m.setVisible(1);
+            m.setStatus(1);
+            menuMapper.insert(m);
+            log.info("挂号统计菜单已补充(reg_stats/RegStatistics)");
+        }
+        menuIds.put("reg_stats", m.getId());
+    }
+
+    /**
+     * 幂等确保“挂号明细”菜单存在(挂号明细只读查询页, 排在挂号统计之后): 挂门诊挂号台目录,
+     * sort_no 续接目录现有子项最大值。既有库 seedMenus 表非空即跳过, 故在此按 menu_key 判存补种,
+     * 并将 id 回填 menuIds 供角色补授权(ensureBizRoleGrants 给挂号员)。
+     */
+    private void ensureRegDetailMenu(Map<String, Long> menuIds) {
+        SysMenu m = menuMapper.selectOne(new QueryWrapper<SysMenu>().eq("menu_key", "reg_detail").last("LIMIT 1"));
+        if (m == null) {
+            SysMenu outpatient = menuMapper.selectOne(new QueryWrapper<SysMenu>().eq("menu_key", "outpatient").last("LIMIT 1"));
+            if (outpatient == null) {
+                return;
+            }
+            int maxSort = 0;
+            for (SysMenu c : menuMapper.selectList(new QueryWrapper<SysMenu>().eq("parent_id", outpatient.getId()))) {
+                maxSort = Math.max(maxSort, c.getSortNo() == null ? 0 : c.getSortNo());
+            }
+            m = new SysMenu();
+            m.setParentId(outpatient.getId());
+            m.setMenuKey("reg_detail");
+            m.setMenuName("挂号明细");
+            m.setMenuType(2);
+            m.setComp("RegDetailQuery");
+            m.setSortNo(maxSort + 1);
+            m.setVisible(1);
+            m.setStatus(1);
+            menuMapper.insert(m);
+            log.info("挂号明细菜单已补充(reg_detail/RegDetailQuery)");
+        }
+        menuIds.put("reg_detail", m.getId());
+    }
+    
+    /**
+     * 幂等将“基础数据”目录并入“平台管理”(两组菜单合并):
      * 子菜单(科室/职工/排班/收费项目对照)重挂到 platform 目录、排序续接原平台子项之后,
      * 随后删除 basedata 目录及其角色授权残留(旧 role_menu 指向已删 id 会被 treeByIds 自动忽略, 清理为卫生)。
      * 子集角色无需补授权: SysMenuService.treeByIds 会自动补全命中菜单的祖先目录。

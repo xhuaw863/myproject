@@ -14,6 +14,8 @@ public class OrgNode {
     private Long parentId;
     private String orgCode;
     private String orgName;
+    /** 拼音简码(机构名首字母, 供前端下拉本地检索) */
+    private String pyCode;
     /** 机构级别: 1-县级 2-乡镇 3-村(牵头与否见 isLead) */
     private Integer orgLevel;
     /** 是否牵头机构: 1-牵头 0-成员 */

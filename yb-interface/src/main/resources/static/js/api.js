@@ -97,11 +97,56 @@
       (list || []).forEach(function (n) {
         var pad = '';
         for (var i = 0; i < depth; i++) { pad += '　'; }
-        out.push({ id: n.id, label: pad + n.orgName, orgLevel: n.orgLevel, orgCode: n.orgCode, depth: depth, hasKids: !!(n.children && n.children.length) });
+        out.push({ id: n.id, label: pad + n.orgName, orgLevel: n.orgLevel, orgCode: n.orgCode, pyCode: n.pyCode, depth: depth, hasKids: !!(n.children && n.children.length) });
         if (n.children && n.children.length) { walk(n.children, depth + 1); }
       });
     })(nodes, 0);
     return out;
+  };
+
+  /* ===== 关键字本地匹配助手 =====
+   * 供所有本地 el-select filterable / 客户端过滤列表统一使用:
+   * kw 为空→全部命中; 否则 kw 小写后对 item 指定 fields 任一字段做不区分大小写包含判断。
+   * 用法: :filter-method="function(q){ return HIS.kwMatch(opt, q, ['label','code','pyCode','abbrCode']) }"
+   */
+  HIS.kwMatch = function (item, kw, fields) {
+    if (!kw) { return true; }
+    if (!item) { return false; }
+    var q = String(kw).toLowerCase();
+    for (var i = 0; i < fields.length; i++) {
+      var v = item[fields[i]];
+      if (v != null && String(v).toLowerCase().indexOf(q) >= 0) { return true; }
+    }
+    return false;
+  };
+
+  /**
+   * 本地下拉简码检索 mixin: el-select 搭配
+   *   :filter-method="kwFilter(key)" + v-for="x in kwOptions(key, list, fields)"
+   * 输入关键字同时命中名称/编码/拼音码/自定义码(各字段不区分大小写包含)。
+   * 需拼音检索的下拉组件声明 mixins: [HIS.kwSelectMixin] 即可, selQ 由各组件独立持有。
+   */
+  HIS.kwSelectMixin = {
+    data: function () { return { selQ: {} }; },
+    methods: {
+      kwFilter: function (key) {
+        var vm = this;
+        return function (q) { vm.selQ[key] = q || ''; };
+      },
+      kwOptions: function (key, list, fields) {
+        var q = this.selQ[key] || '';
+        if (!q) { return list || []; }
+        return (list || []).filter(function (it) { return HIS.kwMatch(it, q, fields); });
+      },
+      /* 分组选项(el-option-group)版本: 逐组过滤并丢弃空组 */
+      kwGroupOptions: function (key, groups, fields) {
+        var vm = this;
+        if (!this.selQ[key]) { return groups || []; }
+        return (groups || []).map(function (g) {
+          return { category: g.category, options: vm.kwOptions(key, g.options, fields) };
+        }).filter(function (g) { return g.options.length; });
+      }
+    }
   };
 
   /* ===== HTTP 封装 =====

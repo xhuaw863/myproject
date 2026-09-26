@@ -91,6 +91,7 @@ public class HisVisitService extends ServiceImpl<HisVisitMapper, HisVisit> {
         v.setDrName(reg.getDrName());
         v.setWorkDate(reg.getWorkDate() == null ? LocalDate.now() : reg.getWorkDate());
         v.setVisitStatus(1);
+        v.setQueueNo(reg.getQueueNo());
         save(v);
         log.info("创建候诊就诊: visitId={}, regNo={}", v.getId(), reg.getRegNo());
         return v;

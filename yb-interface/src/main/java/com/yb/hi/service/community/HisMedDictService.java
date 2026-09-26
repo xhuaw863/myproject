@@ -6,6 +6,7 @@ import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
 import com.yb.hi.entity.community.HisMedDict;
 import com.yb.hi.framework.common.BizException;
+import com.yb.hi.framework.util.PinyinUtil;
 import com.yb.hi.mapper.community.HisMedDictMapper;
 import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
@@ -37,10 +38,31 @@ public class HisMedDictService extends ServiceImpl<HisMedDictMapper, HisMedDict>
         if (StringUtils.hasText(keyword)) {
             q.and(w -> w.like(HisMedDict::getName, keyword)
                     .or().like(HisMedDict::getCode, keyword)
-                    .or().like(HisMedDict::getYbCode, keyword));
+                    .or().like(HisMedDict::getYbCode, keyword)
+                    .or().like(HisMedDict::getPyCode, keyword)
+                    .or().like(HisMedDict::getAbbrCode, keyword));
         }
         return q.orderByAsc(HisMedDict::getSortNo).orderByAsc(HisMedDict::getId)
                 .page(new Page<>(page, size));
+    }
+
+    @Override
+    public boolean save(HisMedDict e) {
+        fillPyCode(e);
+        return super.save(e);
+    }
+
+    @Override
+    public boolean updateById(HisMedDict e) {
+        fillPyCode(e);
+        return super.updateById(e);
+    }
+
+    /** 拼音简码随名称自动重算(只读); 自定义码 abbr_code 由维护页透传不覆盖 */
+    private void fillPyCode(HisMedDict e) {
+        if (e != null && StringUtils.hasText(e.getName())) {
+            e.setPyCode(PinyinUtil.initials(e.getName()));
+        }
     }
 
     /** 本机构启用项查询(医生站下拉用): status=1, 按排序号/ID 升序 */

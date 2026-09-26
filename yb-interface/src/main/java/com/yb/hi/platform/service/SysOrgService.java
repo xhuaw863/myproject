@@ -2,6 +2,7 @@ package com.yb.hi.platform.service;
 
 import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
 import com.yb.hi.framework.common.BizException;
+import com.yb.hi.framework.util.PinyinUtil;
 import com.yb.hi.framework.tenant.LoginUser;
 import com.yb.hi.framework.tenant.UserContext;
 import com.yb.hi.platform.dto.OrgNode;
@@ -177,6 +178,7 @@ public class SysOrgService {
         n.setParentId(o.getParentId());
         n.setOrgCode(o.getOrgCode());
         n.setOrgName(o.getOrgName());
+        n.setPyCode(o.getPyCode());
         n.setOrgLevel(o.getOrgLevel());
         n.setIsLead(o.getIsLead());
         n.setOrgType(o.getOrgType());
@@ -265,6 +267,8 @@ public class SysOrgService {
     private void applyReq(SysOrg o, OrgSaveReq req) {
         o.setOrgCode(req.getOrgCode());
         o.setOrgName(req.getOrgName());
+        // 拼音简码随机构名自动重算(只读)
+        o.setPyCode(PinyinUtil.initials(req.getOrgName()));
         o.setOrgLevel(req.getOrgLevel() == null ? 1 : req.getOrgLevel());
         // 牵头标识: null=不变更(编辑表单未带时保留原值); 唯一性由 validate 保证
         if (req.getIsLead() != null) {

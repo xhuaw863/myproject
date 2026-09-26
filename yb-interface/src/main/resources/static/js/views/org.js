@@ -24,6 +24,7 @@
   }
 
   HIS.views.OrgManage = {
+    mixins: [HIS.kwSelectMixin],
     data: function () {
       return {
         loading: false, saving: false,
@@ -49,9 +50,7 @@
         var st = (vm.filterStatus === '' || vm.filterStatus == null) ? null : vm.filterStatus;
         if (!kw && lv === null && st === null) { return vm.tree; }
         function match(n) {
-          if (kw && String(n.orgName || '').toLowerCase().indexOf(kw) < 0
-            && String(n.orgCode || '').toLowerCase().indexOf(kw) < 0
-            && String(n.leader || '').toLowerCase().indexOf(kw) < 0) { return false; }
+          if (kw && !HIS.kwMatch(n, kw, ['orgName', 'orgCode', 'leader', 'pyCode'])) { return false; }
           if (lv !== null && Number(n.orgLevel) !== lv) { return false; }
           if (st !== null && n.status !== st) { return false; }
           return true;
@@ -175,7 +174,7 @@
         this.editing = true;
         var vm = this;
         this.form = {
-          id: row.id, orgCode: row.orgCode, orgName: row.orgName,
+          id: row.id, orgCode: row.orgCode, orgName: row.orgName, pyCode: row.pyCode || '',
           orgLevel: Number(row.orgLevel) || 1, isLead: row.isLead == null ? 0 : Number(row.isLead), parentId: row.parentId == null ? 0 : row.parentId,
           orgType: row.orgType || '', fixmedinsCode: row.fixmedinsCode || '', admvsCode: row.admvsCode || '',
           fixmedinsName: row.fixmedinsName || '', uscc: row.uscc || '',
@@ -232,7 +231,7 @@
       '  <div class="toolbar">',
       '    <el-button type="primary" @click="openCreate(null)">新增县级机构</el-button>',
       '    <el-button @click="load">刷新</el-button>',
-      '    <el-input v-model="keyword" placeholder="机构名称/编码/负责人" clearable style="width:190px" @input="onQueryChange" @clear="onQueryChange"></el-input>',
+      '    <el-input v-model="keyword" placeholder="机构名称/编码/负责人/拼音简码" clearable style="width:210px" @input="onQueryChange" @clear="onQueryChange"></el-input>',
       '    <el-select v-model="filterLevel" placeholder="全部级别" clearable style="width:130px" @change="onQueryChange"><el-option v-for="o in levelOpts" :key="o.v" :label="o.l" :value="o.v"></el-option></el-select>',
       '    <el-select v-model="filterStatus" placeholder="全部状态" clearable style="width:110px" @change="onQueryChange"><el-option label="启用" :value="1"></el-option><el-option label="停用" :value="0"></el-option></el-select>',
       '    <el-button :loading="exporting" @click="exportRows">导出</el-button>',
@@ -246,6 +245,7 @@
       '    <el-table-column type="index" :index="seqNo" label="序号" width="60"></el-table-column>',
       '    <el-table-column prop="orgName" label="机构名称" min-width="220"></el-table-column>',
       '    <el-table-column prop="orgCode" label="机构编码" width="150"></el-table-column>',
+      '    <el-table-column prop="pyCode" label="拼音码" width="90"><template #default="s">{{ s.row.pyCode || \'-\' }}</template></el-table-column>',
       '    <el-table-column label="级别" width="150"><template #default="s"><el-tag size="small" :type="levelTag(s.row.orgLevel)">{{ levelLabel(s.row.orgLevel) }}</el-tag><el-tag v-if="s.row.isLead===1" size="small" type="danger" effect="dark" style="margin-left:4px;">牵头</el-tag></template></el-table-column>',
       '    <el-table-column label="机构类型" width="140"><template #default="s">{{ s.row.orgTypeName || orgTypeMap[s.row.orgType] || s.row.orgType || \'-\' }}</template></el-table-column>',
       '    <el-table-column prop="fixmedinsCode" label="定点机构编号" width="150"></el-table-column>',
@@ -268,6 +268,7 @@
       '          <div style="max-height:50vh;overflow-y:auto;padding-right:6px;">',
       '      <el-form-item label="机构编码"><el-input v-model="form.orgCode" placeholder="医共体内唯一, 如 H42010000000"></el-input></el-form-item>',
       '      <el-form-item label="机构名称"><el-input v-model="form.orgName"></el-input></el-form-item>',
+      '      <el-form-item label="拼音码"><el-input v-model="form.pyCode" disabled placeholder="保存时按机构名称自动生成"></el-input></el-form-item>',
       '      <el-form-item label="机构级别">',
       '        <el-select v-model="form.orgLevel" style="width:100%">',
       '          <el-option v-for="o in levelOpts" :key="o.v" :label="o.l" :value="o.v"></el-option>',
@@ -277,9 +278,9 @@
       '        <el-switch v-model="form.isLead" :active-value="1" :inactive-value="0" active-text="牵头" inactive-text="成员"></el-switch>',
       '      </el-form-item>',
       '      <el-form-item label="上级机构">',
-      '        <el-select v-model="form.parentId" style="width:100%" filterable>',
+      '        <el-select v-model="form.parentId" style="width:100%" filterable :filter-method="kwFilter(\'parent\')">',
       '          <el-option :value="0" label="无(顶级/县级)"></el-option>',
-      '          <el-option v-for="o in flat" :key="o.id" :label="o.label" :value="o.id" :disabled="editing && o.id === form.id"></el-option>',
+      '          <el-option v-for="o in kwOptions(\'parent\', flat, [\'label\',\'orgCode\',\'pyCode\'])" :key="o.id" :label="o.label" :value="o.id" :disabled="editing && o.id === form.id"></el-option>',
       '        </el-select>',
       '      </el-form-item>',
       '      <el-form-item label="机构类型">',

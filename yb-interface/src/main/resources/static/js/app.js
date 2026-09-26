@@ -35,8 +35,10 @@
       group: '门诊挂号台', children: [
         { key: 'patient', label: '患者建档/查询', comp: 'PatientManage' },
         { key: 'register', label: '门诊挂号', comp: 'RegistrationDesk' },
-        { key: 'unregister', label: '退号', comp: 'UnregisterDesk' },
-        { key: 'schedule', label: '排班号源', comp: 'ScheduleManage' }
+        { key: 'unregister', label: '退号换号', comp: 'UnregisterDesk' },
+        { key: 'schedule', label: '排班号源', comp: 'ScheduleManage' },
+        { key: 'reg_stats', label: '挂号统计', comp: 'RegStatistics' },
+        { key: 'reg_detail', label: '挂号明细', comp: 'RegDetailQuery' }
       ]
     },
     {

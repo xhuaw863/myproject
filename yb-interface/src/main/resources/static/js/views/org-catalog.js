@@ -87,7 +87,7 @@
       '    <el-tab-pane v-for="t in tabs" :key="t.name" :label="t.label" :name="t.name"></el-tab-pane>',
       '  </el-tabs>',
       '  <div class="toolbar">',
-      '    <el-input v-model="keyword" placeholder="名称/编码检索" clearable style="width:220px" @keyup.enter="search"></el-input>',
+      '    <el-input v-model="keyword" placeholder="名称/编码/拼音简码检索" clearable style="width:230px" @keyup.enter="search"></el-input>',
       '    <el-select v-model="enabledFilter" style="width:120px" @change="search"><el-option label="全部状态" value=""></el-option><el-option label="已开展" value="1"></el-option><el-option label="未开展" value="0"></el-option></el-select>',
       '    <el-button @click="search">查询</el-button>',
       '    <el-button type="success" @click="batch(1)">批量开展</el-button>',

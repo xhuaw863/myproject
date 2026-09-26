@@ -5,6 +5,7 @@ import com.yb.hi.entity.basedata.HisDept;
 import com.yb.hi.mapper.basedata.HisDeptMapper;
 import com.yb.hi.platform.entity.SysOrg;
 import com.yb.hi.platform.service.SysOrgService;
+import com.yb.hi.framework.util.PinyinUtil;
 import com.yb.hi.service.StdDictQueryService;
 import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
@@ -42,6 +43,8 @@ public class HisDeptService extends ServiceImpl<HisDeptMapper, HisDept> {
         if (d == null) {
             return;
         }
+        // 拼音简码随科室名自动重算(只读); 自定义码 abbr_code 由维护页透传不覆盖
+        d.setPyCode(PinyinUtil.initials(d.getDeptName()));
         if (StringUtils.hasText(d.getDeptCaty())) {
             d.setDeptCatyName(stdDict.nameOf("cv_code", "caty", d.getDeptCaty()));
             d.setDeptCatySrc("cv_code:caty");
@@ -49,7 +52,9 @@ public class HisDeptService extends ServiceImpl<HisDeptMapper, HisDept> {
     }
 
     /**
-     * 可排班/可挂号科室(严格限机构): 本机构 dept_category=门诊科室 且层级为科室/诊室 且 启用+门诊开诊。
+     * 可排班/可挂号科室(严格限机构): 本机构 dept_category=门诊科室 且层级为科室/诊室 且 启用。
+     * 门诊开诊标志(open_clinic)仅约束科室级(2)——未开诊的门诊科室不参与排班/挂号;
+     * 诊室(3)是科室的物理子级, 其可选性只看启用/停用, 不受开诊标志限制(诊室通常不带该标志)。
      * orgId 为空则返回空集: 机构是排班的业务边界, 不允许退化为全医共体查询。
      */
     public List<HisDept> listSchedulable(Long orgId) {
@@ -61,7 +66,10 @@ public class HisDeptService extends ServiceImpl<HisDeptMapper, HisDept> {
                 .eq(HisDept::getDeptCategory, CATEGORY_OUTPATIENT)
                 .in(HisDept::getDeptLevel, SCHEDULE_LEVELS)
                 .eq(HisDept::getStatus, 1)
-                .ne(HisDept::getOpenClinic, 0)
+                // 诊室(3)直接放行; 科室(2)须开诊(open_clinic 缺省 NULL 视为开诊)
+                .and(w -> w.eq(HisDept::getDeptLevel, 3)
+                        .or().isNull(HisDept::getOpenClinic)
+                        .or().ne(HisDept::getOpenClinic, 0))
                 .orderByAsc(HisDept::getSortNo)
                 .orderByAsc(HisDept::getId)
                 .list();
@@ -247,7 +255,9 @@ public class HisDeptService extends ServiceImpl<HisDeptMapper, HisDept> {
         if (kw != null) {
             String name = d.getDeptName() == null ? "" : d.getDeptName().toLowerCase();
             String code = d.getDeptCode() == null ? "" : d.getDeptCode().toLowerCase();
-            if (!name.contains(kw) && !code.contains(kw)) {
+            String py = d.getPyCode() == null ? "" : d.getPyCode().toLowerCase();
+            String ab = d.getAbbrCode() == null ? "" : d.getAbbrCode().toLowerCase();
+            if (!name.contains(kw) && !code.contains(kw) && !py.contains(kw) && !ab.contains(kw)) {
                 return false;
             }
         }

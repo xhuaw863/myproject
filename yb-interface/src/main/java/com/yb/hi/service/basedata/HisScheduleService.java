@@ -114,7 +114,7 @@ public class HisScheduleService extends ServiceImpl<HisScheduleMapper, HisSchedu
                 + " DATE_FORMAT(s.work_date, '%Y-%m-%d') AS work_date,"
                 + " s.time_type, s.reg_level_code, s.reg_level_name, s.reg_fee,"
                 + " s.total_num, s.left_num, s.status, s.room, s.template_id, s.stop_reason,"
-                + " d.dept_name, d.org_id, st.staff_name, st.staff_no"
+                + " d.dept_name, d.org_id, st.staff_name, st.staff_no, d.yb_dept_code, st.atddr_no"
                 + joins + where
                 + " ORDER BY s.work_date ASC, s.time_type ASC, s.id ASC LIMIT ?, ?";
         List<Object> dataArgs = new ArrayList<>(args);
@@ -265,6 +265,29 @@ public class HisScheduleService extends ServiceImpl<HisScheduleMapper, HisSchedu
         }
         scheduleMapper.deleteById(id);
         log.info("删除排班: id={}, staffId={}, workDate={}", id, old.getStaffId(), old.getWorkDate());
+    }
+
+    /**
+     * 加号: 原子 UPDATE 同步增加总号源与剩余号源(total_num+1, left_num+1),
+     * 返回更新后的记录(租户/逻辑删除由 Mapper 自动过滤, 原生 SQL 显式 tenant_id)。
+     */
+    @Transactional(rollbackFor = Exception.class)
+    public HisSchedule addSlot(Long scheduleId) {
+        if (scheduleId == null) {
+            throw new BizException(400, "排班ID不能为空");
+        }
+        int affected = jdbc.update(
+                "UPDATE his_schedule SET total_num = total_num + 1, left_num = left_num + 1, update_time = NOW()"
+                        + " WHERE id = ? AND tenant_id = ? AND deleted = 0",
+                scheduleId, tenantId());
+        if (affected == 0) {
+            throw new BizException(400, "排班记录不存在");
+        }
+        HisSchedule updated = scheduleMapper.selectById(scheduleId);
+        log.info("排班加号: id={}, totalNum={}, leftNum={}", scheduleId,
+                updated == null ? null : updated.getTotalNum(),
+                updated == null ? null : updated.getLeftNum());
+        return updated;
     }
 
     // ===== 批量操作 =====
@@ -683,7 +706,8 @@ public class HisScheduleService extends ServiceImpl<HisScheduleMapper, HisSchedu
             throw new BizException("该科室已停用, 不可排班: " + str(d.get("dept_name")));
         }
         Integer oc = toInt(d.get("open_clinic"));
-        if (oc != null && oc == 0) {
+        // 开诊标志仅约束科室级(2); 诊室(3)只看启用, 不受开诊标志限制
+        if (lv != 3 && oc != null && oc == 0) {
             throw new BizException("该门诊科室未开诊, 不可排班: " + str(d.get("dept_name")));
         }
     }

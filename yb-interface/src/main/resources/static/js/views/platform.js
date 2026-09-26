@@ -124,6 +124,7 @@
 
   /* ============ 用户管理 ============ */
   HIS.views.UserManage = {
+    mixins: [HIS.kwSelectMixin],
     data: function () {
       return {
         loading: false,
@@ -195,7 +196,7 @@
           if (!groups[cat]) { groups[cat] = []; order.push(cat); }
           var prefix = d.deptLevel === 3 ? '　└ ' : '';
           var on = vm.orgName(d.orgId);
-          groups[cat].push({ id: d.id, label: prefix + d.deptName + (on && on !== '-' ? ' (' + on + ')' : '') });
+          groups[cat].push({ id: d.id, label: prefix + d.deptName + (on && on !== '-' ? ' (' + on + ')' : ''), pyCode: d.pyCode, abbrCode: d.abbrCode });
         });
         return order.map(function (c) { return { category: c, options: groups[c] }; });
       }
@@ -351,7 +352,7 @@
       '  <div class="page-title">用户管理</div>',
       '  <el-alert v-if="!lead" type="warning" :closable="false" show-icon style="margin-bottom:10px;" title="非牵头机构: 仅展示本机构用户, 只读不可维护。"></el-alert>',
       '  <div class="toolbar">',
-      '    <el-select v-model="filterOrg" placeholder="全部机构" clearable filterable :disabled="!lead" style="width:200px" @change="onOrgChange"><el-option v-for="o in orgs" :key="o.id" :label="o.label" :value="o.id"></el-option></el-select>',
+      '    <el-select v-model="filterOrg" placeholder="全部机构(可输拼音简码)" clearable filterable :disabled="!lead" style="width:200px" :filter-method="kwFilter(\'fOrg\')" @change="onOrgChange"><el-option v-for="o in kwOptions(\'fOrg\', orgs, [\'label\',\'orgCode\',\'pyCode\'])" :key="o.id" :label="o.label" :value="o.id"></el-option></el-select>',
       '    <el-input v-model="keyword" placeholder="账号/姓名/电话" clearable style="width:170px" @input="onQueryChange" @clear="onQueryChange"></el-input>',
       '    <el-select v-model="filterRole" placeholder="全部角色" clearable style="width:130px" @change="onQueryChange"><el-option v-for="r in roles" :key="r.value" :label="r.label" :value="r.value"></el-option></el-select>',
       '    <el-select v-model="filterStatus" placeholder="全部状态" clearable style="width:110px" @change="onQueryChange"><el-option label="启用" :value="1"></el-option><el-option label="停用" :value="0"></el-option></el-select>',
@@ -394,10 +395,10 @@
       '          <el-form-item label="密码" v-if="!editing"><el-input v-model="form.password" type="password" show-password placeholder="至少6位"></el-input></el-form-item>',
       '          <el-form-item label="姓名"><el-input v-model="form.realName"></el-input></el-form-item>',
       '          <el-form-item label="联系电话"><el-input v-model="form.phone"></el-input></el-form-item>',
-      '          <el-form-item label="归属机构"><el-select v-model="form.orgId" style="width:100%" clearable filterable placeholder="选择归属机构(行政所属、默认可登录)" @change="onHomeOrgChange"><el-option v-for="o in orgs" :key="o.id" :label="o.label" :value="o.id"></el-option></el-select></el-form-item>',
-      '          <el-form-item label="可登录机构"><el-select v-model="form.loginOrgIds" multiple clearable filterable style="width:100%" placeholder="多点执业: 可登录的多个机构(归属机构默认已含且不可取消)"><el-option v-for="o in orgs" :key="o.id" :label="o.label + (o.id===form.orgId?\' (归属·默认)\':\'\')" :value="o.id" :disabled="o.id===form.orgId"></el-option></el-select></el-form-item>',
+      '          <el-form-item label="归属机构"><el-select v-model="form.orgId" style="width:100%" clearable filterable placeholder="选择归属机构(行政所属、默认可登录; 可输拼音简码)" :filter-method="kwFilter(\'homeOrg\')" @change="onHomeOrgChange"><el-option v-for="o in kwOptions(\'homeOrg\', orgs, [\'label\',\'orgCode\',\'pyCode\'])" :key="o.id" :label="o.label" :value="o.id"></el-option></el-select></el-form-item>',
+      '          <el-form-item label="可登录机构"><el-select v-model="form.loginOrgIds" multiple clearable filterable style="width:100%" placeholder="多点执业: 可登录的多个机构(归属机构默认已含且不可取消; 可输拼音简码)" :filter-method="kwFilter(\'loginOrg\')"><el-option v-for="o in kwOptions(\'loginOrg\', orgs, [\'label\',\'orgCode\',\'pyCode\'])" :key="o.id" :label="o.label + (o.id===form.orgId?\' (归属·默认)\':\'\')" :value="o.id" :disabled="o.id===form.orgId"></el-option></el-select></el-form-item>',
       '          <el-form-item label=" "><span style="color:#909399;font-size:12px;">归属机构为默认可登录机构, 始终保留; 可再勾选本医共体内其他机构以支持多点执业。登录后默认进入归属机构, 可在顶部"切换机构"。仅本医共体(同租户)机构可选。</span></el-form-item>',
-      '          <el-form-item label="关联职工"><el-select v-model="form.staffId" style="width:100%" clearable filterable placeholder="关联 his_staff(操作留痕/电子签名)"><el-option v-for="st in staffs" :key="st.id" :label="st.staffName + \'(\' + st.staffNo + \')\'" :value="st.id"></el-option></el-select></el-form-item>',
+      '          <el-form-item label="关联职工"><el-select v-model="form.staffId" style="width:100%" clearable filterable placeholder="关联 his_staff(操作留痕/电子签名; 可输拼音简码)" :filter-method="kwFilter(\'staff\')"><el-option v-for="st in kwOptions(\'staff\', staffs, [\'staffName\',\'staffNo\',\'pyCode\',\'abbrCode\'])" :key="st.id" :label="st.staffName + \'(\' + st.staffNo + \')\'" :value="st.id"></el-option></el-select></el-form-item>',
       '          <el-form-item label="状态" v-if="editing"><el-switch v-model="form.status" :active-value="1" :inactive-value="0" active-text="启用" inactive-text="停用"></el-switch></el-form-item>',
       '        </el-form>',
       '      </el-tab-pane>',
@@ -414,8 +415,8 @@
       '      </el-tab-pane>',
       '      <el-tab-pane label="科室权限" name="dept">',
       '        <el-form :model="form" label-width="90px">',
-      '          <el-form-item label="主属科室"><el-select v-model="form.deptId" style="width:100%" clearable filterable placeholder="该账号编制主属科室"><el-option-group v-for="g in deptGroups" :key="g.category" :label="g.category"><el-option v-for="d in g.options" :key="d.id" :label="d.label" :value="d.id"></el-option></el-option-group></el-select></el-form-item>',
-      '          <el-form-item label="授权科室"><el-select v-model="deptScopeArr" multiple clearable filterable style="width:100%" placeholder="可登录/执业的多个科室(数据权限); 留空=仅主属科室"><el-option-group v-for="g in deptGroups" :key="g.category" :label="g.category"><el-option v-for="d in g.options" :key="d.id" :label="d.label" :value="d.id"></el-option></el-option-group></el-select></el-form-item>',
+      '          <el-form-item label="主属科室"><el-select v-model="form.deptId" style="width:100%" clearable filterable placeholder="该账号编制主属科室(可输拼音简码)" :filter-method="kwFilter(\'uDept\')"><el-option-group v-for="g in kwGroupOptions(\'uDept\', deptGroups, [\'label\',\'pyCode\',\'abbrCode\'])" :key="g.category" :label="g.category"><el-option v-for="d in g.options" :key="d.id" :label="d.label" :value="d.id"></el-option></el-option-group></el-select></el-form-item>',
+      '          <el-form-item label="授权科室"><el-select v-model="deptScopeArr" multiple clearable filterable style="width:100%" placeholder="可登录/执业的多个科室(数据权限); 留空=仅主属科室; 可输拼音简码" :filter-method="kwFilter(\'uScope\')"><el-option-group v-for="g in kwGroupOptions(\'uScope\', deptGroups, [\'label\',\'pyCode\',\'abbrCode\'])" :key="g.category" :label="g.category"><el-option v-for="d in g.options" :key="d.id" :label="d.label" :value="d.id"></el-option></el-option-group></el-select></el-form-item>',
       '          <el-form-item label=" "><span style="color:#909399;font-size:12px;">已授权 {{ deptScopeArr.length }} 个科室。一个医生可登录多个住院科室、护士可进多个病区、药师可进多个药房。科室权限决定账号可见的就诊/患者数据范围(数据权限), 与角色菜单权限(功能权限)相互独立。</span></el-form-item>',
       '        </el-form>',
       '      </el-tab-pane>',

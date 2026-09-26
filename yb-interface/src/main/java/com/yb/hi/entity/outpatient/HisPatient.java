@@ -254,4 +254,7 @@ public class HisPatient extends BaseEntity {
     private Long orgId;
     /** 备注 */
     private String memo;
+
+    /** 拼音简码(患者姓名首字母, 保存时自动生成只读) */
+    private String pyCode;
 }

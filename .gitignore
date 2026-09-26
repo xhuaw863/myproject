@@ -27,6 +27,8 @@ step*.png
 verify_*.png
 walkthrough_*.png
 bug_*.png
+perm_verify_*.png
+_tmp_*.png
 test_avatar.png
 
 # ===== Database backups =====

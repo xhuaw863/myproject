@@ -30,4 +30,7 @@ public class AreaCode implements Serializable {
 
     /** 父级区划代码(顶级为 0) */
     private Long pcode;
+
+    /** 拼音简码(区划名称首字母, 回填生成只读) */
+    private String pyCode;
 }

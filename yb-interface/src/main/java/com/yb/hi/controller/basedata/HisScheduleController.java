@@ -64,6 +64,13 @@ public class HisScheduleController {
         return R.ok(null);
     }
 
+    /** 加号: 总号源+1 且剩余号源+1(原子更新, 返回更新后的记录) */
+    @PostMapping("/addSlot")
+    public R<HisSchedule> addSlot(@RequestParam Long id) {
+        guard.requireSelfOrgWrite();
+        return R.ok(scheduleService.addSlot(id));
+    }
+
     /** 批量停诊: {ids: [..], reason: "..."} -> 受影响行数 */
     @PostMapping("/batch-stop")
     public R<Integer> batchStop(@RequestBody Map<String, Object> body) {

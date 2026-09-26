@@ -129,7 +129,7 @@
       '    <el-select v-model="level" placeholder="级别" clearable style="width:130px" @change="search">',
       '      <el-option v-for="o in levelOpts" :key="o.v" :label="o.l" :value="o.v"></el-option>',
       '    </el-select>',
-      '    <el-input v-model="keyword" placeholder="名称/区划代码检索" clearable style="width:240px" @keyup.enter="search"></el-input>',
+      '    <el-input v-model="keyword" placeholder="名称/区划代码/拼音简码检索" clearable style="width:240px" @keyup.enter="search"></el-input>',
       '    <el-button type="primary" @click="search">检索</el-button>',
       '    <el-button @click="resetRoot">回到全部</el-button>',
       '    <el-button type="success" @click="openCreate">新增区划</el-button>',

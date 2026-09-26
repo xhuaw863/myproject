@@ -34,7 +34,7 @@ public class AreaCodeService extends ServiceImpl<AreaCodeMapper, AreaCode> {
         LambdaQueryWrapper<AreaCode> qw = new LambdaQueryWrapper<>();
         if (StringUtils.hasText(keyword)) {
             String kw = keyword.trim();
-            qw.and(w -> w.like(AreaCode::getName, kw).or().like(AreaCode::getCode, kw));
+            qw.and(w -> w.like(AreaCode::getName, kw).or().like(AreaCode::getCode, kw).or().like(AreaCode::getPyCode, kw));
         }
         if (level != null) {
             qw.eq(AreaCode::getLevel, level);

@@ -75,7 +75,9 @@ public class StdDictQueryService {
         String selectSql = "SELECT " + dict.getCodeCol() + " AS code, "
                 + dict.getNameCol() + " AS name, "
                 + dict.getSpecCol() + " AS spec, "
-                + dict.getExtraCol() + " AS extra FROM " + dict.getTable() + where + " ORDER BY id LIMIT ?,?";
+                + dict.getExtraCol() + " AS extra, "
+                // 拼音简码随行带出供前端展示(医保药品目录用源自带 pinyin, 其余 std_* 用迁移新增 py_code)
+                + ("drug_catalog".equals(dict.getTable()) ? "pinyin" : "py_code") + " AS pyCode FROM " + dict.getTable() + where + " ORDER BY id LIMIT ?,?";
         String countSql = "SELECT COUNT(*) FROM " + dict.getTable() + where;
 
         long offset = (page - 1) * size;
@@ -99,6 +101,7 @@ public class StdDictQueryService {
                         m.put("name", rs.getString("name"));
                         m.put("spec", rs.getString("spec"));
                         m.put("extra", rs.getString("extra"));
+                        m.put("pyCode", rs.getString("pyCode"));
                         records.add(m);
                     }
                 }
@@ -169,7 +172,7 @@ public class StdDictQueryService {
         return null;
     }
 
-    /** 有效检索列: 前端展示的 code/name/spec/extra 列全部纳入, 再并入注册表额外配置的检索列(去重保序)。 */
+    /** 有效检索列: 前端展示的 code/name/spec/extra 列全部纳入, 再并入注册表额外配置的检索列(去重保序), 末尾附拼音简码列。 */
     private List<String> effectiveSearchCols(StdDict dict) {
         LinkedHashSet<String> cols = new LinkedHashSet<>();
         for (String c : new String[]{dict.getCodeCol(), dict.getNameCol(), dict.getSpecCol(), dict.getExtraCol()}) {
@@ -180,6 +183,8 @@ public class StdDictQueryService {
                 if (StringUtils.hasText(c)) cols.add(c);
             }
         }
+        // 拼音简码: 医保药品目录(drug_catalog)用源自带 pinyin 列, 其余 std_* 用迁移新增的 py_code
+        cols.add("drug_catalog".equals(dict.getTable()) ? "pinyin" : "py_code");
         return new ArrayList<>(cols);
     }
 

@@ -103,6 +103,7 @@
 
   /* ================= 接诊工作台 ================= */
   HIS.views.DoctorWork = {
+    mixins: [HIS.kwSelectMixin],
     data: function () {
       return {
         queueList: [], currentVisitId: null, visit: null, submitting: false,
@@ -304,7 +305,7 @@
       /* ---- 诊断 ---- */
       '      <el-tab-pane label="诊断" name="diag">',
       '        <div class="toolbar">',
-      '          <el-input v-model="diag.keyword" placeholder="疾病名称/编码(医保疾病目录)" clearable style="width:300px" @keyup.enter="searchDiag"></el-input>',
+      '          <el-input v-model="diag.keyword" placeholder="疾病名称/编码/拼音简码(医保疾病目录)" clearable style="width:300px" @keyup.enter="searchDiag"></el-input>',
       '          <el-button type="primary" @click="searchDiag">检索目录</el-button>',
       '        </div>',
       '        <el-table :data="diag.results" v-loading="diag.loading" border size="small" height="180" style="margin-bottom:12px;">',
@@ -324,7 +325,7 @@
       /* ---- 处方 ---- */
       '      <el-tab-pane label="处方" name="rx">',
       '        <div class="toolbar">',
-      '          <el-input v-model="rx.keyword" placeholder="药品名称/编码" clearable style="width:260px" @keyup.enter="searchRx"></el-input>',
+      '          <el-input v-model="rx.keyword" placeholder="药品名称/编码/拼音简码" clearable style="width:260px" @keyup.enter="searchRx"></el-input>',
       '          <el-button type="primary" @click="searchRx">检索药品</el-button>',
       '          <el-select v-model="rx.rxType" style="width:110px"><el-option label="西药" value="西药"></el-option><el-option label="中药" value="中药"></el-option></el-select>',
       '        </div>',
@@ -342,8 +343,8 @@
       '          <el-table-column prop="spec" label="规格" width="110"></el-table-column>',
       '          <el-table-column label="数量" width="110"><template #default="s"><el-input-number v-model="s.row.quantity" :min="1" size="small" controls-position="right" style="width:95px"></el-input-number></template></el-table-column>',
       '          <el-table-column label="剂量" width="150"><template #default="s"><div style="display:flex;gap:4px;"><el-input v-model="s.row.dosage" size="small" placeholder="如0.5"></el-input><el-button link type="primary" size="small" @click="calcQty(s.row)">算量</el-button></div></template></el-table-column>',
-      '          <el-table-column label="用法" width="140"><template #default="s"><el-select v-model="s.row.usageMethod" size="small" placeholder="选择用法" clearable filterable style="width:125px"><el-option v-for="o in usageOpts" :key="o.id" :label="o.name" :value="o.name"></el-option></el-select></template></el-table-column>',
-      '          <el-table-column label="频次" width="140"><template #default="s"><el-select v-model="s.row.frequency" size="small" placeholder="选择频次" clearable filterable style="width:125px"><el-option v-for="o in freqOpts" :key="o.id" :label="o.name" :value="o.name"></el-option></el-select></template></el-table-column>',
+      '          <el-table-column label="用法" width="140"><template #default="s"><el-select v-model="s.row.usageMethod" size="small" placeholder="选择用法" clearable filterable style="width:125px" :filter-method="kwFilter(\'usage\'+s.$index)"><el-option v-for="o in kwOptions(\'usage\'+s.$index, usageOpts, [\'name\',\'code\',\'pyCode\',\'abbrCode\'])" :key="o.id" :label="o.name" :value="o.name"></el-option></el-select></template></el-table-column>',
+      '          <el-table-column label="频次" width="140"><template #default="s"><el-select v-model="s.row.frequency" size="small" placeholder="选择频次" clearable filterable style="width:125px" :filter-method="kwFilter(\'freq\'+s.$index)"><el-option v-for="o in kwOptions(\'freq\'+s.$index, freqOpts, [\'name\',\'code\',\'pyCode\',\'abbrCode\'])" :key="o.id" :label="o.name" :value="o.name"></el-option></el-select></template></el-table-column>',
       '          <el-table-column label="天数" width="90"><template #default="s"><el-input-number v-model="s.row.days" :min="1" size="small" controls-position="right" style="width:75px"></el-input-number></template></el-table-column>',
       '          <el-table-column label="金额" width="90"><template #default="s">{{ lineAmount(s.row) }}</template></el-table-column>',
       '          <el-table-column label="操作" width="60"><template #default="s"><el-button link type="danger" @click="removeRxItem(s.$index)">删</el-button></template></el-table-column>',
@@ -365,7 +366,7 @@
       /* ---- 检查单 ---- */
       '      <el-tab-pane label="检查单" name="od">',
       '        <div class="toolbar">',
-      '          <el-input v-model="od.keyword" placeholder="诊疗项目名称/编码" clearable style="width:260px" @keyup.enter="searchOd"></el-input>',
+      '          <el-input v-model="od.keyword" placeholder="诊疗项目名称/编码/拼音简码" clearable style="width:260px" @keyup.enter="searchOd"></el-input>',
       '          <el-button type="primary" @click="searchOd">检索项目</el-button>',
       '          <el-select v-model="od.orderType" style="width:110px"><el-option label="检查" value="检查"></el-option><el-option label="检验" value="检验"></el-option><el-option label="治疗" value="治疗"></el-option></el-select>',
       '        </div>',

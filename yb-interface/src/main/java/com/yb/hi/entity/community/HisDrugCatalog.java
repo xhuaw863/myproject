@@ -155,4 +155,10 @@ public class HisDrugCatalog extends BaseEntity {
     /** 大包装参考价 = retail_price * pack_ratio(派生展示, 不落库) */
     @TableField(exist = false)
     private BigDecimal packPrice;
+
+    /** 拼音简码(通用名首字母, 保存时自动生成只读) */
+    private String pyCode;
+
+    /** 自定义简码(维护页可编辑, 选填) */
+    private String abbrCode;
 }

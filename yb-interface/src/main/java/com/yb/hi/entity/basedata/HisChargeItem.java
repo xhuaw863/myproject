@@ -105,4 +105,10 @@ public class HisChargeItem extends BaseEntity {
     /** 执行价档次(派生不落库) */
     @TableField(exist = false)
     private Integer execPriceLv;
+
+    /** 拼音简码(项目名称首字母, 保存时自动生成只读) */
+    private String pyCode;
+
+    /** 自定义简码(维护页可编辑, 选填) */
+    private String abbrCode;
 }

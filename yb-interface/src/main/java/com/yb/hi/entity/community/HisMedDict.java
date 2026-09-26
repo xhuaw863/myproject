@@ -45,4 +45,10 @@ public class HisMedDict extends BaseEntity {
     private String srcDoc;
     /** 来源编码(标准值域行编码) */
     private String srcCode;
+
+    /** 拼音简码(名称首字母, 保存时自动生成只读) */
+    private String pyCode;
+
+    /** 自定义简码(维护页可编辑, 选填) */
+    private String abbrCode;
 }

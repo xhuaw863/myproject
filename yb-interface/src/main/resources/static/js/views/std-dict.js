@@ -43,6 +43,13 @@
     return { v: v, l: v, cols: ['编码', '名称', '规格/分类', '附加'] };
   }
 
+  /* 检索框占位文案: 统一追加拼音简码提示(后端检索列已并入 py_code/源pinyin) */
+  function kwPh(ph) {
+    var base = ph || '编码/名称检索';
+    if (base.indexOf('拼音') >= 0) { return base; }
+    return base.replace(/检索$/, '') + '/拼音简码检索';
+  }
+
   /* ================= 标准字典浏览/对照 ================= */
   HIS.views.StdDictBrowse = {
     data: function () {
@@ -54,7 +61,7 @@
     computed: {
       cols: function () { return typeMeta(this.dictType).cols; },
       curMeta: function () { var m = typeMeta(this.dictType); return { st: m.st || '', doc: m.doc || '' }; },
-      ph: function () { return typeMeta(this.dictType).ph || '编码/名称检索'; },
+      ph: function () { return kwPh(typeMeta(this.dictType).ph); },
       groups: function () {
         var out = [];
         STD_TYPE_ORDER.forEach(function (st) {
@@ -101,6 +108,7 @@
       '    <el-table-column type="index" label="序号" width="60" :index="seqNo"></el-table-column>',
       '    <el-table-column prop="code" :label="cols[0]" width="220" show-overflow-tooltip></el-table-column>',
       '    <el-table-column prop="name" :label="cols[1]" min-width="240" show-overflow-tooltip></el-table-column>',
+      '    <el-table-column prop="pyCode" label="拼音码" width="120" show-overflow-tooltip><template #default="s">{{ s.row.pyCode || \'-\' }}</template></el-table-column>',
       '    <el-table-column prop="spec" :label="cols[2]" min-width="140" show-overflow-tooltip></el-table-column>',
       '    <el-table-column prop="extra" :label="cols[3]" min-width="160" show-overflow-tooltip></el-table-column>',
       '  </el-table>',
@@ -204,7 +212,7 @@
     computed: {
       cols: function () { return typeMeta(this.dictType).cols; },
       curMeta: function () { var m = typeMeta(this.dictType); return { st: m.st || '', doc: m.doc || '' }; },
-      ph: function () { return typeMeta(this.dictType).ph || '编码/名称检索'; },
+      ph: function () { return kwPh(typeMeta(this.dictType).ph); },
       editCols: function () {
         return (this.columns || []).filter(function (c) { return String(c.name).toLowerCase() !== 'id' && !c.auto; });
       },
@@ -297,6 +305,7 @@
       '    <el-table-column type="index" label="序号" width="60" :index="seqNo"></el-table-column>',
       '    <el-table-column prop="code" :label="cols[0]" width="200" show-overflow-tooltip></el-table-column>',
       '    <el-table-column prop="name" :label="cols[1]" min-width="220" show-overflow-tooltip></el-table-column>',
+      '    <el-table-column prop="pyCode" label="拼音码" width="110" show-overflow-tooltip><template #default="s">{{ s.row.pyCode || \'-\' }}</template></el-table-column>',
       '    <el-table-column prop="spec" :label="cols[2]" min-width="130" show-overflow-tooltip></el-table-column>',
       '    <el-table-column prop="extra" :label="cols[3]" min-width="150" show-overflow-tooltip></el-table-column>',
       '    <el-table-column label="操作" width="130" fixed="right"><template #default="s">',

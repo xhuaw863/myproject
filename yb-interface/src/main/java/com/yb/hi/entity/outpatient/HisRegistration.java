@@ -1,6 +1,7 @@
 package com.yb.hi.entity.outpatient;
 
 import com.baomidou.mybatisplus.annotation.IdType;
+import com.baomidou.mybatisplus.annotation.TableField;
 import com.baomidou.mybatisplus.annotation.TableId;
 import com.baomidou.mybatisplus.annotation.TableName;
 import com.yb.hi.framework.entity.BaseEntity;
@@ -80,4 +81,29 @@ public class HisRegistration extends BaseEntity {
     private String cancelReason;
     /** 挂号员 */
     private String operator;
+    /** 费别编码 */
+    private String feeType;
+    /** 减免类型编码(none=无减免, age70free=70岁老人免挂号费等) */
+    private String discountType;
+    /** 减免原因说明 */
+    private String discountReason;
+    /** 减免金额 */
+    private BigDecimal discountAmount;
+    /** 实收金额(挂号费-减免金额) */
+    private BigDecimal actualFee;
+    /** 支付方式(free=免费) */
+    private String payMethod;
+    /** 混合支付明细JSON */
+    private String payDetail;
+    /** 候诊序号(科室简码+4位流水号, 如 NK-0015) */
+    private String queueNo;
+    /** 同日同科室挂号提示(瞬态, 不落库; 挂号返回值携带) */
+    @TableField(exist = false)
+    private Boolean sameDeptWarning;
+    /** 同日同科室提示文案(瞬态, 不落库; 挂号返回值携带) */
+    @TableField(exist = false)
+    private String sameDeptInfo;
+    /** 换号来源挂号单号(瞬态, 不落库; 换号返回值携带) */
+    @TableField(exist = false)
+    private String changeFromRegNo;
 }

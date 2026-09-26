@@ -117,4 +117,10 @@ public class HisStaff extends BaseEntity {
 
     /** 备注 */
     private String memo;
+
+    /** 拼音简码(姓名首字母, 保存时自动生成只读) */
+    private String pyCode;
+
+    /** 自定义简码(维护页可编辑, 选填) */
+    private String abbrCode;
 }

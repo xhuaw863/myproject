@@ -5,6 +5,7 @@ import com.baomidou.mybatisplus.extension.conditions.query.LambdaQueryChainWrapp
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
 import com.yb.hi.entity.community.HisConsCatalog;
+import com.yb.hi.framework.util.PinyinUtil;
 import com.yb.hi.mapper.community.HisConsCatalogMapper;
 import com.yb.hi.service.StdDictQueryService;
 import org.springframework.stereotype.Service;
@@ -30,7 +31,9 @@ public class HisConsCatalogService extends ServiceImpl<HisConsCatalogMapper, His
             q.and(w -> w.like(HisConsCatalog::getName, keyword)
                     .or().like(HisConsCatalog::getConsCode, keyword)
                     .or().like(HisConsCatalog::getYbConsCode, keyword)
-                    .or().like(HisConsCatalog::getRegCertNo, keyword));
+                    .or().like(HisConsCatalog::getRegCertNo, keyword)
+                    .or().like(HisConsCatalog::getPyCode, keyword)
+                    .or().like(HisConsCatalog::getAbbrCode, keyword));
         }
         return q.orderByDesc(HisConsCatalog::getId).page(new Page<>(page, size));
     }
@@ -51,6 +54,10 @@ public class HisConsCatalogService extends ServiceImpl<HisConsCatalogMapper, His
     public void backfillDict(HisConsCatalog e) {
         if (e == null) {
             return;
+        }
+        // 拼音简码随耗材名自动重算(只读); 自定义码 abbr_code 由维护页透传不覆盖
+        if (StringUtils.hasText(e.getName())) {
+            e.setPyCode(PinyinUtil.initials(e.getName()));
         }
         if (StringUtils.hasText(e.getChrgitmLv())) {
             e.setChrgitmLvName(stdDict.nameOf("cv_code", "chrgitm_lv", e.getChrgitmLv()));

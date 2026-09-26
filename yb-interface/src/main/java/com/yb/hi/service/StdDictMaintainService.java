@@ -104,7 +104,9 @@ public class StdDictMaintainService {
         String selectSql = "SELECT id, " + dict.getCodeCol() + " AS code, "
                 + dict.getNameCol() + " AS name, "
                 + dict.getSpecCol() + " AS spec, "
-                + dict.getExtraCol() + " AS extra FROM " + dict.getTable() + where + " ORDER BY id LIMIT ?,?";
+                + dict.getExtraCol() + " AS extra, "
+                // 拼音简码随行带出供前端展示(医保药品目录用源自带 pinyin, 其余 std_* 用迁移新增 py_code)
+                + ("drug_catalog".equals(dict.getTable()) ? "pinyin" : "py_code") + " AS pyCode FROM " + dict.getTable() + where + " ORDER BY id LIMIT ?,?";
         String countSql = "SELECT COUNT(*) FROM " + dict.getTable() + where;
         long offset = (page - 1) * size;
         List<Map<String, Object>> records = new ArrayList<>();
@@ -128,6 +130,7 @@ public class StdDictMaintainService {
                         m.put("name", rs.getString("name"));
                         m.put("spec", rs.getString("spec"));
                         m.put("extra", rs.getString("extra"));
+                        m.put("pyCode", rs.getString("pyCode"));
                         records.add(m);
                     }
                 }
@@ -578,6 +581,11 @@ public class StdDictMaintainService {
                     cols.add(c);
                 }
             }
+        }
+        // 拼音简码: drug_catalog 用源自带 pinyin, 其余 std_* 用新增 py_code
+        String py = "drug_catalog".equals(dict.getTable()) ? "pinyin" : "py_code";
+        if (!cols.contains(py)) {
+            cols.add(py);
         }
         return cols;
     }

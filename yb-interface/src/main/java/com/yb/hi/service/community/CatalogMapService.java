@@ -150,7 +150,9 @@ public class CatalogMapService {
                 q.and(w -> w.like(HisDrugCatalog::getGenericName, keyword)
                         .or().like(HisDrugCatalog::getTradeName, keyword)
                         .or().like(HisDrugCatalog::getDrugCode, keyword)
-                        .or().like(HisDrugCatalog::getYbDrugCode, keyword));
+                        .or().like(HisDrugCatalog::getYbDrugCode, keyword)
+                        .or().like(HisDrugCatalog::getPyCode, keyword)
+                        .or().like(HisDrugCatalog::getAbbrCode, keyword));
             }
             IPage<HisDrugCatalog> p = q.orderByDesc(HisDrugCatalog::getId).page(new Page<>(page, size));
             return enrichYbInfo(catalog, mapView(p, e -> hosp(e.getId(), e.getDrugCode(), e.getGenericName(), e.getSpec(),
@@ -164,7 +166,9 @@ public class CatalogMapService {
                 q.and(w -> w.like(HisConsCatalog::getName, keyword)
                         .or().like(HisConsCatalog::getConsCode, keyword)
                         .or().like(HisConsCatalog::getYbConsCode, keyword)
-                        .or().like(HisConsCatalog::getRegCertNo, keyword));
+                        .or().like(HisConsCatalog::getRegCertNo, keyword)
+                        .or().like(HisConsCatalog::getPyCode, keyword)
+                        .or().like(HisConsCatalog::getAbbrCode, keyword));
             }
             IPage<HisConsCatalog> p = q.orderByDesc(HisConsCatalog::getId).page(new Page<>(page, size));
             return enrichYbInfo(catalog, mapView(p, e -> hosp(e.getId(), e.getConsCode(), e.getName(), e.getSpecModel(),
@@ -178,7 +182,9 @@ public class CatalogMapService {
         if (hasKw) {
             q.and(w -> w.like(HisChargeItem::getItemName, keyword)
                     .or().like(HisChargeItem::getItemCode, keyword)
-                    .or().like(HisChargeItem::getMedListCodg, keyword));
+                    .or().like(HisChargeItem::getMedListCodg, keyword)
+                    .or().like(HisChargeItem::getPyCode, keyword)
+                    .or().like(HisChargeItem::getAbbrCode, keyword));
         }
         IPage<HisChargeItem> p = q.orderByDesc(HisChargeItem::getId).page(new Page<>(page, size));
         return enrichYbInfo(catalog, mapView(p, e -> hosp(e.getId(), e.getItemCode(), e.getItemName(), e.getSpec(),

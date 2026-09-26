@@ -501,7 +501,7 @@
       /* ---- 药品选择器 ---- */
       '  <el-dialog v-model="drugDlg" title="选择药品(院内药品目录)" width="860px" top="6vh">',
       '    <div class="toolbar">',
-      '      <el-input v-model="drugKeyword" placeholder="药品名称/编码/医保码" clearable style="width:280px" @keyup.enter="searchDrugs"></el-input>',
+      '      <el-input v-model="drugKeyword" placeholder="药品名称/编码/拼音简码/医保码" clearable style="width:280px" @keyup.enter="searchDrugs"></el-input>',
       '      <el-button type="primary" @click="searchDrugs">查询</el-button>',
       '      <span style="color:#909399;font-size:12px;">共 {{ drugTotal }} 条</span>',
       '    </div>',
