@@ -39,4 +39,6 @@ public class HisWarehouseDef extends BaseEntity {
     private Integer status;
     /** 排序号 */
     private Integer sortNo;
+    /** 归属科室(his_dept.id): 仅 kind=WAREHOUSE 药库使用, 与科室一一对应; PHARMACY 库存位随药房继承不单独绑定; 空=历史未绑定 */
+    private Long deptId;
 }

@@ -14,6 +14,7 @@ import java.util.Arrays;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.HashSet;
+import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -103,8 +104,25 @@ public class SysMenuService {
             return new ArrayList<>();
         }
         Set<String> keep = new HashSet<>(topKeys);
-        roots.removeIf(n -> !keep.contains(n.getMenuKey()));
-        return roots;
+        // 任意层级递归命中: 目标目录移入其他目录(如 std-dict 挂入医共体管理, 2026-09)后仍作顶级展示,
+        // 命中节点整体提升为顶级, 其原父目录(不在 keep 集)被剪枝不会重复渲染
+        List<MenuNode> hits = new ArrayList<>();
+        collectKeys(roots, keep, hits);
+        return hits;
+    }
+
+    /** 递归收集 key 命中的节点(连同子树提升为顶级), 未命中节点就地剪枝 */
+    private void collectKeys(List<MenuNode> nodes, Set<String> keep, List<MenuNode> hits) {
+        Iterator<MenuNode> it = nodes.iterator();
+        while (it.hasNext()) {
+            MenuNode n = it.next();
+            if (keep.contains(n.getMenuKey())) {
+                hits.add(n);
+                it.remove();
+            } else if (n.getChildren() != null && !n.getChildren().isEmpty()) {
+                collectKeys(n.getChildren(), keep, hits);
+            }
+        }
     }
 
     /** 全量树, 但剔除指定 menuKey 的顶级节点(及其子树); 用于医院端排除平台级菜单 */

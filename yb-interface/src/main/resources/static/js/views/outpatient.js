@@ -1,4 +1,4 @@
-/* 门诊挂号台: 患者建档/查询 + 门诊挂号工作站(医保2201/2202, 含退号/重挂/凭条) */
+/* 门诊挂号台: 患者建档(档案管理) + 门诊挂号工作站(医保2201/2202, 含退号/重挂/凭条) */
 (function () {
   var HIS = (window.HIS = window.HIS || {});
   HIS.views = HIS.views || {};
@@ -203,7 +203,7 @@
     '</el-dialog>'
   ].join('\n');
 
-  /* ================= 患者建档 / 查询 ================= */
+  /* ================= 档案管理(原患者建档/查询, 2026-09 并入医共体管理) ================= */
   HIS.views.PatientManage = {
     data: function () {
       return {
@@ -420,7 +420,7 @@
     },
     template: [
       '<div class="page-card">',
-      '  <div class="page-title">患者建档 / 查询</div>',
+      '  <div class="page-title">档案管理</div>',
       '  <div class="toolbar">',
       '    <el-input v-model="keyword" placeholder="姓名/患者号/身份证/医保号/电话/拼音简码" clearable style="width:280px" @keyup.enter="search"></el-input>',
       '    <el-button type="primary" @click="search">查询</el-button>',

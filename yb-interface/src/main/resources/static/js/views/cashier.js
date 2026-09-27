@@ -415,7 +415,7 @@
     ].join('\n')
   };
 
-  /* ================= 收费/结算记录 ================= */
+  /* ================= 收费结算记录 ================= */
   HIS.views.ChargeSetl = {
     mixins: [receiptMixin],
     data: function () {
@@ -606,7 +606,7 @@
     },
     template: [
       '<div class="page-card">',
-      '  <div class="page-title">收费/结算记录 <span style="font-size:12px;color:#909399;font-weight:normal;">(含退费单; 已日结的收费单不可退费)</span></div>',
+      '  <div class="page-title">收费结算记录 <span style="font-size:12px;color:#909399;font-weight:normal;">(含退费单; 已日结的收费单不可退费)</span></div>',
       '  <div class="toolbar">',
       '    <el-select v-model="filterStatus" placeholder="全部状态" clearable style="width:130px">',
       '      <el-option v-for="o in statusOpts" :key="o.v" :label="o.l" :value="o.v"></el-option>',

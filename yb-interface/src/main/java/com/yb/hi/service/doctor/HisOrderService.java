@@ -37,12 +37,14 @@ public class HisOrderService extends ServiceImpl<HisOrderMapper, HisOrder> {
     private final HisVisitService visitService;
     private final HisDiagnosisService diagnosisService;
     private final HisOrderItemMapper itemMapper;
+    private final org.springframework.jdbc.core.JdbcTemplate jdbcTemplate;
 
     public HisOrderService(HisVisitService visitService, HisDiagnosisService diagnosisService,
-                           HisOrderItemMapper itemMapper) {
+                           HisOrderItemMapper itemMapper, org.springframework.jdbc.core.JdbcTemplate jdbcTemplate) {
         this.visitService = visitService;
         this.diagnosisService = diagnosisService;
         this.itemMapper = itemMapper;
+        this.jdbcTemplate = jdbcTemplate;
     }
 
     /** 查询某次就诊的单据列表 */
@@ -56,7 +58,7 @@ public class HisOrderService extends ServiceImpl<HisOrderMapper, HisOrder> {
                 .eq("order_id", orderId).eq("deleted", 0).orderByAsc("id"));
     }
 
-    /** 仅未收费且未作废的医嘱单允许作废(收费状态取所属就诊 charge_status)。 */
+    /** 仅未收费、未作废且下游未开始执行的医嘱单允许作废(收费状态取所属就诊 charge_status)。 */
     @Transactional(rollbackFor = Exception.class)
     public HisOrder cancel(Long id) {
         HisOrder order = getById(id);
@@ -71,10 +73,49 @@ public class HisOrderService extends ServiceImpl<HisOrderMapper, HisOrder> {
         if (visit != null && visit.getChargeStatus() != null && visit.getChargeStatus() != 0) {
             throw new BizException("该医嘱单所属就诊已收费或已退费(收费状态:" + visit.getChargeStatus() + "), 请先退费再作废");
         }
+        // 下游已开始执行(护士已执行/治疗已签到/标本已采集)时禁止作废, 否则产生孤立执行轨迹与已收费未退项
+        String started = describeStartedDownstream(id, order.getExecStatus());
+        if (started != null) {
+            throw new BizException("该医嘱" + started + ", 不能作废(如需停止请走取消执行/退费流程)");
+        }
         order.setStatus(-1);
         updateById(order);
         log.info("医嘱单作废: id={}, orderNo={}, visitId={}", order.getId(), order.getOrderNo(), order.getVisitId());
         return order;
+    }
+
+    /**
+     * 下游执行痕迹探测: 返回可读的"已开始"描述, 无痕迹时 null。
+     * 口径: 医嘱级 exec_status>0(整单已执行/执行中) 或 三类执行单已离开初始态
+     * (护士执行单开始过 / 治疗单已签到或开始 / 标本已采集或签收)。
+     */
+    private String describeStartedDownstream(Long orderId, Integer execStatus) {
+        if (execStatus != null && execStatus > 0) {
+            return "已执行(执行状态:" + execStatus + ")";
+        }
+        long tid = com.yb.hi.framework.tenant.TenantContext.get() == null
+                ? 0L : com.yb.hi.framework.tenant.TenantContext.get();
+        Integer nurse = jdbcTemplate.queryForObject(
+                "SELECT COUNT(*) FROM his_nurse_exec WHERE order_id = ? AND tenant_id = ? AND deleted = 0 AND exec_status <> 0",
+                Integer.class, orderId, tid);
+        if (nurse != null && nurse > 0) {
+            return "已有护理执行单开始/完成";
+        }
+        Integer treat = jdbcTemplate.queryForObject(
+                "SELECT COUNT(*) FROM his_treatment_exec e JOIN his_treatment_plan p ON p.id = e.plan_id AND p.deleted = 0"
+                        + " WHERE p.order_id = ? AND e.tenant_id = ? AND e.deleted = 0"
+                        + " AND (e.exec_status <> 0 OR e.checkin_time IS NOT NULL)",
+                Integer.class, orderId, tid);
+        if (treat != null && treat > 0) {
+            return "已有治疗单签到/执行";
+        }
+        Integer spec = jdbcTemplate.queryForObject(
+                "SELECT COUNT(*) FROM his_specimen WHERE order_id = ? AND tenant_id = ? AND deleted = 0 AND status <> 0",
+                Integer.class, orderId, tid);
+        if (spec != null && spec > 0) {
+            return "已有标本采集/签收";
+        }
+        return null;
     }
 
     /**

@@ -13,6 +13,7 @@ import com.yb.hi.platform.service.SysUserService;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.List;
+import java.util.Map;
 
 /**
  * 用户管理接口(医院管理员)
@@ -89,9 +90,14 @@ public class SysUserController {
         return req.getRole() == null ? "DOCTOR" : req.getRole();
     }
 
+    /** 重置密码: 改 POST body 传新密码, 避免明文密码落入 access/应用日志(#4); 后端兜长度底线 */
     @PostMapping("/{id}/reset-password")
-    public R<Void> resetPassword(@PathVariable Long id, @RequestParam String password) {
+    public R<Void> resetPassword(@PathVariable Long id, @RequestBody Map<String, String> body) {
         guard.requireLeadWrite();
+        String password = body == null ? null : body.get("password");
+        if (password == null || password.length() < 6) {
+            throw new BizException(400, "密码至少6位");
+        }
         userService.resetPassword(id, password);
         return R.ok();
     }
@@ -106,6 +112,10 @@ public class SysUserController {
     @DeleteMapping("/{id}")
     public R<Void> delete(@PathVariable Long id) {
         guard.requireLeadWrite();
+        /* 禁删当前登录账号: 防牵头管理员误删自己导致无人可维护用户(#3) */
+        if (id != null && id.equals(UserContext.userId())) {
+            throw new BizException(400, "不能删除自己的账号, 请先由其他管理员交接");
+        }
         userService.delete(id);
         return R.ok();
     }

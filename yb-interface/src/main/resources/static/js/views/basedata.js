@@ -21,9 +21,10 @@
 
   /* ================= 科室管理(层级树: 大类→科室→窗口/诊室) ================= */
   HIS.views.DeptManage = {
+    mixins: [HIS.kwSelectMixin],
     data: function () {
       return {
-        loading: false, tree: [], nodeMap: {},
+        loading: false, tree: [], nodeMap: {}, allDepts: null,
         deptTypes: DEPT_TYPES, deptCategories: DEPT_CATEGORIES, deptLevels: DEPT_LEVELS,
         orgs: [], filterOrg: null, catyOpts: [], catyMap: {},
         /* 查询条件(前端过滤已加载的机构科室树): 名称/编码关键字 + 大类 + 状态 */
@@ -38,6 +39,17 @@
         orgsCollapsed: (function () { try { return localStorage.getItem('his.deptOrgsCollapsed') === '1'; } catch (e) { return false; } })(),
         /* 左栏机构子树折叠态: 机构id→true=已折叠(隐藏其下级机构) */
         orgFolded: {},
+        /* 左栏机构树过滤关键字(名称/编码/拼音命中, 连同祖先保留) */
+        orgKw: '',
+        /* 右栏科室表列设置: 低频列默认隐藏(拼音码/自定义码/医保科别), localStorage 持久化 */
+        colDefs: [
+          { key: 'code', label: '编码' }, { key: 'pinyin', label: '拼音码' }, { key: 'abbr', label: '自定义码' },
+          { key: 'level', label: '层级' }, { key: 'cat', label: '所属大类' }, { key: 'org', label: '所属机构' },
+          { key: 'type', label: '类型' }, { key: 'caty', label: '医保科别' }, { key: 'status', label: '状态' }, { key: 'clinic', label: '门诊开诊' }
+        ],
+        colOff: (function () {
+          try { return JSON.parse(localStorage.getItem('his.deptCols') || '{"pinyin":1,"abbr":1,"caty":1}'); } catch (e) { return { pinyin: 1, abbr: 1, caty: 1 }; }
+        })(),
         lead: HIS.isLead(),
         /* 三期: 科室默认发药药房下拉选项(按当前表单机构加载启用药房) */
         pharmacyOpts: [],
@@ -45,9 +57,14 @@
       };
     },
     created: function () {
+      var vm = this;
       /* 非牵头: 锁定本机构(后端亦强制), 只读 */
-      if (!this.lead) { this.filterOrg = (HIS.getUser() || {}).orgId || null; }
-      this.loadOrgs(); this.loadCaty(); this.load();
+      if (!vm.lead) { vm.filterOrg = (HIS.getUser() || {}).orgId || null; }
+      vm.loadCaty(); vm.load(); vm.loadDeptCounts();
+      /* 首屏默认收缩到二级(显示二级医疗机构), 与"收缩"按钮同口径(#1) */
+      vm.loadOrgs().then(function () {
+        if (!Object.keys(vm.orgFolded).length) { vm.collapseOrgToLevel(2); }
+      });
     },
     computed: {
       /* 上级科室下拉: 扁平化缩进展示层级; 编辑时排除自身及子树防环 */
@@ -55,12 +72,15 @@
         var vm = this;
         var out = [{ id: 0, label: '（顶级：科室大类）' }];
         var excludeId = vm.editing && vm.form.id ? vm.form.id : null;
+        /* 已选所属机构时上级候选仅限该机构子树, 防跨机构父子(#2) */
+        var orgFilter = vm.form.orgId || null;
         (function walk(nodes, depth) {
           (nodes || []).forEach(function (n) {
             if (excludeId && n.id === excludeId) { return; }
+            if (orgFilter && n.orgId !== orgFilter) { return; }
             var pad = '';
             for (var i = 0; i < depth; i++) { pad += '　'; }
-            out.push({ id: n.id, label: pad + (depth > 0 ? '└ ' : '') + n.deptName });
+            out.push({ id: n.id, label: pad + (depth > 0 ? '└ ' : '') + n.deptName, pyCode: n.pyCode, abbrCode: n.abbrCode });
             walk(n.children, depth + 1);
           });
         })(vm.tree, 0);
@@ -118,9 +138,52 @@
         (function walk(nodes) { (nodes || []).forEach(function (x) { n++; walk(x.children); }); })(this.filteredTree);
         return n;
       },
-      /* 左栏机构列表: 已折叠机构的下级子树整段隐藏(按 depth 跳过) */
+      /* 左栏机构树是否处于过滤态(强制展平 + caret 置灰) */
+      searching: function () { return !!String(this.orgKw || '').trim(); },
+      /* 机构父链索引(共享缓存): 前序展平数组中向前最近更小 orgLevel 即父机构; 角标累计与搜索保留父链两处复用(#5) */
+      orgParentIdx: function () {
+        var orgs = this.orgs; var par = {};
+        for (var i = 0; i < orgs.length; i++) {
+          for (var j = i - 1; j >= 0; j--) { if ((orgs[j].orgLevel || 1) < (orgs[i].orgLevel || 1)) { par[orgs[i].id] = orgs[j].id; break; } }
+        }
+        return par;
+      },
+      /* 右栏计数文案: 树计数含停用, 与左栏"在用"角标口径不同, 明示避免误解(#4) */
+      countHint: function () {
+        var s = '共 ' + this.filteredCount + ' 个科室';
+        return (this.filterStatus === '' || this.filterStatus == null) ? s + '（含停用 · 左栏角标为在用数）' : s;
+      },
+      /* 机构节点在用科室数角标(含下级机构累计); allDepts 未就绪时返回 null 不显示 */
+      orgCountMap: function () {
+        var vm = this;
+        if (!vm.allDepts) { return null; }
+        var direct = {}; var total = 0;
+        vm.allDepts.forEach(function (d) { direct[d.orgId] = (direct[d.orgId] || 0) + 1; total++; });
+        var orgs = vm.orgs; var sub = {}; var par = vm.orgParentIdx;
+        orgs.forEach(function (o) { sub[o.id] = direct[o.id] || 0; });
+        /* 逆序累加: 子机构科室数并入父机构 */
+        for (var k = orgs.length - 1; k >= 0; k--) { var pid = par[orgs[k].id]; if (pid != null && sub[pid] != null) { sub[pid] += sub[orgs[k].id]; } }
+        var m = { all: total };
+        orgs.forEach(function (o) { m['org-' + o.id] = sub[o.id] || 0; });
+        return m;
+      },
+      /* 左栏机构列表: 过滤态忽略折叠强制展平并保留命中祖先链+选中项; 否则按 orgFolded 跳过子树 */
       visibleOrgs: function () {
-        var vm = this, out = [], skipping = null;
+        var vm = this; var out = [];
+        var kw = String(vm.orgKw || '').trim();
+        if (kw) {
+          var byId = {};
+          vm.orgs.forEach(function (o) { byId[o.id] = o; });
+          var par = vm.orgParentIdx;
+          var keep = {};
+          var markUp = function (o) { var c = o; while (c && !keep[c.id]) { keep[c.id] = 1; c = par[c.id] ? byId[par[c.id]] : null; } };
+          vm.orgs.forEach(function (o) { if (HIS.kwMatch(o, kw, ['label', 'orgCode', 'pyCode'])) { markUp(o); } });
+          /* 作用域可见性: 已选机构及其祖先始终保留 */
+          if (vm.filterOrg && byId[vm.filterOrg]) { markUp(byId[vm.filterOrg]); }
+          vm.orgs.forEach(function (o) { if (keep[o.id]) { out.push(o); } });
+          return out;
+        }
+        var skipping = null;
         vm.orgs.forEach(function (o) {
           if (skipping !== null) {
             if ((o.depth || 0) > skipping) { return; }
@@ -144,18 +207,28 @@
           .then(function (list) { vm.pharmacyOpts = list || []; })
           .catch(function () { vm.pharmacyOpts = []; });
       },
-      /* 所属机构变更: 重拉药房选项并清空已选默认药房(避免跨机构残留) */
+      /* 所属机构变更: 重拉药房选项并清空已选默认药房(避免跨机构残留); 上级不属于新机构时重置为顶级(#2) */
       onDeptOrgChange: function () {
         this.form.defPharmacyWest = null; this.form.defPharmacyTcm = null;
+        var pid = this.form.parentId;
+        if (pid && pid !== 0 && (!this.nodeMap[pid] || this.nodeMap[pid].orgId !== this.form.orgId)) {
+          this.form.parentId = 0; this.form.deptLevel = 1;
+          ElementPlus.ElMessage.info('上级科室不属于所选机构, 已重置为顶级(大类)');
+        }
         this.loadPharmacies(this.form.orgId);
       },
       loadOrgs: function () {
         var vm = this;
-        HIS.get('/api/sys/org/tree').then(function (d) {
+        return HIS.get('/api/sys/org/tree').then(function (d) {
           vm.orgs = HIS.flattenOrgs(d || []);
           /* 非牵头: 左栏仅列本机构(后端读隔离亦强制) */
           if (!vm.lead) { vm.orgs = vm.orgs.filter(function (o) { return o.id === vm.filterOrg; }); }
         }).catch(function () { vm.orgs = []; });
+      },
+      /* 左栏机构角标数据源: 一次性拉全院在用科室(status=1)按 orgId 统计(后端按登录机构作用域隔离) */
+      loadDeptCounts: function () {
+        var vm = this;
+        return HIS.get('/api/his/dept/enabled').then(function (d) { vm.allDepts = d || []; }).catch(function () { vm.allDepts = []; });
       },
       /* 左栏点选机构: 右侧科室树按机构过滤(null=全部机构) */
       selectOrg: function (id) {
@@ -169,6 +242,45 @@
       },
       /* 折叠/展开机构下级子树(仅显隐, 不触发筛选) */
       toggleOrgFold: function (o) { this.orgFolded[o.id] = !this.orgFolded[o.id]; },
+      /* 机构树标签高亮: 转义 HTML 后将命中子串包入 <mark>(大小写不敏感) */
+      hl: function (text) {
+        var t = String(text == null ? '' : text);
+        var esc = function (s) { return s.replace(/[&<>]/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]; }); };
+        var kw = String(this.orgKw || '').trim();
+        if (!kw) { return esc(t); }
+        var lower = t.toLowerCase(); var k = kw.toLowerCase(); var out = ''; var i = 0;
+        for (;;) {
+          var idx = lower.indexOf(k, i);
+          if (idx < 0) { out += esc(t.slice(i)); break; }
+          out += esc(t.slice(i, idx)) + '<mark class="kw-hit">' + esc(t.slice(idx, idx + kw.length)) + '</mark>';
+          i = idx + kw.length;
+        }
+        return out;
+      },
+      /* 左栏机构悬停提示: 名称+编码+拼音, 命中编码/拼音而无可见高亮时可解释(#7) */
+      orgTitle: function (o) {
+        var parts = [String(o.label || '').trim()];
+        if (o.orgCode) { parts.push('编码 ' + o.orgCode); }
+        if (o.pyCode) { parts.push('拼音 ' + o.pyCode); }
+        return parts.join(' / ');
+      },
+      /* 机构树批量展开/收缩/到层级(搜索态强制展平, 先清关键字使操作即时可见) */
+      expandAllOrg: function () { this.orgKw = ''; this.orgFolded = {}; },
+      /* "收缩": 收缩到二级机构(保留顶级与二级可见, 折叠二级及更深的子树) */
+      collapseAllOrg: function () {
+        this.orgKw = ''; var f = {}; this.orgs.forEach(function (o) { if (o.hasKids && (o.depth || 0) >= 1) { f[o.id] = true; } }); this.orgFolded = f;
+      },
+      collapseOrgToLevel: function (n) {
+        this.orgKw = '';
+        if (!n) { this.orgFolded = {}; return; }
+        var cap = n - 1; var f = {};
+        this.orgs.forEach(function (o) { if (o.hasKids && (o.depth || 0) >= cap) { f[o.id] = true; } });
+        this.orgFolded = f;
+      },
+      /* 列设置: 勾选=显示(colOff 置0), 取消=隐藏(置1); 持久化 */
+      colShow: function (key) { return !this.colOff[key]; },
+      onColToggle: function (key, shown) { this.colOff[key] = shown ? 0 : 1; this.onColChange(); },
+      onColChange: function () { try { localStorage.setItem('his.deptCols', JSON.stringify(this.colOff)); } catch (e) { } },
       loadCaty: function () { var vm = this; HIS.stdValues('cv_code', 'caty').then(function (l) { vm.catyOpts = l || []; vm.catyMap = HIS.dictMap(l); }).catch(HIS.notifyError); },
       orgName: function (id) { for (var i = 0; i < this.orgs.length; i++) { if (this.orgs[i].id === id) { return String(this.orgs[i].label).trim(); } } return '-'; },
       load: function () {
@@ -241,16 +353,28 @@
           if (!this.form.orgId && p.orgId) { this.form.orgId = p.orgId; }
         }
       },
+      /* 保存前基础校验: 编码/名称必填; 编码/电话若填做格式约束(不伤历史宽松值) */
+      validateForm: function () {
+        var f = this.form;
+        if (!String(f.deptCode || '').trim()) { return '科室编码必填'; }
+        if (!String(f.deptName || '').trim()) { return '科室名称必填'; }
+        if (f.deptCode && !/^[0-9A-Za-z_.\-]+$/.test(String(f.deptCode).trim())) { return '科室编码仅允许字母数字及 _ . - ';
+        }
+        var ph = String(f.phone || '').trim();
+        if (ph && !/^[0-9+\-() ]{6,20}$/.test(ph)) { return '联系电话格式不正确'; }
+        return null;
+      },
       submit: function () {
         var vm = this;
-        if (!vm.form.deptCode || !vm.form.deptName) { ElementPlus.ElMessage.warning('科室编码与名称必填'); return; }
+        var err = vm.validateForm();
+        if (err) { ElementPlus.ElMessage.warning(err); return; }
         var p = vm.editing ? HIS.put('/api/his/dept', vm.form) : HIS.post('/api/his/dept', vm.form);
-        p.then(function () { HIS.notifySuccess('保存成功'); vm.dlg = false; vm.load(); }).catch(HIS.notifyError);
+        p.then(function () { HIS.notifySuccess('保存成功'); vm.dlg = false; vm.load(); vm.loadDeptCounts(); }).catch(HIS.notifyError);
       },
       del: function (row) {
         var vm = this;
         if (row.children && row.children.length) { ElementPlus.ElMessage.warning('该科室存在下级, 请先删除或移动下级科室'); return; }
-        HIS.del('/api/his/dept/' + row.id).then(function () { HIS.notifySuccess('已删除'); vm.load(); }).catch(HIS.notifyError);
+        HIS.del('/api/his/dept/' + row.id).then(function () { HIS.notifySuccess('已删除'); vm.load(); vm.loadDeptCounts(); }).catch(HIS.notifyError);
       }
     },
     template: [
@@ -264,9 +388,28 @@
       '        <span v-show="orgsCollapsed" class="dept-orgs-vt">机构列表</span>',
       '        <el-button link size="small" class="dept-orgs-tg" :title="orgsCollapsed?\'展开机构列表\':\'收缩机构列表\'" @click="toggleOrgs">{{ orgsCollapsed ? "\u00bb" : "\u00ab" }}</el-button>',
       '      </div>',
+      '      <div v-show="!orgsCollapsed" style="padding:6px 8px 0;">',
+      '        <el-input v-model="orgKw" size="small" clearable placeholder="过滤机构名/编码"></el-input>',
+      '        <div class="dept-tree-tools">',
+      '          <span class="dept-tree-tools-lb">层级</span>',
+      '          <el-button link size="small" class="dept-tree-btn" title="展开全部层级" @click="expandAllOrg">展开</el-button>',
+      '          <el-dropdown trigger="click" class="dept-tree-drop" @command="collapseOrgToLevel">',
+      '            <el-button link size="small" class="dept-tree-btn" title="展开/收缩到指定层级">到层级\u25be</el-button>',
+      '            <template #dropdown>',
+      '              <el-dropdown-menu>',
+      '                <el-dropdown-item :command="1">一级（顶级机构）</el-dropdown-item>',
+      '                <el-dropdown-item :command="2">二级（卫生院/社区）</el-dropdown-item>',
+      '                <el-dropdown-item :command="3">三级（卫生室）</el-dropdown-item>',
+      '              </el-dropdown-menu>',
+      '            </template>',
+      '          </el-dropdown>',
+      '          <el-button link size="small" class="dept-tree-btn" title="收缩到二级(显示二级医疗机构)" @click="collapseAllOrg">收缩</el-button>',
+      '        </div>',
+      '      </div>',
       '      <el-scrollbar v-show="!orgsCollapsed">',
-      '        <div v-if="lead" class="dept-org-item" :class="{active: filterOrg===null}" @click="selectOrg(null)"><span class="tree-caret"></span>全部机构</div>',
-      '        <div v-for="o in visibleOrgs" :key="o.id" class="dept-org-item" :class="{active: filterOrg===o.id}" @click="selectOrg(o.id)"><span v-if="o.hasKids" class="tree-caret" @click.stop="toggleOrgFold(o)">{{ orgFolded[o.id] ? \'▸\' : \'▾\' }}</span><span v-else class="tree-caret"></span>{{ o.label }}</div>',
+      '        <div v-if="lead" class="dept-org-item" :class="{active: filterOrg===null}" @click="selectOrg(null)"><span class="tree-caret"></span><span>全部机构</span><span v-if="orgCountMap" class="tree-cnt" title="在用科室数(不含停用)">{{ orgCountMap.all }}</span></div>',
+      '        <div v-for="o in visibleOrgs" :key="o.id" class="dept-org-item" :title="orgTitle(o)" :class="{active: filterOrg===o.id}" @click="selectOrg(o.id)"><span v-if="o.hasKids" class="tree-caret" :class="{\'is-inert\': searching}" :title="searching?\'过滤态自动展开全部层级, 清空关键字后可折叠\':\'折叠/展开\'" @click.stop="searching ? null : toggleOrgFold(o)">{{ (searching || !orgFolded[o.id]) ? \'▾\' : \'▸\' }}</span><span v-else class="tree-caret"></span><span v-html="hl(o.label)"></span><span v-if="orgCountMap && orgCountMap[\'org-\'+o.id]" class="tree-cnt" title="在用科室数(含下级机构, 不含停用)">{{ orgCountMap[\'org-\'+o.id] }}</span></div>',
+      '        <div v-if="orgKw && !visibleOrgs.length" class="dept-tree-empty">无匹配机构</div>',
       '      </el-scrollbar>',
       '    </div>',
       '    <div class="dept-main">',
@@ -277,25 +420,31 @@
       '    <el-select v-model="filterStatus" placeholder="全部状态" clearable style="width:100px" @change="onQueryChange"><el-option label="启用" :value="1"></el-option><el-option label="停用" :value="0"></el-option></el-select>',
       '    <el-checkbox v-if="lead" v-model="withSubOrgs" @change="load" title="勾选后选中机构时级联显示下级机构的科室; 默认仅显示选中机构本身的科室" style="margin-left:4px;">含下级机构</el-checkbox>',
       '    <el-button :loading="exporting" @click="exportRows">导出</el-button>',
+      '    <el-popover placement="bottom" :width="180" trigger="click">',
+      '      <template #reference><el-button link type="primary" size="small" style="margin-left:6px;">列设置</el-button></template>',
+      '      <div style="max-height:260px;overflow:auto;">',
+      '        <el-checkbox v-for="c in colDefs" :key="c.key" :model-value="colShow(c.key)" @change="onColToggle(c.key, $event)" style="display:block;margin:2px 0;">{{ c.label }}</el-checkbox>',
+      '      </div>',
+      '    </el-popover>',
       '    <el-radio-group v-model="paged" size="small" @change="onPagedToggle" title="右侧明细显示模式: 全量=树形展示所有行; 分页=按明细行分页平铺展示" style="margin-left:6px;">',
       '      <el-radio-button :label="false">全量</el-radio-button>',
       '      <el-radio-button :label="true">分页</el-radio-button>',
       '    </el-radio-group>',
-      '    <span style="color:#909399;font-size:13px;">点击左侧机构查看其科室 · 共 {{ filteredCount }} 个科室</span></div>',
+      '    <span style="color:#909399;font-size:13px;">点击左侧机构查看其科室 · {{ countHint }}</span></div>',
       '  <div class="table-box">',
       '  <el-table :data="pagedTree" v-loading="loading" border row-key="id" :tree-props="{children:\'children\'}" default-expand-all size="small" height="100%">',
       '    <el-table-column type="index" :index="seqNo" label="序号" width="60"></el-table-column>',
       '    <el-table-column prop="deptName" label="科室名称" min-width="200"></el-table-column>',
-      '    <el-table-column prop="deptCode" label="编码" width="90"></el-table-column>',
-      '    <el-table-column prop="pyCode" label="拼音码" width="90"><template #default="s">{{ s.row.pyCode || \'-\' }}</template></el-table-column>',
-      '    <el-table-column prop="abbrCode" label="自定义码" width="90"><template #default="s">{{ s.row.abbrCode || \'-\' }}</template></el-table-column>',
-      '    <el-table-column label="层级" width="90"><template #default="s"><el-tag size="small" :type="levelTagType(s.row.deptLevel)">{{ levelLabel(s.row.deptLevel) }}</el-tag></template></el-table-column>',
-      '    <el-table-column prop="deptCategory" label="所属大类" width="110"></el-table-column>',
-      '    <el-table-column label="所属机构" min-width="140" show-overflow-tooltip><template #default="s">{{ orgName(s.row.orgId) }}</template></el-table-column>',
-      '    <el-table-column prop="deptType" label="类型" width="70"></el-table-column>',
-      '    <el-table-column label="医保科别" width="130" show-overflow-tooltip><template #default="s">{{ s.row.deptCatyName || catyMap[s.row.deptCaty] || s.row.deptCaty || \'-\' }}</template></el-table-column>',
-      '    <el-table-column label="状态" width="70"><template #default="s"><el-tag size="small" :type="s.row.status===1?\'success\':\'info\'">{{ s.row.status===1?"启用":"停用" }}</el-tag></template></el-table-column>',
-      '    <el-table-column label="门诊开诊" width="90" title="仅开诊的门诊科室参与排班与挂号"><template #default="s"><el-tag v-if="s.row.deptCategory===\'门诊科室\'" size="small" :type="s.row.openClinic===0?\'info\':\'success\'">{{ s.row.openClinic===0?"未开诊":"开诊" }}</el-tag><span v-else style="color:#c0c4cc;">-</span></template></el-table-column>',
+      '    <el-table-column v-if="colShow(\'code\')" prop="deptCode" label="编码" width="90"></el-table-column>',
+      '    <el-table-column v-if="colShow(\'pinyin\')" prop="pyCode" label="拼音码" width="90"><template #default="s">{{ s.row.pyCode || \'-\' }}</template></el-table-column>',
+      '    <el-table-column v-if="colShow(\'abbr\')" prop="abbrCode" label="自定义码" width="90"><template #default="s">{{ s.row.abbrCode || \'-\' }}</template></el-table-column>',
+      '    <el-table-column v-if="colShow(\'level\') || paged" label="层级" width="90"><template #default="s"><el-tag size="small" :type="levelTagType(s.row.deptLevel)">{{ levelLabel(s.row.deptLevel) }}</el-tag></template></el-table-column>',
+      '    <el-table-column v-if="colShow(\'cat\')" prop="deptCategory" label="所属大类" width="110"></el-table-column>',
+      '    <el-table-column v-if="colShow(\'org\')" label="所属机构" min-width="140" show-overflow-tooltip><template #default="s">{{ orgName(s.row.orgId) }}</template></el-table-column>',
+      '    <el-table-column v-if="colShow(\'type\')" prop="deptType" label="类型" width="70"></el-table-column>',
+      '    <el-table-column v-if="colShow(\'caty\')" label="医保科别" width="130" show-overflow-tooltip><template #default="s">{{ s.row.deptCatyName || catyMap[s.row.deptCaty] || s.row.deptCaty || \'-\' }}</template></el-table-column>',
+      '    <el-table-column v-if="colShow(\'status\')" label="状态" width="70"><template #default="s"><el-tag size="small" :type="s.row.status===1?\'success\':\'info\'">{{ s.row.status===1?"启用":"停用" }}</el-tag></template></el-table-column>',
+      '    <el-table-column v-if="colShow(\'clinic\')" label="门诊开诊" width="90" title="仅开诊的门诊科室参与排班与挂号"><template #default="s"><el-tag v-if="s.row.deptCategory===\'门诊科室\'" size="small" :type="s.row.openClinic===0?\'info\':\'success\'">{{ s.row.openClinic===0?"未开诊":"开诊" }}</el-tag><span v-else style="color:#c0c4cc;">-</span></template></el-table-column>',
       '    <el-table-column label="操作" min-width="190" fixed="right"><template #default="s">',
       '      <el-button v-if="lead" link type="primary" @click="edit(s.row)">编辑</el-button>',
       '      <el-button v-if="lead" link type="success" @click="addChild(s.row)">新增下级</el-button>',
@@ -311,10 +460,10 @@
       '  </div>',
       '  <el-dialog v-model="dlg" :title="editing?\'编辑科室\':\'新增科室\'" width="560px">',
       '    <el-form :model="form" label-width="100px" size="default">',
-      '      <el-form-item label="上级科室"><el-select v-model="form.parentId" style="width:100%" @change="onParentChange"><el-option v-for="o in parentOptions" :key="o.id" :label="o.label" :value="o.id"></el-option></el-select></el-form-item>',
+      '      <el-form-item label="上级科室"><el-select v-model="form.parentId" filterable style="width:100%" placeholder="选择上级科室(可输拼音简码)" :filter-method="kwFilter(\'dParent\')" @change="onParentChange"><el-option v-for="o in kwOptions(\'dParent\', parentOptions, [\'label\',\'pyCode\',\'abbrCode\'])" :key="o.id" :label="o.label" :value="o.id"></el-option></el-select></el-form-item>',
       '      <el-form-item label="科室大类"><el-select v-model="form.deptCategory" clearable style="width:100%" placeholder="门诊/住院/病区护理/医技/行政后勤"><el-option v-for="c in deptCategories" :key="c" :label="c" :value="c"></el-option></el-select></el-form-item>',
-      '      <el-form-item label="层级"><el-select v-model="form.deptLevel" style="width:100%"><el-option v-for="l in deptLevels" :key="l.v" :label="l.v+\'-\'+l.l" :value="l.v"></el-option></el-select></el-form-item>',
-      '      <el-form-item label="所属机构"><el-select v-model="form.orgId" clearable filterable style="width:100%" placeholder="医共体内机构(可选)" @change="onDeptOrgChange"><el-option v-for="o in orgs" :key="o.id" :label="o.label" :value="o.id"></el-option></el-select></el-form-item>',
+      '      <el-form-item label="层级"><el-select v-model="form.deptLevel" style="width:100%" :disabled="form.parentId !== 0 && form.parentId != null" :title="form.parentId !== 0 && form.parentId != null ? \'已选上级, 层级由上级自动推导(#3)\' : \'\'"><el-option v-for="l in deptLevels" :key="l.v" :label="l.v+\'-\'+l.l" :value="l.v"></el-option></el-select></el-form-item>',
+      '      <el-form-item label="所属机构"><el-select v-model="form.orgId" clearable filterable style="width:100%" placeholder="医共体内机构(可选; 可输拼音简码)" :filter-method="kwFilter(\'dOrg\')" @change="onDeptOrgChange"><el-option v-for="o in kwOptions(\'dOrg\', orgs, [\'label\',\'orgCode\',\'pyCode\'])" :key="o.id" :label="o.label" :value="o.id"></el-option></el-select></el-form-item>',
       '      <el-form-item label="科室编码"><el-input v-model="form.deptCode"></el-input></el-form-item>',
       '      <el-form-item label="科室名称"><el-input v-model="form.deptName"></el-input></el-form-item>',
       '      <el-form-item label="拼音码"><el-input v-model="form.pyCode" disabled placeholder="保存时按名称自动生成"></el-input></el-form-item>',
@@ -348,12 +497,16 @@
         abxOpts: [], abxMap: {},
         surgeryOpts: [], surgeryMap: {},
         activeTab: 'basic',
-        filterOrg: null, filterDept: null, filterType: '', keyword: '',
+        filterOrg: null, filterDept: null, filterType: '', filterStatus: null, keyword: '',
         /* 选上级科室时是否级联显示下级科室人员(默认开, 关=仅精确匹配选中科室) */
         withKids: true,
         /* 选上级机构时是否级联显示下级机构人员(默认开, 关=仅精确匹配选中机构; 仅牵头机构生效) */
         withSubOrgs: true,
         exporting: false,
+        /* 服务端筛选结果全集(不参与分页): 供左栏节点人数统计; 无统计时置 null 不显示角标 */
+        allRows: null,
+        /* 左栏树过滤关键字(按机构/科室名, 命中节点连同其父级链保留显示) */
+        treeKw: '',
         /* 右侧明细显示模式: paged=true 分页 / false 全量(默认, localStorage 持久化) */
         paged: (function () { try { return localStorage.getItem('his.staffPaged') === '1'; } catch (e) { return false; } })(),
         page: 1, size: 20,
@@ -361,14 +514,28 @@
         orgsCollapsed: (function () { try { return localStorage.getItem('his.staffOrgsCollapsed') === '1'; } catch (e) { return false; } })(),
         /* 左栏分支折叠态: key(org-Id/dept-Id)→true=已折叠 */
         folded: {},
+        /* 列设置: 低频列默认隐藏(pinyin拼音码/abbr自定义码/atddr主治医师编码/fee挂号费/sort排序), localStorage 持久化 */
+        colDefs: [
+          { key: 'pinyin', label: '拼音码' }, { key: 'abbr', label: '自定义码' }, { key: 'cat', label: '类别' },
+          { key: 'dept', label: '科室' }, { key: 'org', label: '归属机构' }, { key: 'atddr', label: '主治医师编码' },
+          { key: 'reg', label: '可挂号' }, { key: 'fee', label: '挂号费' }, { key: 'status', label: '状态' }, { key: 'rx', label: '处方权限' }
+        ],
+        colOff: (function () {
+          try { return JSON.parse(localStorage.getItem('his.staffCols') || '{"abbr":1,"atddr":1,"fee":1}'); } catch (e) { return { abbr: 1, atddr: 1, fee: 1 }; }
+        })(),
         lead: HIS.isLead(),
         dlg: false, editing: false, form: this.empty()
       };
     },
     created: function () {
+      var vm = this;
       /* 非牵头: 锁定本机构(后端亦强制), 只读 */
-      if (!this.lead) { this.filterOrg = (HIS.getUser() || {}).orgId || null; }
-      this.loadDicts(); this.loadDepts(); this.loadOrgs(); this.load();
+      if (!vm.lead) { vm.filterOrg = (HIS.getUser() || {}).orgId || null; }
+      vm.loadDicts(); vm.load(); vm.loadCounts();
+      /* 首屏默认折叠到科室层: 待机构+科室树就绪后一次性设定, 数百节点不再全展开(用户已手动展开则不覆盖) */
+      Promise.all([vm.loadDepts(), vm.loadOrgs()]).then(function () {
+        if (!Object.keys(vm.folded).length) { vm.collapseToLevel(3); }
+      });
     },
     computed: {
       /* 表单科室下拉按所选机构联动: 选定机构时只列该机构下科室 */
@@ -377,37 +544,119 @@
         if (!f.orgId) { return this.depts; }
         return this.depts.filter(function (d) { return d.orgId === f.orgId; });
       },
-      /* 分页模式按页切片; 全量模式直接返完整列表 */
-      pagedList: function () {
-        if (!this.paged) { return this.list; }
-        return this.list.slice((this.page - 1) * this.size, this.page * this.size);
+      /* 科室索引(仅随 depts 变化重算): 按机构分组 + 按(机构:父科室)分组子节点 + id 直查,
+         将 leftNodes/branchList 的 O(机构×科室^2) 重复 filter/some 降为近似 O(科室) */
+      deptIndex: function () {
+        var byId = {}; var byOrg = {}; var childrenOf = {};
+        this.depts.forEach(function (d) {
+          byId[d.id] = d;
+          (byOrg[d.orgId] = byOrg[d.orgId] || []).push(d);
+          if (d.parentId) { var k = d.orgId + ':' + d.parentId; (childrenOf[k] = childrenOf[k] || []).push(d); }
+        });
+        return { byId: byId, byOrg: byOrg, childrenOf: childrenOf };
       },
       /* 左栏组合层级: 全部机构 → 机构(按 org_level 缩进) → 其下科室树(按 dept_level 缩进);
          有子级的节点带 caret 可折叠(folded 记录), 点节点本身仍为筛选 */
       leftNodes: function () {
-        var vm = this;
+        var vm = this; var idx = vm.deptIndex;
+        /* 搜索态强制展平整棵树(命中分支不因手动折叠而被隐藏); 非搜索态尊重 folded */
+        var ignoreFold = !!String(vm.treeKw || '').trim();
+        var isFold = function (k) { return !ignoreFold && vm.folded[k]; };
+        var rootsOf = function (mine) {
+          return mine.filter(function (d) { var p = d.parentId ? idx.byId[d.parentId] : null; return !p || p.orgId !== d.orgId; });
+        };
         var out = [{ type: 'all', id: null, label: '全部机构', pad: 0, kids: false, key: 'all' }];
         vm.orgs.forEach(function (o) {
           var base = (o.orgLevel || 1) - 1;
-          var mine = vm.depts.filter(function (d) { return d.orgId === o.id; });
-          var map = {};
-          mine.forEach(function (d) { map[d.id] = d; });
+          var mine = idx.byOrg[o.id] || [];
           var orgKey = 'org-' + o.id;
-          out.push({ type: 'org', id: o.id, label: String(o.label).trim(), pad: base, kids: mine.length > 0, key: orgKey });
-          if (!mine.length || vm.folded[orgKey]) { return; }
+          out.push({ type: 'org', id: o.id, label: String(o.label).trim(), code: o.orgCode, pyCode: o.pyCode, pad: base, kids: mine.length > 0, key: orgKey });
+          if (!mine.length || isFold(orgKey)) { return; }
           (function walk(parentId, depth) {
-            mine.forEach(function (d) {
-              var isRoot = !d.parentId || !map[d.parentId];
-              if (parentId === 0 ? isRoot : d.parentId === parentId) {
-                var dk = 'dept-' + d.id;
-                var hasKids = mine.some(function (c) { return c.parentId === d.id; });
-                out.push({ type: 'dept', id: d.id, orgId: o.id, label: d.deptName, pad: base + 1 + depth, kids: hasKids, key: dk });
-                if (hasKids && !vm.folded[dk]) { walk(d.id, depth + 1); }
-              }
+            var list = parentId === 0 ? rootsOf(mine) : (idx.childrenOf[o.id + ':' + parentId] || []);
+            list.forEach(function (d) {
+              var dk = 'dept-' + d.id;
+              var kids = idx.childrenOf[o.id + ':' + d.id] || [];
+              out.push({ type: 'dept', id: d.id, orgId: o.id, parentId: d.parentId, label: d.deptName, code: d.deptCode, pyCode: d.pyCode, abbr: d.abbrCode, pad: base + 1 + depth, kids: kids.length > 0, key: dk });
+              if (kids.length && !isFold(dk)) { walk(d.id, depth + 1); }
             });
           })(0, 0);
         });
         return out;
+      },
+      /* 左栏树(应用过滤关键字): 命中节点(名称/编码/拼音码/自定义码)保留, 并连同父级机构/科室链一起显示;
+         已选中的作用域节点(机构/科室)始终保留不被过滤掉 */
+      filterTree: function () {
+        var vm = this;
+        var kw = String(vm.treeKw || '').trim().toLowerCase();
+        var nodes = vm.leftNodes;
+        if (!kw) { return nodes; }
+        var keep = {};
+        var byKey = {};
+        nodes.forEach(function (n) { byKey[n.key] = n; });
+        /* 标记节点及其父级链(已标记则其祖先必已标记, 提前停止) */
+        var markChain = function (n) {
+          while (n && !keep[n.key]) {
+            keep[n.key] = 1;
+            n = n.type === 'dept' ? (n.parentId ? byKey['dept-' + n.parentId] : byKey['org-' + n.orgId]) : null;
+          }
+        };
+        var hit = function (v) { return v && String(v).toLowerCase().indexOf(kw) >= 0; };
+        nodes.forEach(function (n) {
+          if (hit(n.label) || hit(n.code) || hit(n.pyCode) || hit(n.abbr)) { markChain(n); }
+        });
+        /* 作用域可见性: 仅当已选定机构/科室时保留其选中节点(未选定时"全部机构"不强制保留, 以便零命中空态生效) */
+        if (vm.filterOrg || vm.filterDept) {
+          nodes.forEach(function (n) { if (vm.nodeActive(n)) { markChain(n); } });
+        }
+        return nodes.filter(function (n) { return keep[n.key]; });
+      },
+      /* 筛选条件回显: 非"全部机构"时显示当前作用域(机构 ▸ 科室), 点 × 一键清除 */
+      chipLabel: function () {
+        if (!this.filterOrg && !this.filterDept) { return ''; }
+        var s = this.orgName(this.filterOrg);
+        if (this.filterDept) { s += ' ▸ ' + this.deptName(this.filterDept); }
+        return s;
+      },
+      /* 是否处于树过滤态(决定 leftNodes 强制展平与 caret 是否可点) */
+      searching: function () { return !!String(this.treeKw || '').trim(); },
+      /* 分页模式按当前列表切片; 全量模式直接返完整列表 */
+      pagedList: function () {
+        if (!this.paged) { return this.list; }
+        return this.list.slice((this.page - 1) * this.size, this.page * this.size);
+      },
+      /* 左栏节点人数角标索引: 基于全集一次性统计(机构含下级机构累计, 科室含子科室累计); 未拉全集时返回 null 不显示 */
+      nodeCountMap: function () {
+        var vm = this;
+        if (!vm.allRows) { return null; }
+        var m = { all: vm.allRows.length };
+        var deptById = vm.deptIndex.byId;
+        /* 机构父级索引: flattenOrgs 为前序展平, 向前最近的更小 orgLevel 即父机构 */
+        var orgParent = {};
+        for (var i = 0; i < vm.orgs.length; i++) {
+          for (var j = i - 1; j >= 0; j--) {
+            if ((vm.orgs[j].orgLevel || 1) < (vm.orgs[i].orgLevel || 1)) { orgParent[vm.orgs[i].id] = vm.orgs[j].id; break; }
+          }
+        }
+        vm.allRows.forEach(function (s) {
+          var d = deptById[s.deptId];
+          /* 科室链逐级累计(含子科室); 链顶科室的 orgId 即机构节点 */
+          var orgId = 0; var seen = {};
+          /* 环/自引用守卫: 科室父链遇重复 id 立即停止, 避免脏数据导致整页死循环卡死 */
+          while (d && !seen[d.id]) {
+            seen[d.id] = 1;
+            m['dept-' + d.id] = (m['dept-' + d.id] || 0) + 1;
+            if (!d.parentId && d.orgId) { orgId = d.orgId; }
+            d = d.parentId ? deptById[d.parentId] : null;
+          }
+          if (!orgId) { orgId = s.orgId; }
+          /* 机构沿父链上卷, 上级机构含下级机构累计 */
+          while (orgId) {
+            m['org-' + orgId] = (m['org-' + orgId] || 0) + 1;
+            orgId = orgParent[orgId];
+          }
+        });
+        return m;
       }
     },
     methods: {
@@ -430,14 +679,14 @@
       empty: function () {
         return { id: null, staffNo: '', staffName: '', pyCode: '', abbrCode: '', staffType: '医师', gender: '1', titleCode: '', titleName: '', deptId: null, orgId: null, atddrNo: '', diseDorNo: '', idCard: '', birthDate: '', medInsurCode: '', pracCate: '', drQualCertNo: '', pracCertNo: '', phone: '', canRegister: 0, regFee: 0, sortNo: 0, status: 1, memo: '', avatarUrl: '', signImgUrl: '', rxRight: 0, narcoticRight: 0, psych1Right: 0, psych2Right: 0, antibioticLevel: '', surgeryLevel: '', rxAuthOrg: '', rxAuthNo: '', rxAuthDate: '', rxValidUntil: '' };
       },
-      loadDepts: function () { var vm = this; HIS.get('/api/his/dept/enabled').then(function (d) { vm.depts = d || []; }).catch(HIS.notifyError); },
+      loadDepts: function () { var vm = this; return HIS.get('/api/his/dept/enabled').then(function (d) { vm.depts = d || []; }).catch(HIS.notifyError); },
       onOrgChange: function () {
         var vm = this;
         if (vm.form.deptId && vm.formDepts.every(function (d) { return d.id !== vm.form.deptId; })) { vm.form.deptId = null; }
       },
       loadOrgs: function () {
         var vm = this;
-        HIS.get('/api/sys/org/tree').then(function (d) {
+        return HIS.get('/api/sys/org/tree').then(function (d) {
           vm.orgs = HIS.flattenOrgs(d || []);
           /* 非牵头: 左栏仅列本机构(后端读隔离亦强制) */
           if (!vm.lead) { vm.orgs = vm.orgs.filter(function (o) { return o.id === vm.filterOrg; }); }
@@ -454,6 +703,21 @@
         if (n.type === 'org') { return this.filterOrg === n.id && !this.filterDept; }
         return !this.filterOrg && !this.filterDept;
       },
+      /* 树节点标签高亮: 先转义 HTML 再将命中子串包入 <mark>(大小写不敏感) */
+      hl: function (text) {
+        var t = String(text == null ? '' : text);
+        var esc = function (s) { return s.replace(/[&<>]/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]; }); };
+        var kw = String(this.treeKw || '').trim();
+        if (!kw) { return esc(t); }
+        var lower = t.toLowerCase(); var k = kw.toLowerCase(); var out = ''; var i = 0;
+        for (;;) {
+          var idx = lower.indexOf(k, i);
+          if (idx < 0) { out += esc(t.slice(i)); break; }
+          out += esc(t.slice(i, idx)) + '<mark class="kw-hit">' + esc(t.slice(idx, idx + kw.length)) + '</mark>';
+          i = idx + kw.length;
+        }
+        return out;
+      },
       /* 左栏收缩/展开切换并持久化 */
       toggleOrgs: function () {
         this.orgsCollapsed = !this.orgsCollapsed;
@@ -461,14 +725,71 @@
       },
       /* 折叠/展开左栏分支(仅显隐子级, 不触发筛选) */
       toggleFold: function (n) { this.folded[n.key] = !this.folded[n.key]; },
+      /* 收集所有"有子级"分支节点及其显示层级 pad(与 leftNodes 展平口径一致, 忽略 folded 全展开), 供按层级批量收展 */
+      branchList: function () {
+        var vm = this; var idx = vm.deptIndex; var arr = [];
+        var rootsOf = function (mine) {
+          return mine.filter(function (d) { var p = d.parentId ? idx.byId[d.parentId] : null; return !p || p.orgId !== d.orgId; });
+        };
+        vm.orgs.forEach(function (o) {
+          var base = (o.orgLevel || 1) - 1;
+          var mine = idx.byOrg[o.id] || [];
+          if (mine.length) { arr.push({ key: 'org-' + o.id, pad: base }); }
+          (function walk(parentId, depth) {
+            var list = parentId === 0 ? rootsOf(mine) : (idx.childrenOf[o.id + ':' + parentId] || []);
+            list.forEach(function (d) {
+              var kids = idx.childrenOf[o.id + ':' + d.id] || [];
+              if (kids.length) { arr.push({ key: 'dept-' + d.id, pad: base + 1 + depth }); walk(d.id, depth + 1); }
+            });
+          })(0, 0);
+        });
+        return arr;
+      },
+      /* 批量展开/收缩: 搜索态会强制展平, 故先清空关键字确保操作即时可见 */
+      expandAllTree: function () { this.treeKw = ''; this.folded = {}; },
+      /* 全部收缩: 仅显示"全部机构"+顶级机构行(折叠所有分支) */
+      collapseAllTree: function () {
+        this.treeKw = '';
+        var f = {}; this.branchList().forEach(function (b) { f[b.key] = true; }); this.folded = f;
+      },
+      /* 展开到第 n 级(1-based 显示层级=pad+1): 折叠 pad>=n-1 的分支即隐藏更深层; n=0/空=全部展开 */
+      collapseToLevel: function (n) {
+        this.treeKw = '';
+        if (!n) { this.folded = {}; return; }
+        var cap = n - 1; var f = {};
+        this.branchList().forEach(function (b) { if (b.pad >= cap) { f[b.key] = true; } });
+        this.folded = f;
+      },
       load: function () {
         var vm = this; vm.loading = true;
         var q = '/api/his/staff/list?1=1';
         if (vm.filterOrg) { q += '&orgId=' + vm.filterOrg + '&withSubOrgs=' + vm.withSubOrgs; }
         if (vm.filterDept) { q += '&deptId=' + vm.filterDept + '&withChildren=' + vm.withKids; }
         if (vm.filterType) { q += '&staffType=' + encodeURIComponent(vm.filterType); }
+        if (vm.filterStatus !== '' && vm.filterStatus != null) { q += '&status=' + vm.filterStatus; }
         if (vm.keyword) { q += '&keyword=' + encodeURIComponent(vm.keyword); }
-        HIS.get(q).then(function (d) { vm.list = d || []; vm.page = 1; }).catch(HIS.notifyError).finally(function () { vm.loading = false; });
+        HIS.get(q).then(function (d) {
+          vm.list = d || []; vm.page = 1;
+        }).catch(HIS.notifyError).finally(function () { vm.loading = false; });
+      },
+      /* 左栏人数角标全集来源: 独立于右表筛选, 拉一次不带任何筛选的列表(后端按登录机构作用域隔离);
+         新增/编辑/删除后需重调, 保证角标与"全部机构"总数随数据变化刷新 */
+      loadCounts: function () {
+        var vm = this;
+        HIS.get('/api/his/staff/list?1=1').then(function (d) { vm.allRows = d || []; }).catch(function () { });
+      },
+      /* 一键清除左栏筛选回到"全部机构" */
+      chipClear: function () { this.filterOrg = null; this.filterDept = null; this.load(); },
+      /* 列设置: 显隐开关(持久化) */
+      colShow: function (key) { return !this.colOff[key]; },
+      /* 复选框代"显示"语义: 勾选=显示(colOff 置0), 取消=隐藏(colOff 置1) */
+      onColToggle: function (key, shown) { this.colOff[key] = shown ? 0 : 1; this.onColChange(); },
+      onColChange: function () {
+        try { localStorage.setItem('his.staffCols', JSON.stringify(this.colOff)); } catch (e) { }
+      },
+      /* 类别标签配色: 医师/药师/护士/技师区分显示, 未知类别回退灰 */
+      typeTag: function (t) {
+        return { '医师': 'primary', '药师': 'success', '护士': 'warning', '技师': 'info' }[t] || 'info';
       },
       /* 分页/全量模式切换(持久化)与翻页 */
       onPagedToggle: function () {
@@ -486,6 +807,7 @@
         if (vm.filterOrg) { q += '&orgId=' + vm.filterOrg + '&withSubOrgs=' + vm.withSubOrgs; }
         if (vm.filterDept) { q += '&deptId=' + vm.filterDept + '&withChildren=' + vm.withKids; }
         if (vm.filterType) { q += '&staffType=' + encodeURIComponent(vm.filterType); }
+        if (vm.filterStatus !== '' && vm.filterStatus != null) { q += '&status=' + vm.filterStatus; }
         if (vm.keyword) { q += '&keyword=' + encodeURIComponent(vm.keyword); }
         vm.exporting = true;
         HIS.download(q).then(function (name) {
@@ -502,13 +824,27 @@
         this.dlg = true;
       },
       edit: function (row) { this.editing = true; this.form = clean(Object.assign(this.empty(), row)); this.activeTab = 'basic'; this.dlg = true; },
+      /* 保存前基础格式校验: 仅拦截明确的格式错误, 对选填/历史宽松值不误伤 */
+      validateForm: function () {
+        var f = this.form;
+        if (!String(f.staffNo || '').trim()) { return '工号必填'; }
+        if (!String(f.staffName || '').trim()) { return '姓名必填'; }
+        var idc = String(f.idCard || '').trim();
+        if (idc && !/^\d{17}[0-9Xx]$/.test(idc)) { return '身份证号格式不正确(应为18位)'; }
+        var ph = String(f.phone || '').trim();
+        if (ph && !/^[0-9+\-() ]{6,20}$/.test(ph)) { return '联系电话格式不正确'; }
+        if (f.regFee !== '' && f.regFee != null && (isNaN(Number(f.regFee)) || Number(f.regFee) < 0)) { return '挂号费须为不小于0的数字'; }
+        if (f.birthDate && String(f.birthDate) > new Date().toISOString().slice(0, 10)) { return '出生日期不能晚于今天'; }
+        return null;
+      },
       submit: function () {
         var vm = this;
-        if (!vm.form.staffNo || !vm.form.staffName) { ElementPlus.ElMessage.warning('工号与姓名必填'); return; }
+        var err = vm.validateForm();
+        if (err) { ElementPlus.ElMessage.warning(err); return; }
         var p = vm.editing ? HIS.put('/api/his/staff', vm.form) : HIS.post('/api/his/staff', vm.form);
-        p.then(function () { HIS.notifySuccess('保存成功'); vm.dlg = false; vm.load(); }).catch(HIS.notifyError);
+        p.then(function () { HIS.notifySuccess('保存成功'); vm.dlg = false; vm.load(); vm.loadCounts(); }).catch(HIS.notifyError);
       },
-      del: function (row) { var vm = this; HIS.del('/api/his/staff/' + row.id).then(function () { HIS.notifySuccess('已删除'); vm.load(); }).catch(HIS.notifyError); },
+      del: function (row) { var vm = this; HIS.del('/api/his/staff/' + row.id).then(function () { HIS.notifySuccess('已删除'); vm.load(); vm.loadCounts(); }).catch(HIS.notifyError); },
       /* 头像上传(本地文件服务 /api/file/upload, biz=staff_avatar) */
       uploadAvatar: function (opt) {
         var vm = this;
@@ -576,41 +912,65 @@
       '        <span v-show="orgsCollapsed" class="dept-orgs-vt">机构科室</span>',
       '        <el-button link size="small" class="dept-orgs-tg" :title="orgsCollapsed?\'展开机构科室树\':\'收缩机构科室树\'" @click="toggleOrgs">{{ orgsCollapsed ? "\u00bb" : "\u00ab" }}</el-button>',
       '      </div>',
+      '      <div v-show="!orgsCollapsed" style="padding:6px 8px 0;">',
+      '        <el-input v-model="treeKw" size="small" clearable placeholder="过滤机构/科室名"></el-input>',
+      '        <div class="dept-tree-tools">',
+      '          <span class="dept-tree-tools-lb">层级</span>',
+      '          <el-button link size="small" class="dept-tree-btn" title="展开全部层级" @click="expandAllTree">展开</el-button>',
+      '          <el-dropdown trigger="click" class="dept-tree-drop" @command="collapseToLevel">',
+      '            <el-button link size="small" class="dept-tree-btn" title="展开/收缩到指定层级">到层级\u25be</el-button>',
+      '            <template #dropdown>',
+      '              <el-dropdown-menu>',
+      '                <el-dropdown-item :command="1">一级（仅机构）</el-dropdown-item>',
+      '                <el-dropdown-item :command="2">二级（大类）</el-dropdown-item>',
+      '                <el-dropdown-item :command="3">三级（科室）</el-dropdown-item>',
+      '                <el-dropdown-item :command="4">四级（诊室/窗口）</el-dropdown-item>',
+      '                <el-dropdown-item :command="5">五级</el-dropdown-item>',
+      '              </el-dropdown-menu>',
+      '            </template>',
+      '          </el-dropdown>',
+      '          <el-button link size="small" class="dept-tree-btn" title="全部收缩(仅显示机构)" @click="collapseAllTree">收缩</el-button>',
+      '        </div>',
+      '      </div>',
       '      <el-scrollbar v-show="!orgsCollapsed">',
-      '        <div v-for="n in leftNodes" :key="n.type + \'-\' + n.id" class="dept-org-item" :class="{active: nodeActive(n), \'is-head\': n.type !== \'dept\'}" :style="{paddingLeft: (8 + n.pad * 14) + \'px\'}" @click="selectNode(n)"><span v-if="n.kids" class="tree-caret" @click.stop="toggleFold(n)">{{ folded[n.key] ? \'▸\' : \'▾\' }}</span><span v-else class="tree-caret"></span>{{ n.label }}</div>',
+      '        <div v-for="n in filterTree" :key="n.type + \'-\' + n.id" class="dept-org-item" :class="{active: nodeActive(n), \'is-head\': n.type !== \'dept\'}" :style="{paddingLeft: (8 + n.pad * 14) + \'px\'}" @click="selectNode(n)"><span v-if="n.kids" class="tree-caret" :class="{\'is-inert\': searching}" :title="searching?\'过滤态自动展开全部层级, 清空关键字后可折叠\':\'折叠/展开\'" @click.stop="searching ? null : toggleFold(n)">{{ (searching || !folded[n.key]) ? \'▾\' : \'▸\' }}</span><span v-else class="tree-caret"></span><span v-html="hl(n.label)"></span><span v-if="nodeCountMap && nodeCountMap[n.key]" class="tree-cnt">{{ nodeCountMap[n.key] }}</span></div>',
+      '        <div v-if="treeKw && !filterTree.length" class="dept-tree-empty">无匹配节点</div>',
       '      </el-scrollbar>',
       '    </div>',
       '    <div class="dept-main">',
       '  <div class="toolbar">',
       '    <el-select v-model="filterType" placeholder="全部类别" clearable style="width:130px" @change="load"><el-option v-for="t in staffTypes" :key="t" :label="t" :value="t"></el-option></el-select>',
-      '    <el-input v-model="keyword" placeholder="工号/姓名/拼音简码" clearable style="width:170px" @keyup.enter="load"></el-input>',
-      '    <el-checkbox v-if="lead" v-model="withSubOrgs" @change="load" title="选上级机构时级联显示下级机构人员; 取消勾选仅显示选中机构本身的人员" style="margin-left:4px;">含下级机构</el-checkbox>',
-      '    <el-checkbox v-model="withKids" @change="load" title="选上级科室时级联显示下级科室人员; 取消勾选仅显示选中科室本身的人员" style="margin-left:4px;">含下级科室</el-checkbox>',
+      '    <el-select v-model="filterStatus" placeholder="全部状态" clearable style="width:100px" @change="load"><el-option label="在职" :value="1"></el-option><el-option label="停用" :value="0"></el-option></el-select>',
+      '    <el-input v-model="keyword" placeholder="工号/姓名/拼音简码, 回车查询" clearable style="width:190px" @keyup.enter="load" @clear="load"></el-input>',
+      '    <el-checkbox v-if="lead" v-model="withSubOrgs" :disabled="!filterOrg" @change="load" title="选上级机构时级联显示下级机构人员; 取消勾选仅显示选中机构本身的人员(左侧选中机构后激活)" style="margin-left:4px;">含下级机构</el-checkbox>',
+      '    <el-checkbox v-model="withKids" :disabled="!filterDept" @change="load" title="选上级科室时级联显示下级科室人员; 取消勾选仅显示选中科室本身的人员(左侧选中科室后激活)" style="margin-left:4px;">含下级科室</el-checkbox>',
       '    <el-button @click="load">查询</el-button>',
       '    <el-button :loading="exporting" @click="exportRows">导出</el-button>',
-      '    <el-radio-group v-model="paged" size="small" @change="onPagedToggle" title="右侧明细显示模式: 全量=一次性展示所有行; 分页=按页展示" style="margin-left:6px;">',
-      '      <el-radio-button :label="false">全量</el-radio-button>',
-      '      <el-radio-button :label="true">分页</el-radio-button>',
-      '    </el-radio-group>',
       '    <el-button v-if="lead" type="primary" @click="add">新增职工</el-button>',
-      '    <span style="color:#909399;font-size:13px;">点击左侧机构/科室筛选 · 共 {{ list.length }} 人</span>',
+      '    <span v-if="chipLabel" class="filter-chip" title="当前列表作用域, 点 × 回到全部机构">筛选: {{ chipLabel }}<b class="filter-chip-x" @click="chipClear">×</b></span>',
+      '    <span style="color:#909399;font-size:13px;">共 {{ list.length }} 人</span>',
+      '    <el-popover placement="bottom-end" :width="280" trigger="click">',
+      '      <template #reference><el-button style="margin-left:auto;">列设置</el-button></template>',
+      '      <div style="font-size:12px;color:#909399;margin-bottom:6px;">勾选需要展示的列(选择跨会话保存)</div>',
+      '      <el-checkbox v-for="c in colDefs" :key="c.key" :model-value="!colOff[c.key]" @change="onColToggle(c.key, $event)" style="width:120px;margin-right:0;">{{ c.label }}</el-checkbox>',
+      '    </el-popover>',
       '  </div>',
       '  <div class="table-box">',
       '  <el-table :data="pagedList" v-loading="loading" border stripe size="small" height="100%">',
-      '    <el-table-column type="index" :index="seqNo" label="序号" width="60"></el-table-column>',
-      '    <el-table-column prop="staffNo" label="工号" width="90"></el-table-column>',
-      '    <el-table-column prop="staffName" label="姓名" width="100"></el-table-column>',
-      '    <el-table-column prop="pyCode" label="拼音码" width="80"><template #default="s">{{ s.row.pyCode || \'-\' }}</template></el-table-column>',
-      '    <el-table-column prop="abbrCode" label="自定义码" width="90"><template #default="s">{{ s.row.abbrCode || \'-\' }}</template></el-table-column>',
-      '    <el-table-column prop="staffType" label="类别" width="80"></el-table-column>',
-      '    <el-table-column prop="titleName" label="职称" width="110"></el-table-column>',
-      '    <el-table-column label="科室" width="110"><template #default="s">{{ deptName(s.row.deptId) }}</template></el-table-column>',
-      '    <el-table-column label="归属机构" min-width="150" show-overflow-tooltip><template #default="s">{{ orgName(s.row.orgId) }}</template></el-table-column>',
-      '    <el-table-column prop="atddrNo" label="主治医师编码" width="120"></el-table-column>',
-      '    <el-table-column label="可挂号" width="80"><template #default="s"><el-tag size="small" :type="s.row.canRegister===1?\'success\':\'info\'">{{ s.row.canRegister===1?"是":"否" }}</el-tag></template></el-table-column>',
-      '    <el-table-column prop="regFee" label="挂号费" width="80"></el-table-column>',
-      '    <el-table-column label="状态" width="70"><template #default="s"><el-tag size="small" :type="s.row.status===1?\'success\':\'info\'">{{ s.row.status===1?"在职":"停用" }}</el-tag></template></el-table-column>',
-      '    <el-table-column label="处方权限" min-width="200"><template #default="s"><template v-if="rxTags(s.row).length"><el-tag v-for="(g,i) in rxTags(s.row)" :key="i" size="small" :type="g.c" style="margin-right:4px;">{{ g.t }}</el-tag></template><span v-else style="color:#c0c4cc;">-</span></template></el-table-column>',
+      '    <el-table-column type="index" :index="seqNo" label="序号" width="60" fixed="left"></el-table-column>',
+      '    <el-table-column prop="staffNo" label="工号" width="110" sortable></el-table-column>',
+      '    <el-table-column prop="staffName" label="姓名" width="100" sortable></el-table-column>',
+      '    <el-table-column v-if="colShow(\'pinyin\')" prop="pyCode" label="拼音码" width="80"><template #default="s">{{ s.row.pyCode || \'—\' }}</template></el-table-column>',
+      '    <el-table-column v-if="colShow(\'abbr\')" prop="abbrCode" label="自定义码" width="90"><template #default="s">{{ s.row.abbrCode || \'—\' }}</template></el-table-column>',
+      '    <el-table-column v-if="colShow(\'cat\')" prop="staffType" label="类别" width="86" sortable><template #default="s"><el-tag size="small" :type="typeTag(s.row.staffType)">{{ s.row.staffType }}</el-tag></template></el-table-column>',
+      '    <el-table-column prop="titleName" label="职称" width="110" sortable></el-table-column>',
+      '    <el-table-column v-if="colShow(\'dept\')" label="科室" width="110" show-overflow-tooltip><template #default="s">{{ deptName(s.row.deptId) }}</template></el-table-column>',
+      '    <el-table-column v-if="colShow(\'org\')" label="归属机构" min-width="150" show-overflow-tooltip><template #default="s">{{ orgName(s.row.orgId) }}</template></el-table-column>',
+      '    <el-table-column v-if="colShow(\'atddr\')" prop="atddrNo" label="主治医师编码" width="120" show-overflow-tooltip><template #default="s">{{ s.row.atddrNo || \'—\' }}</template></el-table-column>',
+      '    <el-table-column v-if="colShow(\'reg\')" label="可挂号" width="80"><template #default="s"><el-tag size="small" :type="s.row.canRegister===1?\'success\':\'info\'">{{ s.row.canRegister===1?"是":"否" }}</el-tag></template></el-table-column>',
+      '    <el-table-column v-if="colShow(\'fee\')" prop="regFee" label="挂号费" width="80"></el-table-column>',
+      '    <el-table-column v-if="colShow(\'status\')" label="状态" width="70"><template #default="s"><el-tag size="small" :type="s.row.status===1?\'success\':\'info\'">{{ s.row.status===1?"在职":"停用" }}</el-tag></template></el-table-column>',
+      '    <el-table-column v-if="colShow(\'rx\')" label="处方权限" min-width="200"><template #default="s"><template v-if="rxTags(s.row).length"><el-tag v-for="(g,i) in rxTags(s.row)" :key="i" size="small" :type="g.c" style="margin-right:4px;">{{ g.t }}</el-tag></template><span v-else style="color:#c0c4cc;">—</span></template></el-table-column>',
       '    <el-table-column label="操作" width="130" fixed="right"><template #default="s">',
       '      <el-button v-if="lead" link type="primary" @click="edit(s.row)">编辑</el-button>',
       '      <el-popconfirm v-if="lead" title="确认删除该职工？" @confirm="del(s.row)"><template #reference><el-button link type="danger">删除</el-button></template></el-popconfirm>',
@@ -618,8 +978,13 @@
       '    </template></el-table-column>',
       '  </el-table>',
       '  </div>',
-      '  <div v-if="paged" class="pager">',
-      '    <el-pagination background layout="total, sizes, prev, pager, next" :total="list.length" :page-size="size" :page-sizes="[10, 20, 50, 100]" :current-page="page" @current-change="onPage" @size-change="onSize"></el-pagination>',
+      '  <div class="pager">',
+      '    <el-radio-group v-model="paged" size="small" @change="onPagedToggle" title="明细显示模式: 全量=一次性展示所有行; 分页=按页展示" style="margin-right:auto;">',
+      '      <el-radio-button :label="false">全量</el-radio-button>',
+      '      <el-radio-button :label="true">分页</el-radio-button>',
+      '    </el-radio-group>',
+      '    <span v-if="!paged" style="color:#909399;font-size:13px;">全量展示 {{ list.length }} 条</span>',
+      '    <el-pagination v-else background layout="total, sizes, prev, pager, next, jumper" :total="list.length" :page-size="size" :page-sizes="[10, 20, 50, 100]" :current-page="page" @current-change="onPage" @size-change="onSize"></el-pagination>',
       '  </div>',
       '    </div>',
       '  </div>',

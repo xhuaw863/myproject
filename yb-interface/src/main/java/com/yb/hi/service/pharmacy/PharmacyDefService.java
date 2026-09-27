@@ -165,6 +165,15 @@ public class PharmacyDefService {
         if (dup != null && dup > 0) {
             throw new BizException("药房编码已存在: " + def.getCode());
         }
+        // 归属科室一一对应校验: 非空时该科室不得被其它药房占用(排除自身; 与 uk_dept 同口径, 不分启用/停用)
+        if (def.getDeptId() != null) {
+            Long deptDup = pharmacyDefMapper.selectCount(Wrappers.<HisPharmacyDef>lambdaQuery()
+                    .eq(HisPharmacyDef::getDeptId, def.getDeptId())
+                    .ne(def.getId() != null, HisPharmacyDef::getId, def.getId()));
+            if (deptDup != null && deptDup > 0) {
+                throw new BizException(400, "该科室已绑定其它药房, 药房与科室一一对应不允许重复绑定");
+            }
+        }
         // 关联药库校验: 非空须存在且启用(同机构)
         if (def.getWarehouseId() != null && !warehouseEnabled(def.getWarehouseId(), def.getOrgId())) {
             throw new BizException("关联药库不存在或已停用: warehouseId=" + def.getWarehouseId());

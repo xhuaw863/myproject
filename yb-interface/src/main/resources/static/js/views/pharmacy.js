@@ -66,11 +66,10 @@
    * /detail 的明细键为 drugName/qty/usageName/freqName(与规格说明略有差异), 同样归一。
    */
   HIS.views.DispenseTodo = {
+    mixins: [HIS.phScopeMixin],
     data: function () {
       return {
         loading: false, list: [], total: 0, page: 1, size: 20, keyword: '',
-        /* 药房过滤(空=全部药房; 中药房只看中药处方) */
-        pharmacyId: '', pharmacyDefs: [],
         /* 发药详情对话框 */
         dispenseVisible: false, detailLoading: false,
         dispenseRx: null, dispenseItems: [], detailOrgId: null,
@@ -89,7 +88,7 @@
         return false;
       }
     },
-    created: function () { loadPharmacyOpts(this); this.load(); this.startAutoRefresh(); },
+    created: function () { var vm = this; this.loadPharmacyOpts().then(function () { vm.load(); vm.startAutoRefresh(); }); },
     /* Vue3 销毁钩子(beforeDestroy为Vue2名称, 在Vue3中被忽略): 清理自动刷新定时器防泄漏 */
     beforeUnmount: function () { this.stopAutoRefresh(); },
     methods: {
@@ -247,9 +246,12 @@
       '<div class="page-card">',
       '  <div class="page-title">待发药 <span style="font-size:12px;color:#909399;font-weight:normal;">(已开立未发药处方 · 先开先发 · 列表每30秒自动刷新)</span></div>',
       '  <div class="toolbar">',
-      '    <el-select v-model="pharmacyId" placeholder="全部药房" clearable style="width:150px" @change="search">',
+      '    <span style="font-weight:600;color:#303133;">当前药房</span>',
+      '    <el-select v-model="pharmacyId" style="width:150px" :disabled="phSingle" @change="search">',
       '      <el-option v-for="p in pharmacyDefs" :key="p.id" :label="p.name" :value="p.id"></el-option>',
       '    </el-select>',
+      '    <el-tag v-if="currentPharmacy" size="small">{{ currentPhLabel }}</el-tag>',
+      '    <el-tag v-else size="small" type="warning">无可操作药房</el-tag>',
       '    <el-input v-model="keyword" placeholder="患者姓名/处方号" clearable style="width:240px" @keyup.enter="search"></el-input>',
       '    <el-button type="primary" @click="search">查询</el-button>',
       '    <el-button @click="load()">刷新</el-button>',
@@ -348,19 +350,18 @@
 
   /* ================= 调剂发药记录 ================= */
   HIS.views.DispenseRecord = {
+    mixins: [HIS.phScopeMixin],
     data: function () {
       return {
         loading: false, list: [], total: 0, page: 1, size: 20,
         filterStatus: null, dateRange: [], keyword: '', exporting: false,
-        /* 药房过滤(空=全部药房; 列表/导出同口径) */
-        pharmacyId: '', pharmacyDefs: [],
         statusOpts: [{ v: 2, l: '已发药' }, { v: 3, l: '已退药' }]
       };
     },
     created: function () {
       this.dateRange = [today(), today()];
-      loadPharmacyOpts(this);
-      this.load();
+      var vm = this;
+      this.loadPharmacyOpts().then(function () { vm.load(); });
     },
     methods: {
       load: function () {
@@ -403,9 +404,12 @@
       '<div class="page-card">',
       '  <div class="page-title">调剂发药记录 <span style="font-size:12px;color:#909399;font-weight:normal;">(发药/核对双签留痕 · 导出按药房+日期区间口径)</span></div>',
       '  <div class="toolbar">',
-      '    <el-select v-model="pharmacyId" placeholder="全部药房" clearable style="width:150px" @change="search">',
+      '    <span style="font-weight:600;color:#303133;">当前药房</span>',
+      '    <el-select v-model="pharmacyId" style="width:150px" :disabled="phSingle" @change="search">',
       '      <el-option v-for="p in pharmacyDefs" :key="p.id" :label="p.name" :value="p.id"></el-option>',
       '    </el-select>',
+      '    <el-tag v-if="currentPharmacy" size="small">{{ currentPhLabel }}</el-tag>',
+      '    <el-tag v-else size="small" type="warning">无可操作药房</el-tag>',
       '    <el-select v-model="filterStatus" placeholder="全部状态" clearable style="width:130px" @change="search">',
       '      <el-option v-for="s in statusOpts" :key="s.v" :label="s.l" :value="s.v"></el-option>',
       '    </el-select>',
@@ -447,12 +451,11 @@
 
   /* ================= 退药(申请 + 审批 + 记录) ================= */
   HIS.views.DrugReturn = {
+    mixins: [HIS.phScopeMixin],
     data: function () {
       return {
         /* 新建退药申请 */
         searchDispenseNo: '', dispSearchLoading: false, dispense: null,
-        /* 药房过滤(限定发药记录查询范围; 退药记录行无药房字段不做过滤) */
-        pharmacyId: '', pharmacyDefs: [],
         returnReason: '', submitting: false,
         /* 退药记录(按状态页签): 0待审核 1已退药 2已驳回 */
         returnTab: '0',
@@ -460,14 +463,16 @@
       };
     },
     created: function () {
-      loadPharmacyOpts(this);
-      this.load();
-      /* 从「调剂发药记录」页跳转带入的发药单号: 消费后立即清除并自动查询 */
-      if (HIS.pendingReturnDispenseNo) {
-        this.searchDispenseNo = HIS.pendingReturnDispenseNo;
-        HIS.pendingReturnDispenseNo = null;
-        this.searchDispense();
-      }
+      var vm = this;
+      this.loadPharmacyOpts().then(function () {
+        vm.load();
+        /* 从「调剂发药记录」页跳转带入的发药单号: 消费后立即清除并自动查询 */
+        if (HIS.pendingReturnDispenseNo) {
+          vm.searchDispenseNo = HIS.pendingReturnDispenseNo;
+          HIS.pendingReturnDispenseNo = null;
+          vm.searchDispense();
+        }
+      });
     },
     methods: {
       /* ---- 退药申请 ---- */
@@ -555,9 +560,12 @@
       /* ---- 新建退药申请 ---- */
       '  <el-divider content-position="left">新建退药申请</el-divider>',
       '  <div class="toolbar">',
-      '    <el-select v-model="pharmacyId" placeholder="全部药房" clearable style="width:150px" @change="onPharmacyChange">',
+      '    <span style="font-weight:600;color:#303133;">当前药房</span>',
+      '    <el-select v-model="pharmacyId" style="width:150px" :disabled="phSingle" @change="onPharmacyChange">',
       '      <el-option v-for="p in pharmacyDefs" :key="p.id" :label="p.name" :value="p.id"></el-option>',
       '    </el-select>',
+      '    <el-tag v-if="currentPharmacy" size="small">{{ currentPhLabel }}</el-tag>',
+      '    <el-tag v-else size="small" type="warning">无可操作药房</el-tag>',
       '    <el-input v-model="searchDispenseNo" placeholder="发药单号(如 FY202609250001)" clearable style="width:280px" @keyup.enter="searchDispense"></el-input>',
       '    <el-button type="primary" :loading="dispSearchLoading" @click="searchDispense">查询发药记录</el-button>',
       '    <span style="color:#909399;font-size:13px;">仅「已发药」状态的单据可申请; 选择药房可限定查询范围; 也可在「调剂发药记录」页点"退药"自动带入单号</span>',
@@ -620,14 +628,14 @@
       return {
         lead: HIS.isLead(),
         loading: false, list: [],
-        warehouseDefs: [],
+        warehouseDefs: [], deptDefs: [],
         typeOpts: PHARMACY_TYPES,
         /* 新增/编辑弹窗 */
         dlgVisible: false, saving: false,
-        form: { id: null, code: '', name: '', pharmacyType: 'OUTPATIENT', warehouseId: null, location: '', sortNo: 0 }
+        form: { id: null, code: '', name: '', pharmacyType: 'OUTPATIENT', warehouseId: null, deptId: null, location: '', sortNo: 0 }
       };
     },
-    created: function () { this.load(); this.loadWarehouses(); },
+    created: function () { this.load(); this.loadWarehouses(); this.loadDepts(); },
     methods: {
       load: function () {
         var vm = this; vm.loading = true;
@@ -642,8 +650,20 @@
           vm.warehouseDefs = list || [];
         }).catch(HIS.notifyError);
       },
+      /* 归属科室下拉(本机构启用科室; 药房与科室一一对应, 后端校验重复绑定) */
+      loadDepts: function () {
+        var vm = this;
+        HIS.get('/api/his/dept/enabled').then(function (list) {
+          vm.deptDefs = list || [];
+        }).catch(HIS.notifyError);
+      },
+      deptName: function (id) {
+        if (id === null || id === undefined || id === '') { return '-'; }
+        for (var i = 0; i < this.deptDefs.length; i++) { if (this.deptDefs[i].id === id) { return this.deptDefs[i].deptName; } }
+        return '科室#' + id;
+      },
       openAdd: function () {
-        this.form = { id: null, code: '', name: '', pharmacyType: 'OUTPATIENT', warehouseId: null, location: '', sortNo: 0 };
+        this.form = { id: null, code: '', name: '', pharmacyType: 'OUTPATIENT', warehouseId: null, deptId: null, location: '', sortNo: 0 };
         this.dlgVisible = true;
       },
       openEdit: function (row) {
@@ -651,6 +671,7 @@
           id: row.id, code: row.code, name: row.name,
           pharmacyType: row.pharmacyType || 'OUTPATIENT',
           warehouseId: (row.warehouseId === null || row.warehouseId === undefined) ? null : row.warehouseId,
+          deptId: (row.deptId === null || row.deptId === undefined) ? null : row.deptId,
           location: row.location || '',
           sortNo: (row.sortNo === null || row.sortNo === undefined) ? 0 : row.sortNo
         };
@@ -664,7 +685,7 @@
         vm.saving = true;
         HIS.post('/api/his/pharmacy/pharmacy-def', {
           id: vm.form.id, code: vm.form.code, name: vm.form.name,
-          pharmacyType: vm.form.pharmacyType, warehouseId: vm.form.warehouseId,
+          pharmacyType: vm.form.pharmacyType, warehouseId: vm.form.warehouseId, deptId: vm.form.deptId,
           location: vm.form.location, sortNo: vm.form.sortNo
         }).then(function (d) {
           HIS.notifySuccess((vm.form.id ? '药房已更新: ' : '药房已新增: ') + ((d && d.name) || ''));
@@ -719,6 +740,7 @@
       '      <el-tag size="small" :type="pharmacyTypeTag(s.row.pharmacyType)">{{ pharmacyTypeLabel(s.row.pharmacyType) }}</el-tag>',
       '    </template></el-table-column>',
       '    <el-table-column label="关联药库" width="140"><template #default="s">{{ warehouseName(s.row.warehouseId) }}</template></el-table-column>',
+      '    <el-table-column label="归属科室" width="140"><template #default="s">{{ deptName(s.row.deptId) }}</template></el-table-column>',
       '    <el-table-column label="位置" width="140" show-overflow-tooltip><template #default="s">{{ s.row.location || \'-\' }}</template></el-table-column>',
       '    <el-table-column prop="sortNo" label="排序" width="70" align="center"></el-table-column>',
       '    <el-table-column label="状态" width="80" align="center"><template #default="s">',
@@ -746,6 +768,11 @@
       '      <el-form-item label="关联药库">',
       '        <el-select v-model="form.warehouseId" clearable placeholder="选择药库(可选)" style="width:100%">',
       '          <el-option v-for="w in warehouseDefs" :key="w.id" :label="w.name" :value="w.id"></el-option>',
+      '        </el-select>',
+      '      </el-form-item>',
+      '      <el-form-item label="归属科室">',
+      '        <el-select v-model="form.deptId" clearable placeholder="选择归属科室(与科室一一对应)" style="width:100%">',
+      '          <el-option v-for="d in deptDefs" :key="d.id" :label="d.deptName" :value="d.id"></el-option>',
       '        </el-select>',
       '      </el-form-item>',
       '      <el-form-item label="位置"><el-input v-model="form.location" placeholder="如 1楼取药窗口" maxlength="64"></el-input></el-form-item>',
@@ -785,12 +812,13 @@
    * 选药复用机构开展药品目录 /api/his/stock/drug-catalog(按来源药库 warehouseType 联动); 药房/药库下拉复用共用接口。
    */
   HIS.views.RequisitionManage = {
+    mixins: [HIS.phScopeMixin],
     data: function () {
       return {
         lead: HIS.isLead(),
         loading: false, list: [], total: 0, page: 1, size: 20,
-        filterPharmacy: '', filterStatus: null, keyword: '',
-        pharmacyDefs: [], warehouseDefs: [], statusOpts: REQ_STATUS,
+        filterStatus: null, keyword: '',
+        warehouseDefs: [], statusOpts: REQ_STATUS,
         /* 发起请领对话框 */
         createDlg: false, saving: false,
         form: { pharmacyId: '', toWarehouseId: null, remark: '', items: [] },
@@ -810,7 +838,7 @@
         return s;
       }
     },
-    created: function () { loadPharmacyOpts(this); this.loadWarehouses(); this.load(); },
+    created: function () { var vm = this; this.loadWarehouses(); this.loadPharmacyOpts().then(function () { vm.load(); }); },
     methods: {
       /* ---- 列表 ---- */
       loadWarehouses: function () {
@@ -820,7 +848,7 @@
       load: function () {
         var vm = this; vm.loading = true;
         var q = '/api/his/requisition/page?page=' + vm.page + '&size=' + vm.size;
-        if (vm.filterPharmacy) { q += '&pharmacyId=' + vm.filterPharmacy; }
+        if (vm.pharmacyId) { q += '&pharmacyId=' + vm.pharmacyId; }
         if (vm.filterStatus !== null && vm.filterStatus !== '' && vm.filterStatus !== undefined) { q += '&status=' + vm.filterStatus; }
         if (vm.keyword) { q += '&keyword=' + encodeURIComponent(vm.keyword); }
         HIS.get(q).then(function (d) { vm.list = (d && d.records) || []; vm.total = (d && d.total) || 0; })
@@ -831,7 +859,11 @@
       onSize: function (s) { this.size = s; this.onPage(1); },
       seqNo: function (i) { return (this.page - 1) * this.size + i + 1; },
       /* ---- 发起请领 ---- */
-      openCreate: function () { this.form = { pharmacyId: '', toWarehouseId: null, remark: '', items: [] }; this.createDlg = true; },
+      openCreate: function () {
+        this.form = { pharmacyId: this.pharmacyId || '', toWarehouseId: null, remark: '', items: [] };
+        if (this.form.pharmacyId) { this.onPharmacyChange(); }
+        this.createDlg = true;
+      },
       onPharmacyChange: function () {
         var p = null;
         for (var i = 0; i < this.pharmacyDefs.length; i++) { if (this.pharmacyDefs[i].id === this.form.pharmacyId) { p = this.pharmacyDefs[i]; break; } }
@@ -942,9 +974,12 @@
       '<div class="page-card">',
       '  <div class="page-title">药品请领 <span style="font-size:12px;color:#909399;font-weight:normal;">(药房→药库 · 发起请领 → 药库审核发货 → 药房确认收货)</span></div>',
       '  <div class="toolbar">',
-      '    <el-select v-model="filterPharmacy" placeholder="全部药房" clearable style="width:150px" @change="search">',
+      '    <span style="font-weight:600;color:#303133;">当前药房</span>',
+      '    <el-select v-model="pharmacyId" style="width:150px" :disabled="phSingle" @change="search">',
       '      <el-option v-for="p in pharmacyDefs" :key="p.id" :label="p.name" :value="p.id"></el-option>',
       '    </el-select>',
+      '    <el-tag v-if="currentPharmacy" size="small">{{ currentPhLabel }}</el-tag>',
+      '    <el-tag v-else size="small" type="warning">无可操作药房</el-tag>',
       '    <el-select v-model="filterStatus" placeholder="全部状态" clearable style="width:120px" @change="search">',
       '      <el-option v-for="s in statusOpts" :key="s.v" :label="s.l" :value="s.v"></el-option>',
       '    </el-select>',

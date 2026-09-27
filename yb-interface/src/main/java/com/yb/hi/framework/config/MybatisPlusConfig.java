@@ -23,7 +23,9 @@ import java.util.Set;
 public class MybatisPlusConfig {
 
     /** 全局表(不做租户隔离): 租户注册表 + 行政区划国家标准表 + RBAC 全局/半全局表(菜单真源、角色含全局角色、角色菜单关联)
-     *  + 三目录标准字典(全局共享、无 tenant_id 列, 业务查询需以子查询校验医保码是否仍有效) */
+     *  + 三目录标准字典(全局共享、无 tenant_id 列, 业务查询需以子查询校验医保码是否仍有效)
+     *  + 系统参数(sys_param 含全局行 tenant_id=0 需跨租户可见且实体显式映射 tenant_id, 隔离由 Service 层手动处理; sys_param_group 为全局共享分组)。
+     *  注意: 入此集合后 MP 不再注入 tenant_id 条件, 涉及租户隔离的查询必须在 Service/Wrapper 中显式处理。 */
     private static final Set<String> IGNORE_TABLES = new HashSet<>(Arrays.asList(
             "sys_tenant",
             "area_code_2021",
@@ -32,7 +34,9 @@ public class MybatisPlusConfig {
             "sys_role_menu",
             "std_drug",
             "std_consumable",
-            "std_med_service"
+            "std_med_service",
+            "sys_param",
+            "sys_param_group"
     ));
 
     @Bean

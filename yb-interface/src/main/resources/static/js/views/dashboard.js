@@ -27,6 +27,9 @@
         overviewLoading: false,
         chartReady: false,       /* ECharts 实例化完成(脚本缺失时保持false并提示) */
         revenueGranularity: 'day',
+        /* 危急值待确认(2026-09 集成: /api/medtech/critical-values?status=2 已通知待接收, 徽章+跳转) */
+        criticalTodo: 0,
+        criticalLoading: false,
         /* 图表实例(非响应式, 不入data避免Vue代理开销) */
         revenueChart: null, deptChart: null, visitChart: null, drugChart: null,
         refreshTimer: null
@@ -68,13 +71,14 @@
         ];
       }
     },
-    created: function () { this.loadDashboard(); },
+    created: function () { this.loadDashboard(); this.loadCriticalTodo(); },
     mounted: function () {
       var vm = this;
       vm.$nextTick(function () { vm.initCharts(); });
       /* 定时刷新(5分钟): 概览 + 图表数据 */
       vm.refreshTimer = setInterval(function () {
         vm.loadDashboard();
+        vm.loadCriticalTodo();
         vm.loadRevenue(); vm.loadDeptRevenue(); vm.loadVisits(); vm.loadDrugUsage();
       }, 5 * 60 * 1000);
     },
@@ -137,6 +141,21 @@
       ratioColor: function (r) {
         if (r === null || r === undefined || r === 0) { return '#909399'; }
         return r > 0 ? '#67C23A' : '#F56C6C';
+      },
+      /* ===== 危急值待确认(2026-09 集成: 医技危急值闭环 status=2 已通知待接收) =====
+       * 接口不可用(无机构/无权限)时静默置 0, 不阻断工作台; 定时随概览一并刷新 */
+      loadCriticalTodo: function () {
+        var vm = this;
+        vm.criticalLoading = true;
+        HIS.get('/api/medtech/critical-values?status=2&page=1&size=1').then(function (d) {
+          var n = d && d.total;
+          vm.criticalTodo = (n === null || n === undefined) ? 0 : Number(n) || 0;
+        }).catch(function () { vm.criticalTodo = 0; })
+          .finally(function () { vm.criticalLoading = false; });
+      },
+      /* 跳转危急值管理页(菜单 key=medtech-critical, HIS.go 由主布局注册) */
+      goCritical: function () {
+        if (typeof HIS.go === 'function') { HIS.go('medtech-critical'); }
       },
       /* ===== 收入趋势(折线, 近30天, 日/周/月粒度) ===== */
       loadRevenue: function () {
@@ -289,6 +308,13 @@
       '      </div>',
       '    </div>',
       '    <div style="text-align:right;color:#909399;font-size:12px;line-height:1.8;">',
+      '      <div v-loading="criticalLoading" @click="goCritical" style="cursor:pointer;margin-bottom:4px;" title="已通知待接收的危急值记录">',
+      '        <el-badge :value="criticalTodo" :max="99" type="danger" :hidden="criticalTodo <= 0">',
+      '          <span :class="criticalTodo > 0 ? \'ds-critical-tag-on\' : \'ds-critical-tag-off\'">危急值待确认</span>',
+      '        </el-badge>',
+      '        <span :style="{ marginLeft: \'6px\', fontWeight: \'700\', color: criticalTodo > 0 ? \'#f56c6c\' : \'#909399\' }">{{ criticalTodo }} 项已通知待接收</span>',
+      '        <span style="color:#1a5fb4;">前往处理 →</span>',
+      '      </div>',
       '      <div>今日: <b style="color:#409EFF;">{{ todayStr }}</b></div>',
       '      <div><a href="/verify/index.html" target="_blank" style="color:#1a5fb4;text-decoration:none;">医保接口验证台 →</a></div>',
       '    </div>',

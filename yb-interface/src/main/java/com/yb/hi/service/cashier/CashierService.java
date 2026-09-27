@@ -29,7 +29,11 @@ import com.yb.hi.mapper.cashier.HisDailySettleMapper;
 import com.yb.hi.mapper.cashier.HisPaymentDetailMapper;
 import com.yb.hi.platform.service.OrgAccessGuard;
 import com.yb.hi.service.OutpatientService;
+import com.yb.hi.service.medtech.SpecimenService;
+import com.yb.hi.service.nurse.NurseExecService;
+import com.yb.hi.service.treatment.TreatmentPlanService;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.context.annotation.Lazy;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -83,12 +87,19 @@ public class CashierService {
     private final TenantYbConfigResolver ybConfigResolver;
     private final OrgAccessGuard orgAccessGuard;
     private final InvoiceService invoiceService;
+    /** 下游执行链路(护士站/治疗/医技): 收费完成后驱动单据生成, @Lazy 规避潜在循环依赖 */
+    private final NurseExecService nurseExecService;
+    private final TreatmentPlanService treatmentPlanService;
+    private final SpecimenService specimenService;
 
     public CashierService(HisChargeBillMapper billMapper, HisChargeBillItemMapper billItemMapper,
                           HisDailySettleMapper dailySettleMapper, HisPaymentDetailMapper paymentDetailMapper,
                           JdbcTemplate jdbcTemplate,
                           OutpatientService outpatientService, TenantYbConfigResolver ybConfigResolver,
-                          OrgAccessGuard orgAccessGuard, InvoiceService invoiceService) {
+                          OrgAccessGuard orgAccessGuard, InvoiceService invoiceService,
+                          @Lazy NurseExecService nurseExecService,
+                          @Lazy TreatmentPlanService treatmentPlanService,
+                          @Lazy SpecimenService specimenService) {
         this.billMapper = billMapper;
         this.billItemMapper = billItemMapper;
         this.dailySettleMapper = dailySettleMapper;
@@ -98,6 +109,9 @@ public class CashierService {
         this.ybConfigResolver = ybConfigResolver;
         this.orgAccessGuard = orgAccessGuard;
         this.invoiceService = invoiceService;
+        this.nurseExecService = nurseExecService;
+        this.treatmentPlanService = treatmentPlanService;
+        this.specimenService = specimenService;
     }
 
     // ==================== 待收费 ====================
@@ -185,15 +199,16 @@ public class CashierService {
         patient.put("drName", v.get("dr_name"));
 
         List<Map<String, Object>> items = new ArrayList<>();
-        // 药品明细(处方)
+        // 药品明细(处方): rx_type 供票据归并区分中草药费; selfpay_prop 取目录(甲乙丙分级 chrgitm_lv 归一化为首字符)
         List<Map<String, Object>> drugRows = jdbcTemplate.queryForList(
                 "SELECT pi.id AS ref_id, pi.item_code, pi.item_name, pi.spec,"
-                        + " pi.quantity AS qty, pi.price, pi.amount,"
+                        + " pi.quantity AS qty, pi.price, pi.amount, pi.unit,"
                         + " COALESCE(pi.med_list_codg, dc.yb_drug_code) AS med_list_codg,"
                         + " COALESCE((SELECT sd.reg_name FROM std_drug sd"
                         + "           WHERE sd.drug_code = COALESCE(pi.med_list_codg, dc.yb_drug_code) LIMIT 1),"
                         + "          dc.generic_name) AS med_list_name,"
-                        + " IFNULL(dc.selfpay_prop, 0) AS ratio"
+                        + " IFNULL(dc.selfpay_prop, 0) AS ratio, pr.rx_type,"
+                        + " LEFT(dc.chrgitm_lv, 1) AS lv"
                         + " FROM his_prescription_item pi"
                         + " JOIN his_prescription pr ON pr.id = pi.prescription_id AND pr.status > 0"
                         + " LEFT JOIN his_drug_catalog dc ON dc.id = pi.drug_id"
@@ -202,14 +217,15 @@ public class CashierService {
         for (Map<String, Object> r : drugRows) {
             items.add(buildItem(1, "prescription_item", r));
         }
-        // 检查/治疗明细(医嘱单)
+        // 检查/治疗明细(医嘱单): 票据分类取收费项目字典 invoice_class(归集口径规范已填 64%), 空时服务层默认
         List<Map<String, Object>> orderRows = jdbcTemplate.queryForList(
                 "SELECT oi.id AS ref_id, oi.item_code, oi.item_name, oi.spec,"
-                        + " oi.quantity AS qty, oi.price, oi.amount,"
+                        + " oi.quantity AS qty, oi.price, oi.amount, oi.unit,"
                         + " COALESCE(oi.med_list_codg, ci.med_list_codg) AS med_list_codg,"
                         + " (SELECT sms.loc_item_name FROM std_med_service sms"
                         + "  WHERE sms.nat_item_code = COALESCE(oi.med_list_codg, ci.med_list_codg) LIMIT 1) AS med_list_name,"
-                        + " IFNULL(ci.selfpay_prop, 0) AS ratio, o.order_type"
+                        + " IFNULL(ci.selfpay_prop, 0) AS ratio, o.order_type, ci.invoice_class,"
+                        + " LEFT(ci.chrgitm_lv, 1) AS lv"
                         + " FROM his_order_item oi"
                         + " JOIN his_order o ON o.id = oi.order_id AND o.status > 0"
                         + " LEFT JOIN his_charge_item ci ON ci.id = oi.item_id"
@@ -217,6 +233,10 @@ public class CashierService {
                         + " ORDER BY oi.id", visitId);
         for (Map<String, Object> r : orderRows) {
             items.add(buildItem(orderItemType(str(r.get("order_type"))), "order_item", r));
+        }
+        // 票据式样字段: 报销类别(甲/乙/丙/自费) + 自费自理(乙类先自付部分) + 其中医保政策范围外自费
+        for (Map<String, Object> it : items) {
+            enrichInvoiceFields(it);
         }
 
         // 汇总
@@ -266,13 +286,88 @@ public class CashierService {
         it.put("itemCode", r.get("item_code"));
         it.put("itemName", r.get("item_name"));
         it.put("spec", r.get("spec"));
+        it.put("unit", r.get("unit"));
         it.put("qty", toBd(r.get("qty")));
         it.put("price", toBd(r.get("price")));
         it.put("amount", toBd(r.get("amount")));
         it.put("medListCodg", r.get("med_list_codg"));
         it.put("medListName", r.get("med_list_name"));
         it.put("ratio", toBd(r.get("ratio")));
+        it.put("lv", r.get("lv"));
+        it.put("rxType", r.get("rx_type"));
+        it.put("invoiceClass", r.get("invoice_class"));
         return it;
+    }
+
+    /**
+     * 票据式样字段计算(财综〔2012〕3号门诊收费票据):
+     * - 报销类别 rebateClass: 医保甲类/乙类/丙类(按目录 chrgitm_lv), 无医保编码=自费;
+     * - 自费自理 selfCost: 乙类先自付部分 = 金额 x 自付比例; 丙类/自费整项计入范围外;
+     * - 医保政策范围外自费 outOfScope: 自费/丙类全额, 乙类取先自付部分;
+     * - 票据归并类 invoiceCat: 药品按处方类型与院内编码首字母(中成药Z/饮片C,T/其余西药),
+     *   服务项目优先收费项目字典 invoice_class(病理/麻醉/中医细分归并到父类), 材料默认卫生材料费。
+     */
+    private void enrichInvoiceFields(Map<String, Object> it) {
+        BigDecimal amount = nvl(toBd(it.get("amount")));
+        BigDecimal ratio = nvl(toBd(it.get("ratio")));
+        String lv = str(it.get("lv"));
+        String med = str(it.get("medListCodg"));
+        String rebate;
+        BigDecimal selfCost;
+        BigDecimal outOfScope;
+        if (!StringUtils.hasText(med)) {
+            rebate = "自费";
+            selfCost = BigDecimal.ZERO;
+            outOfScope = amount;
+        } else if ("乙".equals(lv)) {
+            rebate = "医保乙类";
+            selfCost = amount.multiply(ratio).setScale(2, RoundingMode.HALF_UP);
+            outOfScope = selfCost;
+        } else if ("丙".equals(lv)) {
+            rebate = "医保丙类";
+            selfCost = BigDecimal.ZERO;
+            outOfScope = amount;
+        } else {
+            rebate = "医保甲类";
+            selfCost = BigDecimal.ZERO;
+            outOfScope = BigDecimal.ZERO;
+        }
+        it.put("rebateClass", rebate);
+        it.put("selfCost", selfCost);
+        it.put("outOfScope", outOfScope);
+        it.put("invoiceCat", invoiceCatOf(it));
+    }
+
+    /** 明细行 -> 门诊票据费用归并类(手工票 11 栏目) */
+    private String invoiceCatOf(Map<String, Object> it) {
+        Integer t = toInt(it.get("itemType"));
+        if (t != null && t == 1) {
+            String rxType = str(it.get("rxType"));
+            if (rxType != null && rxType.contains("中")) {
+                return "中草药费";
+            }
+            String code = str(it.get("itemCode"));
+            String head = StringUtils.hasText(code) ? code.substring(0, 1).toUpperCase() : "";
+            if ("Z".equals(head)) {
+                return "中成药费";
+            }
+            if ("C".equals(head) || "T".equals(head)) {
+                return "中草药费";
+            }
+            return "西药费";
+        }
+        if (t != null && t == 4) {
+            return "卫生材料费";
+        }
+        String inv = str(it.get("invoiceClass"));
+        if (StringUtils.hasText(inv)) {
+            int dash = inv.indexOf('-');
+            return dash > 0 ? inv.substring(0, dash) : inv;
+        }
+        if (t != null && t == 2) {
+            return "检查费";
+        }
+        return "治疗费";
     }
 
     /** 医嘱单类型 -> 收费明细类型: 检查/检验=2, 治疗/其余=3 */
@@ -476,7 +571,10 @@ public class CashierService {
 
         // 9. 回写就诊收费状态
         jdbcTemplate.update("UPDATE his_visit SET charge_status = 1 WHERE id = ? AND tenant_id = ? AND deleted = 0",
-                req.getVisitId(), tenantId);
+                req.getVisitId(), tenantId());
+        
+        // 9b. 医嘱下游联动: 回写 paid_flag 并驱动治疗计划/标本/护士执行单生成(失败不阻塞收费)
+        syncOrderAfterCharge(req.getVisitId());
 
         // 10. 发票联动: 自动取号开票并回写 bill.invoice_no; 号段未配置/用完仅记日志不阻塞收费
         try {
@@ -494,6 +592,49 @@ public class CashierService {
         result.put("bill", bill);
         result.put("receipt", billReceipt(bill.getId()));
         return result;
+    }
+
+    /**
+     * 收费完成后的医嘱下游联动(门诊闭环关键接缝):
+     * 1) 本就诊未作废医嘱统一置 paid_flag=1 —— 护士站/治疗/医技三个工作台的待执行查询均以此为准;
+     * 2) 按单据类型驱动下游单据生成: 治疗→疗程计划+执行单, 检验→标本, 全部→护士执行单(明细关键词命中才建);
+     * 3) 逐类 try-catch 只记日志: 下游单据可由各工作台查询侧兜底补建, 不能因建单失败回滚已成功的收费/医保结算。
+     */
+    private void syncOrderAfterCharge(Long visitId) {
+        long tid = tenantId();
+        try {
+            jdbcTemplate.update("UPDATE his_order SET paid_flag = 1"
+                    + " WHERE visit_id = ? AND tenant_id = ? AND deleted = 0 AND status > 0 AND IFNULL(paid_flag, 0) <> 1",
+                    visitId, tid);
+        } catch (Exception e) {
+            log.warn("医嘱收费标志回写失败: visitId={}, 原因: {}", visitId, e.getMessage());
+        }
+        List<Map<String, Object>> orders = jdbcTemplate.queryForList(
+                "SELECT id, order_no, order_type FROM his_order"
+                        + " WHERE visit_id = ? AND tenant_id = ? AND deleted = 0 AND status > 0 ORDER BY id",
+                visitId, tid);
+        for (Map<String, Object> o : orders) {
+            Long orderId = toLong(o.get("id"));
+            String orderType = str(o.get("order_type"));
+            if ("治疗".equals(orderType)) {
+                try {
+                    treatmentPlanService.createPlanFromOrder(orderId);
+                } catch (Exception e) {
+                    log.warn("治疗计划自动生成失败(可治疗台补建): orderNo={}, 原因: {}", o.get("order_no"), e.getMessage());
+                }
+            } else if ("检验".equals(orderType)) {
+                try {
+                    specimenService.generateSpecimens(orderId);
+                } catch (Exception e) {
+                    log.warn("标本自动生成失败(可医技台补生成): orderNo={}, 原因: {}", o.get("order_no"), e.getMessage());
+                }
+            }
+            try {
+                nurseExecService.createExecRecords(orderId);
+            } catch (Exception e) {
+                log.warn("护士执行单自动生成失败(可护士站兜底补建): orderNo={}, 原因: {}", o.get("order_no"), e.getMessage());
+            }
+        }
     }
 
     /**
@@ -521,13 +662,15 @@ public class CashierService {
                 && !origin.getOrgId().equals(lu.getOrgId()) && !orgAccessGuard.isLead()) {
             throw new BizException(403, "仅可退本机构收费单");
         }
-        // 已日结不可退费
+        // 已日结不可退费(仅锁定日结时刻之前收取的单: 日结后当日新收的票未被汇总, 不应被历史日结误锁)
         if (origin.getChargeTime() != null && origin.getOrgId() != null) {
-            Long settled = dailySettleMapper.selectCount(Wrappers.<HisDailySettle>lambdaQuery()
+            HisDailySettle settled = dailySettleMapper.selectOne(Wrappers.<HisDailySettle>lambdaQuery()
                     .eq(HisDailySettle::getOrgId, origin.getOrgId())
                     .eq(HisDailySettle::getSettleDate, origin.getChargeTime().toLocalDate())
-                    .eq(HisDailySettle::getStatus, 1));
-            if (settled != null && settled > 0) {
+                    .eq(HisDailySettle::getStatus, 1)
+                    .last("LIMIT 1"));
+            if (settled != null && (settled.getSettleTime() == null
+                    || !origin.getChargeTime().isAfter(settled.getSettleTime()))) {
                 throw new BizException("该笔收费已日结, 不能退费");
             }
         }
@@ -625,6 +768,14 @@ public class CashierService {
         if (origin.getVisitId() != null) {
             jdbcTemplate.update("UPDATE his_visit SET charge_status = 2 WHERE id = ? AND tenant_id = ? AND deleted = 0",
                     origin.getVisitId(), tenantId());
+            // 医嘱下游回滚: 未产生执行痕迹的医嘱复位 paid_flag(已执行单留痕不回滚, 避免费用已发生仍可被工作台执行)
+            int reset = jdbcTemplate.update("UPDATE his_order SET paid_flag = 0, update_by = ?, update_time = NOW()"
+                    + " WHERE visit_id = ? AND tenant_id = ? AND deleted = 0 AND status > 0"
+                    + " AND IFNULL(exec_status, 0) = 0 AND IFNULL(paid_flag, 0) = 1",
+                    UserContext.username(), origin.getVisitId(), tenantId());
+            if (reset > 0) {
+                log.info("全额退费回滚医嘱收费标志: visitId={}, 回滚{}条", origin.getVisitId(), reset);
+            }
         }
 
         log.info("退费完成: 原单={}, 退费单={}, visitId={}", origin.getBillNo(), refundBill.getBillNo(), origin.getVisitId());
@@ -661,13 +812,15 @@ public class CashierService {
                 && !origin.getOrgId().equals(lu.getOrgId()) && !orgAccessGuard.isLead()) {
             throw new BizException(403, "仅可退本机构收费单");
         }
-        // 3. 日结锁定: 原单收费日期已日结则不可退
+        // 3. 日结锁定: 原单收费时刻已被当日日结汇总则不可退(日结后新收的票不受历史日结影响)
         if (origin.getChargeTime() != null && origin.getOrgId() != null) {
-            Long settled = dailySettleMapper.selectCount(Wrappers.<HisDailySettle>lambdaQuery()
+            HisDailySettle settled = dailySettleMapper.selectOne(Wrappers.<HisDailySettle>lambdaQuery()
                     .eq(HisDailySettle::getOrgId, origin.getOrgId())
                     .eq(HisDailySettle::getSettleDate, origin.getChargeTime().toLocalDate())
-                    .eq(HisDailySettle::getStatus, 1));
-            if (settled != null && settled > 0) {
+                    .eq(HisDailySettle::getStatus, 1)
+                    .last("LIMIT 1"));
+            if (settled != null && (settled.getSettleTime() == null
+                    || !origin.getChargeTime().isAfter(settled.getSettleTime()))) {
                 throw new BizException("该笔收费已日结, 不能退费");
             }
         }
@@ -876,16 +1029,13 @@ public class CashierService {
         return billMapper.selectPage(new Page<>(safePage(page), safeSize(size)), w);
     }
 
-    /** 收据数据: 收费单 + 明细列表 + 患者信息 */
+    /** 收据数据: 收费单 + 明细列表(含票据式样字段) + 患者信息 */
     public Map<String, Object> billReceipt(Long billId) {
         HisChargeBill bill = billMapper.selectById(billId);
         if (bill == null) {
             throw new BizException(400, "收费单不存在");
         }
-        List<HisChargeBillItem> items = billItemMapper.selectList(
-                Wrappers.<HisChargeBillItem>lambdaQuery()
-                        .eq(HisChargeBillItem::getBillId, billId)
-                        .orderByAsc(HisChargeBillItem::getId));
+        List<Map<String, Object>> items = receiptItems(billId);
         Map<String, Object> patient = new LinkedHashMap<>();
         if (bill.getVisitId() != null) {
             List<Map<String, Object>> rows = jdbcTemplate.queryForList(
@@ -905,6 +1055,7 @@ public class CashierService {
                 patient.put("mdtrtId", r.get("mdtrt_id"));
                 patient.put("deptName", r.get("dept_name"));
                 patient.put("drName", r.get("dr_name"));
+                patient.put("psnNo", r.get("psn_no"));
             }
         }
         Map<String, Object> result = new LinkedHashMap<>();
@@ -912,6 +1063,396 @@ public class CashierService {
         result.put("items", items);
         result.put("patient", patient);
         return result;
+    }
+
+    /**
+     * 收据/票据明细: 收费单明细行 + 票据式样字段。
+     * 明细表仅快照了医保编码/比例, 报销类别所需 chrgitm_lv、归并类所需 rx_type/invoice_class
+     * 按 refType/refId 回溯源单据(处方明细/医嘱明细)取得, 再走与收费前预览同一套 enrichInvoiceFields 计算。
+     */
+    private List<Map<String, Object>> receiptItems(Long billId) {
+        List<HisChargeBillItem> rows = billItemMapper.selectList(
+                Wrappers.<HisChargeBillItem>lambdaQuery()
+                        .eq(HisChargeBillItem::getBillId, billId)
+                        .orderByAsc(HisChargeBillItem::getId));
+        List<Long> piIds = new ArrayList<>();
+        List<Long> oiIds = new ArrayList<>();
+        for (HisChargeBillItem r : rows) {
+            if (r.getRefId() == null) {
+                continue;
+            }
+            if ("prescription_item".equals(r.getRefType())) {
+                piIds.add(r.getRefId());
+            } else if ("order_item".equals(r.getRefType())) {
+                oiIds.add(r.getRefId());
+            }
+        }
+        Map<Long, Map<String, Object>> piMap = new LinkedHashMap<>();
+        Map<Long, Map<String, Object>> oiMap = new LinkedHashMap<>();
+        if (!piIds.isEmpty()) {
+            for (Map<String, Object> r : jdbcTemplate.queryForList(
+                    "SELECT pi.id AS rid, pr.rx_type, LEFT(dc.chrgitm_lv, 1) AS lv"
+                            + " FROM his_prescription_item pi"
+                            + " LEFT JOIN his_prescription pr ON pr.id = pi.prescription_id AND pr.deleted = 0"
+                            + " LEFT JOIN his_drug_catalog dc ON dc.id = pi.drug_id"
+                            + " WHERE pi.id IN (" + placeholders(piIds.size()) + ")", piIds.toArray())) {
+                piMap.put(toLong(r.get("rid")), r);
+            }
+        }
+        if (!oiIds.isEmpty()) {
+            for (Map<String, Object> r : jdbcTemplate.queryForList(
+                    "SELECT oi.id AS rid, ci.invoice_class, LEFT(ci.chrgitm_lv, 1) AS lv"
+                            + " FROM his_order_item oi"
+                            + " LEFT JOIN his_charge_item ci ON ci.id = oi.item_id"
+                            + " WHERE oi.id IN (" + placeholders(oiIds.size()) + ")", oiIds.toArray())) {
+                oiMap.put(toLong(r.get("rid")), r);
+            }
+        }
+        List<Map<String, Object>> items = new ArrayList<>();
+        for (HisChargeBillItem r : rows) {
+            Map<String, Object> src;
+            if ("prescription_item".equals(r.getRefType())) {
+                src = piMap.get(r.getRefId());
+            } else if ("order_item".equals(r.getRefType())) {
+                src = oiMap.get(r.getRefId());
+            } else {
+                src = null;
+            }
+            Map<String, Object> it = new LinkedHashMap<>();
+            it.put("id", r.getId());
+            it.put("itemType", r.getItemType());
+            it.put("refType", r.getRefType());
+            it.put("refId", r.getRefId());
+            it.put("itemCode", r.getItemCode());
+            it.put("itemName", r.getItemName());
+            it.put("spec", r.getSpec());
+            it.put("qty", r.getQty());
+            it.put("refundedQty", r.getRefundedQty());
+            it.put("price", r.getPrice());
+            it.put("amount", r.getAmount());
+            it.put("medListCodg", r.getMedListCodg());
+            it.put("medListName", r.getMedListName());
+            it.put("ratio", r.getRatio());
+            it.put("lv", src == null ? null : src.get("lv"));
+            it.put("rxType", src == null ? null : src.get("rx_type"));
+            it.put("invoiceClass", src == null ? null : src.get("invoice_class"));
+            enrichInvoiceFields(it);
+            items.add(it);
+        }
+        return items;
+    }
+
+    /** IN 子句占位符 */
+    private static String placeholders(int n) {
+        StringBuilder sb = new StringBuilder();
+        for (int i = 0; i < n; i++) {
+            if (i > 0) {
+                sb.append(',');
+            }
+            sb.append('?');
+        }
+        return sb.toString();
+    }
+
+    // ==================== 收费工作站今日概览 ====================
+
+    /**
+     * 今日收费概览(工作站顶部统计卡):
+     * 待收费人数(完成接诊未收费, 含往日积压)、今日收费/退费笔数金额、
+     * 今日现金/基金/个账净额、今日已开票数、今日是否已日结。
+     */
+    public Map<String, Object> dailySummary(Long orgId) {
+        Long org = orgId != null ? orgId : currentOrgId();
+        Map<String, Object> r = new LinkedHashMap<>();
+        // 待收费: his_visit 无 org_id, 按科室所属机构过滤(与 todoPage 同口径)
+        List<Object> todoArgs = new ArrayList<>();
+        todoArgs.add(tenantId());
+        String orgCond = "";
+        if (org != null) {
+            orgCond = " AND d.org_id = ?";
+            todoArgs.add(org);
+        }
+        Integer todoCount = jdbcTemplate.queryForObject(
+                "SELECT COUNT(*) FROM his_visit v"
+                        + " LEFT JOIN his_dept d ON d.id = v.dept_id AND d.deleted = 0"
+                        + " WHERE v.visit_status = 3 AND v.charge_status = 0 AND v.deleted = 0 AND v.tenant_id = ?" + orgCond,
+                Integer.class, todoArgs.toArray());
+        r.put("todoCount", todoCount == null ? 0 : todoCount);
+        // 今日收费/退费汇总(his_charge_bill 自带 org_id)
+        Map<String, Object> agg = jdbcTemplate.queryForMap(
+                "SELECT"
+                        + " IFNULL(SUM(CASE WHEN bill_type = 1 THEN 1 ELSE 0 END), 0) AS charge_count,"
+                        + " IFNULL(SUM(CASE WHEN bill_type = 1 THEN total_amount ELSE 0 END), 0) AS charge_amount,"
+                        + " IFNULL(SUM(CASE WHEN bill_type = 2 THEN 1 ELSE 0 END), 0) AS refund_count,"
+                        + " IFNULL(SUM(CASE WHEN bill_type = 2 THEN total_amount ELSE 0 END), 0) AS refund_amount,"
+                        + " IFNULL(SUM(CASE WHEN bill_type = 1 THEN cash_pay ELSE -cash_pay END), 0) AS cash_total"
+                        + " FROM his_charge_bill"
+                        + " WHERE tenant_id = ? AND deleted = 0 AND status >= 1 AND DATE(charge_time) = CURDATE()"
+                        + (org == null ? "" : " AND org_id = ?"),
+                org == null ? new Object[]{tenantId()} : new Object[]{tenantId(), org});
+        r.put("chargeCount", agg.get("charge_count"));
+        r.put("chargeAmount", agg.get("charge_amount"));
+        r.put("refundCount", agg.get("refund_count"));
+        r.put("refundAmount", agg.get("refund_amount"));
+        r.put("cashTotal", agg.get("cash_total"));
+        // 今日已开票数(正常票, 不含作废/红冲)
+        Integer invoiceCount = jdbcTemplate.queryForObject(
+                "SELECT COUNT(*) FROM his_invoice"
+                        + " WHERE tenant_id = ? AND deleted = 0 AND invoice_type = 'NORMAL' AND DATE(create_time) = CURDATE()"
+                        + (org == null ? "" : " AND org_id = ?"),
+                Integer.class,
+                org == null ? new Object[]{tenantId()} : new Object[]{tenantId(), org});
+        r.put("invoiceCount", invoiceCount == null ? 0 : invoiceCount);
+        // 今日日结状态
+        List<HisDailySettle> settles = dailySettleMapper.selectList(Wrappers.<HisDailySettle>lambdaQuery()
+                .eq(org != null, HisDailySettle::getOrgId, org)
+                .eq(HisDailySettle::getSettleDate, LocalDate.now())
+                .last("LIMIT 1"));
+        r.put("settled", !settles.isEmpty() && settles.get(0).getStatus() != null && settles.get(0).getStatus() == 1);
+        r.put("settleTime", settles.isEmpty() || settles.get(0).getSettleTime() == null
+                ? "" : settles.get(0).getSettleTime().toString().replace('T', ' '));
+        return r;
+    }
+
+    // ==================== 正式门诊收费票据(财综〔2012〕3号) ====================
+
+    /** 手工票 11 类费用归并栏目(固定顺序, 无发生额也列示) */
+    private static final String[] INVOICE_CATS = {
+            "诊察费", "检查费", "化验费", "治疗费", "手术费", "卫生材料费",
+            "西药费", "中草药费", "中成药费", "药事服务费", "一般诊疗费"};
+
+    /**
+     * 正式门诊收费票据打印数据(财综〔2012〕3号式样):
+     * 表头(业务流水号/票据号/开票日期) + 患者栏(姓名/性别/医保类型/医保付费方式/社会保障号码)
+     * + 机打明细行(项目/规格·报销类别·数量·金额·自费自理·其中医保政策范围外自费)
+     * + 11类费用归并汇总(手工票栏目) + 合计大小写 + 医保统筹/个账/其他支付与个人现金支付。
+     */
+    public Map<String, Object> invoicePrint(Long billId) {
+        HisChargeBill bill = billMapper.selectById(billId);
+        if (bill == null) {
+            throw new BizException(400, "收费单不存在");
+        }
+        List<Map<String, Object>> items = receiptItems(billId);
+        // 患者与就诊信息(机构隔离由页面读口径保证, 此处按单取数)
+        Map<String, Object> patient = new LinkedHashMap<>();
+        if (bill.getVisitId() != null) {
+            List<Map<String, Object>> rows = jdbcTemplate.queryForList(
+                    "SELECT v.patient_no, v.reg_no, v.ipt_otp_no, v.mdtrt_id, v.insutype, v.psn_no,"
+                            + " v.dept_name, v.patient_name, v.gender, v.age, p.id_card"
+                            + " FROM his_visit v LEFT JOIN his_patient p ON p.id = v.patient_id AND p.deleted = 0"
+                            + " WHERE v.id = ? AND v.deleted = 0", bill.getVisitId());
+            if (!rows.isEmpty()) {
+                Map<String, Object> vr = rows.get(0);
+                patient.put("name", vr.get("patient_name"));
+                patient.put("gender", genderText(str(vr.get("gender"))));
+                patient.put("age", vr.get("age"));
+                patient.put("idCard", vr.get("id_card"));
+                patient.put("psnNo", vr.get("psn_no"));
+                patient.put("patientNo", vr.get("patient_no"));
+                patient.put("visitNo", vr.get("ipt_otp_no"));
+                patient.put("regNo", vr.get("reg_no"));
+                patient.put("mdtrtId", vr.get("mdtrt_id"));
+                patient.put("deptName", vr.get("dept_name"));
+                String insutype = str(vr.get("insutype"));
+                patient.put("insuTypeName", insuTypeText(insutype));
+                patient.put("insuPayWay", StringUtils.hasText(str(vr.get("mdtrt_id"))) || StringUtils.hasText(str(vr.get("psn_no")))
+                        ? "按项目支付" : "自费");
+            }
+        }
+        if (patient.isEmpty()) {
+            patient.put("name", bill.getPatientName());
+            patient.put("gender", "");
+            patient.put("insuTypeName", "自费");
+            patient.put("insuPayWay", "自费");
+        }
+        // 收款单位
+        String orgName = "";
+        if (bill.getOrgId() != null) {
+            try {
+                orgName = jdbcTemplate.queryForObject(
+                        "SELECT org_name FROM sys_org WHERE id = ? AND deleted = 0", String.class, bill.getOrgId());
+            } catch (Exception ignore) {
+                // 机构名缺失不阻塞票面生成
+            }
+        }
+        // 机打明细金额侧算: 自费自理合计 + 范围外自费合计
+        BigDecimal selfCostTotal = BigDecimal.ZERO;
+        BigDecimal outOfScopeTotal = BigDecimal.ZERO;
+        for (Map<String, Object> it : items) {
+            selfCostTotal = selfCostTotal.add(nvl(toBd(it.get("selfCost"))));
+            outOfScopeTotal = outOfScopeTotal.add(nvl(toBd(it.get("outOfScope"))));
+        }
+        // 11类费用归并(自定义归并类如"病理费"就近并入化验费, 未知并入治疗费)
+        Map<String, BigDecimal> catMap = new LinkedHashMap<>();
+        for (String c : INVOICE_CATS) {
+            catMap.put(c, BigDecimal.ZERO);
+        }
+        for (Map<String, Object> it : items) {
+            String cat = str(it.get("invoiceCat"));
+            if (!catMap.containsKey(cat)) {
+                cat = cat.contains("病理") || cat.contains("化验") ? "化验费"
+                        : cat.contains("诊察") || cat.contains("诊疗") ? "诊察费" : "治疗费";
+            }
+            catMap.put(cat, catMap.get(cat).add(nvl(toBd(it.get("amount")))));
+        }
+        List<Map<String, Object>> cats = new ArrayList<>();
+        for (Map.Entry<String, BigDecimal> e : catMap.entrySet()) {
+            Map<String, Object> c = new LinkedHashMap<>();
+            c.put("name", e.getKey());
+            c.put("amount", e.getValue().setScale(2, RoundingMode.HALF_UP));
+            cats.add(c);
+        }
+        // 医保支付四分 + 个人现金支付(退费单金额取负展示由前端按 billType 处理)
+        BigDecimal fundPay = nvl(bill.getFundPay());
+        BigDecimal acctPay = nvl(bill.getAcctPay());
+        BigDecimal cashPay = nvl(bill.getCashPay());
+        BigDecimal selfPay = nvl(bill.getSelfPay());
+        BigDecimal total = nvl(bill.getTotalAmount());
+        BigDecimal otherPay = BigDecimal.ZERO;
+        LocalDateTime ct = bill.getChargeTime() == null ? LocalDateTime.now() : bill.getChargeTime();
+
+        Map<String, Object> header = new LinkedHashMap<>();
+        header.put("title", "湖北省医疗门诊收费票据");
+        header.put("subTitle", "(机打)");
+        header.put("orgName", orgName == null ? "" : orgName);
+        header.put("billNo", bill.getBillNo());
+        header.put("invoiceNo", bill.getInvoiceNo());
+        header.put("date", ct.format(java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd")));
+        header.put("year", String.valueOf(ct.getYear()));
+        header.put("month", String.valueOf(ct.getMonthValue()));
+        header.put("day", String.valueOf(ct.getDayOfMonth()));
+        header.put("billType", bill.getBillType());
+        header.put("insuranceTypeCode", "鄂财办票〔2012〕3号");
+
+        Map<String, Object> pay = new LinkedHashMap<>();
+        pay.put("totalAmount", total);
+        pay.put("upper", rmbUpper(total));
+        pay.put("fundPay", fundPay);
+        pay.put("acctPay", acctPay);
+        pay.put("otherPay", otherPay);
+        pay.put("selfPay", selfPay);
+        pay.put("cashPay", cashPay);
+        pay.put("selfCostTotal", selfCostTotal);
+        pay.put("outOfScopeTotal", outOfScopeTotal);
+
+        Map<String, Object> footer = new LinkedHashMap<>();
+        footer.put("chargeBy", bill.getChargeBy());
+        footer.put("chargeTime", ct.format(java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss")));
+        footer.put("setlId", bill.getSetlId());
+        footer.put("payMethod", bill.getPayMethod());
+        footer.put("remark", bill.getRemark());
+
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("header", header);
+        result.put("patient", patient);
+        result.put("items", items);
+        result.put("cats", cats);
+        result.put("pay", pay);
+        result.put("footer", footer);
+        return result;
+    }
+
+    /** 性别码 -> 汉字(收据/票面共用) */
+    private static String genderText(String g) {
+        if ("1".equals(g)) {
+            return "男";
+        }
+        if ("2".equals(g)) {
+            return "女";
+        }
+        return g == null || g.isEmpty() ? "" : g;
+    }
+
+    /** 险种码 -> 医保类型名称(票面"医保类型"栏) */
+    private static String insuTypeText(String t) {
+        if (!StringUtils.hasText(t)) {
+            return "自费";
+        }
+        switch (t) {
+            case "310": return "职工医保";
+            case "340": return "工伤保险";
+            case "390": return "居民医保";
+            case "391": return "城乡居民医保";
+            case "510": return "自费";
+            default: return t + "-医保";
+        }
+    }
+
+    /** 人民币金额转中文大写(票据合计大写栏) */
+    static String rmbUpper(BigDecimal amount) {
+        if (amount == null) {
+            return "";
+        }
+        String[] cnNum = {"零", "壹", "贰", "叁", "肆", "伍", "陆", "柒", "捌", "玖"};
+        String[] unit = {"", "拾", "佰", "仟"};
+        String[] bigUnit = {"", "万", "亿", "万亿"};
+        boolean neg = amount.compareTo(BigDecimal.ZERO) < 0;
+        BigDecimal abs = amount.abs().setScale(2, RoundingMode.HALF_UP);
+        long yuan = abs.longValue();
+        int jiaoFen = abs.subtract(BigDecimal.valueOf(yuan)).multiply(BigDecimal.valueOf(100)).intValue();
+        if (yuan == 0 && jiaoFen == 0) {
+            return "零元整";
+        }
+        // 整数部分按 4 位分节, 高位向低位拼接; 低位节非零但不足千位(如 壹万零壹)或中间节全零时补零
+        List<Integer> sections = new ArrayList<>();
+        long tmp = yuan;
+        while (tmp > 0) {
+            sections.add((int) (tmp % 10000));
+            tmp /= 10000;
+        }
+        StringBuilder sb = new StringBuilder();
+        for (int i = sections.size() - 1; i >= 0; i--) {
+            int sec = sections.get(i);
+            if (sec == 0) {
+                continue;
+            }
+            if (sec < 1000 && sb.length() > 0) {
+                sb.append("零");
+            }
+            sb.append(sectionToCn(sec, cnNum, unit)).append(bigUnit[i]);
+        }
+        // 不足1元时不接"元"(如 0.50 -> 伍角, 0.05 -> 伍分)
+        if (yuan > 0) {
+            sb.append("元");
+        }
+        int jiao = jiaoFen / 10;
+        int fen = jiaoFen % 10;
+        if (jiaoFen == 0) {
+            sb.append("整");
+        } else {
+            if (jiao > 0) {
+                sb.append(cnNum[jiao]).append("角");
+            } else if (fen > 0 && yuan > 0) {
+                sb.append("零");
+            }
+            if (fen > 0) {
+                sb.append(cnNum[fen]).append("分");
+            } else {
+                sb.append("整");
+            }
+        }
+        return (neg ? "负" : "") + sb;
+    }
+
+    /** 4 位以内金额节转大写(节内零值折叠, 尾零由调用方处理) */
+    private static String sectionToCn(int sec, String[] cnNum, String[] unit) {
+        StringBuilder s = new StringBuilder();
+        boolean zero = false;
+        for (int k = 3; k >= 0; k--) {
+            int d = (int) (sec / Math.pow(10, k)) % 10;
+            if (d == 0) {
+                if (s.length() > 0) {
+                    zero = true;
+                }
+            } else {
+                if (zero) {
+                    s.append("零");
+                    zero = false;
+                }
+                s.append(cnNum[d]).append(unit[k]);
+            }
+        }
+        return s.toString();
     }
 
     /** 收费记录导出数据(head/rows, 与列表同筛选口径, 上限5000行) */

@@ -16,6 +16,7 @@ import com.yb.hi.framework.tenant.LoginUser;
 import com.yb.hi.framework.tenant.UserContext;
 import com.yb.hi.platform.service.OrgAccessGuard;
 import com.yb.hi.service.warehouse.DrugStockService;
+import com.yb.hi.service.warehouse.WarehouseAccessService;
 import com.yb.hi.service.warehouse.WarehouseDefService;
 import org.springframework.web.bind.annotation.*;
 
@@ -39,23 +40,26 @@ public class DrugStockController {
     private final DrugStockService service;
     private final WarehouseDefService warehouseDefService;
     private final OrgAccessGuard guard;
+    private final WarehouseAccessService access;
 
-    public DrugStockController(DrugStockService service, WarehouseDefService warehouseDefService, OrgAccessGuard guard) {
+    public DrugStockController(DrugStockService service, WarehouseDefService warehouseDefService, OrgAccessGuard guard,
+                               WarehouseAccessService access) {
         this.service = service;
         this.warehouseDefService = warehouseDefService;
         this.guard = guard;
+        this.access = access;
     }
 
     /* ================= 药库定义 ================= */
 
-    /** 药库列表(下拉默认只返回启用; includeDisabled=true 返回全部含停用, 维护页用) */
+    /** 药库列表(下拉按当前用户授权科室过滤; includeDisabled=true 返回全部含停用, 维护页用不受限) */
     @GetMapping("/warehouse-def")
     public R<List<HisWarehouseDef>> warehouseDefList(@RequestParam(required = false) Long orgId,
                                                      @RequestParam(required = false) Boolean includeDisabled) {
         Long scoped = guard.scopeOrgId(orgId);
         return R.ok(Boolean.TRUE.equals(includeDisabled)
                 ? warehouseDefService.listAll(scoped)
-                : warehouseDefService.list(scoped));
+                : access.accessibleWarehouses(scoped));
     }
 
     /** 保存药库定义(id==null 新增, 否则编辑; code 同机构唯一) */
@@ -86,6 +90,7 @@ public class DrugStockController {
     public R<HisStockCheck> createCheck(@RequestParam(required = false) Long orgId,
                                         @RequestParam Long warehouseId) {
         guard.requireLeadWrite();
+        requireWhIfPresent(warehouseId);
         Long theOrg = orgId;
         if (theOrg == null) {
             LoginUser lu = UserContext.get();
@@ -130,6 +135,7 @@ public class DrugStockController {
                                              @RequestParam(required = false) String endDate,
                                              @RequestParam(defaultValue = "1") long page,
                                              @RequestParam(defaultValue = "20") long size) {
+        requireWhIfPresent(warehouseId);
         return R.ok(service.stockCheckPage(guard.scopeOrgId(orgId), warehouseId, startDate, endDate, page, size));
     }
 
@@ -163,6 +169,7 @@ public class DrugStockController {
                                        @RequestParam(required = false) Boolean lowStock,
                                        @RequestParam(defaultValue = "1") long page,
                                        @RequestParam(defaultValue = "20") long size) {
+        requireWhIfPresent(warehouseId);
         return R.ok(service.stockPage(guard.scopeOrgId(orgId), warehouseId, keyword, lowStock, page, size));
     }
 
@@ -170,6 +177,7 @@ public class DrugStockController {
     @GetMapping("/alert")
     public R<List<HisDrugStock>> alert(@RequestParam(required = false) Long orgId,
                                        @RequestParam(required = false) Long warehouseId) {
+        requireWhIfPresent(warehouseId);
         return R.ok(service.lowStockAlert(guard.scopeOrgId(orgId), warehouseId));
     }
 
@@ -182,6 +190,7 @@ public class DrugStockController {
                                               @RequestParam(required = false) String endDate,
                                               @RequestParam(defaultValue = "1") long page,
                                               @RequestParam(defaultValue = "20") long size) {
+        requireWhIfPresent(warehouseId);
         return R.ok(service.stockFlow(guard.scopeOrgId(orgId), warehouseId, drugCatalogId, startDate, endDate, page, size));
     }
 
@@ -191,6 +200,7 @@ public class DrugStockController {
     public void export(@RequestParam(required = false) Long orgId,
                        @RequestParam(required = false) Long warehouseId,
                        HttpServletResponse resp) throws IOException {
+        requireWhIfPresent(warehouseId);
         Map<String, Object> data = service.exportStock(guard.scopeOrgId(orgId), warehouseId);
         String fname = "药品库存_" + LocalDate.now() + ".xlsx";
         String enc = URLEncoder.encode(fname, "UTF-8").replace("+", "%20");
@@ -210,6 +220,7 @@ public class DrugStockController {
     @PostMapping("/in")
     public R<HisStockIn> createIn(@RequestBody StockInReq req) {
         guard.requireLeadWrite();
+        requireWhIfPresent(req.getWarehouseId());
         if (req.getOrgId() == null) {
             LoginUser lu = UserContext.get();
             if (lu != null) {
@@ -244,6 +255,7 @@ public class DrugStockController {
                                        @RequestParam(required = false) String endDate,
                                        @RequestParam(defaultValue = "1") long page,
                                        @RequestParam(defaultValue = "20") long size) {
+        requireWhIfPresent(warehouseId);
         return R.ok(service.stockInPage(guard.scopeOrgId(orgId), warehouseId, status, startDate, endDate, page, size));
     }
 
@@ -261,6 +273,7 @@ public class DrugStockController {
     @PostMapping("/out")
     public R<HisStockOut> createOut(@RequestBody StockOutReq req) {
         guard.requireLeadWrite();
+        requireWhIfPresent(req.getWarehouseId());
         if (req.getOrgId() == null) {
             LoginUser lu = UserContext.get();
             if (lu != null) {
@@ -295,6 +308,7 @@ public class DrugStockController {
                                          @RequestParam(required = false) String endDate,
                                          @RequestParam(defaultValue = "1") long page,
                                          @RequestParam(defaultValue = "20") long size) {
+        requireWhIfPresent(warehouseId);
         return R.ok(service.stockOutPage(guard.scopeOrgId(orgId), warehouseId, status, startDate, endDate, page, size));
     }
 
@@ -311,6 +325,13 @@ public class DrugStockController {
         Long scoped = guard.scopeOrgId(null);
         if (scoped != null && !scoped.equals(orgId)) {
             throw new BizException(403, "仅可查看本机构单据");
+        }
+    }
+
+    /** 传入 warehouseId 非空时校验当前用户是否有权操作该药库(按授权科室); 为空(全部/未选)不拦截 */
+    private void requireWhIfPresent(Long warehouseId) {
+        if (warehouseId != null) {
+            access.requireWarehouseAccess(warehouseId);
         }
     }
 }

@@ -627,7 +627,7 @@
 
       /* ---- 修改记录(字段级留痕) ---- */
       '    <el-tab-pane label="修改记录" name="elog">',
-      '      <el-alert type="info" :closable="false" show-icon style="margin-bottom:10px;" title="逐字段记录三目录编辑保存的变更(修改前/后); 价格调整见「调价记录」页签, 医保码变更见「医保字典→三目录医保对照」的对照变更记录。"></el-alert>',
+      '      <el-alert type="info" :closable="false" show-icon style="margin-bottom:10px;" title="逐字段记录三目录编辑保存的变更(修改前/后); 价格调整见「调价记录」页签, 医保码变更见「医共体管理→基础数据→医保目录对照」的对照变更记录。"></el-alert>',
       '      <div class="toolbar">',
       '        <el-select v-model="elog.catalogType" placeholder="全部目录" clearable style="width:130px" @change="elogSearch"><el-option label="收费项目" value="charge"></el-option><el-option label="药品" value="drug"></el-option><el-option label="耗材" value="cons"></el-option></el-select>',
       '        <el-date-picker v-model="elog.range" type="daterange" value-format="YYYY-MM-DD" start-placeholder="开始日期" end-placeholder="结束日期" style="width:240px" @change="elogSearch"></el-date-picker>',

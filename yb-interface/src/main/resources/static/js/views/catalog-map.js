@@ -284,7 +284,7 @@
     },
     template: [
       '<div class="page-card">',
-      '  <div class="page-title">三目录医保对照 <span style="font-size:12px;color:#909399;font-weight:normal;">(医疗机构目录 → 标准字典医保目录)</span></div>',
+      '  <div class="page-title">医保目录对照 <span style="font-size:12px;color:#909399;font-weight:normal;">(医疗机构目录 → 标准字典医保目录)</span></div>',
       '  <el-alert type="info" :closable="false" show-icon style="margin-bottom:12px;"',
       '    title="从院内已有条目出发补/改医保标准编码: 左栏选院内条目, 右栏按名称/规格/厂家打分给出医保候选; 高置信度可批量自动对照, 其余人工确认。"></el-alert>',
       '  <el-alert v-if="mappedFilter===\'2\'" type="warning" :closable="false" show-icon style="margin-bottom:12px;"',

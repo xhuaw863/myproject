@@ -121,15 +121,16 @@ public class HisStaffService extends ServiceImpl<HisStaffMapper, HisStaff> {
 
     /** 按科室/类别过滤职工 */
     public List<HisStaff> listByFilter(Long deptId, String staffType, String keyword) {
-        return listByFilter(null, false, deptId, staffType, keyword, true);
+        return listByFilter(null, false, deptId, staffType, keyword, true, null);
     }
 
     /**
      * 按机构/科室/类别过滤职工。
      * withSubOrgs=true 时选上级机构级联含其下级机构(县→乡→村);
      * withChildren=true 时选上级科室级联含其下级子树科室(大类→科室→窗口/诊室); 否则均仅精确匹配选中项。
+     * status 非空时按在职状态(1在职/0停用)精确过滤。
      */
-    public List<HisStaff> listByFilter(Long orgId, boolean withSubOrgs, Long deptId, String staffType, String keyword, boolean withChildren) {
+    public List<HisStaff> listByFilter(Long orgId, boolean withSubOrgs, Long deptId, String staffType, String keyword, boolean withChildren, Integer status) {
         List<Long> orgIds = (orgId == null || !withSubOrgs) ? null : orgService.subtreeIds(orgId);
         List<Long> deptIds = (deptId == null || !withChildren) ? null : deptService.subtreeIds(deptId);
         return lambdaQuery()
@@ -138,6 +139,7 @@ public class HisStaffService extends ServiceImpl<HisStaffMapper, HisStaff> {
                 .in(deptIds != null, HisStaff::getDeptId, deptIds)
                 .eq(deptId != null && deptIds == null, HisStaff::getDeptId, deptId)
                 .eq(StringUtils.hasText(staffType), HisStaff::getStaffType, staffType)
+                .eq(status != null, HisStaff::getStatus, status)
                 .and(StringUtils.hasText(keyword), w -> w
                         .like(HisStaff::getStaffName, keyword)
                         .or().like(HisStaff::getStaffNo, keyword)
@@ -149,8 +151,8 @@ public class HisStaffService extends ServiceImpl<HisStaffMapper, HisStaff> {
     }
 
     /** 导出职工列表(head/rows/total): 与列表同一筛选(含级联开关), 一次性导出全部匹配行 */
-    public Map<String, Object> exportRows(Long orgId, boolean withSubOrgs, Long deptId, String staffType, String keyword, boolean withChildren) {
-        List<HisStaff> list = listByFilter(orgId, withSubOrgs, deptId, staffType, keyword, withChildren);
+    public Map<String, Object> exportRows(Long orgId, boolean withSubOrgs, Long deptId, String staffType, String keyword, boolean withChildren, Integer status) {
+        List<HisStaff> list = listByFilter(orgId, withSubOrgs, deptId, staffType, keyword, withChildren, status);
         Map<Long, String> deptNames = new LinkedHashMap<>();
         for (HisDept d : deptService.listAll()) {
             deptNames.put(d.getId(), d.getDeptName());

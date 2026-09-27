@@ -35,10 +35,11 @@ public class HisStaffController {
                                   @RequestParam(required = false) Long deptId,
                                   @RequestParam(required = false) String staffType,
                                   @RequestParam(required = false) String keyword,
+                                  @RequestParam(required = false) Integer status,
                                   @RequestParam(defaultValue = "true") boolean withChildren,
                                   @RequestParam(defaultValue = "true") boolean withSubOrgs) {
         /* 机构级联仅牵头机构生效: 非牵头读隔离锁定本机构, 不得穿透到下级 */
-        return R.ok(service.listByFilter(guard.scopeOrgId(orgId), withSubOrgs && guard.isLead(), deptId, staffType, keyword, withChildren));
+        return R.ok(service.listByFilter(guard.scopeOrgId(orgId), withSubOrgs && guard.isLead(), deptId, staffType, keyword, withChildren, status));
     }
 
     /** 导出职工列表(xlsx): 与列表同一筛选(机构/科室/类别/关键字及两个级联开关), 一次性导出全部匹配行 */
@@ -48,11 +49,12 @@ public class HisStaffController {
                        @RequestParam(required = false) Long deptId,
                        @RequestParam(required = false) String staffType,
                        @RequestParam(required = false) String keyword,
+                       @RequestParam(required = false) Integer status,
                        @RequestParam(defaultValue = "true") boolean withChildren,
                        @RequestParam(defaultValue = "true") boolean withSubOrgs,
                        HttpServletResponse resp) throws IOException {
         Map<String, Object> data = service.exportRows(guard.scopeOrgId(orgId), withSubOrgs && guard.isLead(),
-                deptId, staffType, keyword, withChildren);
+                deptId, staffType, keyword, withChildren, status);
         String fname = "职工列表_" + LocalDate.now() + ".xlsx";
         String enc = URLEncoder.encode(fname, "UTF-8").replace("+", "%20");
         resp.setContentType("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");

@@ -22,6 +22,10 @@ public final class Roles {
     public static final String CASHIER = "CASHIER";
     /** 护士 */
     public static final String NURSE = "NURSE";
+    /** 治疗师 */
+    public static final String THERAPIST = "THERAPIST";
+    /** 医技人员 */
+    public static final String TECHNICIAN = "TECHNICIAN";
     /** 平台超级管理员(跨租户) */
     public static final String SUPER_ADMIN = "SUPER_ADMIN";
 }

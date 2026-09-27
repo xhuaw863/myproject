@@ -66,7 +66,16 @@
         mutualHit: null,
         mutualItem: null,
         mutualReason: '',
-        mutualResolver: null
+        mutualResolver: null,
+        /* 过敏拦截(2026-09 集成: 开单前核对护士站过敏档案, 命中强制确认换药/脱敏) */
+        allergyVisible: false,
+        allergyHits: [],
+        allergyResolver: null,
+        /* 医技历史报告(2026-09 集成: /api/medtech/reports/patient/{patientId}, 供医生站调阅) */
+        reportTab: 'medtech',
+        medtechReports: [],
+        medtechLoading: false,
+        medtechDetail: null
       };
     },
     computed: {
@@ -251,6 +260,78 @@
       onMutualClosed: function () {
         if (this.mutualResolver) { var resolve = this.mutualResolver; this.mutualResolver = null; resolve(false); }
       },
+      /* ===== 过敏拦截(2026-09 集成: 开单前调 /api/nurse/allergy/{patientId} 核对) ===== */
+      /* 核对拟开项目与有效过敏原(双向包含匹配, 去除空格括号后比对);
+       * 过敏档案接口不可用时降级放行(不阻断开单), 命中才弹强制拦截 */
+      checkAllergyConflict: function (items) {
+        var vm = this;
+        if (!vm.patientId || !items || !items.length) { return Promise.resolve([]); }
+        return HIS.get('/api/nurse/allergy/' + encodeURIComponent(vm.patientId)).then(function (list) {
+          var allergens = (Array.isArray(list) ? list : []).map(function (a) {
+            return { name: String(a.allergenName || ''), severity: a.severity || '' };
+          }).filter(function (a) { return a.name; });
+          var hits = [];
+          items.forEach(function (it) {
+            var iname = vm.normalizeName(it.itemName);
+            if (!iname) { return; }
+            allergens.forEach(function (ag) {
+              var aname = vm.normalizeName(ag.name);
+              if (aname && (iname.indexOf(aname) >= 0 || aname.indexOf(iname) >= 0)) {
+                hits.push({ itemName: it.itemName, allergenName: ag.name, severity: ag.severity });
+              }
+            });
+          });
+          return hits;
+        }).catch(function () { return []; });
+      },
+      requestAllergyDecision: function (items) {
+        var vm = this;
+        return vm.checkAllergyConflict(items).then(function (hits) {
+          if (!hits.length) { return true; }
+          return new Promise(function (resolve) {
+            vm.allergyHits = hits; vm.allergyResolver = resolve; vm.allergyVisible = true;
+          });
+        });
+      },
+      /* 拦截弹窗按钮: false=换药(返回修改, 终止开单); true=脱敏治疗(签署后继续开单) */
+      finishAllergyChoice: function (proceed) {
+        var resolve = this.allergyResolver;
+        this.allergyResolver = null; this.allergyVisible = false; this.allergyHits = [];
+        if (resolve) { resolve(proceed); }
+      },
+      onAllergyClosed: function () {
+        if (this.allergyResolver) { var resolve = this.allergyResolver; this.allergyResolver = null; resolve(false); }
+      },
+      severityLabel: function (s) {
+        return { mild: '轻度', moderate: '中度', severe: '重度' }[s] || '未分级';
+      },
+      /* ===== 患者历史报告(2026-09 集成: 医技工作站报告调阅) ===== */
+      openReports: function () {
+        this.reportVisible = true; this.reportTab = 'medtech'; this.medtechDetail = null;
+        this.loadMedtechReports();
+      },
+      loadMedtechReports: function () {
+        var vm = this;
+        if (!vm.patientId) { vm.medtechReports = []; return Promise.resolve([]); }
+        vm.medtechLoading = true;
+        return HIS.get('/api/medtech/reports/patient/' + encodeURIComponent(vm.patientId)).then(function (d) {
+          vm.medtechReports = Array.isArray(d) ? d : [];
+          return vm.medtechReports;
+        }).catch(function () { vm.medtechReports = []; return []; })
+          .finally(function () { vm.medtechLoading = false; });
+      },
+      medtechItemNames: function (row) {
+        return ((row && row.resultItems) || []).map(function (it) { return it.itemName || '-'; }).join('、');
+      },
+      mtValue: function (it) { return it.resultValue != null ? it.resultValue : (it.value != null ? it.value : '-'); },
+      showMedtechReport: function (row) { this.medtechDetail = row; },
+      mtReportTypeLabel: function (v) { return v === 'lab' ? '检验' : (v === 'exam' ? '检查' : (v || '-')); },
+      mtReportStatusLabel: function (v) { return ({ 0: '待写', 1: '待审', 2: '已发布', 3: '已作废' })[v] || '-'; },
+      mtRefRange: function (it) {
+        var lo = it.refRangeLow, hi = it.refRangeHigh;
+        if (lo == null && hi == null) { return '-'; }
+        return (lo == null ? '' : lo) + ' ~ ' + (hi == null ? '' : hi);
+      },
       addPackage: function (pkg) {
         var vm = this; var names = (pkg && pkg.items) || [];
         if (!names.length || vm.packageLoading) { return; }
@@ -314,15 +395,21 @@
       saveOd: function () {
         var vm = this; var error = vm.validateOrder();
         if (error) { ElementPlus.ElMessage.warning(error); return; }
-        vm.saving = true;
-        HIS.post('/api/his/order/create', {
-          visitId: vm.visitId, orderType: vm.orderType, items: vm.payloadItems()
-        }).then(function (order) {
-          ElementPlus.ElMessage.success('单据已开立：' + (order.orderNo || '成功') + '，金额￥' + money(order.totalAmount));
-          vm.buckets[vm.orderType] = makeBucket();
-          vm.forms[vm.orderType] = vm.orderType === '检验' ? labForm() : (vm.orderType === '检查' ? examForm() : treatmentForm());
-          vm.loadOrders(); vm.$emit('order-saved', order);
-        }).catch(HIS.notifyError).finally(function () { vm.saving = false; });
+        var items = vm.payloadItems();
+        /* 过敏拦截: 调护士站过敏档案核对拟开项目, 命中过敏原时弹出强制弹窗,
+         * 须确认"换药"(返回修改)或"脱敏治疗"(继续开单)才可继续(见 finishAllergyChoice) */
+        vm.requestAllergyDecision(items).then(function (proceed) {
+          if (!proceed) { return; }
+          vm.saving = true;
+          HIS.post('/api/his/order/create', {
+            visitId: vm.visitId, orderType: vm.orderType, items: items
+          }).then(function (order) {
+            ElementPlus.ElMessage.success('单据已开立：' + (order.orderNo || '成功') + '，金额￥' + money(order.totalAmount));
+            vm.buckets[vm.orderType] = makeBucket();
+            vm.forms[vm.orderType] = vm.orderType === '检验' ? labForm() : (vm.orderType === '检查' ? examForm() : treatmentForm());
+            vm.loadOrders(); vm.$emit('order-saved', order);
+          }).catch(HIS.notifyError).finally(function () { vm.saving = false; });
+        });
       },
       cancelOrder: function (order) {
         var vm = this;
@@ -334,16 +421,23 @@
       },
       printOrder: function (order) { this.$emit('print-order', order.id); },
       orderStatus: function (o) {
+        /* 真实状态源: 医嘱表 paid_flag/exec_status(收费/执行回写) + 报告时间; 就诊级 charge_status 仅作兜底 */
+        var ex = Number(o.execStatus || 0), paid = Number(o.paidFlag || 0);
         if (Number(o.status) < 0 || Number(o.status) === 3) { return '已作废'; }
+        if (ex === 3) { return '已取消'; }
         if (o.reportStatus === 1 || o.reportTime) { return '已报告'; }
-        if (Number(o.status) >= 2 || o.executeTime) { return '已执行'; }
-        if (o.chargeStatus === 1 || o.chargeTime) { return '已收费'; }
+        if (ex === 2) { return '已执行'; }
+        if (ex === 1) { return '执行中'; }
+        if (paid === 1 || o.chargeStatus === 1 || o.chargeTime) { return '已收费'; }
         return '已开';
       },
       orderProgress: function (o) {
+        var ex = Number(o.execStatus || 0), paid = Number(o.paidFlag || 0);
         var steps = ['已开'];
-        if (o.chargeStatus === 1 || o.chargeTime || Number(o.status) >= 2) { steps.push('已收费'); }
-        if (Number(o.status) >= 2 || o.executeTime) { steps.push('已执行'); }
+        if (paid === 1 || o.chargeStatus === 1 || o.chargeTime) { steps.push('已收费'); }
+        if (ex === 1) { steps.push('执行中'); }
+        if (ex === 2) { steps.push('已执行'); }
+        if (ex === 3) { steps.push('已取消'); }
         if (o.reportStatus === 1 || o.reportTime) { steps.push('已报告'); }
         return steps.join(' → ');
       },
@@ -379,7 +473,7 @@
     template: `
       <div class="dw-panel dw-order-panel" :class="{'is-expanded':isExpanded}">
         <style>
-          .dw-order-panel .dw-order-toolbar{display:flex;align-items:center;gap:8px;padding:8px 10px}.dw-order-panel .dw-order-search{flex:1;min-width:140px}.dw-order-panel .dw-order-empty{padding:18px;text-align:center;color:var(--dw-text-hint);font-size:12px}.dw-order-panel .dw-order-split{display:grid;grid-template-columns:35% 65%;min-height:440px}.dw-order-panel .dw-order-catalog{padding:10px;border-right:1px solid var(--dw-border)}.dw-order-panel .dw-order-form{padding:10px 14px}.dw-order-panel .dw-package-row{display:flex;gap:5px;flex-wrap:wrap;margin:8px 0}.dw-order-panel .dw-form-readonly{padding:6px 9px;background:var(--dw-card-muted);border:1px solid var(--dw-border);border-radius:4px;color:var(--dw-text-secondary);min-height:30px}.dw-order-panel .dw-order-cards{padding:0 10px 8px}.dw-order-panel .dw-order-history{padding:10px 14px;border-top:1px solid var(--dw-border)}.dw-order-panel .dw-progress{color:var(--dw-primary);font-size:11px;white-space:nowrap}.dw-order-panel .dw-mutual-alert{padding:12px;border-left:4px solid var(--dw-warning);background:var(--dw-warning-light);line-height:1.8}.dw-order-panel .dw-report-result{font-weight:700}.dw-critical-value-dialog{width:100vw!important;max-width:none!important;height:100vh;margin:0!important;border:8px solid var(--dw-danger)!important;border-radius:0!important;background:var(--dw-danger-light)!important;display:flex;flex-direction:column;justify-content:center}.dw-critical-value-dialog .el-message-box__title,.dw-critical-value-dialog .el-message-box__message{color:var(--dw-danger)!important;font-size:22px;font-weight:700}.dw-critical-value-dialog .el-message-box__content{max-width:760px;margin:0 auto;white-space:pre-line}.dw-critical-value-dialog .el-message-box__btns{justify-content:center}.dw-critical-value-dialog .el-button{font-size:18px;padding:18px 42px}
+          .dw-order-panel .dw-order-toolbar{display:flex;align-items:center;gap:8px;padding:8px 10px}.dw-order-panel .dw-order-search{flex:1;min-width:140px}.dw-order-panel .dw-order-empty{padding:18px;text-align:center;color:var(--dw-text-hint);font-size:12px}.dw-order-panel .dw-order-split{display:grid;grid-template-columns:35% 65%;min-height:440px}.dw-order-panel .dw-order-catalog{padding:10px;border-right:1px solid var(--dw-border)}.dw-order-panel .dw-order-form{padding:10px 14px}.dw-order-panel .dw-package-row{display:flex;gap:5px;flex-wrap:wrap;margin:8px 0}.dw-order-panel .dw-form-readonly{padding:6px 9px;background:var(--dw-card-muted);border:1px solid var(--dw-border);border-radius:4px;color:var(--dw-text-secondary);min-height:30px}.dw-order-panel .dw-order-cards{padding:0 10px 8px}.dw-order-panel .dw-order-history{padding:10px 14px;border-top:1px solid var(--dw-border)}.dw-order-panel .dw-progress{color:var(--dw-primary);font-size:11px;white-space:nowrap}.dw-order-panel .dw-mutual-alert{padding:12px;border-left:4px solid var(--dw-warning);background:var(--dw-warning-light);line-height:1.8}.dw-order-panel .dw-report-result{font-weight:700}.dw-critical-value-dialog{width:100vw!important;max-width:none!important;height:100vh;margin:0!important;border:8px solid var(--dw-danger)!important;border-radius:0!important;background:var(--dw-danger-light)!important;display:flex;flex-direction:column;justify-content:center}.dw-critical-value-dialog .el-message-box__title,.dw-critical-value-dialog .el-message-box__message{color:var(--dw-danger)!important;font-size:22px;font-weight:700}.dw-critical-value-dialog .el-message-box__content{max-width:760px;margin:0 auto;white-space:pre-line}.dw-critical-value-dialog .el-message-box__btns{justify-content:center}.dw-critical-value-dialog .el-button{font-size:18px;padding:18px 42px}.dw-allergy-block-dialog .el-dialog__title{color:var(--dw-danger,#f56c6c);font-weight:700}.dw-order-panel .dw-allergy-alert{border:2px solid var(--dw-danger,#f56c6c);border-radius:6px;padding:14px 16px;background:rgba(245,108,108,.07)}.dw-order-panel .dw-allergy-alert .hd{color:var(--dw-danger,#f56c6c);font-weight:700;font-size:15px;margin-bottom:10px}.dw-order-panel .dw-allergy-alert .row{line-height:2;color:#303133}.dw-order-panel .dw-allergy-alert .row b{color:var(--dw-danger,#f56c6c)}.dw-order-panel .dw-allergy-alert .tip{margin-top:10px;color:#909399;font-size:12px}
         </style>
         <div class="dw-panel-header">
           <span>检查 · 检验 · 治疗申请</span>
@@ -429,7 +523,7 @@
           </div>
           <div class="dw-foot-bar" v-if="activeBucket.items.length"><span>共 {{ activeBucket.items.length }} 项 · 合计 <b>￥{{ money(orderTotal) }}</b></span><el-button type="primary" size="small" :loading="saving" :disabled="!canEdit" @click="saveOd">开立{{ orderType }}单</el-button></div>
           <div class="dw-order-history" v-loading="loadingOrders">
-            <div class="dw-section" style="margin-top:0">已开立单据 <el-button link size="small" @click="reportVisible=true">查看报告</el-button></div>
+            <div class="dw-section" style="margin-top:0">已开立单据 <el-button link size="small" :disabled="!patientId" @click="openReports">查看报告</el-button></div>
             <div v-if="!visibleOrders.length" class="dim">暂无{{ orderType }}单</div>
             <div class="dw-done-list"><div class="dw-done-item" v-for="o in visibleOrders" :key="o.id"><span class="no">{{ o.orderNo }}</span><span class="amt">￥{{ money(o.totalAmount) }}</span><span class="dw-progress">{{ orderProgress(o) }}</span><el-button link type="primary" @click="printOrder(o)">打印</el-button><el-button v-if="Number(o.status)===1" link type="danger" @click="cancelOrder(o)">作废</el-button></div></div>
           </div>
@@ -442,10 +536,35 @@
           <template #footer><el-button @click="finishMutual(false)">取消开单</el-button><el-button type="warning" @click="finishMutual(true)">仍需开单</el-button></template>
         </el-dialog>
 
-        <el-dialog v-model="reportVisible" title="检验检查报告" width="820px" top="5vh">
-          <el-table :data="reports" border size="small" max-height="240" highlight-current-row @row-click="showReport"><el-table-column type="index" label="序号" width="50"></el-table-column><el-table-column label="类型" width="70"><template #default="s">{{ s.row.order&&s.row.order.orderType }}</template></el-table-column><el-table-column label="单据号" width="190"><template #default="s">{{ s.row.order&&s.row.order.orderNo }}</template></el-table-column><el-table-column label="日期" width="130"><template #default="s">{{ textDate((s.row.order||{}).reportTime||(s.row.order||{}).createTime) }}</template></el-table-column><el-table-column label="项目"><template #default="s">{{ reportItemsLine(s.row) }}</template></el-table-column></el-table>
-          <template v-if="reportDetail"><div class="dw-section">报告结果</div><el-table :data="reportItems(reportDetail)" border size="small" max-height="300"><el-table-column prop="itemName" label="项目"></el-table-column><el-table-column label="结果"><template #default="s"><span class="dw-report-result">{{ reportValue(s.row) == null ? '-' : reportValue(s.row) }}</span></template></el-table-column><el-table-column prop="unit" label="单位" width="100"></el-table-column><el-table-column prop="referenceRange" label="参考范围" width="150"></el-table-column></el-table></template>
+        <el-dialog v-model="reportVisible" title="检验检查报告" width="880px" top="5vh">
+          <el-tabs v-model="reportTab">
+            <el-tab-pane label="历史报告（医技工作站）" name="medtech">
+              <el-table :data="medtechReports" v-loading="medtechLoading" border size="small" max-height="260" highlight-current-row @row-click="showMedtechReport"><el-table-column type="index" label="序号" width="50"></el-table-column><el-table-column label="类型" width="64"><template #default="s">{{ mtReportTypeLabel(s.row.reportType) }}</template></el-table-column><el-table-column prop="reportNo" label="报告单号" width="160"></el-table-column><el-table-column label="报告时间" width="150"><template #default="s">{{ s.row.reportTime || s.row.createTime || '-' }}</template></el-table-column><el-table-column label="状态" width="64"><template #default="s">{{ mtReportStatusLabel(s.row.status) }}</template></el-table-column><el-table-column label="危急" width="60"><template #default="s"><el-tag v-if="s.row.criticalFlag === 1" type="danger" size="small" effect="dark">危急</el-tag><span v-else style="color:#c0c4cc;">-</span></template></el-table-column><el-table-column label="项目" show-overflow-tooltip><template #default="s">{{ medtechItemNames(s.row) || '-' }}</template></el-table-column></el-table>
+              <template v-if="medtechDetail">
+                <div class="dw-section">报告结果 — {{ medtechDetail.reportNo }}<span class="dw-section-extra">{{ mtReportTypeLabel(medtechDetail.reportType) }} · {{ medtechDetail.reportDoctorName || '-' }} 报告 / {{ medtechDetail.reviewDoctorName || '-' }} 审核</span></div>
+                <el-table :data="medtechDetail.resultItems || []" border size="small" max-height="260"><el-table-column prop="itemName" label="项目"></el-table-column><el-table-column label="结果"><template #default="s"><span class="dw-report-result">{{ mtValue(s.row) }}</span></template></el-table-column><el-table-column prop="resultUnit" label="单位" width="90"></el-table-column><el-table-column label="参考范围" width="150"><template #default="s">{{ mtRefRange(s.row) }}</template></el-table-column></el-table>
+                <div v-if="!(medtechDetail.resultItems || []).length" class="dw-order-empty">该报告为检查类单据，影像所见与结论请在医技工作站「报告查询」页调阅。</div>
+              </template>
+              <div v-if="!medtechLoading && !medtechReports.length" class="dw-order-empty">该患者在医技工作站暂无历史报告</div>
+            </el-tab-pane>
+            <el-tab-pane label="本次就诊关联单据" name="visit">
+              <el-table :data="reports" border size="small" max-height="260" highlight-current-row @row-click="showReport"><el-table-column type="index" label="序号" width="50"></el-table-column><el-table-column label="类型" width="70"><template #default="s">{{ s.row.order&&s.row.order.orderType }}</template></el-table-column><el-table-column label="单据号" width="190"><template #default="s">{{ s.row.order&&s.row.order.orderNo }}</template></el-table-column><el-table-column label="日期" width="130"><template #default="s">{{ textDate((s.row.order||{}).reportTime||(s.row.order||{}).createTime) }}</template></el-table-column><el-table-column label="项目"><template #default="s">{{ reportItemsLine(s.row) }}</template></el-table-column></el-table>
+              <template v-if="reportDetail"><div class="dw-section">报告结果</div><el-table :data="reportItems(reportDetail)" border size="small" max-height="300"><el-table-column prop="itemName" label="项目"></el-table-column><el-table-column label="结果"><template #default="s"><span class="dw-report-result">{{ reportValue(s.row) == null ? '-' : reportValue(s.row) }}</span></template></el-table-column><el-table-column prop="unit" label="单位" width="100"></el-table-column><el-table-column prop="referenceRange" label="参考范围" width="150"></el-table-column></el-table></template>
+            </el-tab-pane>
+          </el-tabs>
           <template #footer><el-button @click="reportVisible=false">关闭</el-button></template>
+        </el-dialog>
+
+        <el-dialog v-model="allergyVisible" title="药物过敏强制拦截" width="560px" :show-close="false" :close-on-click-modal="false" :close-on-press-escape="false" @closed="onAllergyClosed" class="dw-allergy-block-dialog">
+          <div class="dw-allergy-alert">
+            <div class="hd">该患者存在相关过敏记录，禁止直接开立！</div>
+            <div class="row" v-for="(h,i) in allergyHits" :key="i">拟开项目「<b>{{ h.itemName }}</b>」命中过敏原「<b>{{ h.allergenName }}</b>」（{{ severityLabel(h.severity) }}）</div>
+            <div class="tip">须医师确认处置方案：返回更换其他药品/项目，或签署脱敏治疗后继续开立。</div>
+          </div>
+          <template #footer>
+            <el-button @click="finishAllergyChoice(false)">换药（返回修改）</el-button>
+            <el-button type="danger" @click="finishAllergyChoice(true)">脱敏治疗，继续开单</el-button>
+          </template>
         </el-dialog>
       </div>
     `

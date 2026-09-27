@@ -18,6 +18,7 @@ import com.yb.hi.platform.service.OrgAccessGuard;
 import com.yb.hi.service.pharmacy.PharmacyDefService;
 import com.yb.hi.service.pharmacy.PharmacyPriceService;
 import com.yb.hi.service.pharmacy.PharmacyService;
+import com.yb.hi.service.warehouse.WarehouseAccessService;
 import org.springframework.web.bind.annotation.*;
 
 import javax.servlet.http.HttpServletResponse;
@@ -41,13 +42,16 @@ public class PharmacyController {
     private final PharmacyDefService pharmacyDefService;
     private final PharmacyPriceService pharmacyPriceService;
     private final OrgAccessGuard guard;
+    private final WarehouseAccessService access;
 
     public PharmacyController(PharmacyService pharmacyService, PharmacyDefService pharmacyDefService,
-                              PharmacyPriceService pharmacyPriceService, OrgAccessGuard guard) {
+                              PharmacyPriceService pharmacyPriceService, OrgAccessGuard guard,
+                              WarehouseAccessService access) {
         this.pharmacyService = pharmacyService;
         this.pharmacyDefService = pharmacyDefService;
         this.pharmacyPriceService = pharmacyPriceService;
         this.guard = guard;
+        this.access = access;
     }
 
     /** 待发药列表(dispense_status=0 的处方, 先开先发; pharmacyId 中药房只看中药处方) */
@@ -57,6 +61,7 @@ public class PharmacyController {
                                               @RequestParam(required = false) String keyword,
                                               @RequestParam(defaultValue = "1") long page,
                                               @RequestParam(defaultValue = "20") long size) {
+        requirePharmacyIfPresent(pharmacyId);
         return R.ok(pharmacyService.todoPage(guard.scopeOrgId(orgId), pharmacyId, keyword, page, size));
     }
 
@@ -64,6 +69,7 @@ public class PharmacyController {
     @GetMapping("/detail/{prescriptionId}")
     public R<Map<String, Object>> detail(@PathVariable Long prescriptionId,
                                          @RequestParam(required = false) Long pharmacyId) {
+        requirePharmacyIfPresent(pharmacyId);
         return R.ok(pharmacyService.dispenseDetail(prescriptionId, pharmacyId));
     }
 
@@ -77,6 +83,7 @@ public class PharmacyController {
     @GetMapping("/shortage")
     public R<Map<String, Object>> shortage(@RequestParam Long prescriptionId,
                                            @RequestParam(required = false) Long pharmacyId) {
+        requirePharmacyIfPresent(pharmacyId);
         return R.ok(pharmacyService.shortageInfo(prescriptionId, pharmacyId));
     }
 
@@ -89,6 +96,7 @@ public class PharmacyController {
     /** 处方改派发药药房(三期): 仅已收费未发药可改派; 不动费用/发票, 价差落发药记录对账 */
     @PostMapping("/transfer")
     public R<Map<String, Object>> transfer(@RequestBody TransferReq req) {
+        requirePharmacyIfPresent(req == null ? null : req.getToPharmacyId());
         return R.ok(pharmacyService.transferPrescription(req));
     }
 
@@ -96,6 +104,7 @@ public class PharmacyController {
     @PostMapping("/dispense")
     public R<HisDispense> dispense(@RequestBody DispenseReq req) {
         req.setOrgId(guard.scopeOrgId(req.getOrgId()));
+        requirePharmacyIfPresent(req.getPharmacyId());
         return R.ok(pharmacyService.doDispense(req));
     }
 
@@ -109,6 +118,7 @@ public class PharmacyController {
                                          @RequestParam(required = false) String keyword,
                                          @RequestParam(defaultValue = "1") long page,
                                          @RequestParam(defaultValue = "20") long size) {
+        requirePharmacyIfPresent(pharmacyId);
         return R.ok(pharmacyService.dispensePage(guard.scopeOrgId(orgId), pharmacyId, status, startDate, endDate, keyword, page, size));
     }
 
@@ -158,10 +168,10 @@ public class PharmacyController {
 
     /* ================= 药房定义 ================= */
 
-    /** 药房定义列表(机构启用中的药房, 按 sortNo 排序; 机构首次访问自动创建默认门诊药房) */
+    /** 药房定义列表(按当前用户授权科室过滤; 机构启用中的药房, 按 sortNo 排序; 首次访问自动创建默认门诊药房) */
     @GetMapping("/pharmacy-def")
     public R<List<HisPharmacyDef>> pharmacyDefList(@RequestParam(required = false) Long orgId) {
-        return R.ok(pharmacyDefService.list(resolveOrgId(orgId)));
+        return R.ok(access.accessiblePharmacies(resolveOrgId(orgId)));
     }
 
     /** 保存药房定义(新增/编辑; code 同机构唯一, 关联药库须存在且启用) */
@@ -258,5 +268,12 @@ public class PharmacyController {
         }
         LoginUser lu = UserContext.get();
         return lu == null ? null : lu.getOrgId();
+    }
+
+    /** pharmacyId 非空时校验当前用户是否有权操作该药房(按授权科室); 为空(未选/全院)不拦截 */
+    private void requirePharmacyIfPresent(Long pharmacyId) {
+        if (pharmacyId != null) {
+            access.requirePharmacyAccess(pharmacyId);
+        }
     }
 }

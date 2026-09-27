@@ -143,10 +143,22 @@ public class CashierController {
         return R.ok(cashierService.billPage(guard.scopeOrgId(orgId), status, billType, startDate, endDate, keyword, page, size));
     }
 
-    /** 收据数据(收费单+明细+患者, 供打印/展示) */
+    /** 收据数据(收费单+明细+患者, 供打印/展示; 明细含报销类别/自费自理/票据归并类) */
     @GetMapping("/receipt/{billId}")
     public R<Map<String, Object>> receipt(@PathVariable Long billId) {
         return R.ok(cashierService.billReceipt(billId));
+    }
+
+    /** 正式门诊收费票据打印数据(财综〔2012〕3号式样: 表头/患者栏/机打明细/11类归并/大写合计/支付四分) */
+    @GetMapping("/invoice-print/{billId}")
+    public R<Map<String, Object>> invoicePrint(@PathVariable Long billId) {
+        return R.ok(cashierService.invoicePrint(billId));
+    }
+
+    /** 今日收费概览(工作站顶部统计卡: 待收费/今日收费退费/现金净额/已开票/日结状态) */
+    @GetMapping("/daily-summary")
+    public R<Map<String, Object>> dailySummary(@RequestParam(required = false) Long orgId) {
+        return R.ok(cashierService.dailySummary(guard.scopeOrgId(orgId)));
     }
 
     /** 执行日结(幂等: 已日结直接返回) */

@@ -38,7 +38,7 @@ public class SysRoleService {
     private static final List<String> HOSPITAL_EXCLUDED_MENUS = Arrays.asList("hospital-manage", "std-dict-import", "std-dict-maintain", "area-code");
     /** 超级管理员精简菜单: 工作台 + 医院管理 + 标准字典(浏览+维护) */
     private static final List<String> SUPER_ADMIN_MENUS = Arrays.asList("dashboard", "hospital-manage", "std-dict");
-    /** 机构系统管理员(ORG_ADMIN)额外排除: "系统管理"目录(机构管理/角色权限/菜单管理) */
+    /** 机构系统管理员(ORG_ADMIN)额外排除: 原"系统管理"三菜单(机构管理/角色权限/菜单管理, 2026-09 已并入医共体管理目录, 按子菜单 key 逐个排除; "system"为老目录 key 兼容保留) */
     private static final List<String> SYSTEM_MENUS = Arrays.asList("system", "org-manage", "role-manage", "menu-manage");
 
     public SysRoleService(SysRoleMapper roleMapper, SysRoleMenuMapper roleMenuMapper, SysMenuService menuService,
@@ -279,8 +279,8 @@ public class SysRoleService {
     }
 
     /**
-     * 机构系统管理员(ORG_ADMIN, 非牵头医疗机构)排除集: 在 ADMIN 排除基础上追加"系统管理"目录
-     * 及其三子菜单(机构管理/角色权限/菜单管理), 即非牵头机构管理员不掌握全局机构/角色/菜单维护权。
+     * 机构系统管理员(ORG_ADMIN, 非牵头医疗机构)排除集: 在 ADMIN 排除基础上追加原"系统管理"三菜单
+     * (机构管理/角色权限/菜单管理, 现挂医共体管理目录下), 即非牵头机构管理员不掌握全局机构/角色/菜单维护权。
      */
     private List<String> orgAdminExcludedMenus(LoginUser lu) {
         List<String> ex = new ArrayList<>(adminExcludedMenus(lu));

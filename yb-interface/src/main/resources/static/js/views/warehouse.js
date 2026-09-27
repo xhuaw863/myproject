@@ -103,14 +103,13 @@
 
   /* ================= 库存总览(库存列表 / 低库存预警 / 出入库流水) ================= */
   HIS.views.DrugStock = {
+    mixins: [HIS.whScopeMixin],
     data: function () {
       return {
         activeTab: 'stock',
         /* 库存列表 */
         loading: false, list: [], total: 0, page: 1, size: 20,
         keyword: '', lowStock: false,
-        /* 药库过滤(空=全部药库) */
-        warehouseId: '', warehouseDefs: [],
         /* 低库存预警 */
         alertList: [], alertLoading: false,
         /* 出入库流水 */
@@ -118,13 +117,8 @@
         flowRange: []
       };
     },
-    created: function () { this.loadWarehouseDefs(); this.load(); },
+    created: function () { var vm = this; this.loadWarehouseDefs().then(function () { vm.load(); }); },
     methods: {
-      /* 药库下拉(启用库; 后端首次访问自动补默认药库) */
-      loadWarehouseDefs: function () {
-        var vm = this;
-        HIS.get('/api/his/stock/warehouse-def').then(function (d) { vm.warehouseDefs = d || []; }).catch(HIS.notifyError);
-      },
       whParam: function () { return this.warehouseId ? '&warehouseId=' + this.warehouseId : ''; },
       whName: function (id) { return whNameById(this.warehouseDefs, id); },
       /* 药库过滤切换: 按当前页签重查 */
@@ -192,11 +186,13 @@
       '<div class="page-card">',
       '  <div class="page-title">库存总览 <span style="font-size:12px;color:#909399;font-weight:normal;">(批次级库存 · 低库存/效期预警 · 出入库流水)</span></div>',
       '  <div class="toolbar" style="margin-bottom:6px;">',
-      '    <span style="color:#606266;font-size:13px;">药库</span>',
-      '    <el-select v-model="warehouseId" placeholder="全部药库" clearable style="width:200px" @change="onWarehouseChange">',
+      '    <span style="font-weight:600;color:#303133;">当前药库</span>',
+      '    <el-select v-model="warehouseId" style="width:200px" :disabled="whSingle" @change="onWarehouseChange">',
       '      <el-option v-for="w in warehouseDefs" :key="w.id" :label="w.name" :value="w.id"></el-option>',
       '    </el-select>',
-      '    <span style="color:#909399;font-size:12px;">药库过滤器同时作用于库存列表 / 低库存预警 / 出入库流水</span>',
+      '    <span v-if="currentWarehouse" style="color:#409eff;font-size:13px;font-weight:600;">{{ currentWhLabel }}</span>',
+      '    <span v-else style="color:#e6a23c;font-size:13px;">暂无可操作药库(需在药库管理绑定归属科室并在用户管理授权)</span>',
+      '    <span style="color:#909399;font-size:12px;">当前药库作用于库存列表 / 低库存预警 / 出入库流水 · 切换器仅列授权药库</span>',
       '  </div>',
       '  <el-tabs v-model="activeTab" @tab-change="onTab">',
       /* ---- 库存列表 ---- */
@@ -286,14 +282,13 @@
    * 单据生命周期: 新建(可编辑) --保存草稿--> 草稿(只读, 可确认/作废) --确认--> 已确认(入库upsert库存)。
    * 后端无草稿更新接口: 已保存单据只读展示, 需修改请作废后重建。 */
   HIS.views.StockInManage = {
+    mixins: [HIS.whScopeMixin],
     data: function () {
       return {
         lead: HIS.isLead(),
         /* 左侧入库单列表 */
         loading: false, inList: [], inTotal: 0, inPage: 1, inSize: 20,
         filterStatus: null, dateRange: [],
-        /* 药库过滤(空=全部药库) */
-        warehouseId: '', warehouseDefs: [],
         /* 右侧当前单据: current=主表, currentItems=明细; isNew=新建可编辑 */
         current: null, currentItems: [], isNew: false, detailLoading: false,
         saving: false,
@@ -321,7 +316,7 @@
         return '综合库/未选库: 可选本机构开展的全部药品';
       }
     },
-    created: function () { this.loadWarehouseDefs(); this.load(); },
+    created: function () { var vm = this; this.loadWarehouseDefs().then(function () { vm.load(); }); },
     methods: {
       /* ---- 左侧列表 ---- */
       load: function () {
@@ -339,11 +334,6 @@
       onInPage: function (p) { this.inPage = p; this.load(); },
       onInSize: function (s) { this.inSize = s; this.inPage = 1; this.load(); },
       inSeqNo: function (i) { return (this.inPage - 1) * this.inSize + i + 1; },
-      /* 药库下拉与联动: 入库单归属药库(建单必选), 选药范围按库类型过滤 */
-      loadWarehouseDefs: function () {
-        var vm = this;
-        HIS.get('/api/his/stock/warehouse-def').then(function (d) { vm.warehouseDefs = d || []; }).catch(HIS.notifyError);
-      },
       whName: function (id) { return whNameById(this.warehouseDefs, id); },
       /* 建单默认药库: 优先工具栏过滤药库, 其次唯一启用库 */
       prePickWarehouse: function () {
@@ -526,9 +516,12 @@
       '        <el-date-picker v-model="dateRange" type="daterange" value-format="YYYY-MM-DD" size="small" range-separator="至" start-placeholder="开始" end-placeholder="结束" style="width:250px" @change="search"></el-date-picker>',
       '      </div>',
       '      <div class="toolbar" style="margin-bottom:10px;">',
-      '        <el-select v-model="warehouseId" placeholder="全部药库" clearable size="small" style="width:130px" @change="search">',
+      '        <span style="font-weight:600;color:#303133;font-size:13px;">当前药库</span>',
+      '        <el-select v-model="warehouseId" size="small" style="width:150px" :disabled="whSingle" @change="search">',
       '          <el-option v-for="w in warehouseDefs" :key="w.id" :label="w.name" :value="w.id"></el-option>',
       '        </el-select>',
+      '        <el-tag v-if="currentWarehouse" size="small">{{ currentWhLabel }}</el-tag>',
+      '        <el-tag v-else size="small" type="warning">无可操作药库</el-tag>',
       '        <el-button v-if="lead" type="primary" size="small" @click="createNew">新建入库单</el-button>',
       '        <el-button size="small" @click="load">刷新</el-button>',
       '        <span style="color:#909399;font-size:12px;">共 {{ inTotal }} 单</span>',
@@ -623,14 +616,13 @@
    * 与入库同构, 差异: 明细从库存批次选取(锁定批号/价格), 小计=数量×零售价;
    * 确认出库按批次乐观锁扣减(不足报错), 作废仅草稿态。 */
   HIS.views.StockOutManage = {
+    mixins: [HIS.whScopeMixin],
     data: function () {
       return {
         lead: HIS.isLead(),
         /* 左侧出库单列表 */
         loading: false, outList: [], outTotal: 0, outPage: 1, outSize: 20,
         filterStatus: null, dateRange: [],
-        /* 药库过滤(空=全部药库) */
-        warehouseId: '', warehouseDefs: [],
         /* 右侧当前单据 */
         current: null, currentItems: [], isNew: false, detailLoading: false,
         saving: false,
@@ -653,7 +645,7 @@
         return s.toFixed(2);
       }
     },
-    created: function () { this.loadWarehouseDefs(); this.load(); },
+    created: function () { var vm = this; this.loadWarehouseDefs().then(function () { vm.load(); }); },
     methods: {
       /* ---- 左侧列表 ---- */
       load: function () {
@@ -671,11 +663,6 @@
       onOutPage: function (p) { this.outPage = p; this.load(); },
       onOutSize: function (s) { this.outSize = s; this.outPage = 1; this.load(); },
       outSeqNo: function (i) { return (this.outPage - 1) * this.outSize + i + 1; },
-      /* 药库下拉与联动: 出库单归属来源药库(建单必选), 批次选择锁定该库 */
-      loadWarehouseDefs: function () {
-        var vm = this;
-        HIS.get('/api/his/stock/warehouse-def').then(function (d) { vm.warehouseDefs = d || []; }).catch(HIS.notifyError);
-      },
       whName: function (id) { return whNameById(this.warehouseDefs, id); },
       /* 建单默认药库: 优先工具栏过滤药库, 其次唯一启用库 */
       prePickWarehouse: function () {
@@ -855,9 +842,12 @@
       '        <el-date-picker v-model="dateRange" type="daterange" value-format="YYYY-MM-DD" size="small" range-separator="至" start-placeholder="开始" end-placeholder="结束" style="width:250px" @change="search"></el-date-picker>',
       '      </div>',
       '      <div class="toolbar" style="margin-bottom:10px;">',
-      '        <el-select v-model="warehouseId" placeholder="全部药库" clearable size="small" style="width:130px" @change="search">',
+      '        <span style="font-weight:600;color:#303133;font-size:13px;">当前药库</span>',
+      '        <el-select v-model="warehouseId" size="small" style="width:150px" :disabled="whSingle" @change="search">',
       '          <el-option v-for="w in warehouseDefs" :key="w.id" :label="w.name" :value="w.id"></el-option>',
       '        </el-select>',
+      '        <el-tag v-if="currentWarehouse" size="small">{{ currentWhLabel }}</el-tag>',
+      '        <el-tag v-else size="small" type="warning">无可操作药库</el-tag>',
       '        <el-button v-if="lead" type="primary" size="small" @click="createNew">新建出库单</el-button>',
       '        <el-button size="small" @click="load">刷新</el-button>',
       '        <span style="color:#909399;font-size:12px;">共 {{ outTotal }} 单</span>',
@@ -957,11 +947,11 @@
         lead: HIS.isLead(),
         loading: false, list: [],
         dlg: false, saving: false, togglingId: null,
-        whTypes: WH_TYPES,
-        form: { id: null, code: '', name: '', warehouseType: 'MIXED', location: '', manager: '', sortNo: 0, orgId: null, status: 1 }
+        whTypes: WH_TYPES, deptDefs: [],
+        form: { id: null, code: '', name: '', warehouseType: 'MIXED', location: '', manager: '', sortNo: 0, orgId: null, status: 1, deptId: null }
       };
     },
-    created: function () { this.load(); },
+    created: function () { this.load(); this.loadDepts(); },
     methods: {
       load: function () {
         var vm = this; vm.loading = true;
@@ -969,12 +959,22 @@
           .catch(HIS.notifyError).finally(function () { vm.loading = false; });
       },
       typeLabel: whTypeLabel,
+      /* 归属科室下拉(本机构启用科室; 药库与科室一一对应, 后端校验重复绑定) */
+      loadDepts: function () {
+        var vm = this;
+        HIS.get('/api/his/dept/enabled').then(function (list) { vm.deptDefs = list || []; }).catch(HIS.notifyError);
+      },
+      deptName: function (id) {
+        if (id === null || id === undefined || id === '') { return '-'; }
+        for (var i = 0; i < this.deptDefs.length; i++) { if (this.deptDefs[i].id === id) { return this.deptDefs[i].deptName; } }
+        return '科室#' + id;
+      },
       openCreate: function () {
-        this.form = { id: null, code: '', name: '', warehouseType: 'MIXED', location: '', manager: '', sortNo: 0, orgId: null, status: 1 };
+        this.form = { id: null, code: '', name: '', warehouseType: 'MIXED', location: '', manager: '', sortNo: 0, orgId: null, status: 1, deptId: null };
         this.dlg = true;
       },
       openEdit: function (row) {
-        this.form = { id: row.id, code: row.code, name: row.name, warehouseType: row.warehouseType || 'MIXED', location: row.location || '', manager: row.manager || '', sortNo: row.sortNo || 0, orgId: row.orgId, status: row.status };
+        this.form = { id: row.id, code: row.code, name: row.name, warehouseType: row.warehouseType || 'MIXED', location: row.location || '', manager: row.manager || '', sortNo: row.sortNo || 0, orgId: row.orgId, status: row.status, deptId: (row.deptId === null || row.deptId === undefined) ? null : row.deptId };
         this.dlg = true;
       },
       save: function () {
@@ -1018,6 +1018,7 @@
       '    <el-table-column prop="code" label="编码" width="140" show-overflow-tooltip></el-table-column>',
       '    <el-table-column prop="name" label="名称" min-width="150" show-overflow-tooltip></el-table-column>',
       '    <el-table-column label="类型" width="90"><template #default="s"><el-tag size="small" :type="s.row.warehouseType===\'WESTERN\'?\'primary\':(s.row.warehouseType===\'TCM\'?\'warning\':\'info\')">{{ typeLabel(s.row.warehouseType) }}</el-tag></template></el-table-column>',
+      '    <el-table-column label="归属科室" width="130" show-overflow-tooltip><template #default="s">{{ deptName(s.row.deptId) }}</template></el-table-column>',
       '    <el-table-column prop="location" label="位置" width="140" show-overflow-tooltip></el-table-column>',
       '    <el-table-column prop="manager" label="负责人" width="100" show-overflow-tooltip></el-table-column>',
       '    <el-table-column prop="sortNo" label="排序" width="70" align="right"></el-table-column>',
@@ -1032,6 +1033,7 @@
       '      <el-form-item label="编码" required><el-input v-model="form.code" placeholder="如 WH-WEST-01(机构内唯一)"></el-input></el-form-item>',
       '      <el-form-item label="名称" required><el-input v-model="form.name" placeholder="如 西药库"></el-input></el-form-item>',
       '      <el-form-item label="类型"><el-select v-model="form.warehouseType" style="width:100%"><el-option v-for="t in whTypes" :key="t.v" :label="t.l" :value="t.v"></el-option></el-select></el-form-item>',
+      '      <el-form-item label="归属科室"><el-select v-model="form.deptId" clearable placeholder="选择归属科室(与科室一一对应)" style="width:100%"><el-option v-for="d in deptDefs" :key="d.id" :label="d.deptName" :value="d.id"></el-option></el-select></el-form-item>',
       '      <el-form-item label="位置"><el-input v-model="form.location" placeholder="如 1号楼1层"></el-input></el-form-item>',
       '      <el-form-item label="负责人"><el-input v-model="form.manager" placeholder="药库负责人"></el-input></el-form-item>',
       '      <el-form-item label="排序号"><el-input-number v-model="form.sortNo" :min="0" controls-position="right" style="width:140px"></el-input-number></el-form-item>',
@@ -1098,11 +1100,12 @@
    * 流程: 新建(快照该库有量批次) → 逐行录实盘(失焦自动PUT保存) → 确认(差异生成盘盈入库/盘亏出库) / 作废(仅进行中)。
    * 写操作均需牵头管理员(后端 requireLeadWrite), 非牵头仅可见[查看详情]。 */
   HIS.views.StockCheck = {
+    mixins: [HIS.whScopeMixin],
     data: function () {
       return {
         lead: HIS.isLead(),
         loading: false, list: [], total: 0, page: 1, size: 20,
-        warehouseId: '', dateRange: [], warehouseDefs: [],
+        dateRange: [],
         /* 新建盘点 */
         createDlg: false, createWarehouseId: null, creating: false,
         /* 录入/查看弹窗 */
@@ -1110,12 +1113,8 @@
         cur: { main: null, items: [] }, saveTip: ''
       };
     },
-    created: function () { this.loadWarehouseDefs(); this.load(); },
+    created: function () { var vm = this; this.loadWarehouseDefs().then(function () { vm.load(); }); },
     methods: {
-      loadWarehouseDefs: function () {
-        var vm = this;
-        HIS.get('/api/his/stock/warehouse-def').then(function (d) { vm.warehouseDefs = d || []; }).catch(HIS.notifyError);
-      },
       whName: function (id) { return whNameById(this.warehouseDefs, id); },
       load: function () {
         var vm = this; vm.loading = true;
@@ -1229,9 +1228,12 @@
       '<div class="page-card">',
       '  <div class="page-title">盘点管理 <span style="font-size:12px;color:#909399;font-weight:normal;">(按药库整库盘点 · 确认后差异生成盘盈入库/盘亏出库)</span></div>',
       '  <div class="toolbar">',
-      '    <el-select v-model="warehouseId" placeholder="全部药库" clearable style="width:170px" @change="search">',
+      '    <span style="font-weight:600;color:#303133;">当前药库</span>',
+      '    <el-select v-model="warehouseId" style="width:170px" :disabled="whSingle" @change="search">',
       '      <el-option v-for="w in warehouseDefs" :key="w.id" :label="w.name" :value="w.id"></el-option>',
       '    </el-select>',
+      '    <el-tag v-if="currentWarehouse" size="small">{{ currentWhLabel }}</el-tag>',
+      '    <el-tag v-else size="small" type="warning">无可操作药库</el-tag>',
       '    <el-date-picker v-model="dateRange" type="daterange" value-format="YYYY-MM-DD" range-separator="至" start-placeholder="盘点开始日期" end-placeholder="盘点结束日期" style="width:290px" @change="search"></el-date-picker>',
       '    <el-button type="primary" @click="search">查询</el-button>',
       '    <el-button v-if="lead" @click="openCreate">新建盘点</el-button>',

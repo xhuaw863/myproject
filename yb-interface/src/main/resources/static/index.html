@@ -20,6 +20,8 @@
 
   <!-- 应用脚本 -->
   <script src="/js/api.js"></script>
+  <!-- 全局当前库房/药房上下文与作用域混入(须在各 views 之前加载) -->
+  <script src="/js/scope.js"></script>
   <script src="/js/views/platform.js"></script>
   <script src="/js/views/dashboard.js"></script>
   <script src="/js/views/basedata.js"></script>
@@ -41,12 +43,20 @@
   <script src="/js/views/doctor-worklog.js"></script>
   <script src="/js/views/org.js"></script>
   <script src="/js/views/rbac.js"></script>
+  <!-- 系统参数(四级作用域参数配置, 须在 app.js 之前加载) -->
+  <script src="/js/views/system-param.js"></script>
   <script src="/js/views/community-dict.js"></script>
   <script src="/js/views/org-catalog.js"></script>
   <script src="/js/views/report.js"></script>
   <script src="/js/views/warehouse.js"></script>
   <script src="/js/views/pharmacy.js"></script>
   <script src="/js/views/cashier.js"></script>
+  <script src="/js/views/charge-workstation.js"></script>
+  <script src="/js/views/treatment.js"></script>
+  <!-- 医技管理(标本/报告工作站/危急值, 须在 app.js 之前加载) -->
+  <script src="/js/views/medtech.js"></script>
+  <!-- 门诊护士站(待执行医嘱/皮试/输液/过敏档案/执行记录, 须在 app.js 之前加载) -->
+  <script src="/js/views/nurse.js"></script>
   <!-- 业务统计报表(药库/药房/收费统计, 须在 app.js 之前加载) -->
   <script src="/js/views/report-biz.js"></script>
   <script src="/js/app.js"></script>

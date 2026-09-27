@@ -37,4 +37,6 @@ public class HisPharmacyDef extends BaseEntity {
     private Integer status;
     /** 排序号 */
     private Integer sortNo;
+    /** 归属科室(his_dept.id): 与科室管理一一对应, 按科室授权(dept_scope)控制可操作药房; 空=历史未绑定 */
+    private Long deptId;
 }

@@ -8,6 +8,7 @@ import com.yb.hi.framework.tenant.LoginUser;
 import com.yb.hi.framework.tenant.UserContext;
 import com.yb.hi.platform.service.OrgAccessGuard;
 import com.yb.hi.service.pharmacy.RequisitionService;
+import com.yb.hi.service.warehouse.WarehouseAccessService;
 import org.springframework.web.bind.annotation.*;
 
 import java.math.BigDecimal;
@@ -23,10 +24,13 @@ public class RequisitionController {
 
     private final RequisitionService requisitionService;
     private final OrgAccessGuard guard;
+    private final WarehouseAccessService access;
 
-    public RequisitionController(RequisitionService requisitionService, OrgAccessGuard guard) {
+    public RequisitionController(RequisitionService requisitionService, OrgAccessGuard guard,
+                                 WarehouseAccessService access) {
         this.requisitionService = requisitionService;
         this.guard = guard;
+        this.access = access;
     }
 
     /** 请领单列表(机构/药房/状态/关键字) */
@@ -37,6 +41,9 @@ public class RequisitionController {
                                          @RequestParam(required = false) String keyword,
                                          @RequestParam(defaultValue = "1") long page,
                                          @RequestParam(defaultValue = "20") long size) {
+        if (pharmacyId != null) {
+            access.requirePharmacyAccess(pharmacyId);
+        }
         return R.ok(requisitionService.page(guard.scopeOrgId(orgId), pharmacyId, status, keyword, page, size));
     }
 
@@ -51,6 +58,7 @@ public class RequisitionController {
     public R<BigDecimal> available(@RequestParam(required = false) Long orgId,
                                    @RequestParam Long warehouseId,
                                    @RequestParam Long drugCatalogId) {
+        // 发起请领时查源药库可用量: 药房侧动作, 不以源药库科室授权拦截(否则会阻断合法请领)
         return R.ok(requisitionService.availableQty(resolveOrgId(orgId), warehouseId, drugCatalogId));
     }
 
@@ -58,6 +66,9 @@ public class RequisitionController {
     @PostMapping
     public R<HisRequisition> create(@RequestBody RequisitionReq req) {
         guard.requireSelfOrgWrite();
+        if (req != null && req.getPharmacyId() != null) {
+            access.requirePharmacyAccess(req.getPharmacyId());
+        }
         req.setOrgId(resolveOrgId(req.getOrgId()));
         return R.ok(requisitionService.create(req));
     }

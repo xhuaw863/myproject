@@ -102,6 +102,15 @@ public class WarehouseDefService {
         if (dup != null && dup > 0) {
             throw new BizException(400, "药库编码已存在: " + def.getCode());
         }
+        // 归属科室一一对应校验: 非空时该科室不得被其它药库占用(PHARMACY 库存位 dept_id 恒空, 不参与碰撞)
+        if (def.getDeptId() != null) {
+            Long deptDup = defMapper.selectCount(new LambdaQueryWrapper<HisWarehouseDef>()
+                    .eq(HisWarehouseDef::getDeptId, def.getDeptId())
+                    .ne(def.getId() != null, HisWarehouseDef::getId, def.getId()));
+            if (deptDup != null && deptDup > 0) {
+                throw new BizException(400, "该科室已绑定其它药库, 药库与科室一一对应不允许重复绑定");
+            }
+        }
 
         if (def.getId() == null) {
             def.setStatus(def.getStatus() == null ? 1 : def.getStatus());
@@ -129,6 +138,7 @@ public class WarehouseDefService {
         upd.setLocation(def.getLocation());
         upd.setManager(def.getManager());
         upd.setSortNo(def.getSortNo() == null ? exist.getSortNo() : def.getSortNo());
+        upd.setDeptId(def.getDeptId());
         defMapper.updateById(upd);
         log.info("编辑药库: id={}, code={}, name={}", def.getId(), def.getCode(), def.getName());
         return defMapper.selectById(def.getId());
