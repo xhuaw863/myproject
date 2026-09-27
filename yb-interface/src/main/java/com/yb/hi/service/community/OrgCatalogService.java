@@ -46,16 +46,19 @@ public class OrgCatalogService {
     private final HisConsCatalogService consService;
     private final HisChargeItemService chargeService;
     private final HisMedDictService medDictService;
+    private final com.yb.hi.service.pharmacy.PharmacyPriceService pharmacyPriceService;
 
     public OrgCatalogService(HisOrgCatalogMapper orgCatalogMapper, SysOrgMapper orgMapper,
                              HisDrugCatalogService drugService, HisConsCatalogService consService,
-                             HisChargeItemService chargeService, HisMedDictService medDictService) {
+                             HisChargeItemService chargeService, HisMedDictService medDictService,
+                             com.yb.hi.service.pharmacy.PharmacyPriceService pharmacyPriceService) {
         this.orgCatalogMapper = orgCatalogMapper;
         this.orgMapper = orgMapper;
         this.drugService = drugService;
         this.consService = consService;
         this.chargeService = chargeService;
         this.medDictService = medDictService;
+        this.pharmacyPriceService = pharmacyPriceService;
     }
 
     /* ================= 上下文 ================= */
@@ -212,6 +215,15 @@ public class OrgCatalogService {
 
     /** 可开药药品(本机构启用, 含换算字段与零售价) */
     public IPage<HisDrugCatalog> availableDrug(String keyword, long page, long size) {
+        return availableDrug(keyword, page, size, null);
+    }
+
+    /**
+     * 可开药药品(本机构启用); pharmacyId 非空时按发药药房回填瞬态字段(三期):
+     * effPrice=药房生效价(覆盖价优先), stockQty=该房库存位在库总量(医生站软提示);
+     * 不传行为与旧口径完全一致(向后兼容, 收费台等其他消费方不受影响)。
+     */
+    public IPage<HisDrugCatalog> availableDrug(String keyword, long page, long size, Long pharmacyId) {
         SysOrg org = currentOrg();
         Set<Long> enabled = enabledIds(org.getId(), "drug");
         LambdaQueryChainWrapper<HisDrugCatalog> q = drugService.lambdaQuery().eq(HisDrugCatalog::getStatus, 1);
@@ -225,6 +237,19 @@ public class OrgCatalogService {
         applyEnabled(q, enabled);
         IPage<HisDrugCatalog> r = q.orderByDesc(HisDrugCatalog::getId).page(new Page<>(page, size));
         r.getRecords().forEach(drugService::derivePackPrice);
+        if (pharmacyId != null && !r.getRecords().isEmpty()) {
+            List<Long> ids = new ArrayList<>();
+            for (HisDrugCatalog d : r.getRecords()) {
+                ids.add(d.getId());
+            }
+            Map<Long, BigDecimal> eff = pharmacyPriceService.effectivePriceBatch(pharmacyId, ids);
+            Map<Long, BigDecimal> stock = pharmacyPriceService.stockSummary(pharmacyId, ids);
+            for (HisDrugCatalog d : r.getRecords()) {
+                BigDecimal p = eff.get(d.getId());
+                d.setEffPrice(p == null ? d.getRetailPrice() : p);
+                d.setStockQty(stock.get(d.getId()));
+            }
+        }
         return r;
     }
 

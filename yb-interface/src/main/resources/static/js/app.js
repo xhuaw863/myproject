@@ -53,7 +53,8 @@
         { key: 'dispense', label: '调剂发药', comp: 'DispenseRecord' },
         { key: 'drug-return', label: '退药', comp: 'DrugReturn' },
         { key: 'pharmacy-def', label: '药房管理', comp: 'PharmacyDef' },
-        { key: 'pharmacy-rpt', label: '药房统计', comp: 'PharmacyReport' }
+        { key: 'pharmacy-rpt', label: '药房统计', comp: 'PharmacyReport' },
+        { key: 'price-mgr', label: '药房定价', comp: 'PharmacyPriceManage' }
       ]
     },
     {

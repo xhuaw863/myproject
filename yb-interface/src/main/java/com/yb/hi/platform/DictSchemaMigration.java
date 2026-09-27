@@ -335,6 +335,8 @@ public class DictSchemaMigration implements ApplicationRunner {
             ensureStockCheckTables(conn);
             // 二级库存专业化(P1-P5): 请领/调拨/调价/追溯码 新表(幂等, 新模块非启动关键路径)
             ensureStockChainTables(conn);
+            // 三期: 药房维度定价覆盖表(新发药/定价链路直接依赖, 与关键段双保险幂等)
+            ensurePharmacyPriceTable(conn);
             // 存量表补列: 药库/药房归属 + 混合支付/发票号/退费关联/部分退费已退数量(幂等, 列已存在则跳过)
             alterExistingTables(conn);
         } catch (Exception e) {
@@ -351,6 +353,7 @@ public class DictSchemaMigration implements ApplicationRunner {
             ensureInvoiceTable(conn);
             ensurePaymentDetailTable(conn);
             ensureStockCheckTables(conn);
+            ensurePharmacyPriceTable(conn);
             alterExistingTables(conn);
             // 库存唯一键重建依赖 his_warehouse_def 已存在(回填默认库), 因此必须排在补列之后
             ensureStockWarehouseIsolation(conn);
@@ -1610,6 +1613,29 @@ public class DictSchemaMigration implements ApplicationRunner {
     }
 
     /**
+     * 幂等建表: 药房维度定价覆盖表 his_pharmacy_drug_price。
+     * 唯一键 tenant+org+药房+药品; 有覆盖价则开方按药房价计费, 清空(物理删, 避开软删撞唯一键)回落目录价。
+     */
+    private void ensurePharmacyPriceTable(Connection conn) throws Exception {
+        try (Statement st = conn.createStatement()) {
+            st.executeUpdate("CREATE TABLE IF NOT EXISTS his_pharmacy_drug_price ("
+                    + "id BIGINT NOT NULL AUTO_INCREMENT COMMENT '主键',"
+                    + "tenant_id BIGINT NOT NULL COMMENT '租户ID',"
+                    + "org_id BIGINT NOT NULL COMMENT '机构ID',"
+                    + "pharmacy_id BIGINT NOT NULL COMMENT '药房ID(his_pharmacy_def.id)',"
+                    + "drug_catalog_id BIGINT NOT NULL COMMENT '医共体药品目录ID(his_drug_catalog.id)',"
+                    + "retail_price DECIMAL(12,6) NOT NULL COMMENT '药房零售价(最小单位, 覆盖目录价)',"
+                    + "create_by VARCHAR(50) DEFAULT NULL, create_time DATETIME DEFAULT NULL,"
+                    + "update_by VARCHAR(50) DEFAULT NULL, update_time DATETIME DEFAULT NULL, deleted TINYINT DEFAULT 0,"
+                    + "PRIMARY KEY (id),"
+                    + "UNIQUE KEY uk_tenant_org_ph_drug (tenant_id, org_id, pharmacy_id, drug_catalog_id),"
+                    + "KEY idx_pharmacy (tenant_id, pharmacy_id)"
+                    + ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='药房药品定价(药房维度覆盖价)'"
+            );
+        }
+    }
+
+    /**
      * 幂等补列: 多库房/多药房/发票/混合支付/部分退费改造涉及的 6 张存量表新增列
      * (药库归属/药房归属/支付方式/发票号/退费关联原单/已退数量), 列已存在则跳过。
      */
@@ -1618,6 +1644,17 @@ public class DictSchemaMigration implements ApplicationRunner {
         addColumnIfNotExists(conn, "his_stock_in", "warehouse_id", "BIGINT DEFAULT NULL COMMENT '药库ID(his_warehouse_def.id)'");
         addColumnIfNotExists(conn, "his_stock_out", "warehouse_id", "BIGINT DEFAULT NULL COMMENT '药库ID(his_warehouse_def.id)'");
         addColumnIfNotExists(conn, "his_dispense", "pharmacy_id", "BIGINT DEFAULT NULL COMMENT '药房ID(his_pharmacy_def.id)'");
+        /* ---------- 三期: 发药药房路由与药房维度定价 ---------- */
+        // 科室×中西药渠道默认发药药房(开方未手选时按 rxType 渠道回落)
+        addColumnIfNotExists(conn, "his_dept", "def_pharmacy_west", "BIGINT DEFAULT NULL COMMENT '默认发药药房-西药渠道(his_pharmacy_def.id)'");
+        addColumnIfNotExists(conn, "his_dept", "def_pharmacy_tcm", "BIGINT DEFAULT NULL COMMENT '默认发药药房-中药渠道(his_pharmacy_def.id)'");
+        // 处方绑定发药药房(开方确定/改派更新; 空=发药时全院FIFO兼容存量)
+        addColumnIfNotExists(conn, "his_prescription", "pharmacy_id", "BIGINT DEFAULT NULL COMMENT '发药药房ID(his_pharmacy_def.id, 开方绑定/改派更新)'");
+        addColumnIfNotExists(conn, "his_prescription", "transfer_from_pharmacy_id", "BIGINT DEFAULT NULL COMMENT '改派来源药房ID(发药时随转至发药记录留痕)'");
+        // 发药价差对账: 实发批次零售金额与价差(=实发-计费, 仅院内对账不补退) + 改派来源房留痕
+        addColumnIfNotExists(conn, "his_dispense", "stock_amount", "DECIMAL(12,2) DEFAULT NULL COMMENT '实发批次零售金额(发药时按出库批次价汇总, 院内对账)'");
+        addColumnIfNotExists(conn, "his_dispense", "price_diff", "DECIMAL(12,2) DEFAULT NULL COMMENT '价差=实发-计费(不向患者补退, 仅对账)'");
+        addColumnIfNotExists(conn, "his_dispense", "transfer_from_pharmacy_id", "BIGINT DEFAULT NULL COMMENT '改派来源药房ID(库存不足改派留痕)'");
         addColumnIfNotExists(conn, "his_charge_bill", "pay_method", "VARCHAR(20) DEFAULT NULL COMMENT '主要支付方式:CASH/WECHAT/ALIPAY/CARD/INSURANCE/FREE'");
         addColumnIfNotExists(conn, "his_charge_bill", "origin_bill_id", "BIGINT DEFAULT NULL COMMENT '退费关联原单ID(退费单指向原收费单)'");
         addColumnIfNotExists(conn, "his_charge_bill", "invoice_no", "VARCHAR(50) DEFAULT NULL COMMENT '发票号'");

@@ -16,6 +16,7 @@ import org.springframework.util.StringUtils;
 
 import java.util.Arrays;
 import java.util.List;
+import java.util.Map;
 
 /**
  * 药房定义服务(机构级多药房): 列表(机构无任何药房记录时自动建默认门诊药房) / 保存 / 启停。
@@ -85,6 +86,38 @@ public class PharmacyDefService {
     /** 按ID取药房(不存在返回 null, 不做启停校验, 供历史单据/退药回溯关联药库) */
     public HisPharmacyDef find(Long id) {
         return id == null ? null : pharmacyDefMapper.selectById(id);
+    }
+
+    /* ================= 科室默认发药药房(三期) ================= */
+
+    /** 中西药渠道判定: rxType 含"中药"走中药渠道, 其余(西药/中成药)走西药渠道 */
+    public static boolean isTcmChannel(String rxType) {
+        return rxType != null && rxType.contains("中药");
+    }
+
+    /**
+     * 解析科室默认发药药房ID(科室×中西药渠道, 未配置返回 null 供开方回落)。
+     * 配置失效(药房不存在/已停用)不阻断开方, 记日志后按未配置处理(医生手工改选)。
+     * his_dept 为租户表但 JdbcTemplate 不走租户插件, 显式 tenant_id 过滤。
+     */
+    public Long resolveDefaultPharmacyId(Long deptId, String rxType) {
+        if (deptId == null) {
+            return null;
+        }
+        String col = isTcmChannel(rxType) ? "def_pharmacy_tcm" : "def_pharmacy_west";
+        List<Map<String, Object>> rows = jdbcTemplate.queryForList(
+                "SELECT " + col + " AS pid FROM his_dept WHERE id = ? AND tenant_id = ? AND deleted = 0",
+                deptId, tenantId());
+        if (rows.isEmpty() || rows.get(0).get("pid") == null) {
+            return null;
+        }
+        Long pid = ((Number) rows.get(0).get("pid")).longValue();
+        HisPharmacyDef def = pharmacyDefMapper.selectById(pid);
+        if (def == null || def.getStatus() == null || def.getStatus() != 1) {
+            log.warn("科室默认发药药房配置失效(不存在/已停用), 按未配置处理: deptId={}, pharmacyId={}", deptId, pid);
+            return null;
+        }
+        return pid;
     }
 
     /* ================= 保存 / 启停 ================= */

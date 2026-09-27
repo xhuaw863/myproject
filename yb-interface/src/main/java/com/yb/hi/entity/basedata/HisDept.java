@@ -55,6 +55,10 @@ public class HisDept extends BaseEntity {
     private Integer status;
     /** 门诊开诊: 1-开诊 0-未开诊(仅对 dept_category=门诊科室 有意义; 排班/挂号科室下拉只列开诊科室) */
     private Integer openClinic;
+    /** 默认发药药房-西药渠道(his_pharmacy_def.id; 开方未手选时按 rxType 回落, 空=不预绑) */
+    private Long defPharmacyWest;
+    /** 默认发药药房-中药渠道(his_pharmacy_def.id; rxType含"中药"时适用) */
+    private Long defPharmacyTcm;
     /** 备注 */
     private String memo;
 

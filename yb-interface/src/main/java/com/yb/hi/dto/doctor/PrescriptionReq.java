@@ -15,6 +15,8 @@ public class PrescriptionReq {
     private Long visitId;
     /** 处方类型: 西药/中药 */
     private String rxType;
+    /** 发药药房ID(his_pharmacy_def.id): 医生手选; 空则按科室默认药房回落, 仍空不绑(发药全院FIFO) */
+    private Long pharmacyId;
     /** 处方明细 */
     private List<HisPrescriptionItem> items;
 }

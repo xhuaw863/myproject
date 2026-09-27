@@ -11,6 +11,8 @@ import com.yb.hi.entity.outpatient.HisPatient;
 import com.yb.hi.framework.common.BizException;
 import com.yb.hi.framework.tenant.LoginUser;
 import com.yb.hi.framework.tenant.UserContext;
+import com.yb.hi.service.pharmacy.PharmacyDefService;
+import com.yb.hi.service.pharmacy.PharmacyPriceService;
 import com.yb.hi.mapper.doctor.HisPrescriptionItemMapper;
 import com.yb.hi.mapper.doctor.HisPrescriptionMapper;
 import com.yb.hi.mapper.outpatient.HisPatientMapper;
@@ -40,13 +42,18 @@ public class HisPrescriptionService extends ServiceImpl<HisPrescriptionMapper, H
     private final HisDiagnosisService diagnosisService;
     private final HisPrescriptionItemMapper itemMapper;
     private final HisPatientMapper patientMapper;
+    private final PharmacyDefService pharmacyDefService;
+    private final PharmacyPriceService pharmacyPriceService;
 
     public HisPrescriptionService(HisVisitService visitService, HisDiagnosisService diagnosisService,
-                                  HisPrescriptionItemMapper itemMapper, HisPatientMapper patientMapper) {
+                                  HisPrescriptionItemMapper itemMapper, HisPatientMapper patientMapper,
+                                  PharmacyDefService pharmacyDefService, PharmacyPriceService pharmacyPriceService) {
         this.visitService = visitService;
         this.diagnosisService = diagnosisService;
         this.itemMapper = itemMapper;
         this.patientMapper = patientMapper;
+        this.pharmacyDefService = pharmacyDefService;
+        this.pharmacyPriceService = pharmacyPriceService;
     }
 
     /** 查询某次就诊的处方列表 */
@@ -149,19 +156,40 @@ public class HisPrescriptionService extends ServiceImpl<HisPrescriptionMapper, H
         p.setDeptName(visit.getDeptName());
         p.setDrId(visit.getStaffId());
         p.setDrName(visit.getDrName());
-        p.setRxType(StringUtils.hasText(req.getRxType()) ? req.getRxType() : "西药");
+        String rxType = StringUtils.hasText(req.getRxType()) ? req.getRxType() : "西药";
+        p.setRxType(rxType);
         p.setDiagName(buildDiagName(visit.getId()));
         p.setStatus(1);
+
+        // 发药药房(三期): 医生手选优先并校验归属/启停; 未手选按科室×中西药渠道默认回落; 均无则不绑(发药全院FIFO兼容存量)
+        Long pharmacyId = req.getPharmacyId();
+        if (pharmacyId != null) {
+            LoginUser lu = UserContext.get();
+            pharmacyDefService.requireEnabled(pharmacyId, lu == null ? null : lu.getOrgId());
+        } else {
+            pharmacyId = pharmacyDefService.resolveDefaultPharmacyId(visit.getDeptId(), rxType);
+        }
+        p.setPharmacyId(pharmacyId);
+
+        // 服务端重算价(药房维度定价): 药品行按所选药房生效价覆盖前端传价(不信任客户端), 非药品行(drugId 空)保持原价
+        List<Long> drugIds = req.getItems().stream()
+                .map(HisPrescriptionItem::getDrugId).filter(java.util.Objects::nonNull)
+                .distinct().collect(Collectors.toList());
+        Map<Long, BigDecimal> effPrices = pharmacyPriceService.effectivePriceBatch(pharmacyId, drugIds);
 
         BigDecimal total = BigDecimal.ZERO;
         for (HisPrescriptionItem item : req.getItems()) {
             item.setId(null);
             BigDecimal price = item.getPrice() == null ? BigDecimal.ZERO : item.getPrice();
-            BigDecimal qty = item.getQuantity() == null ? BigDecimal.ZERO : item.getQuantity();
-            BigDecimal amount = item.getAmount();
-            if (amount == null) {
-                amount = price.multiply(qty).setScale(2, BigDecimal.ROUND_HALF_UP);
+            if (item.getDrugId() != null) {
+                BigDecimal eff = effPrices.get(item.getDrugId());
+                if (eff != null) {
+                    price = eff;
+                    item.setPrice(eff);
+                }
             }
+            BigDecimal qty = item.getQuantity() == null ? BigDecimal.ZERO : item.getQuantity();
+            BigDecimal amount = price.multiply(qty).setScale(2, BigDecimal.ROUND_HALF_UP);
             item.setAmount(amount);
             total = total.add(amount);
         }
@@ -172,7 +200,7 @@ public class HisPrescriptionService extends ServiceImpl<HisPrescriptionMapper, H
             item.setPrescriptionId(p.getId());
             itemMapper.insert(item);
         }
-        log.info("开处方成功: rxNo={}, visitId={}, total={}", p.getRxNo(), visit.getId(), p.getTotalAmount());
+        log.info("开处方成功: rxNo={}, visitId={}, total={}, pharmacyId={}", p.getRxNo(), visit.getId(), p.getTotalAmount(), pharmacyId);
         return p;
     }
 

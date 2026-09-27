@@ -156,6 +156,14 @@ public class HisDrugCatalog extends BaseEntity {
     @TableField(exist = false)
     private BigDecimal packPrice;
 
+    /** 发药药房生效零售价(覆盖价优先, 回落本行 retailPrice; 医生站按房取数瞬态回填, 不落库) */
+    @TableField(exist = false)
+    private BigDecimal effPrice;
+
+    /** 指定药房库存位在库总量(医生站库存软提示瞬态字段, 不落库) */
+    @TableField(exist = false)
+    private BigDecimal stockQty;
+
     /** 拼音简码(通用名首字母, 保存时自动生成只读) */
     private String pyCode;
 

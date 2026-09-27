@@ -6,6 +6,7 @@ import com.baomidou.mybatisplus.core.toolkit.Wrappers;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.yb.hi.dto.pharmacy.DispenseReq;
 import com.yb.hi.dto.pharmacy.DrugReturnReq;
+import com.yb.hi.dto.pharmacy.TransferReq;
 import com.yb.hi.dto.warehouse.StockInItemReq;
 import com.yb.hi.dto.warehouse.StockInReq;
 import com.yb.hi.dto.warehouse.StockOutItemReq;
@@ -16,6 +17,7 @@ import com.yb.hi.entity.pharmacy.HisPharmacyDef;
 import com.yb.hi.entity.warehouse.HisStockIn;
 import com.yb.hi.entity.warehouse.HisStockOut;
 import com.yb.hi.framework.common.BizException;
+import com.yb.hi.framework.common.Roles;
 import com.yb.hi.framework.tenant.LoginUser;
 import com.yb.hi.framework.tenant.TenantContext;
 import com.yb.hi.framework.tenant.UserContext;
@@ -36,9 +38,12 @@ import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
+import java.util.HashMap;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 /**
  * 药房服务(药房工作站): 待发药列表 / 发药(扣库存) / 发药记录 / 退药申请与审批(回补库存)。
@@ -65,7 +70,11 @@ public class PharmacyService {
     private final HisDrugReturnMapper returnMapper;
     private final DrugStockService drugStockService;
     private final PharmacyDefService pharmacyDefService;
+    private final PharmacyPriceService pharmacyPriceService;
     private final JdbcTemplate jdbcTemplate;
+
+    /** 三期: 发药出库单与计费快照口径一致(仅药品行, 金额取 price*quantity) */
+    private static final String DISPENSE_ITEM_COLS = "drug_id, item_code, item_name, spec, quantity, price, amount";
 
     /** 单号内存序号(synchronized 唯一; 跨日重置时从DB回读当日最大序号) */
     private String seqDate;
@@ -73,11 +82,13 @@ public class PharmacyService {
 
     public PharmacyService(HisDispenseMapper dispenseMapper, HisDrugReturnMapper returnMapper,
                            DrugStockService drugStockService, PharmacyDefService pharmacyDefService,
+                           PharmacyPriceService pharmacyPriceService,
                            JdbcTemplate jdbcTemplate) {
         this.dispenseMapper = dispenseMapper;
         this.returnMapper = returnMapper;
         this.drugStockService = drugStockService;
         this.pharmacyDefService = pharmacyDefService;
+        this.pharmacyPriceService = pharmacyPriceService;
         this.jdbcTemplate = jdbcTemplate;
     }
 
@@ -130,14 +141,17 @@ public class PharmacyService {
         return result;
     }
 
-    /** 发药详情: 处方信息 + 药品明细(含当前库存匹配, 供发药前核对) */
-    public Map<String, Object> dispenseDetail(Long prescriptionId) {
+    /**
+     * 发药详情: 处方信息 + 药品明细(含库存匹配, 供发药前核对)。
+     * 三期: pharmacyId 入参空时按处方绑定药房取数(该房库存位维度), 未绑房维持全院口径。
+     */
+    public Map<String, Object> dispenseDetail(Long prescriptionId, Long pharmacyId) {
         if (prescriptionId == null) {
             throw new BizException(400, "处方ID不能为空");
         }
         List<Map<String, Object>> presRows = jdbcTemplate.queryForList(
                 "SELECT p.id, p.rx_no, p.visit_id, p.patient_id, p.patient_name, p.dr_name AS doctor_name,"
-                + " p.dept_name, p.total_amount, p.dispense_status,"
+                + " p.dept_name, p.total_amount, p.dispense_status, p.pharmacy_id,"
                 + " DATE_FORMAT(p.create_time, '%Y-%m-%d %H:%i:%s') AS create_time, v.ipt_otp_no AS visit_no"
                 + " FROM his_prescription p LEFT JOIN his_visit v ON p.visit_id = v.id AND v.deleted = 0"
                 + " WHERE p.id = ? AND p.deleted = 0", prescriptionId);
@@ -146,6 +160,13 @@ public class PharmacyService {
         }
         Map<String, Object> pres = presRows.get(0);
         Long orgId = currentOrgId();
+        if (orgId == null) {
+            // 跨机构查看回落: 按处方绑定药房归属机构取库存维度
+            HisPharmacyDef bind = pharmacyDefService.find(toLong(pres.get("pharmacy_id")));
+            orgId = bind == null ? null : bind.getOrgId();
+        }
+        Long effPharmacy = pharmacyId != null ? pharmacyId : toLong(pres.get("pharmacy_id"));
+        Long effWh = warehouseOfPharmacy(effPharmacy);
 
         List<Map<String, Object>> items = new ArrayList<>();
         List<Map<String, Object>> itemRows = jdbcTemplate.queryForList(
@@ -171,7 +192,7 @@ public class PharmacyService {
             it.put("dosage", r.get("dosage"));
             it.put("dosageUnit", r.get("dosage_unit"));
             it.put("administration", r.get("administration"));
-            BigDecimal stockQty = stockQtyOf(orgId, toLong(r.get("drug_id")));
+            BigDecimal stockQty = stockQtyOf(orgId, effWh, toLong(r.get("drug_id")));
             it.put("stockQty", stockQty);
             it.put("stockSufficient", stockQty != null && qty != null && stockQty.compareTo(qty) >= 0);
             items.add(it);
@@ -188,6 +209,9 @@ public class PharmacyService {
         prescription.put("deptName", pres.get("dept_name"));
         prescription.put("totalAmount", toBd(pres.get("total_amount")));
         prescription.put("dispenseStatus", pres.get("dispense_status"));
+        prescription.put("pharmacyId", effPharmacy);
+        HisPharmacyDef effDef = pharmacyDefService.find(effPharmacy);
+        prescription.put("pharmacyName", effDef == null ? null : effDef.getName());
         prescription.put("createTime", pres.get("create_time"));
 
         Map<String, Object> result = new LinkedHashMap<>();
@@ -213,8 +237,8 @@ public class PharmacyService {
         // 1. 查处方(快照患者/医生/科室/金额), 已作废处方不得发药
         List<Map<String, Object>> rows = jdbcTemplate.queryForList(
                 "SELECT id, visit_id, rx_no, patient_id, patient_name, dr_name AS doctor_name, dept_name,"
-                + " total_amount, dispense_status, status FROM his_prescription"
-                + " WHERE id = ? AND tenant_id = ? AND deleted = 0", prescriptionId, tenantId);
+                + " total_amount, dispense_status, status, pharmacy_id, transfer_from_pharmacy_id FROM his_prescription"
+                + " WHERE id = ? AND tenant_id = ? AND deleted = 0", prescriptionId, tenantId());
         if (rows.isEmpty()) {
             throw new BizException(400, "处方不存在");
         }
@@ -251,7 +275,11 @@ public class PharmacyService {
 
         // 4.1 药房: 非空时校验归属机构/启停, 并解析本药房库存位(两级库存: 发药从药房自有库存扣减)
         //     stock_location_id 为空时回退旧 warehouse_id(兼容尚未迁移的存量药房)
+        //     三期: 请求未指定药房时回退处方绑定药房(开方按科室默认/手选落库); 两者都空维持全院FIFO(兼容存量)
         Long pharmacyId = req.getPharmacyId();
+        if (pharmacyId == null) {
+            pharmacyId = toLong(pres.get("pharmacy_id"));
+        }
         Long warehouseId = null;
         if (pharmacyId != null) {
             HisPharmacyDef pharmacyDef = pharmacyDefService.requireEnabled(pharmacyId, orgId);
@@ -280,8 +308,30 @@ public class PharmacyService {
             outItems.add(oi);
         }
         outReq.setItems(outItems);
+        // 4.2 绑定药房的发药前诊断: 逐药需/存缺口清单(软校验; 真正防超扣仍由确认出库乐观锁兑底)
+        if (warehouseId != null && orgId != null) {
+            List<String> lacks = new ArrayList<>();
+            for (Map<String, Object> it : items) {
+                BigDecimal need = toBd(it.get("quantity"));
+                if (need == null) {
+                    continue;
+                }
+                BigDecimal avail = stockQtyOf(orgId, warehouseId, toLong(it.get("drug_id")));
+                if (avail.compareTo(need) < 0) {
+                    lacks.add(str(it.get("item_name")) + " 需" + plain(need) + "/仅存" + plain(avail));
+                }
+            }
+            if (!lacks.isEmpty()) {
+                throw new BizException("药房库存不足: " + String.join("; ", lacks) + "。可改派至有库存药房后发药");
+            }
+        }
         HisStockOut stockOut = drugStockService.createStockOut(outReq);
         drugStockService.confirmStockOut(stockOut.getId());
+
+        // 5.1 实发批次零售金额(对账口径与出库单一致: 零售价优先、空回退进价; 发药完成后按实扣批次汇总)
+        BigDecimal stockAmount = jdbcTemplate.queryForObject(
+                "SELECT IFNULL(SUM(i.qty * IFNULL(i.retail_price, IFNULL(i.cost_price, 0))), 0) FROM his_stock_out_item i"
+                        + " WHERE i.stock_out_id = ? AND i.deleted = 0", BigDecimal.class, stockOut.getId());
 
         // 6. 落发药记录(一步发药到位: status=2已发药, 双签发药人/核对时间)
         HisDispense dispense = new HisDispense();
@@ -303,13 +353,238 @@ public class PharmacyService {
         }
         BigDecimal total = toBd(pres.get("total_amount"));
         dispense.setTotalAmount(total == null ? BigDecimal.ZERO : total);
+        // 三期: 价差对账落账(实发批次金额-计费, 不向患者补退) + 改派来源药房留痕(自发药链路透传)
+        dispense.setStockAmount(stockAmount);
+        if (stockAmount != null) {
+            dispense.setPriceDiff(stockAmount.subtract(dispense.getTotalAmount()).setScale(2, RoundingMode.HALF_UP));
+        }
+        dispense.setTransferFromPharmacyId(toLong(pres.get("transfer_from_pharmacy_id")));
         dispense.setRemark(req.getRemark());
         dispenseMapper.insert(dispense);
 
-        log.info("发药完成: dispenseNo={}, prescriptionId={}, patient={}, items={}, total={}, pharmacyId={}, warehouseId={}",
+        log.info("发药完成: dispenseNo={}, prescriptionId={}, patient={}, items={}, total={}, stockAmount={}, priceDiff={}, pharmacyId={}, warehouseId={}",
                 dispense.getDispenseNo(), prescriptionId, dispense.getPatientName(),
-                items.size(), dispense.getTotalAmount(), pharmacyId, warehouseId);
+                items.size(), dispense.getTotalAmount(), stockAmount, dispense.getPriceDiff(), pharmacyId, warehouseId);
         return dispense;
+    }
+
+    /* ================= 三期: 库存不足诊断 / 价差预览 / 处方改派 ================= */
+
+    /**
+     * 解析处方应绑定的发药药房: 医生手选(须启用且属该机构)优先, 未手选按科室默认(科室×中西药渠道);
+     * 均未命中返回 null(不绑药房, 发药走全院FIFO, 兼容存量流程)。
+     */
+    public Long resolvePharmacyForPrescribe(Long deptId, String rxType, Long handPickPharmacyId, Long orgId) {
+        if (handPickPharmacyId != null) {
+            pharmacyDefService.requireEnabled(handPickPharmacyId, orgId);
+            return handPickPharmacyId;
+        }
+        return pharmacyDefService.resolveDefaultPharmacyId(deptId, rxType);
+    }
+
+    /** 库存不足预检(不扣减): 处方逐药"需求量/该房可用量"缺口清单, 供发药工作站与改派面板展示 */
+    public Map<String, Object> shortageInfo(Long prescriptionId, Long pharmacyId) {
+        if (prescriptionId == null) {
+            throw new BizException(400, "处方ID不能为空");
+        }
+        Map<String, Object> pres = presRow(prescriptionId);
+        Long effPharmacy = pharmacyId != null ? pharmacyId : toLong(pres.get("pharmacy_id"));
+        Long wh = warehouseOfPharmacy(effPharmacy);
+        Long orgId = toLong(pres.get("org_id"));
+        if (orgId == null) {
+            HisPharmacyDef def0 = pharmacyDefService.find(effPharmacy);
+            orgId = def0 == null ? currentOrgId() : def0.getOrgId();
+        }
+        List<Map<String, Object>> lines = new ArrayList<>();
+        boolean allEnough = true;
+        for (Map<String, Object> it : requiredItems(prescriptionId)) {
+            BigDecimal need = nvlBd(toBd(it.get("quantity")));
+            BigDecimal avail = stockQtyOf(orgId, wh, toLong(it.get("drug_id")));
+            boolean enough = avail.compareTo(need) >= 0;
+            if (!enough) {
+                allEnough = false;
+            }
+            Map<String, Object> line = new LinkedHashMap<>();
+            line.put("drugName", str(it.get("item_name")));
+            line.put("spec", str(it.get("spec")));
+            line.put("needQty", plain(need));
+            line.put("availQty", plain(avail));
+            line.put("shortfall", plain(need.subtract(avail).max(BigDecimal.ZERO)));
+            line.put("enough", enough);
+            lines.add(line);
+        }
+        HisPharmacyDef def = pharmacyDefService.find(effPharmacy);
+        Map<String, Object> out = new LinkedHashMap<>();
+        out.put("prescriptionId", prescriptionId);
+        out.put("pharmacyId", effPharmacy);
+        out.put("pharmacyName", def == null ? "全院库存" : def.getName());
+        out.put("allSufficient", allEnough);
+        out.put("lines", lines);
+        return out;
+    }
+
+    /**
+     * 发药前价差预览: 按处方绑定药房对在库批次 FIFO(有效期升序)估算实发零售金额,
+     * 与处方计费金额对比得价差(计费按药房覆盖价重算, 实发按批次零售价, 同房批次价差同样会出现)。
+     */
+    public Map<String, Object> dispensePreview(Long prescriptionId) {
+        if (prescriptionId == null) {
+            throw new BizException(400, "处方ID不能为空");
+        }
+        Map<String, Object> pres = presRow(prescriptionId);
+        Long pharmacyId = toLong(pres.get("pharmacy_id"));
+        Long wh = warehouseOfPharmacy(pharmacyId);
+        Long orgId = toLong(pres.get("org_id"));
+        if (orgId == null) {
+            HisPharmacyDef def0 = pharmacyDefService.find(pharmacyId);
+            orgId = def0 == null ? currentOrgId() : def0.getOrgId();
+        }
+        BigDecimal billing = BigDecimal.ZERO;
+        BigDecimal est = BigDecimal.ZERO;
+        boolean hasShortage = false;
+        List<Map<String, Object>> lines = new ArrayList<>();
+        for (Map<String, Object> it : requiredItems(prescriptionId)) {
+            BigDecimal need = nvlBd(toBd(it.get("quantity")));
+            billing = billing.add(nvlBd(toBd(it.get("price"))).multiply(need));
+            Map<String, Object> e = estimateFifo(orgId, wh, toLong(it.get("drug_id")), need);
+            est = est.add((BigDecimal) e.get("stockAmount"));
+            if (Boolean.TRUE.equals(e.get("shortage"))) {
+                hasShortage = true;
+                Map<String, Object> line = new LinkedHashMap<>();
+                line.put("drugName", str(it.get("item_name")));
+                line.put("needQty", plain(need));
+                line.put("availQty", plain((BigDecimal) e.get("available")));
+                lines.add(line);
+            }
+        }
+        BigDecimal stockAmount = est.setScale(2, RoundingMode.HALF_UP);
+        BigDecimal priceDiff = stockAmount.subtract(billing.setScale(2, RoundingMode.HALF_UP)).setScale(2, RoundingMode.HALF_UP);
+        HisPharmacyDef def = pharmacyDefService.find(pharmacyId);
+        Map<String, Object> out = new LinkedHashMap<>();
+        out.put("prescriptionId", prescriptionId);
+        out.put("pharmacyId", pharmacyId);
+        out.put("pharmacyName", def == null ? null : def.getName());
+        out.put("billingAmount", billing.setScale(2, RoundingMode.HALF_UP));
+        out.put("estStockAmount", stockAmount);
+        out.put("estPriceDiff", priceDiff);
+        out.put("hasPriceDiff", priceDiff.compareTo(BigDecimal.ZERO) != 0);
+        out.put("hasShortage", hasShortage);
+        out.put("shortageLines", lines);
+        out.put("note", wh == null ? "处方未绑定药房, 发药按全院FIFO, 实发金额以出库为准" : null);
+        return out;
+    }
+
+    /**
+     * 改派可选药房: 本机构启用药房逐房 FIFO 估算"是否全满足/缺口明细/预估实发金额与价差"。
+     * 仅未作废且未发药(dispense_status=0)的处方有改派意义; 已绑药房出现在列表中供"改回"。
+     */
+    public List<Map<String, Object>> transferOptions(Long prescriptionId) {
+        if (prescriptionId == null) {
+            throw new BizException(400, "处方ID不能为空");
+        }
+        Map<String, Object> pres = presRow(prescriptionId);
+        assertTransferrable(pres);
+        Long orgId = toLong(pres.get("org_id"));
+        if (orgId == null) {
+            orgId = currentOrgId();
+        }
+        if (orgId == null) {
+            throw new BizException(400, "无法确定处方归属机构, 不可改派");
+        }
+        BigDecimal billing = BigDecimal.ZERO;
+        List<Map<String, Object>> drugs = new ArrayList<>();
+        Set<Long> drugIds = new HashSet<>();
+        for (Map<String, Object> it : requiredItems(prescriptionId)) {
+            BigDecimal need = nvlBd(toBd(it.get("quantity")));
+            billing = billing.add(nvlBd(toBd(it.get("price"))).multiply(need));
+            drugs.add(it);
+            drugIds.add(toLong(it.get("drug_id")));
+        }
+        billing = billing.setScale(2, RoundingMode.HALF_UP);
+        List<Map<String, Object>> out = new ArrayList<>();
+        for (HisPharmacyDef def : pharmacyDefService.list(orgId)) {
+            Long wh = warehouseOfPharmacy(def.getId());
+            Map<String, Object> row = new LinkedHashMap<>();
+            row.put("pharmacyId", def.getId());
+            row.put("pharmacyName", def.getName());
+            row.put("pharmacyType", def.getPharmacyType());
+            row.put("current", def.getId().equals(toLong(pres.get("pharmacy_id"))));
+            if (wh == null) {
+                row.put("allSufficient", false);
+                row.put("shortages", Collections.emptyList());
+                row.put("estStockAmount", null);
+                row.put("estPriceDiff", null);
+                row.put("note", "该药房无库存位, 发药将回落全院FIFO");
+                out.add(row);
+                continue;
+            }
+            BigDecimal est = BigDecimal.ZERO;
+            boolean allOk = true;
+            List<Map<String, Object>> shortages = new ArrayList<>();
+            for (Map<String, Object> it : drugs) {
+                BigDecimal need = nvlBd(toBd(it.get("quantity")));
+                Map<String, Object> e = estimateFifo(orgId, wh, toLong(it.get("drug_id")), need);
+                est = est.add((BigDecimal) e.get("stockAmount"));
+                if (Boolean.TRUE.equals(e.get("shortage"))) {
+                    allOk = false;
+                    Map<String, Object> s = new LinkedHashMap<>();
+                    s.put("drugName", str(it.get("item_name")));
+                    s.put("needQty", plain(need));
+                    s.put("availQty", plain((BigDecimal) e.get("available")));
+                    shortages.add(s);
+                }
+            }
+            row.put("allSufficient", allOk);
+            row.put("shortages", shortages);
+            row.put("estStockAmount", est.setScale(2, RoundingMode.HALF_UP));
+            row.put("estPriceDiff", est.setScale(2, RoundingMode.HALF_UP).subtract(billing).setScale(2, RoundingMode.HALF_UP));
+            out.add(row);
+        }
+        return out;
+    }
+
+    /**
+     * 执行改派: 守卫(未作废 + dispense_status=0 未发药 + 所属就诊已收费 charge_status=1 + 目标房启用且非当前房),
+     * 乐观 UPDATE 换绑药房并记录来源房(transfer_from 仅留首次)。改派不动费用、不动发票(价差仅对账不补退)。
+     */
+    @Transactional(rollbackFor = Exception.class)
+    public Map<String, Object> transferPrescription(TransferReq req) {
+        if (req == null || req.getPrescriptionId() == null || req.getToPharmacyId() == null) {
+            throw new BizException(400, "处方与目标药房不能为空");
+        }
+        Map<String, Object> pres = presRow(req.getPrescriptionId());
+        assertTransferrable(pres);
+        Map<String, Object> visit = jdbcTemplate.queryForMap(
+                "SELECT v.charge_status, v.patient_name FROM his_visit v" + " WHERE v.id = ? AND v.deleted = 0",
+                pres.get("visit_id"));
+        Number cs = (Number) visit.get("charge_status");
+        if (cs == null || cs.intValue() != 1) {
+            throw new BizException("仅已收费未发药的处方(就诊已收费)可改派药房");
+        }
+        Long orgId = toLong(pres.get("org_id"));
+        HisPharmacyDef to = pharmacyDefService.requireEnabled(req.getToPharmacyId(), orgId);
+        if (to.getId().equals(toLong(pres.get("pharmacy_id")))) {
+            throw new BizException("目标药房与当前绑定药房相同, 无需改派");
+        }
+        long tenantId = tenantId();
+        int affected = jdbcTemplate.update(
+                "UPDATE his_prescription SET pharmacy_id = ?, transfer_from_pharmacy_id = COALESCE(transfer_from_pharmacy_id, ?),"
+                        + " update_by = ?, update_time = NOW()"
+                        + " WHERE id = ? AND tenant_id = ? AND deleted = 0 AND dispense_status = 0 AND status > 0",
+                to.getId(), toLong(pres.get("pharmacy_id")), currentUserName(), req.getPrescriptionId(), tenantId);
+        if (affected == 0) {
+            throw new BizException("处方状态已变更(已发药/已作废), 改派失败");
+        }
+        log.info("处方改派发药药房: prescriptionId={}, rxNo={}, from={}, to={}, orgId={}, actor={}",
+                req.getPrescriptionId(), str(pres.get("rx_no")), pres.get("pharmacy_id"), to.getId(), orgId, currentUserName());
+        Map<String, Object> out = new LinkedHashMap<>();
+        out.put("prescriptionId", req.getPrescriptionId());
+        out.put("rxNo", str(pres.get("rx_no")));
+        out.put("fromPharmacyId", toLong(pres.get("pharmacy_id")));
+        out.put("toPharmacyId", to.getId());
+        out.put("toPharmacyName", to.getName());
+        out.put("billingAmount", toBd(pres.get("total_amount")));
+        return out;
     }
 
     /* ================= 发药记录 ================= */
@@ -530,16 +805,111 @@ public class PharmacyService {
                 + " ORDER BY soi.id", prescriptionId, tenantId());
     }
 
-    /** 药品当前库存总量(按机构 SUM 各批次, 批次无关) */
-    private BigDecimal stockQtyOf(Long orgId, Long drugCatalogId) {
+    /** 药品库存总量: warehouseId 非空按药房库存位维度, 为空按机构全院 SUM 各批次 */
+    private BigDecimal stockQtyOf(Long orgId, Long warehouseId, Long drugCatalogId) {
         if (orgId == null || drugCatalogId == null) {
             return BigDecimal.ZERO;
         }
-        BigDecimal qty = jdbcTemplate.queryForObject(
-                "SELECT IFNULL(SUM(qty), 0) FROM his_drug_stock"
-                        + " WHERE tenant_id = ? AND org_id = ? AND drug_catalog_id = ? AND deleted = 0",
-                BigDecimal.class, tenantId(), orgId, drugCatalogId);
+        BigDecimal qty;
+        if (warehouseId != null) {
+            qty = jdbcTemplate.queryForObject(
+                    "SELECT IFNULL(SUM(qty), 0) FROM his_drug_stock"
+                            + " WHERE tenant_id = ? AND org_id = ? AND warehouse_id = ? AND drug_catalog_id = ? AND status = 1 AND deleted = 0",
+                    BigDecimal.class, tenantId(), orgId, warehouseId, drugCatalogId);
+        } else {
+            qty = jdbcTemplate.queryForObject(
+                    "SELECT IFNULL(SUM(qty), 0) FROM his_drug_stock"
+                            + " WHERE tenant_id = ? AND org_id = ? AND drug_catalog_id = ? AND status = 1 AND deleted = 0",
+                    BigDecimal.class, tenantId(), orgId, drugCatalogId);
+        }
         return qty == null ? BigDecimal.ZERO : qty;
+    }
+
+    /** 药房库存位(两级库存记账维度): stock_location_id 优先, 空回退旧 warehouse_id; 药房空/无库位返回 null(全院口径) */
+    private Long warehouseOfPharmacy(Long pharmacyId) {
+        HisPharmacyDef def = pharmacyDefService.find(pharmacyId);
+        if (def == null) {
+            return null;
+        }
+        return def.getStockLocationId() != null ? def.getStockLocationId() : def.getWarehouseId();
+    }
+
+    /** 处方快照(含改派守卫所需 dispense_status/status/charge_status 上下文); org_id 经就诊科室(his_dept)归属推导(his_visit 无 org_id 列) */
+    private Map<String, Object> presRow(Long prescriptionId) {
+        List<Map<String, Object>> rows = jdbcTemplate.queryForList(
+                "SELECT p.id, p.rx_no, p.visit_id, p.patient_name, p.dept_name, p.total_amount,"
+                        + " p.dispense_status, p.status, p.rx_type, p.pharmacy_id, p.transfer_from_pharmacy_id,"
+                        + " v.dept_id, v.charge_status, d.org_id"
+                        + " FROM his_prescription p"
+                        + " LEFT JOIN his_visit v ON p.visit_id = v.id AND v.deleted = 0"
+                        + " LEFT JOIN his_dept d ON v.dept_id = d.id AND d.deleted = 0"
+                        + " WHERE p.id = ? AND p.tenant_id = ? AND p.deleted = 0",
+                prescriptionId, tenantId());
+        if (rows.isEmpty()) {
+            throw new BizException(400, "处方不存在");
+        }
+        return rows.get(0);
+    }
+
+    /** 处方需发药药品行(drug_id 非空) */
+    private List<Map<String, Object>> requiredItems(Long prescriptionId) {
+        return jdbcTemplate.queryForList(
+                "SELECT " + DISPENSE_ITEM_COLS + " FROM his_prescription_item"
+                        + " WHERE prescription_id = ? AND drug_id IS NOT NULL AND deleted = 0 ORDER BY id",
+                prescriptionId);
+    }
+
+    /** 改派前置校验: 未作废(status>0)且未发药(dispense_status=0) */
+    private void assertTransferrable(Map<String, Object> pres) {
+        Number status = (Number) pres.get("status");
+        if (status != null && status.intValue() < 0) {
+            throw new BizException("处方已作废, 不可改派");
+        }
+        Number ds = (Number) pres.get("dispense_status");
+        if (ds == null || ds.intValue() != 0) {
+            throw new BizException("仅待发药状态的处方可改派药房");
+        }
+    }
+
+    /** FIFO 估算(不扣减): 按有效期升序吃批次, 实发金额口径与出库确认一致(批次零售价优先, 空回退进价) */
+    private Map<String, Object> estimateFifo(Long orgId, Long warehouseId, Long drugId, BigDecimal need) {
+        BigDecimal amount = BigDecimal.ZERO;
+        BigDecimal availSum = stockQtyOf(orgId, warehouseId, drugId);
+        BigDecimal remaining = need;
+        if (warehouseId != null && drugId != null && remaining.compareTo(BigDecimal.ZERO) > 0) {
+            List<Map<String, Object>> batches = jdbcTemplate.queryForList(
+                    "SELECT qty, IFNULL(retail_price, IFNULL(cost_price, 0)) price FROM his_drug_stock"
+                            + " WHERE tenant_id = ? AND org_id = ? AND warehouse_id = ? AND drug_catalog_id = ?"
+                            + " AND status = 1 AND deleted = 0 AND qty > 0"
+                            + " ORDER BY COALESCE(exp_date, '9999-12-31'), id",
+                    tenantId(), orgId, warehouseId, drugId);
+            for (Map<String, Object> b : batches) {
+                if (remaining.compareTo(BigDecimal.ZERO) <= 0) {
+                    break;
+                }
+                BigDecimal bq = nvlBd(toBd(b.get("qty")));
+                if (bq.compareTo(BigDecimal.ZERO) <= 0) {
+                    continue;
+                }
+                BigDecimal take = bq.min(remaining);
+                amount = amount.add(take.multiply(nvlBd(toBd(b.get("price")))));
+                remaining = remaining.subtract(take);
+            }
+        }
+        Map<String, Object> out = new LinkedHashMap<>();
+        out.put("stockAmount", amount);
+        out.put("available", availSum);
+        out.put("shortage", availSum.compareTo(need) < 0);
+        return out;
+    }
+
+    /** BigDecimal 展示文本(去科学计数法, 错误提示/清单用) */
+    private static String plain(BigDecimal v) {
+        return v == null ? "0" : v.stripTrailingZeros().toPlainString();
+    }
+
+    private static BigDecimal nvlBd(BigDecimal v) {
+        return v == null ? BigDecimal.ZERO : v;
     }
 
     /** 单号生成: 前缀+yyyyMMdd+4位序号(FY发药/TY退药), synchronized 唯一, 跨日重置时DB回读当日最大序号兜底重启 */

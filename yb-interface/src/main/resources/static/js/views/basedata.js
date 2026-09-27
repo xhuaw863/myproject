@@ -39,6 +39,8 @@
         /* 左栏机构子树折叠态: 机构id→true=已折叠(隐藏其下级机构) */
         orgFolded: {},
         lead: HIS.isLead(),
+        /* 三期: 科室默认发药药房下拉选项(按当前表单机构加载启用药房) */
+        pharmacyOpts: [],
         dlg: false, editing: false, form: this.empty()
       };
     },
@@ -132,7 +134,20 @@
     },
     methods: {
       empty: function () {
-        return { id: null, orgId: null, parentId: 0, deptCategory: '', deptLevel: 1, deptCode: '', deptName: '', pyCode: '', abbrCode: '', deptType: '临床', deptCaty: '', ybDeptCode: '', phone: '', locDesc: '', sortNo: 0, status: 1, openClinic: 1, memo: '' };
+        return { id: null, orgId: null, parentId: 0, deptCategory: '', deptLevel: 1, deptCode: '', deptName: '', pyCode: '', abbrCode: '', deptType: '临床', deptCaty: '', ybDeptCode: '', phone: '', locDesc: '', sortNo: 0, status: 1, openClinic: 1, defPharmacyWest: null, defPharmacyTcm: null, memo: '' };
+      },
+      /* 三期: 按表单机构加载启用药房(无机构则清空); 默认药房为机构级配置, 需先选定所属机构 */
+      loadPharmacies: function (orgId) {
+        var vm = this;
+        if (!orgId) { vm.pharmacyOpts = []; return; }
+        HIS.get('/api/his/pharmacy/pharmacy-def?orgId=' + encodeURIComponent(orgId))
+          .then(function (list) { vm.pharmacyOpts = list || []; })
+          .catch(function () { vm.pharmacyOpts = []; });
+      },
+      /* 所属机构变更: 重拉药房选项并清空已选默认药房(避免跨机构残留) */
+      onDeptOrgChange: function () {
+        this.form.defPharmacyWest = null; this.form.defPharmacyTcm = null;
+        this.loadPharmacies(this.form.orgId);
       },
       loadOrgs: function () {
         var vm = this;
@@ -197,6 +212,7 @@
         this.editing = false; this.form = this.empty();
         /* 已选中机构时默认带入所属机构 */
         if (this.filterOrg) { this.form.orgId = this.filterOrg; }
+        this.loadPharmacies(this.form.orgId);
         this.dlg = true;
       },
       /* 快捷新增下级: 继承上级机构/大类, 层级+1(封顶3) */
@@ -205,13 +221,14 @@
         var f = this.empty();
         f.parentId = row.id; f.orgId = row.orgId; f.deptCategory = row.deptCategory || '';
         f.deptLevel = (row.deptLevel || 1) + 1; if (f.deptLevel > 3) { f.deptLevel = 3; }
-        this.form = f; this.dlg = true;
+        this.form = f; this.loadPharmacies(f.orgId); this.dlg = true;
       },
       edit: function (row) {
         this.editing = true; this.form = clean(Object.assign(this.empty(), row));
         delete this.form.children;
         if (this.form.parentId == null) { this.form.parentId = 0; }
         if (this.form.openClinic == null) { this.form.openClinic = 1; }
+        this.loadPharmacies(this.form.orgId);
         this.dlg = true;
       },
       /* 选上级时自动带出大类与层级(顶级=1大类) */
@@ -297,7 +314,7 @@
       '      <el-form-item label="上级科室"><el-select v-model="form.parentId" style="width:100%" @change="onParentChange"><el-option v-for="o in parentOptions" :key="o.id" :label="o.label" :value="o.id"></el-option></el-select></el-form-item>',
       '      <el-form-item label="科室大类"><el-select v-model="form.deptCategory" clearable style="width:100%" placeholder="门诊/住院/病区护理/医技/行政后勤"><el-option v-for="c in deptCategories" :key="c" :label="c" :value="c"></el-option></el-select></el-form-item>',
       '      <el-form-item label="层级"><el-select v-model="form.deptLevel" style="width:100%"><el-option v-for="l in deptLevels" :key="l.v" :label="l.v+\'-\'+l.l" :value="l.v"></el-option></el-select></el-form-item>',
-      '      <el-form-item label="所属机构"><el-select v-model="form.orgId" clearable filterable style="width:100%" placeholder="医共体内机构(可选)"><el-option v-for="o in orgs" :key="o.id" :label="o.label" :value="o.id"></el-option></el-select></el-form-item>',
+      '      <el-form-item label="所属机构"><el-select v-model="form.orgId" clearable filterable style="width:100%" placeholder="医共体内机构(可选)" @change="onDeptOrgChange"><el-option v-for="o in orgs" :key="o.id" :label="o.label" :value="o.id"></el-option></el-select></el-form-item>',
       '      <el-form-item label="科室编码"><el-input v-model="form.deptCode"></el-input></el-form-item>',
       '      <el-form-item label="科室名称"><el-input v-model="form.deptName"></el-input></el-form-item>',
       '      <el-form-item label="拼音码"><el-input v-model="form.pyCode" disabled placeholder="保存时按名称自动生成"></el-input></el-form-item>',
@@ -307,6 +324,9 @@
       '      <el-form-item label="医保科室编码"><el-select v-model="form.ybDeptCode" filterable clearable style="width:100%" placeholder="从医保标准字典选择科室代码(caty)"><el-option v-for="o in catyOpts" :key="o.code" :label="o.name + \' (\' + o.code + \')\'" :value="o.code"></el-option></el-select></el-form-item>',
       '      <el-form-item label="联系电话"><el-input v-model="form.phone"></el-input></el-form-item>',
       '      <el-form-item label="位置描述"><el-input v-model="form.locDesc"></el-input></el-form-item>',
+      /* 三期: 科室默认发药药房(区分西药/中药渠道, 需先选定所属机构; 可空=医生开方时手工选择) */
+      '      <el-form-item label="默认药房(西)"><el-select v-model="form.defPharmacyWest" clearable filterable style="width:100%" :disabled="!form.orgId" placeholder="西药/中成药默认发药药房(可空)"><el-option v-for="p in pharmacyOpts" :key="p.id" :label="p.name" :value="p.id"></el-option></el-select></el-form-item>',
+      '      <el-form-item label="默认药房(中)"><el-select v-model="form.defPharmacyTcm" clearable filterable style="width:100%" :disabled="!form.orgId" placeholder="中药饮片默认发药药房(可空)"><el-option v-for="p in pharmacyOpts" :key="p.id" :label="p.name" :value="p.id"></el-option></el-select></el-form-item>',
       '      <el-form-item label="排序号"><el-input v-model.number="form.sortNo" type="number"></el-input></el-form-item>',
       '      <el-form-item label="状态"><el-switch v-model="form.status" :active-value="1" :inactive-value="0" active-text="启用" inactive-text="停用"></el-switch></el-form-item>',
       '      <el-form-item v-if="form.deptCategory===\'门诊科室\'" label="门诊开诊" title="仅开诊的门诊科室会出现在排班/挂号科室下拉"><el-switch v-model="form.openClinic" :active-value="1" :inactive-value="0" active-text="开诊" inactive-text="未开诊"></el-switch><span style="color:#909399;font-size:12px;margin-left:8px;">未开诊的门诊科室不参与排班与挂号</span></el-form-item>',

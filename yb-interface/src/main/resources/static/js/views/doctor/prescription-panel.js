@@ -75,6 +75,9 @@
             <span v-if="rxItems.length" style="font-size:11px;color:var(--dw-text-hint)">{{ rxItems.length }}种 / {{ groupedItems.length }}组</span>
           </div>
           <div style="display:flex;align-items:center;gap:6px;margin-left:auto">
+            <el-select v-model="selectedPharmacyId" size="small" clearable filterable placeholder="发药药房" style="width:122px" @change="onPharmacyChange">
+              <el-option v-for="ph in pharmacies" :key="ph.id" :label="ph.name" :value="ph.id"></el-option>
+            </el-select>
             <el-select v-model="selectedTemplateId" size="small" clearable filterable placeholder="常用处方" style="width:128px" @change="applyTemplate">
               <el-option v-for="tpl in templates" :key="tpl.id" :label="tpl.name" :value="tpl.id"></el-option>
             </el-select>
@@ -99,7 +102,8 @@
             <el-table v-if="searchResults.length" :data="searchResults" v-loading="searching" border size="small" max-height="150" @row-dblclick="addDrug">
               <el-table-column prop="genericName" label="通用名" min-width="125" show-overflow-tooltip></el-table-column>
               <el-table-column prop="spec" label="规格" width="88" show-overflow-tooltip></el-table-column>
-              <el-table-column label="单价" width="66" align="right"><template #default="s">¥{{ money(s.row.retailPrice) }}</template></el-table-column>
+              <el-table-column label="单价" width="66" align="right"><template #default="s">¥{{ unitPriceOf(s.row) }}</template></el-table-column>
+              <el-table-column label="库存" width="58" align="right"><template #default="s">{{ stockText(s.row) }}</template></el-table-column>
               <el-table-column label="" width="48"><template #default="s"><el-button link type="primary" size="small" :disabled="!canEdit" @click.stop="addDrug(s.row)">加</el-button></template></el-table-column>
             </el-table>
 
@@ -165,7 +169,7 @@
                 <el-table-column prop="spec" label="规格" width="92" show-overflow-tooltip></el-table-column>
                 <el-table-column prop="manufacturer" label="厂家" min-width="105" show-overflow-tooltip></el-table-column>
                 <el-table-column label="包装" width="80"><template #default="s">{{ s.row.packRatio || 1 }}{{ s.row.minUnit }}/{{ s.row.packUnit || '盒' }}</template></el-table-column>
-                <el-table-column label="单价" width="66" align="right"><template #default="s">{{ money(s.row.retailPrice) }}</template></el-table-column>
+                <el-table-column label="单价" width="66" align="right"><template #default="s">{{ unitPriceOf(s.row) }}</template></el-table-column>
                 <el-table-column label="医保" width="58"><template #default="s">{{ s.row.chrgitmLvName || (s.row.ybDrugCode ? '目录内' : '自费') }}</template></el-table-column>
                 <el-table-column label="库存" width="62" align="right"><template #default="s">{{ stockText(s.row) }}</template></el-table-column>
                 <el-table-column fixed="right" label="" width="48"><template #default="s"><el-button link type="primary" :disabled="!canEdit" @click.stop="addDrug(s.row)">加</el-button></template></el-table-column>
@@ -179,6 +183,9 @@
               <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px">
                 <el-select v-model="rxType" style="width:160px" @change="onManualTypeChange">
                   <el-option v-for="option in rxTypeOptions" :key="option.value" :label="option.label" :value="option.value"></el-option>
+                </el-select>
+                <el-select v-model="selectedPharmacyId" clearable filterable placeholder="发药药房" style="width:150px" @change="onPharmacyChange">
+                  <el-option v-for="ph in pharmacies" :key="ph.id" :label="ph.name" :value="ph.id"></el-option>
                 </el-select>
                 <el-alert v-if="hasMixedHerb" title="中药饮片将在开立时自动拆分为独立处方" type="warning" :closable="false" show-icon style="flex:1"></el-alert>
                 <el-button type="primary" plain :disabled="!canEdit" @click="newGroup">＋ 新建分组</el-button>
@@ -246,7 +253,10 @@
         selectedTemplateId: null,
         prescriptions: [],
         itemSequence: 0,
-        loadedVisitId: null
+        loadedVisitId: null,
+        pharmacies: [],
+        selectedPharmacyId: null,
+        pharmacyAutoResolved: false
       };
     },
     computed: {
@@ -298,6 +308,7 @@
           this.currentGroupNo = 1;
           this.searchResults = [];
           this.setDefaultRxType();
+          this.initPharmacyScope();
           if (id) { this.loadPrescriptions(); }
           else { this.prescriptions = []; }
         }
@@ -315,7 +326,55 @@
         return 'NORMAL';
       },
       setDefaultRxType: function () { this.rxType = this.suggestedRxType(); },
+      /* ===== 三期: 发药药房选择(科室×渠道默认预载 + 手选改房重取价/库存) ===== */
+      loadPharmacies: function () {
+        var vm = this;
+        return window.HIS.get('/api/his/pharmacy/pharmacy-def').then(function (rows) {
+          vm.pharmacies = rows || [];
+        }).catch(function () { vm.pharmacies = []; });
+      },
+      initPharmacyScope: function () {
+        var vm = this;
+        vm.selectedPharmacyId = null;
+        vm.pharmacyAutoResolved = false;
+        if (!vm.visitId) { return Promise.resolve(); }
+        return vm.loadPharmacies().then(function () { vm.autoResolvePharmacy(); });
+      },
+      autoResolvePharmacy: function () {
+        var vm = this;
+        var visit = vm.visit || {};
+        if (!visit.deptId) { return; }
+        window.HIS.get('/api/his/pharmacy/resolve-default?deptId=' + encodeURIComponent(visit.deptId)
+          + '&rxType=' + encodeURIComponent(vm.currentRxTypeLabel())).then(function (data) {
+          if (data && data.pharmacyId && !vm.selectedPharmacyId) {
+            vm.selectedPharmacyId = data.pharmacyId;
+            vm.pharmacyAutoResolved = true;
+            vm.searchDrugs();
+          }
+        }).catch(function () {});
+      },
+      currentRxTypeLabel: function () { return (RX_TYPES[this.rxType] || RX_TYPES.NORMAL).label; },
+      onPharmacyChange: function () {
+        var vm = this;
+        vm.pharmacyAutoResolved = false;
+        vm.searchDrugs();
+        // 已加明细按新药房生效价重算(服务端开方时仍会重算兑底, 此处仅预览对齐)
+        window.HIS.get('/api/org-catalog/available/drug?page=1&size=200&pharmacyId=' + encodeURIComponent(vm.selectedPharmacyId || ''))
+          .then(function (data) {
+            var map = {};
+            ((data && data.records) || []).forEach(function (row) { map[row.id] = row.effPrice != null ? row.effPrice : row.retailPrice; });
+            var changed = 0;
+            vm.rxItems.forEach(function (item) {
+              if (item.drugId && map[item.drugId] != null && Number(map[item.drugId]) !== Number(item.price)) {
+                item.price = Number(map[item.drugId]); changed++;
+              }
+            });
+            if (changed) { ElementPlus.ElMessage.info('药房变更,' + changed + '种药品价格已刷新'); }
+          }).catch(function () {});
+      },
+      unitPriceOf: function (drug) { return money(drug.effPrice != null ? drug.effPrice : drug.retailPrice); },
       onManualTypeChange: function () {
+        if (this.rxType !== 'TCM_HERB') { this.autoResolvePharmacy(); }
         var cfg = this.rxTypeConfig;
         this.rxItems.forEach(function (item) {
           if (!item._detectedType || item._detectedType === 'NORMAL') { item._rxType = this.rxType; }
@@ -347,7 +406,7 @@
           itemName: drug.itemName || drug.genericName,
           spec: drug.spec || '',
           unit: drug.unit || drug.minUnit || '',
-          price: drug.price != null ? drug.price : drug.retailPrice,
+          price: drug.price != null ? drug.price : (drug.effPrice != null ? drug.effPrice : drug.retailPrice),
           quantity: Number(drug.quantity) || 1,
           dosage: drug.dosage != null ? drug.dosage : '',
           dosageUnit: drug.dosageUnit || drug.doseUnit || '',
@@ -378,6 +437,7 @@
         vm.searching = true;
         var url = '/api/org-catalog/available/drug?page=1&size=' + (vm.isExpanded ? 100 : 20);
         if (text(vm.keyword).trim()) { url += '&keyword=' + encodeURIComponent(text(vm.keyword).trim()); }
+        if (vm.selectedPharmacyId) { url += '&pharmacyId=' + encodeURIComponent(vm.selectedPharmacyId); }
         window.HIS.get(url).then(function (data) {
           vm.searchResults = (data && data.records) || [];
         }).catch(window.HIS.notifyError).finally(function () { vm.searching = false; });
@@ -414,6 +474,10 @@
           }
         }
         if (!drug.medListCodg) { warnings.push({ level: 'info', msg: '“' + drug.itemName + '”非医保目录药品（自费）' }); }
+        var stock = Number(drug.stockQty != null ? drug.stockQty : -1);
+        if (stock >= 0 && stock < Number(drug.quantity || 1)) {
+          warnings.push({ level: 'warning', msg: '所选药房库存不足（可用' + drug.stockQty + '，本次需' + (drug.quantity || 1) + '），发药环节可能需改派药房' });
+        }
         if (this.rxItems.length && this.rxItems.some(function (item) { return this.isHerbItem(item) !== this.isHerbItem(drug); }, this)) {
           warnings.push({ level: 'info', msg: '中药饮片与西药/中成药将自动拆分为两张独立处方' });
         }
@@ -627,7 +691,7 @@
         var created = [];
         batches.reduce(function (chain, batch) {
           return chain.then(function () {
-            return window.HIS.post('/api/his/prescription/create', { visitId: vm.visitId, rxType: batch.rxType, items: batch.items })
+            return window.HIS.post('/api/his/prescription/create', { visitId: vm.visitId, rxType: batch.rxType, pharmacyId: vm.selectedPharmacyId || null, items: batch.items })
               .then(function (result) { created.push(result); });
           });
         }, Promise.resolve()).then(function () {

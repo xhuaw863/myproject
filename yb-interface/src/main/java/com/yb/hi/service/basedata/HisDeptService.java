@@ -2,7 +2,10 @@ package com.yb.hi.service.basedata;
 
 import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
 import com.yb.hi.entity.basedata.HisDept;
+import com.yb.hi.entity.pharmacy.HisPharmacyDef;
+import com.yb.hi.framework.common.BizException;
 import com.yb.hi.mapper.basedata.HisDeptMapper;
+import com.yb.hi.mapper.pharmacy.HisPharmacyDefMapper;
 import com.yb.hi.platform.entity.SysOrg;
 import com.yb.hi.platform.service.SysOrgService;
 import com.yb.hi.framework.util.PinyinUtil;
@@ -30,10 +33,13 @@ public class HisDeptService extends ServiceImpl<HisDeptMapper, HisDept> {
 
     private final StdDictQueryService stdDict;
     private final SysOrgService orgService;
+    private final HisPharmacyDefMapper pharmacyDefMapper;
 
-    public HisDeptService(StdDictQueryService stdDict, SysOrgService orgService) {
+    public HisDeptService(StdDictQueryService stdDict, SysOrgService orgService,
+                          HisPharmacyDefMapper pharmacyDefMapper) {
         this.stdDict = stdDict;
         this.orgService = orgService;
+        this.pharmacyDefMapper = pharmacyDefMapper;
     }
 
     /**
@@ -79,16 +85,52 @@ public class HisDeptService extends ServiceImpl<HisDeptMapper, HisDept> {
     public void saveDept(HisDept d) {
         normalizeLevel(d);
         normalizeOpenClinic(d);
+        validateDefaultPharmacies(d);
         enrichDict(d);
         save(d);
     }
 
-    /** 修改科室(回填字典名称与来源标识) */
+    /**
+     * 修改科室(回填字典名称与来源标识)。
+     * 默认发药药房清空需显式置 NULL: updateById 忽略 null 字段, 不补写则编辑页无法解除绑定
+     * (调用方约定: 编辑表单透传完整实体, null 即"清空该渠道默认药房"的业务语义)。
+     */
     public void updateDept(HisDept d) {
         normalizeLevel(d);
         normalizeOpenClinic(d);
+        validateDefaultPharmacies(d);
         enrichDict(d);
         updateById(d);
+        if (d.getId() != null) {
+            if (d.getDefPharmacyWest() == null) {
+                lambdaUpdate().set(HisDept::getDefPharmacyWest, null).eq(HisDept::getId, d.getId()).update();
+            }
+            if (d.getDefPharmacyTcm() == null) {
+                lambdaUpdate().set(HisDept::getDefPharmacyTcm, null).eq(HisDept::getId, d.getId()).update();
+            }
+        }
+    }
+
+    /** 默认发药药房配置校验(三期): 非空须药房存在、与科室同机构、启用; 不校验 pharmacyType 与渠道匹配(前端弱提示) */
+    private void validateDefaultPharmacies(HisDept d) {
+        checkDefaultPharmacy(d.getDefPharmacyWest(), d.getOrgId(), "西药渠道默认发药药房");
+        checkDefaultPharmacy(d.getDefPharmacyTcm(), d.getOrgId(), "中药渠道默认发药药房");
+    }
+
+    private void checkDefaultPharmacy(Long pharmacyId, Long orgId, String label) {
+        if (pharmacyId == null) {
+            return;
+        }
+        HisPharmacyDef def = pharmacyDefMapper.selectById(pharmacyId);
+        if (def == null) {
+            throw new BizException(label + "不存在: " + pharmacyId);
+        }
+        if (orgId != null && !orgId.equals(def.getOrgId())) {
+            throw new BizException(label + "须与科室归属同一机构(药房在: " + def.getName() + "所属机构)");
+        }
+        if (def.getStatus() == null || def.getStatus() != 1) {
+            throw new BizException(label + "已停用: " + def.getName());
+        }
     }
 
     /**

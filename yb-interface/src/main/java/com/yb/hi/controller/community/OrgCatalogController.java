@@ -96,12 +96,13 @@ public class OrgCatalogController {
         return R.ok();
     }
 
-    /** 医生站取数: 本机构可开药药品(含换算字段与零售价) */
+    /** 医生站取数: 本机构可开药药品(含换算字段与零售价); pharmacyId 非空时附药房生效价与在库量(三期按房取数) */
     @GetMapping("/available/drug")
     public R<IPage<HisDrugCatalog>> availableDrug(@RequestParam(required = false) String keyword,
                                                   @RequestParam(defaultValue = "1") long page,
-                                                  @RequestParam(defaultValue = "20") long size) {
-        return R.ok(service.availableDrug(keyword, page, size));
+                                                  @RequestParam(defaultValue = "20") long size,
+                                                  @RequestParam(required = false) Long pharmacyId) {
+        return R.ok(service.availableDrug(keyword, page, size, pharmacyId));
     }
 
     /** 医生站/收费取数: 本机构可开收费项目(附机构执行价 execPrice) */

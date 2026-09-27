@@ -74,7 +74,10 @@
         /* 发药详情对话框 */
         dispenseVisible: false, detailLoading: false,
         dispenseRx: null, dispenseItems: [], detailOrgId: null,
-        checkBy: '', dispenseRemark: '', dispensing: false
+        checkBy: '', dispenseRemark: '', dispensing: false,
+        /* 三期: 处方改派对话框 */
+        transferVisible: false, transferLoading: false, transferring: false,
+        transferRx: null, transferOptions: []
       };
     },
     computed: {
@@ -133,7 +136,9 @@
             doctorName: p.doctorName,
             deptName: p.deptName,
             totalAmount: p.totalAmount,
-            createTime: p.createTime
+            createTime: p.createTime,
+            pharmacyId: p.pharmacyId,
+            pharmacyName: p.pharmacyName
           };
           vm.dispenseItems = ((d && d.items) || []).map(function (it) {
             return {
@@ -161,25 +166,73 @@
       doDispense: function () {
         var vm = this;
         if (!vm.dispenseRx || !vm.dispenseRx.id) { ElementPlus.ElMessage.warning('处方信息未加载'); return; }
-        if (vm.hasInsufficientStock) { ElementPlus.ElMessage.warning('存在库存不足的药品, 无法发药'); return; }
+        if (vm.hasInsufficientStock) { ElementPlus.ElMessage.warning('存在库存不足的药品, 请点"改派药房"换房发药'); return; }
         var rx = vm.dispenseRx;
-        ElementPlus.ElMessageBox.confirm(
-          '确认对处方 ' + rx.rxNo + '（' + rx.patientName + '，金额￥' + money(rx.totalAmount) + '）执行发药？发药将按有效期FIFO扣减药库库存。',
-          '发药确认',
-          { type: 'warning', confirmButtonText: '确认发药', cancelButtonText: '取消' }
-        ).then(function () {
+        // 三期: 发药前价差预览(计费 vs 实发批次零售金额, 院内对账不补退)
+        HIS.get('/api/his/pharmacy/dispense-preview?prescriptionId=' + rx.id).then(function (pv) {
+          var msg = '确认对处方 ' + rx.rxNo + '（' + rx.patientName + '，金额￥' + money(rx.totalAmount) + '）执行发药？发药将按有效期FIFO扣减药房库存。';
+          if (pv && pv.hasPriceDiff) {
+            msg = '处方 ' + rx.rxNo + '（' + rx.patientName + '）计费 ￥' + money(pv.billingAmount)
+              + '，预计实发批次零售金额 ￥' + money(pv.estStockAmount)
+              + '，价差 ￥' + money(pv.estPriceDiff) + '（院内对账口径, 不向患者补收/退）。确认发药？';
+          }
+          return ElementPlus.ElMessageBox.confirm(msg, '发药确认',
+            { type: pv && pv.hasPriceDiff ? 'warning' : 'info', confirmButtonText: '确认发药', cancelButtonText: '取消' });
+        }).then(function () {
           vm.dispensing = true;
           return HIS.post('/api/his/pharmacy/dispense', {
-            prescriptionId: rx.id, orgId: vm.detailOrgId, pharmacyId: vm.pharmacyId || null,
+            prescriptionId: rx.id, orgId: vm.detailOrgId, pharmacyId: rx.pharmacyId || vm.pharmacyId || null,
             checkBy: vm.checkBy, remark: vm.dispenseRemark
           });
         }).then(function (d) {
-          HIS.notifySuccess('发药成功, 发药单号 ' + ((d && d.dispenseNo) || ''));
+          var tip = '发药成功, 发药单号 ' + ((d && d.dispenseNo) || '');
+          if (d && d.priceDiff != null && Number(d.priceDiff) !== 0) {
+            tip += ', 价差 ￥' + money(d.priceDiff) + ' 已落发药记录对账';
+          }
+          HIS.notifySuccess(tip);
           vm.dispenseVisible = false;
           vm.load();
         }).catch(function (e) {
           if (e !== 'cancel' && e !== 'close') { HIS.notifyError(e); }
         }).finally(function () { vm.dispensing = false; });
+      },
+      /* ===== 三期: 处方改派发药药房(已收费未发药, 库存不足换房) ===== */
+      openTransfer: function (row) {
+        var vm = this;
+        vm.transferRx = row;
+        vm.transferOptions = [];
+        vm.transferVisible = true;
+        vm.transferLoading = true;
+        HIS.get('/api/his/pharmacy/transfer-options?prescriptionId=' + row.prescriptionId)
+          .then(function (list) { vm.transferOptions = list || []; })
+          .catch(HIS.notifyError)
+          .finally(function () { vm.transferLoading = false; });
+      },
+      transferFromDetail: function () {
+        var rx = this.dispenseRx || {};
+        return { prescriptionId: rx.id, rxNo: rx.rxNo, patientName: rx.patientName, totalAmount: rx.totalAmount };
+      },
+      doTransfer: function (opt) {
+        var vm = this;
+        if (!vm.transferRx) { return; }
+        ElementPlus.ElMessageBox.confirm(
+          '将处方 ' + (vm.transferRx.rxNo || '') + ' 改派至"' + opt.pharmacyName + '"发药？已收费用不变, 价差仅落发药记录对账。',
+          '确认改派', { type: 'warning', confirmButtonText: '改派', cancelButtonText: '取消' }
+        ).then(function () {
+          vm.transferring = true;
+          return HIS.post('/api/his/pharmacy/transfer', {
+            prescriptionId: vm.transferRx.prescriptionId, toPharmacyId: opt.pharmacyId
+          });
+        }).then(function (d) {
+          HIS.notifySuccess('已改派至 ' + ((d && d.toPharmacyName) || '') + ', 请继续发药');
+          vm.transferVisible = false;
+          if (vm.dispenseVisible && vm.dispenseRx && vm.dispenseRx.id) {
+            vm.openDispense({ prescriptionId: vm.dispenseRx.id });
+          }
+          vm.load(true);
+        }).catch(function (e) {
+          if (e !== 'cancel' && e !== 'close') { HIS.notifyError(e); }
+        }).finally(function () { vm.transferring = false; });
       },
       startAutoRefresh: function () {
         var vm = this;
@@ -212,8 +265,9 @@
       '    <el-table-column prop="prescribeTime" label="开方时间" width="160"></el-table-column>',
       '    <el-table-column prop="itemCount" label="药品数" width="80" align="center"></el-table-column>',
       '    <el-table-column label="金额" width="100" align="right"><template #default="s">￥{{ money(s.row.totalAmount) }}</template></el-table-column>',
-      '    <el-table-column label="操作" width="100" fixed="right"><template #default="s">',
+      '    <el-table-column label="操作" width="160" fixed="right"><template #default="s">',
       '      <el-button type="primary" size="small" @click="openDispense(s.row)">发药</el-button>',
+      '      <el-button size="small" @click="openTransfer(s.row)">改派</el-button>',
       '    </template></el-table-column>',
       '  </el-table>',
       '  <el-pagination style="margin-top:12px;justify-content:flex-end;" background layout="total, sizes, prev, pager, next" :total="total" :page-size="size" :page-sizes="[10, 20, 50, 100]" :current-page="page" @current-change="onPage" @size-change="onSize"></el-pagination>',
@@ -229,7 +283,7 @@
       '        <el-descriptions-item label="开方时间">{{ dispenseRx.createTime || \'-\' }}</el-descriptions-item>',
       '        <el-descriptions-item label="总金额"><span style="color:#f56c6c;font-weight:600;">￥{{ money(dispenseRx.totalAmount) }}</span></el-descriptions-item>',
       '      </el-descriptions>',
-      '      <el-alert v-if="hasInsufficientStock" type="error" show-icon :closable="false" title="存在库存不足的药品, 无法发药, 请先补货或联系药库" style="margin-bottom:10px;"></el-alert>',
+      '      <el-alert v-if="hasInsufficientStock" type="warning" show-icon :closable="false" title="绑定药房库存不足, 请点下方\'改派药房\'换房发药, 或联系药库补货" style="margin-bottom:10px;"></el-alert>',
       '      <el-table :data="dispenseItems" border size="small" max-height="360">',
       '        <el-table-column type="index" label="序号" width="55"></el-table-column>',
       '        <el-table-column prop="itemName" label="药品名称" width="170" show-overflow-tooltip></el-table-column>',
@@ -250,9 +304,10 @@
       '    </div>',
       '    <template #footer>',
       '      <div style="display:flex;align-items:center;gap:10px;">',
-      '        <el-input v-model="checkBy" placeholder="核对药师(双签)" style="width:200px;"></el-input>',
-      '        <el-input v-model="dispenseRemark" placeholder="备注(可选)" style="width:300px;"></el-input>',
+      '        <el-input v-model="checkBy" placeholder="核对药师(双签)" style="width:180px;"></el-input>',
+      '        <el-input v-model="dispenseRemark" placeholder="备注(可选)" style="width:220px;"></el-input>',
       '        <span style="flex:1;"></span>',
+      '        <el-button v-if="hasInsufficientStock" @click="openTransfer(transferFromDetail())">改派药房</el-button>',
       '        <el-button @click="dispenseVisible=false">取 消</el-button>',
       '        <el-tooltip content="库存不足, 无法发药" placement="top" :disabled="!hasInsufficientStock">',
       '          <span style="display:inline-block;">',
@@ -261,6 +316,31 @@
       '        </el-tooltip>',
       '      </div>',
       '    </template>',
+      '  </el-dialog>',
+      /* ---- 三期: 改派药房对话框(逐房满足状态/缺口/预估价差) ---- */
+      '  <el-dialog v-model="transferVisible" title="改派发药药房" width="860px" top="8vh">',
+      '    <div v-loading="transferLoading">',
+      '      <div v-if="transferRx" style="margin-bottom:10px;color:#606266;font-size:13px;">处方 {{ transferRx.rxNo }} · {{ transferRx.patientName }} · 计费￥{{ money(transferRx.totalAmount) }}　<span style="color:#909399;">改派不动费用, 价差仅落发药记录对账</span></div>',
+      '      <el-table :data="transferOptions" border size="small" max-height="380">',
+      '        <el-table-column type="index" label="序号" width="55"></el-table-column>',
+      '        <el-table-column prop="pharmacyName" label="药房" width="140"><template #default="s">{{ s.row.pharmacyName }}<el-tag v-if="s.row.current" size="small" type="info" style="margin-left:4px;">当前</el-tag></template></el-table-column>',
+      '        <el-table-column label="满足状态" width="100" align="center"><template #default="s">',
+      '          <el-tag size="small" :type="s.row.allSufficient?\'success\':\'danger\'">{{ s.row.allSufficient?\'全部满足\':\'库存不足\' }}</el-tag>',
+      '        </template></el-table-column>',
+      '        <el-table-column label="缺口明细" min-width="180"><template #default="s">',
+      '          <span v-if="s.row.shortages && s.row.shortages.length" style="color:#f56c6c;">{{ s.row.shortages.map(function(x){return x.drugName + \'需\' + x.needQty + \'/仅\' + x.availQty;}).join(\'; \') }}</span>',
+      '          <span v-else-if="s.row.note" style="color:#909399;">{{ s.row.note }}</span>',
+      '          <span v-else style="color:#909399;">-</span>',
+      '        </template></el-table-column>',
+      '        <el-table-column label="预估实发" width="95" align="right"><template #default="s">{{ s.row.estStockAmount==null?\'-\':money(s.row.estStockAmount) }}</template></el-table-column>',
+      '        <el-table-column label="预估价差" width="95" align="right"><template #default="s">',
+      '          <span :style="(s.row.estPriceDiff!=null && Number(s.row.estPriceDiff)!==0)?\'color:#e6a23c;\':\'\'">{{ s.row.estPriceDiff==null?\'-\':money(s.row.estPriceDiff) }}</span>',
+      '        </template></el-table-column>',
+      '        <el-table-column label="操作" width="80" align="center" fixed="right"><template #default="s">',
+      '          <el-button type="primary" size="small" :disabled="!s.row.allSufficient || s.row.current" :loading="transferring" @click="doTransfer(s.row)">改派</el-button>',
+      '        </template></el-table-column>',
+      '      </el-table>',
+      '    </div>',
       '  </el-dialog>',
       '</div>'
     ].join('\n')
@@ -348,6 +428,12 @@
       '    <el-table-column prop="dispenseBy" label="发药人" width="90"></el-table-column>',
       '    <el-table-column prop="checkBy" label="核对人" width="90"></el-table-column>',
       '    <el-table-column label="金额" width="100" align="right"><template #default="s">￥{{ money(s.row.totalAmount) }}</template></el-table-column>',
+      /* 三期: 实发批次零售金额/价差(=实发-计费, 对账不补退)/改派来源药房 */
+      '    <el-table-column label="实发金额" width="95" align="right"><template #default="s">{{ s.row.stockAmount==null?\'-\':money(s.row.stockAmount) }}</template></el-table-column>',
+      '    <el-table-column label="价差" width="90" align="right"><template #default="s">',
+      '      <span :style="(s.row.priceDiff!=null && Number(s.row.priceDiff)!==0)?\'color:#e6a23c;font-weight:600;\':\'\'">{{ s.row.priceDiff==null?\'-\':money(s.row.priceDiff) }}</span>',
+      '    </template></el-table-column>',
+      '    <el-table-column label="改派来源" width="100"><template #default="s">{{ pharmacyName(pharmacyDefs, s.row.transferFromPharmacyId) }}</template></el-table-column>',
       '    <el-table-column label="状态" width="80" align="center"><template #default="s"><el-tag size="small" :type="dispTag(s.row.status)">{{ dispLabel(s.row.status) }}</el-tag></template></el-table-column>',
       '    <el-table-column label="操作" width="80" fixed="right"><template #default="s">',
       '      <el-button v-if="s.row.status===2" link type="warning" size="small" @click="goReturn(s.row)">退药</el-button>',
@@ -1843,6 +1929,125 @@
       '      <el-table-column label="操作" width="70"><template #default="s"><el-button link type="primary" @click="pickDrug(s.row)">选择</el-button></template></el-table-column>',
       '    </el-table>',
       '    <el-pagination style="margin-top:10px;justify-content:flex-end;" small background layout="total, prev, pager, next" :total="drugTotal" :page-size="drugSize" :current-page="drugPage" @current-change="onDrugPage"></el-pagination>',
+      '  </el-dialog>',
+      '</div>'
+    ].join('\n')
+  };
+
+  /* ================= 三期: 药房维度定价(覆盖价维护, 未覆盖回落目录价) =================
+   * 后端 /price/page 返回 JdbcTemplate 行(snake_case 键); 写守卫=管理员/药师(后端 requirePriceWrite)。
+   */
+  HIS.views.PharmacyPriceManage = {
+    data: function () {
+      return {
+        loading: false, saving: false,
+        pharmacyDefs: [], pharmacyId: null,
+        keyword: '', list: [], total: 0, page: 1, size: 20,
+        editPrice: null, editRow: null, editDlg: false
+      };
+    },
+    created: function () {
+      var vm = this;
+      HIS.get('/api/his/pharmacy/pharmacy-def').then(function (list) {
+        vm.pharmacyDefs = list || [];
+        if (vm.pharmacyDefs.length) { vm.pharmacyId = vm.pharmacyDefs[0].id; vm.load(); }
+      }).catch(HIS.notifyError);
+    },
+    methods: {
+      load: function () {
+        var vm = this;
+        if (!vm.pharmacyId) { vm.list = []; vm.total = 0; return; }
+        vm.loading = true;
+        var q = '/api/his/pharmacy/price/page?pharmacyId=' + vm.pharmacyId
+          + '&page=' + vm.page + '&size=' + vm.size;
+        if (vm.keyword) { q += '&keyword=' + encodeURIComponent(vm.keyword); }
+        HIS.get(q).then(function (d) {
+          vm.list = (d && d.records) || [];
+          vm.total = (d && d.total) || 0;
+        }).catch(HIS.notifyError).finally(function () { vm.loading = false; });
+      },
+      search: function () { this.page = 1; this.load(); },
+      onPage: function (p) { this.page = p; this.load(); },
+      onSize: function (s) { this.size = s; this.page = 1; this.load(); },
+      onPharmacyChange: function () { this.page = 1; this.load(); },
+      seqNo: function (i) { return (this.page - 1) * this.size + i + 1; },
+      rowId: function (r) { return r.id != null ? r.id : r.drug_catalog_id; },
+      openEdit: function (row) {
+        this.editRow = row;
+        var ov = row.override_price != null ? row.override_price : row.eff_price;
+        this.editPrice = ov != null ? Number(ov) : null;
+        this.editDlg = true;
+      },
+      savePrice: function () {
+        var vm = this;
+        if (!vm.editRow) { return; }
+        if (vm.editPrice == null || isNaN(Number(vm.editPrice)) || Number(vm.editPrice) < 0) {
+          ElementPlus.ElMessage.warning('请输入非负数字零售价'); return;
+        }
+        vm.saving = true;
+        HIS.post('/api/his/pharmacy/price/save', {
+          pharmacyId: vm.pharmacyId, drugCatalogId: vm.rowId(vm.editRow), retailPrice: Number(vm.editPrice)
+        }).then(function () {
+          HIS.notifySuccess('覆盖价已保存');
+          vm.editDlg = false;
+          vm.load();
+        }).catch(HIS.notifyError).finally(function () { vm.saving = false; });
+      },
+      clearPrice: function (row) {
+        var vm = this;
+        if (row.override_price == null) { ElementPlus.ElMessage.info('该药未设覆盖价(已是目录价)'); return; }
+        ElementPlus.ElMessageBox.confirm(
+          '清空"' + (row.generic_name || '') + '"的覆盖价, 生效价回落目录价 ￥' + money(row.catalog_price) + '？',
+          '清空覆盖价', { type: 'warning', confirmButtonText: '清空', cancelButtonText: '取消' }
+        ).then(function () {
+          return HIS.post('/api/his/pharmacy/price/clear', { pharmacyId: vm.pharmacyId, drugCatalogId: vm.rowId(row) });
+        }).then(function () {
+          HIS.notifySuccess('已清空, 回落目录价');
+          vm.load();
+        }).catch(function (e) { if (e !== 'cancel' && e !== 'close') { HIS.notifyError(e); } });
+      },
+      money: money
+    },
+    template: [
+      '<div class="page-card">',
+      '  <div class="page-title">药房定价 <span style="font-size:12px;color:#909399;font-weight:normal;">(按药房维护覆盖零售价 · 未覆盖回落目录价 · 开方计价按此生效价)</span></div>',
+      '  <div class="toolbar">',
+      '    <el-select v-model="pharmacyId" placeholder="选择药房" filterable style="width:180px" @change="onPharmacyChange">',
+      '      <el-option v-for="p in pharmacyDefs" :key="p.id" :label="p.name" :value="p.id"></el-option>',
+      '    </el-select>',
+      '    <el-input v-model="keyword" placeholder="药品名称/编码/拼音" clearable style="width:220px" @keyup.enter="search"></el-input>',
+      '    <el-button type="primary" @click="search" :disabled="!pharmacyId">查询</el-button>',
+      '    <el-button @click="load" :disabled="!pharmacyId">刷新</el-button>',
+      '    <span style="flex:1;"></span>',
+      '    <span style="color:#909399;font-size:13px;">共 {{ total }} 条</span>',
+      '  </div>',
+      '  <el-table :data="list" v-loading="loading" border stripe size="small">',
+      '    <el-table-column type="index" label="序号" width="60" :index="seqNo"></el-table-column>',
+      '    <el-table-column prop="drug_code" label="编码" width="110" show-overflow-tooltip></el-table-column>',
+      '    <el-table-column prop="generic_name" label="通用名" min-width="160" show-overflow-tooltip></el-table-column>',
+      '    <el-table-column prop="spec" label="规格" width="120" show-overflow-tooltip></el-table-column>',
+      '    <el-table-column prop="min_unit" label="最小单位" width="80"><template #default="s">{{ s.row.min_unit || \'-\' }}</template></el-table-column>',
+      '    <el-table-column label="目录价" width="90" align="right"><template #default="s">{{ money(s.row.catalog_price) }}</template></el-table-column>',
+      '    <el-table-column label="覆盖价" width="90" align="right"><template #default="s">',
+      '      <span v-if="s.row.override_price!=null" style="color:#409eff;font-weight:600;">{{ money(s.row.override_price) }}</span>',
+      '      <span v-else style="color:#c0c4cc;">-</span>',
+      '    </template></el-table-column>',
+      '    <el-table-column label="生效价" width="90" align="right"><template #default="s"><b>{{ money(s.row.eff_price) }}</b></template></el-table-column>',
+      '    <el-table-column label="库存" width="90" align="right"><template #default="s">{{ s.row.stock_qty==null?\'-\':s.row.stock_qty }}</template></el-table-column>',
+      '    <el-table-column label="操作" width="140" fixed="right"><template #default="s">',
+      '      <el-button link type="primary" size="small" @click="openEdit(s.row)">{{ s.row.override_price==null?\'设覆盖价\':\'改覆盖价\' }}</el-button>',
+      '      <el-button v-if="s.row.override_price!=null" link type="danger" size="small" @click="clearPrice(s.row)">清空</el-button>',
+      '    </template></el-table-column>',
+      '  </el-table>',
+      '  <el-pagination style="margin-top:12px;justify-content:flex-end;" background layout="total, sizes, prev, pager, next" :total="total" :page-size="size" :page-sizes="[10, 20, 50, 100]" :current-page="page" @current-change="onPage" @size-change="onSize"></el-pagination>',
+      '  <el-dialog v-model="editDlg" title="维护覆盖价" width="420px">',
+      '    <el-form label-width="90px" v-if="editRow">',
+      '      <el-form-item label="药品">{{ editRow.generic_name }} {{ editRow.spec }}</el-form-item>',
+      '      <el-form-item label="目录价">{{ money(editRow.catalog_price) }}</el-form-item>',
+      '      <el-form-item label="覆盖价"><el-input-number v-model="editPrice" :min="0" :precision="4" :step="0.01" controls-position="right" style="width:60%;"></el-input-number></el-form-item>',
+      '      <el-form-item><span style="color:#909399;font-size:12px;">最小单位零售价(元), 与目录价同口径</span></el-form-item>',
+      '    </el-form>',
+      '    <template #footer><el-button @click="editDlg=false">取消</el-button><el-button type="primary" :loading="saving" @click="savePrice">保存</el-button></template>',
       '  </el-dialog>',
       '</div>'
     ].join('\n')

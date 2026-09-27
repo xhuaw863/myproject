@@ -52,6 +52,12 @@ public class HisDispense extends BaseEntity {
     private LocalDateTime checkTime;
     /** 总金额 */
     private BigDecimal totalAmount;
+    /** 实发批次零售金额(发药时按出库批次价汇总, 院内对账口径) */
+    private BigDecimal stockAmount;
+    /** 价差=实发-计费(不向患者补退, 仅对账; 含同房批次差价与改派跨房差价) */
+    private BigDecimal priceDiff;
+    /** 改派来源药房ID(库存不足改派后发药时自处方转入, 未改派为空) */
+    private Long transferFromPharmacyId;
     /** 备注 */
     private String remark;
 }
