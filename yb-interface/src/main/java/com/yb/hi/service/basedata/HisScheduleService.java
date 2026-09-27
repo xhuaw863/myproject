@@ -714,7 +714,8 @@ public class HisScheduleService extends ServiceImpl<HisScheduleMapper, HisSchedu
 
     /**
      * 出诊医师机构归属校验(机构业务边界): orgId 为空时不校验;
-     * 医师存在且已配归属机构时, 必须与当前登录机构一致(未配机构的存量数据不拦截)。
+     * 行政所属匹配或 staff_employment 存在该机构任职行均放行(多点执业免重复建档);
+     * 两者皆不匹配才拦截; 未配机构的存量数据不拦截。
      */
     private void assertStaffInOrg(Long staffId, Long orgId) {
         if (orgId == null || staffId == null) {
@@ -729,8 +730,14 @@ public class HisScheduleService extends ServiceImpl<HisScheduleMapper, HisSchedu
         Map<String, Object> s = rows.get(0);
         Long sOrg = toLong(s.get("org_id"));
         if (sOrg != null && sOrg.longValue() != orgId.longValue()) {
-            throw new BizException("出诊医师必须属于本机构: " + str(s.get("staff_name"))
-                    + "(" + str(s.get("staff_no")) + "), 院外专家请先建本院职工档案再排班");
+            // 任职兜底: 多点执业员工在分院排班不再要求重复建档(原生 SQL 手动带租户, 与本类口径一致)
+            Long employed = jdbc.queryForObject(
+                    "SELECT COUNT(*) FROM staff_employment WHERE staff_id = ? AND org_id = ? AND tenant_id = ?",
+                    Long.class, staffId, orgId, tenantId());
+            if (employed == null || employed == 0L) {
+                throw new BizException("出诊医师必须属于本机构或有本院任职记录: " + str(s.get("staff_name"))
+                        + "(" + str(s.get("staff_no")) + "), 院外专家请先在职工管理中维护本院任职再排班");
+            }
         }
     }
 

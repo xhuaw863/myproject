@@ -22,6 +22,24 @@ public class SysUserService {
         this.sysUserMapper = sysUserMapper;
     }
 
+    /**
+     * 一员工一账号软校验: staff_id 非空时, 断言该职工未被其他有效账号绑定。
+     * 采用软校验而非 DB 唯一索引: sys_user 为逻辑删除, 墓碑行仍占 staff_id,
+     * MySQL 无过滤唯一索引会误拦"删除旧账号后重新绑定同一职工"的正当场景。
+     */
+    public void assertStaffNotBound(Long staffId, Long selfUserId) {
+        if (staffId == null) {
+            return;
+        }
+        // 在当前租户上下文内查(由 AuthInterceptor/createUser 预先 set), 租户插件自动隔离
+        SysUser exist = sysUserMapper.selectOne(new QueryWrapper<SysUser>()
+                .eq("staff_id", staffId).ne(selfUserId != null, "id", selfUserId)
+                .last("LIMIT 1"));
+        if (exist != null) {
+            throw new BizException(400, "该职工已绑定账号 " + exist.getUsername() + ", 一个职工仅可对应一个账号");
+        }
+    }
+
     public SysUser getByUsername(String username) {
         return sysUserMapper.selectOne(new QueryWrapper<SysUser>()
                 .eq("username", username).last("LIMIT 1"));
@@ -49,6 +67,7 @@ public class SysUserService {
             if (getByUsername(username) != null) {
                 throw new BizException("账号已存在: " + username);
             }
+            assertStaffNotBound(staffId, null);
             SysUser user = new SysUser();
             user.setUsername(username);
             user.setPassword(BCrypt.hashpw(rawPassword, BCrypt.gensalt()));

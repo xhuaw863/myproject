@@ -524,6 +524,9 @@
           try { return JSON.parse(localStorage.getItem('his.staffCols') || '{"abbr":1,"atddr":1,"fee":1}'); } catch (e) { return { abbr: 1, atddr: 1, fee: 1 }; }
         })(),
         lead: HIS.isLead(),
+        /* 任职与授权(编辑态懒加载): 任职行 [{orgId,deptId,isPrimary}], 临调授权行 [StaffDeptGrant] */
+        empRows: [], grantRows: [], empLoaded: false, empSaving: false,
+        grantForm: { orgId: null, deptId: null, validFrom: null, validTo: null, remark: '' },
         dlg: false, editing: false, form: this.empty()
       };
     },
@@ -818,12 +821,13 @@
       orgName: function (id) { for (var i = 0; i < this.orgs.length; i++) { if (this.orgs[i].id === id) { return String(this.orgs[i].label).trim(); } } return '-'; },
       add: function () {
         this.editing = false; this.form = this.empty(); this.activeTab = 'basic';
+        this.empRows = []; this.grantRows = []; this.empLoaded = false;
         /* 左栏已选中机构/科室时默认带入 */
         if (this.filterOrg) { this.form.orgId = this.filterOrg; }
         if (this.filterDept) { this.form.deptId = this.filterDept; }
         this.dlg = true;
       },
-      edit: function (row) { this.editing = true; this.form = clean(Object.assign(this.empty(), row)); this.activeTab = 'basic'; this.dlg = true; },
+      edit: function (row) { this.editing = true; this.form = clean(Object.assign(this.empty(), row)); this.activeTab = 'basic'; this.empRows = []; this.grantRows = []; this.empLoaded = false; this.dlg = true; },
       /* 保存前基础格式校验: 仅拦截明确的格式错误, 对选填/历史宽松值不误伤 */
       validateForm: function () {
         var f = this.form;
@@ -845,6 +849,60 @@
         p.then(function () { HIS.notifySuccess('保存成功'); vm.dlg = false; vm.load(); vm.loadCounts(); }).catch(HIS.notifyError);
       },
       del: function (row) { var vm = this; HIS.del('/api/his/staff/' + row.id).then(function () { HIS.notifySuccess('已删除'); vm.load(); vm.loadCounts(); }).catch(HIS.notifyError); },
+      /* ===== 任职与授权(仅编辑现有职工时可维护) ===== */
+      /* 切换到"任职与授权"Tab 时懒加载一次 */
+      onTabChange: function (name) {
+        if (name === 'employ' && this.editing && this.form.id && !this.empLoaded) { this.loadEmploy(); }
+      },
+      loadEmploy: function () {
+        var vm = this;
+        if (!vm.form.id) { return; }
+        HIS.get('/api/his/staff-employment/' + vm.form.id + '/employments').then(function (d) {
+          vm.empRows = (d || []).map(function (e) { return { orgId: e.orgId, deptId: e.deptId, isPrimary: e.isPrimary === 1 }; });
+        }).catch(HIS.notifyError);
+        HIS.get('/api/his/staff-employment/' + vm.form.id + '/grants').then(function (d) {
+          vm.grantRows = d || [];
+        }).catch(HIS.notifyError);
+        vm.empLoaded = true;
+      },
+      /* 按机构联动过滤可选科室 */
+      empDeptsFor: function (orgId) {
+        if (!orgId) { return this.depts; }
+        return this.depts.filter(function (d) { return d.orgId === orgId; });
+      },
+      addEmploy: function () { this.empRows.push({ orgId: null, deptId: null, isPrimary: false }); },
+      removeEmploy: function (i) { this.empRows.splice(i, 1); },
+      /* 单选当前主选行下标(无标记时 -1, 保存时自动补首条) */
+      rowPrimaryIdx: function (row) { var i = this.empRows.indexOf(row); return row && row.isPrimary ? i : -1; },
+      setPrimary: function (i) {
+        for (var k = 0; k < this.empRows.length; k++) { this.empRows[k].isPrimary = (k === i); }
+      },
+      saveEmploy: function () {
+        var vm = this;
+        var rows = vm.empRows.filter(function (r) { return r.orgId && r.deptId; });
+        if (!rows.length) { ElementPlus.ElMessage.warning('至少维护一条有效任职(机构+科室)'); return; }
+        /* 后端以首个有效行为主任职: 前端把选中标记行排到最前; 实体 isPrimary 为 Integer 列, 不随布尔传参 */
+        var body = rows.slice().sort(function (a, b) { return (b.isPrimary ? 1 : 0) - (a.isPrimary ? 1 : 0); })
+          .map(function (r) { return { orgId: r.orgId, deptId: r.deptId }; });
+        vm.empSaving = true;
+        HIS.post('/api/his/staff-employment/' + vm.form.id + '/employments', body).then(function () {
+          HIS.notifySuccess('任职已保存'); vm.load(); vm.loadCounts(); vm.loadEmploy();
+        }).catch(HIS.notifyError).finally(function () { vm.empSaving = false; });
+      },
+      addGrantRow: function () {
+        var vm = this; var g = vm.grantForm;
+        if (!g.orgId || !g.deptId) { ElementPlus.ElMessage.warning('请选择机构与科室'); return; }
+        HIS.post('/api/his/staff-employment/' + vm.form.id + '/grants', {
+          orgId: g.orgId, deptId: g.deptId, validFrom: g.validFrom || null, validTo: g.validTo || null, remark: g.remark || null
+        }).then(function () {
+          HIS.notifySuccess('临调授权已新增'); vm.grantForm = { orgId: null, deptId: null, validFrom: null, validTo: null, remark: '' };
+          vm.loadEmploy(); vm.empLoaded = true;
+        }).catch(HIS.notifyError);
+      },
+      removeGrantRow: function (row) {
+        var vm = this;
+        HIS.del('/api/his/staff-employment/grants/' + row.id).then(function () { HIS.notifySuccess('已撤销授权'); vm.loadEmploy(); }).catch(HIS.notifyError);
+      },
       /* 头像上传(本地文件服务 /api/file/upload, biz=staff_avatar) */
       uploadAvatar: function (opt) {
         var vm = this;
@@ -989,7 +1047,7 @@
       '    </div>',
       '  </div>',
       '  <el-dialog v-model="dlg" :title="editing?\'编辑职工\':\'新增职工\'" width="760px" top="6vh">',
-      '    <el-tabs v-model="activeTab">',
+      '    <el-tabs v-model="activeTab" @tab-change="onTabChange">',
       '      <el-tab-pane label="基本信息" name="basic">',
       '        <el-form :model="form" label-width="100px">',
       '      <el-row :gutter="12">',
@@ -1052,6 +1110,33 @@
       '        <el-col :span="12"><el-form-item label="医护资格证号"><el-input v-model="form.drQualCertNo" placeholder="医师/护士资格证号"></el-input></el-form-item></el-col>',
       '        <el-col :span="12"><el-form-item label="执业证书编码"><el-input v-model="form.pracCertNo" placeholder="医师执业证书编码"></el-input></el-form-item></el-col>',
       '      </el-row>',
+      '        </el-form>',
+      '      </el-tab-pane>',
+      '      <el-tab-pane v-if="editing" label="任职与授权" name="employ">',
+      '        <el-alert type="info" :closable="false" show-icon style="margin-bottom:8px;" title="任职为事实(多点执业/兼科室), 首条为主任职并回写基本信息Tab的归属机构/科室; 临调授权适用于替班/临时调配, 带生效期限。"></el-alert>',
+      '        <el-table :data="empRows" border size="small" style="margin-bottom:8px;">',
+      '          <el-table-column label="机构" min-width="180"><template #default="s"><el-select v-model="s.row.orgId" filterable size="small" style="width:100%;" placeholder="选择机构" @change="s.row.deptId=null"><el-option v-for="o in orgs" :key="o.id" :label="o.label" :value="o.id"></el-option></el-select></template></el-table-column>',
+      '          <el-table-column label="科室" min-width="160"><template #default="s"><el-select v-model="s.row.deptId" filterable size="small" style="width:100%;" placeholder="选择科室"><el-option v-for="d in empDeptsFor(s.row.orgId)" :key="d.id" :label="d.deptName" :value="d.id"></el-option></el-select></template></el-table-column>',
+      '          <el-table-column label="主任职" width="80" align="center"><template #default="s"><el-radio :model-value="rowPrimaryIdx(s.row)" :label="empRows.indexOf(s.row)" @change="setPrimary(empRows.indexOf(s.row))"><span></span></el-radio></template></el-table-column>',
+      '          <el-table-column label="操作" width="70" align="center"><template #default="s"><el-button link type="danger" size="small" @click="removeEmploy(empRows.indexOf(s.row))">移除</el-button></template></el-table-column>',
+      '        </el-table>',
+      '        <div style="margin-bottom:12px;"><el-button size="small" @click="addEmploy">+ 新增任职</el-button><el-button size="small" type="primary" :loading="empSaving" @click="saveEmploy">保存任职</el-button></div>',
+      '        <el-divider content-position="left">临调科室授权(替班/临时调配)</el-divider>',
+      '        <el-table :data="grantRows" border size="small" style="margin-bottom:8px;">',
+      '          <el-table-column label="机构" min-width="150"><template #default="s">{{ orgName(s.row.orgId) }}</template></el-table-column>',
+      '          <el-table-column label="科室" min-width="120"><template #default="s">{{ deptName(s.row.deptId) }}</template></el-table-column>',
+      '          <el-table-column label="生效" width="110"><template #default="s">{{ s.row.validFrom || \'立即\' }}</template></el-table-column>',
+      '          <el-table-column label="失效" width="110"><template #default="s">{{ s.row.validTo || \'长期\' }}</template></el-table-column>',
+      '          <el-table-column prop="remark" label="备注" min-width="120" show-overflow-tooltip><template #default="s">{{ s.row.remark || \'—\' }}</template></el-table-column>',
+      '          <el-table-column label="操作" width="70" align="center"><template #default="s"><el-button link type="danger" size="small" @click="removeGrantRow(s.row)">撤销</el-button></template></el-table-column>',
+      '        </el-table>',
+      '        <el-form :inline="true" size="small">',
+      '          <el-form-item label="机构"><el-select v-model="grantForm.orgId" filterable style="width:170px;" placeholder="机构" @change="grantForm.deptId=null"><el-option v-for="o in orgs" :key="o.id" :label="o.label" :value="o.id"></el-option></el-select></el-form-item>',
+      '          <el-form-item label="科室"><el-select v-model="grantForm.deptId" filterable style="width:150px;" placeholder="科室"><el-option v-for="d in empDeptsFor(grantForm.orgId)" :key="d.id" :label="d.deptName" :value="d.id"></el-option></el-select></el-form-item>',
+      '          <el-form-item label="生效"><el-date-picker v-model="grantForm.validFrom" type="date" value-format="YYYY-MM-DD" style="width:130px;" placeholder="默认立即"></el-date-picker></el-form-item>',
+      '          <el-form-item label="失效"><el-date-picker v-model="grantForm.validTo" type="date" value-format="YYYY-MM-DD" style="width:130px;" placeholder="默认长期"></el-date-picker></el-form-item>',
+      '          <el-form-item label="事由"><el-input v-model="grantForm.remark" style="width:130px;" placeholder="替班等"></el-input></el-form-item>',
+      '          <el-form-item><el-button @click="addGrantRow">新增授权</el-button></el-form-item>',
       '        </el-form>',
       '      </el-tab-pane>',
       '    </el-tabs>',

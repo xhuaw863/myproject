@@ -9,6 +9,7 @@ import com.yb.hi.platform.entity.SysUser;
 import com.yb.hi.platform.service.OrgAccessGuard;
 import com.yb.hi.platform.service.SysRoleService;
 import com.yb.hi.platform.service.SysUserOrgService;
+import com.yb.hi.platform.service.SysUserRoleService;
 import com.yb.hi.platform.service.SysUserService;
 import org.springframework.web.bind.annotation.*;
 
@@ -27,19 +28,24 @@ public class SysUserController {
     private final SysRoleService roleService;
     private final OrgAccessGuard guard;
     private final SysUserOrgService userOrgService;
+    private final SysUserRoleService userRoleService;
 
     public SysUserController(SysUserService userService, SysRoleService roleService, OrgAccessGuard guard,
-                             SysUserOrgService userOrgService) {
+                             SysUserOrgService userOrgService, SysUserRoleService userRoleService) {
         this.userService = userService;
         this.roleService = roleService;
         this.guard = guard;
         this.userOrgService = userOrgService;
+        this.userRoleService = userRoleService;
     }
 
     @GetMapping("/list")
     public R<List<SysUser>> list(@RequestParam(required = false) Long orgId) {
         List<SysUser> users = userService.list(guard.scopeOrgId(orgId));
-        users.forEach(u -> u.setLoginOrgIds(userOrgService.allowedOrgIds(u.getId(), u.getOrgId())));
+        users.forEach(u -> {
+            u.setLoginOrgIds(userOrgService.allowedOrgIds(u.getId(), u.getOrgId()));
+            u.setRoleIds(userRoleService.listRoleIds(u.getId()));
+        });
         return R.ok(users);
     }
 
@@ -50,17 +56,20 @@ public class SysUserController {
             throw new BizException(400, "账号与密码不能为空");
         }
         String roleCode = resolveRoleCode(req);
+        Long primaryRoleId = primaryRoleId(req);
         SysUser created = userService.createUser(UserContext.get().getTenantId(), req.getUsername(), req.getPassword(),
                 req.getRealName(), roleCode,
-                req.getStaffId(), req.getDeptId(), req.getOrgId(), req.getRoleId(), req.getPhone(),
+                req.getStaffId(), req.getDeptId(), req.getOrgId(), primaryRoleId, req.getPhone(),
                 req.getDeptScope());
         userOrgService.setLoginOrgs(created.getId(), created.getOrgId(), req.getLoginOrgIds());
+        userRoleService.replaceRoles(created.getId(), primaryRoleId, req.getRoleIds());
         return R.ok();
     }
 
     @PutMapping
     public R<Void> update(@RequestBody UserSaveReq req) {
         guard.requireLeadWrite();
+        userService.assertStaffNotBound(req.getStaffId(), req.getId());
         SysUser u = new SysUser();
         u.setId(req.getId());
         u.setRealName(req.getRealName());
@@ -68,7 +77,7 @@ public class SysUserController {
         u.setStaffId(req.getStaffId());
         u.setDeptId(req.getDeptId());
         u.setOrgId(req.getOrgId());
-        u.setRoleId(req.getRoleId());
+        u.setRoleId(primaryRoleId(req));
         u.setPhone(req.getPhone());
         u.setDeptScope(req.getDeptScope());
         u.setStatus(req.getStatus());
@@ -76,13 +85,27 @@ public class SysUserController {
         if (req.getLoginOrgIds() != null) {
             userOrgService.setLoginOrgs(req.getId(), req.getOrgId(), req.getLoginOrgIds());
         }
+        // 多角色关联: roleIds 非 null 或显式传了主角色时覆盖重建; 旧前端不传 roleIds 时退化为单主角色
+        if (req.getRoleIds() != null || req.getRoleId() != null) {
+            userRoleService.replaceRoles(req.getId(), primaryRoleId(req), req.getRoleIds());
+        }
         return R.ok();
     }
 
-    /** 优先按 roleId 取权威角色编码; 无 roleId 时回退 role 字符串(默认 DOCTOR) */
-    private String resolveRoleCode(UserSaveReq req) {
+    /** 主角色ID: 优先 roleId(旧单角色传参), 回落 roleIds 首位(多角色约定主角色置首) */
+    private Long primaryRoleId(UserSaveReq req) {
         if (req.getRoleId() != null) {
-            SysRole r = roleService.getById(req.getRoleId());
+            return req.getRoleId();
+        }
+        List<Long> ids = req.getRoleIds();
+        return ids == null || ids.isEmpty() ? null : ids.get(0);
+    }
+
+    /** 优先按主角色ID取权威角色编码; 无角色ID时回退 role 字符串(默认 DOCTOR) */
+    private String resolveRoleCode(UserSaveReq req) {
+        Long pid = primaryRoleId(req);
+        if (pid != null) {
+            SysRole r = roleService.getById(pid);
             if (r != null) {
                 return r.getRoleCode();
             }
