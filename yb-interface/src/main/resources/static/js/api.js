@@ -51,12 +51,18 @@
     return u ? u.orgId : null;
   };
 
+  /* 医共体一人多角色: 任一角色命中即拥有(登录响应 roles 数组并集口径); roles 缺失回落主角色(旧登录会话兼容) */
+  HIS.hasRole = function (code) {
+    var u = HIS.getUser();
+    if (!u) { return false; }
+    if (u.roles && u.roles.length) { return u.roles.indexOf(code) >= 0; }
+    return u.role === code;
+  };
+
   /* 是否可维护本机构级业务数据(排班号源): 本机构管理员 ADMIN/ORG_ADMIN 或平台超管。
    * 排班为机构自己的业务过程, 不再限定牵头身份, 每个机构自治自己的号源。 */
   HIS.canMaintainSelfOrg = function () {
-    var u = HIS.getUser();
-    if (!u) { return false; }
-    return u.role === 'ADMIN' || u.role === 'ORG_ADMIN' || u.role === 'SUPER_ADMIN';
+    return HIS.hasRole('ADMIN') || HIS.hasRole('ORG_ADMIN') || HIS.hasRole('SUPER_ADMIN');
   };
 
   /* ===== 角色字典 ===== */

@@ -37,7 +37,7 @@ public class SysUser extends BaseEntity {
     private String deptScope;
     /** 归属机构ID(sys_org) */
     private Long orgId;
-    /** 权威角色ID(sys_role) */
+    /** 主角色ID(sys_role, 显示与无关联行时兜底; 判权走 sys_user_role 并集) */
     private Long roleId;
     /** 手机号 */
     private String phone;
@@ -47,4 +47,8 @@ public class SysUser extends BaseEntity {
     /** 可登录机构ID列表(多点执业, 含归属机构默认; 非DB列, 仅传输/回显) */
     @TableField(exist = false)
     private List<Long> loginOrgIds;
+
+    /** 全部角色ID(sys_user_role 关联口径, 主角色置首; 非DB列, 仅列表回显) */
+    @TableField(exist = false)
+    private List<Long> roleIds;
 }

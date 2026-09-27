@@ -4,6 +4,7 @@ import com.alibaba.excel.EasyExcel;
 import com.yb.hi.framework.common.BizException;
 import com.yb.hi.framework.common.R;
 import com.yb.hi.framework.common.Roles;
+import com.yb.hi.framework.tenant.LoginUser;
 import com.yb.hi.framework.tenant.UserContext;
 import com.yb.hi.platform.dto.OrgNode;
 import com.yb.hi.platform.dto.OrgSaveReq;
@@ -99,15 +100,15 @@ public class SysOrgController {
 
     /** 仅机构管理员(牵头 ADMIN / 非牵头 ORG_ADMIN / 超管)可维护本机构医保配置 */
     private void requireOrgAdmin() {
-        String role = UserContext.get() == null ? null : UserContext.get().getRole();
-        if (!Roles.ADMIN.equals(role) && !Roles.ORG_ADMIN.equals(role) && !Roles.SUPER_ADMIN.equals(role)) {
+        LoginUser u = UserContext.get();
+        if (u == null || !u.hasAnyRole(Roles.ADMIN, Roles.ORG_ADMIN, Roles.SUPER_ADMIN)) {
             throw new BizException(403, "仅机构管理员可维护本机构医保配置");
         }
     }
 
     private void requireAdmin() {
-        String role = UserContext.get() == null ? null : UserContext.get().getRole();
-        if (!Roles.ADMIN.equals(role) && !Roles.SUPER_ADMIN.equals(role)) {
+        LoginUser u = UserContext.get();
+        if (u == null || !u.hasAnyRole(Roles.ADMIN, Roles.SUPER_ADMIN)) {
             throw new BizException(403, "无权维护机构信息");
         }
     }

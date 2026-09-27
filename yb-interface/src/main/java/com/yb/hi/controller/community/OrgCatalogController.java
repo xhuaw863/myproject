@@ -123,8 +123,7 @@ public class OrgCatalogController {
     /** 仅机构管理员(牵头 ADMIN / 非牵头 ORG_ADMIN / 超管)可维护本机构开展目录 */
     private void requireOrgAdmin() {
         LoginUser lu = UserContext.get();
-        String role = lu == null ? null : lu.getRole();
-        if (!Roles.ADMIN.equals(role) && !Roles.SUPER_ADMIN.equals(role) && !Roles.ORG_ADMIN.equals(role)) {
+        if (lu == null || !lu.hasAnyRole(Roles.ADMIN, Roles.SUPER_ADMIN, Roles.ORG_ADMIN)) {
             throw new BizException(403, "仅机构管理员可维护本机构开展目录");
         }
     }

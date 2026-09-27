@@ -36,16 +36,18 @@ public class AuthService {
     private final SysOrgService orgService;
     private final JwtUtil jwtUtil;
     private final SysUserOrgService userOrgService;
+    private final SysUserRoleService userRoleService;
 
     public AuthService(SysTenantService tenantService, SysUserService userService,
                        SysRoleService roleService, SysOrgService orgService, JwtUtil jwtUtil,
-                       SysUserOrgService userOrgService) {
+                       SysUserOrgService userOrgService, SysUserRoleService userRoleService) {
         this.tenantService = tenantService;
         this.userService = userService;
         this.roleService = roleService;
         this.orgService = orgService;
         this.jwtUtil = jwtUtil;
         this.userOrgService = userOrgService;
+        this.userRoleService = userRoleService;
     }
 
     /** 登录 */
@@ -194,7 +196,23 @@ public class AuthService {
     private LoginResp buildLoginResp(SysUser user, SysTenant tenant, Long sessionOrgId, Long homeOrgId, List<SysOrg> allowed) {
         SysRole role = resolveRole(user);
         Long roleId = role == null ? null : role.getId();
-        String roleName = role != null ? role.getRoleName() : user.getRole();
+        // 多角色(医共体一人多角色): 关联表集合优先, 主角色置首用于显示; 无关联行时回落单角色
+        List<SysRole> roles = resolveRoles(user);
+        String roleName = "";
+        List<String> roleCodes = new ArrayList<>();
+        List<Long> roleIds = new ArrayList<>();
+        for (SysRole r : roles) {
+            roleName = roleName.isEmpty() ? r.getRoleName() : roleName + " / " + r.getRoleName();
+            if (r.getRoleCode() != null && !roleCodes.contains(r.getRoleCode())) {
+                roleCodes.add(r.getRoleCode());
+            }
+            if (r.getId() != null && !roleIds.contains(r.getId())) {
+                roleIds.add(r.getId());
+            }
+        }
+        if (roleName.isEmpty()) {
+            roleName = role != null ? role.getRoleName() : user.getRole();
+        }
         SysOrg sessionOrg = sessionOrgId == null ? null : orgService.getById(sessionOrgId);
         String orgName = sessionOrg == null ? null : sessionOrg.getOrgName();
         boolean leadOrg = sessionOrg != null && sessionOrg.getIsLead() != null && sessionOrg.getIsLead() == 1;
@@ -209,6 +227,8 @@ public class AuthService {
         lu.setDeptId(user.getDeptId());
         lu.setOrgId(sessionOrgId);
         lu.setRoleId(roleId);
+        lu.setRoles(roleCodes);
+        lu.setRoleIds(roleIds);
         lu.setLeadOrg(leadOrg);
         lu.setTenantName(tenant.getTenantName());
 
@@ -228,12 +248,13 @@ public class AuthService {
         resp.setOrgName(orgName);
         resp.setLeadOrg(leadOrg);
         resp.setRoleName(roleName);
+        resp.setRoles(roleCodes);
         resp.setHomeOrgId(homeOrgId);
         resp.setAllowedOrgs(toOptions(allowed, homeOrgId));
         return resp;
     }
 
-    /** 解析权威角色: 优先 user.roleId, 为空则按 role 字符串回退匹配 */
+    /** 解析主角色(兼容字段): 优先 user.roleId, 为空则按 role 字符串回退匹配 */
     private SysRole resolveRole(SysUser user) {
         SysRole role = null;
         if (user.getRoleId() != null) {
@@ -243,6 +264,28 @@ public class AuthService {
             role = roleService.findByCode(user.getRole());
         }
         return role;
+    }
+
+    /**
+     * 解析全部角色(一人多角色): sys_user_role 关联集合优先, 主角色置首保显示顺序;
+     * 无关联行时回落 {@link #resolveRole} 单角色(存量未回填/异常数据兜底)。
+     */
+    private List<SysRole> resolveRoles(SysUser user) {
+        List<SysRole> out = new ArrayList<>();
+        SysRole primary = resolveRole(user);
+        if (primary != null) {
+            out.add(primary);
+        }
+        for (Long rid : userRoleService.listRoleIds(user.getId())) {
+            if (rid == null || (primary != null && rid.equals(primary.getId()))) {
+                continue;
+            }
+            SysRole r = roleService.getById(rid);
+            if (r != null) {
+                out.add(r);
+            }
+        }
+        return out;
     }
 
     private boolean containsOrg(List<SysOrg> orgs, Long orgId) {

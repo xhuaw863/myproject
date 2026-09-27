@@ -27,8 +27,10 @@ public class LoginResp {
     private String orgName;
     /** 是否牵头机构(org_level=1): 前端据此渲染基础数据只读态 */
     private Boolean leadOrg;
-    /** 角色名称(支持租户自定义角色名, 前端显示) */
+    /** 角色名称(支持租户自定义角色名, 前端显示; 多角色以 " / " 连接) */
     private String roleName;
+    /** 全部角色编码(医共体一人多角色, 主角色置首) */
+    private List<String> roles;
     /** 归属机构ID(默认可登录机构) */
     private Long homeOrgId;
     /** 可登录机构列表(多点执业, 含归属机构); 前端据此渲染"切换机构" */

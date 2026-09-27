@@ -29,7 +29,8 @@
         {
           group: '医保字典', children: [
             { key: 'dict-download', label: '字典下载', comp: 'DictDownload' },
-            { key: 'dict-version', label: '版本状态', comp: 'DictVersion' }
+            { key: 'dict-version', label: '版本状态', comp: 'DictVersion' },
+            { key: 'verify-console', label: '医保验证台' }
           ]
         },
         {
@@ -260,6 +261,8 @@
     data: function () {
       return {
         activeKey: 'dashboard', menu: MENU,
+        /* 顶栏日期时钟: 每分钟刷新一次, 跨零点自动更新日期/星期 */
+        now: new Date(),
         collapsed: localStorage.getItem('his-aside-collapsed') === '1',
         /* 固定开关: 默认不固定=菜单自动隐藏(2026-09); 固定后常驻展开不再自动隐藏 */
         pinned: localStorage.getItem('his-aside-pinned') === '1',
@@ -292,11 +295,27 @@
         var s = u.realName || u.username || '';
         return s.charAt(0).toUpperCase();
       },
+      /* 顶栏日期+星期: 2026-09-27 周日 */
+      dateText: function () {
+        var d = this.now;
+        var wk = ['周日', '周一', '周二', '周三', '周四', '周五', '周六'][d.getDay()];
+        var m = d.getMonth() + 1, day = d.getDate();
+        return d.getFullYear() + '-' + (m < 10 ? '0' + m : m) + '-' + (day < 10 ? '0' + day : day) + ' ' + wk;
+      },
       /* 可登录机构(多点执业): >1 时顶栏展示"切换机构" */
       allowedOrgs: function () { return (this.user || {}).allowedOrgs || []; }
     },
     methods: {
       onSelect: function (key) {
+        /* 医保验证台: 独立静态调试页外链, 新标签打开且不切换当前视图(验证台按当前登录机构的医保身份生效) */
+        if (key === 'verify-console') {
+          window.open('/verify/index.html', '_blank');
+          /* el-menu 高亮由 default-active 的 watch 驱动, 同值不触发; 先置空再恢复以回退选中态 */
+          var vm = this, prev = this.activeKey;
+          vm.activeKey = '';
+          vm.$nextTick(function () { vm.activeKey = prev; });
+          return;
+        }
         this.activeKey = key;
         /* 自动隐藏模式下选完菜单即收回浮层, 避免面板持续遮挡内容区 */
         if (!this.asideExpanded) { this.hoverOpen = false; }
@@ -330,8 +349,22 @@
     },
     mounted: function () {
       var vm = this;
+      /* 日期时钟定时器: 60s 一跳 */
+      this.dateTimer = setInterval(function () { vm.now = new Date(); }, 60000);
       /* 全局视图跳转: 供列表页跳转到工作台等场景 */
       HIS.go = function (key) { vm.activeKey = key; };
+      /* 左菜单默认折叠参数(租户级可配, 机构级覆盖优先由后端四级解析器保证):
+       * 参数值与上次应用记录不同→应用新默认; 未变→尊重用户本地手动选择。
+       * 切换机构会整页重载, mounted 重跑, 新机构上下文自动命中机构级覆盖 */
+      HIS.get('/api/sys/param/resolve/system.menu_default_collapsed')
+        .then(function (v) {
+          var want = v === 'true' ? '1' : '0';
+          if (localStorage.getItem('his-aside-default') === want) { return; }
+          localStorage.setItem('his-aside-default', want);
+          localStorage.setItem('his-aside-collapsed', want);
+          vm.collapsed = want === '1';
+        })
+        .catch(function () { /* 参数不可用时保持本地态, 不锁死菜单 */ });
       /* 动态菜单: 按角色从后端加载; 失败回退静态 MENU 防锁死 */
       HIS.get('/api/auth/menus')
         .then(function (nodes) {
@@ -341,6 +374,9 @@
           }
         })
         .catch(function () { /* 保留静态 MENU 兜底 */ });
+    },
+    beforeUnmount: function () {
+      if (this.dateTimer) { clearInterval(this.dateTimer); }
     },
     template: [
       '<div class="layout">',
@@ -355,7 +391,7 @@
       '    </el-dropdown>',
       '    <span class="hosp" v-else-if="user.orgName" style="opacity:.85;">机构: {{ user.orgName }}</span>',
       '    <span class="spacer"></span>',
-      '    <a class="hosp" href="/verify/index.html" target="_blank" style="text-decoration:none;cursor:pointer;">医保验证台</a>',
+      '    <span class="hosp hdr-date">{{ dateText }}</span>',
       '    <el-dropdown @command="onCmd">',
       '      <span class="user" :data-avatar="avatarChar">{{ user.realName || user.username }}（{{ roleName }}）<span style="margin-left:4px;">▾</span></span>',
       '      <template #dropdown>',

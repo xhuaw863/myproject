@@ -129,6 +129,7 @@ public class RbacInitializer implements ApplicationRunner {
             ensureMedtechMenus(menuIds);
             renameNurseTreatmentMedtechMenus();
             ensureSystemParamMenu(menuIds);
+            ensureVerifyConsoleMenu(menuIds);
             Map<String, Long> roleIds = seedGlobalRoles();
             ensureOrgAdminRole();
             ensureTherapistTechnicianRoles(roleIds);
@@ -175,6 +176,8 @@ public class RbacInitializer implements ApplicationRunner {
         ids.put("dict-download", menuK("dict-download", "字典下载", "DictDownload", null, g3, ++sort[0]));
         ids.put("dict-version", menuK("dict-version", "版本状态", "DictVersion", null, g3, ++sort[0]));
         ids.put("catalog-map", menuK("catalog-map", "医保目录对照", "CatalogMap", null, g3, ++sort[0]));
+        // 医保验证台(独立静态调试页外链, 前端 app.js 按 key 拦截 window.open; 医保按机构对接, 收编进菜单随机构上下文生效)
+        ids.put("verify-console", menuK("verify-console", "医保验证台", null, null, g3, ++sort[0]));
         // 标准字典(2026-09 移入医共体管理目录; 超管视图由 SysMenuService.treeOnlyTopKeys 递归命中仍作顶级展示)
         long g4 = dir("std-dict", "标准字典", g1, 102);
         ids.put("std-dict-browse", menuK("std-dict-browse", "字典浏览", "StdDictBrowse", null, g4, ++sort[0]));
@@ -637,6 +640,40 @@ public class RbacInitializer implements ApplicationRunner {
             log.info("挂号统计菜单已补充(reg_stats/RegStatistics)");
         }
         menuIds.put("reg_stats", m.getId());
+    }
+
+    /**
+     * 幂等确保"医保验证台"菜单存在(2026-09 从顶栏静态链接收编进 RBAC 菜单: 医保按机构对接,
+     * 入口应随当前登录机构上下文与角色授权生效)。挂"医保字典"子目录末尾, comp 为空(外链页,
+     * 前端 app.js onSelect 按 key 拦截 window.open 新标签打开 /verify/index.html)。
+     * ADMIN/ORG_ADMIN/SUPER_ADMIN 走 all_menus 自动可见; 业务角色需在角色权限页勾选授权。
+     */
+    private void ensureVerifyConsoleMenu(Map<String, Long> menuIds) {
+        SysMenu m = menuMapper.selectOne(new QueryWrapper<SysMenu>().eq("menu_key", "verify-console").last("LIMIT 1"));
+        if (m == null) {
+            SysMenu ybDir = menuMapper.selectOne(new QueryWrapper<SysMenu>().eq("menu_key", "yb-dict").last("LIMIT 1"));
+            if (ybDir == null) {
+                ybDir = menuMapper.selectOne(new QueryWrapper<SysMenu>().eq("menu_key", "platform").last("LIMIT 1"));
+            }
+            if (ybDir == null) {
+                return;
+            }
+            int maxSort = 0;
+            for (SysMenu c : menuMapper.selectList(new QueryWrapper<SysMenu>().eq("parent_id", ybDir.getId()))) {
+                maxSort = Math.max(maxSort, c.getSortNo() == null ? 0 : c.getSortNo());
+            }
+            m = new SysMenu();
+            m.setParentId(ybDir.getId());
+            m.setMenuKey("verify-console");
+            m.setMenuName("医保验证台");
+            m.setMenuType(2);
+            m.setSortNo(maxSort + 1);
+            m.setVisible(1);
+            m.setStatus(1);
+            menuMapper.insert(m);
+            log.info("医保验证台菜单已补充(verify-console, 外链 /verify/index.html)");
+        }
+        menuIds.put("verify-console", m.getId());
     }
 
     /**

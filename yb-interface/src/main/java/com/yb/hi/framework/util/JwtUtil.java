@@ -8,8 +8,10 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
 import java.util.Date;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 
 /**
@@ -40,6 +42,17 @@ public class JwtUtil {
         payload.put("deptId", user.getDeptId());
         payload.put("orgId", user.getOrgId());
         payload.put("roleId", user.getRoleId());
+        // 多角色(医共体一人多角色): 逗号串存 claim, 解析时拆回列表
+        if (user.getRoles() != null && !user.getRoles().isEmpty()) {
+            payload.put("roles", String.join(",", user.getRoles()));
+        }
+        if (user.getRoleIds() != null && !user.getRoleIds().isEmpty()) {
+            List<String> idStr = new ArrayList<>();
+            for (Long id : user.getRoleIds()) {
+                idStr.add(String.valueOf(id));
+            }
+            payload.put("roleIds", String.join(",", idStr));
+        }
         payload.put("leadOrg", user.getLeadOrg());
         payload.put("tenantName", user.getTenantName());
         long now = System.currentTimeMillis();
@@ -69,6 +82,8 @@ public class JwtUtil {
             user.setDeptId(toLong(jwt.getPayload("deptId")));
             user.setOrgId(toLong(jwt.getPayload("orgId")));
             user.setRoleId(toLong(jwt.getPayload("roleId")));
+            user.setRoles(toList(toStr(jwt.getPayload("roles"))));
+            user.setRoleIds(toLongList(toStr(jwt.getPayload("roleIds"))));
             user.setLeadOrg(toBool(jwt.getPayload("leadOrg")));
             user.setTenantName(toStr(jwt.getPayload("tenantName")));
             return user;
@@ -93,6 +108,34 @@ public class JwtUtil {
 
     private String toStr(Object o) {
         return o == null ? null : o.toString();
+    }
+
+    /** 逗号串拆列表(空/无效返回 null, 触发 LoginUser.hasRole 主角色回落) */
+    private List<String> toList(String s) {
+        if (s == null || s.isEmpty()) {
+            return null;
+        }
+        List<String> out = new ArrayList<>();
+        for (String p : s.split(",")) {
+            if (!p.trim().isEmpty()) {
+                out.add(p.trim());
+            }
+        }
+        return out.isEmpty() ? null : out;
+    }
+
+    private List<Long> toLongList(String s) {
+        if (s == null || s.isEmpty()) {
+            return null;
+        }
+        List<Long> out = new ArrayList<>();
+        for (String p : s.split(",")) {
+            Long v = toLong(p.trim());
+            if (v != null) {
+                out.add(v);
+            }
+        }
+        return out.isEmpty() ? null : out;
     }
 
     private Boolean toBool(Object o) {

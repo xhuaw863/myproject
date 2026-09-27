@@ -316,7 +316,6 @@
       '        <span style="color:var(--yb-brand);">前往处理 →</span>',
       '      </div>',
       '      <div>今日: <b style="color:var(--yb-link);">{{ todayStr }}</b></div>',
-      '      <div><a href="/verify/index.html" target="_blank" style="color:var(--yb-brand);text-decoration:none;">医保接口验证台 →</a></div>',
       '    </div>',
       '  </div>',
       /* ---- 第一行: 四个统计卡片 ---- */

@@ -85,9 +85,9 @@
       vm.loadParams();
     },
     computed: {
-      isSuper: function () { return this.role === 'SUPER_ADMIN'; },
-      isAdmin: function () { return this.role === 'ADMIN'; },
-      isOrgAdmin: function () { return this.role === 'ORG_ADMIN'; },
+      isSuper: function () { return HIS.hasRole('SUPER_ADMIN'); },
+      isAdmin: function () { return HIS.hasRole('ADMIN'); },
+      isOrgAdmin: function () { return HIS.hasRole('ORG_ADMIN'); },
       lead: function () { return !!(this.user && this.user.leadOrg); },
       /* 可维护者(菜单本就只下发给三个管理员角色, 此处兜底误入场景) */
       canAccess: function () { return this.isSuper || this.isAdmin || this.isOrgAdmin; },
@@ -580,11 +580,12 @@
       '      <el-form-item label="校验规则"><span style="font-size:12px;color:var(--yb-ink-2);">{{ constraintText(edit.row) || \'无\' }}</span></el-form-item>',
       '      <el-form-item v-if="edit.row.remark" label="备注"><span style="font-size:12px;color:var(--yb-ink-2);">{{ edit.row.remark }}</span></el-form-item>',
       '    </el-form>',
-      '    <template #footer>',
-      '      <el-button @click="edit.visible = false">取消</el-button>',
-      '      <el-button v-if="edit.mode===\'override\' && edit.row && edit.row.override_value != null && String(edit.row.override_value) !== \'\'" type="warning" plain :loading="edit.saving" @click="deleteOverride(edit.row)">恢复继承</el-button>',
-      '      <el-button type="primary" :loading="edit.saving" @click="saveEdit">保存</el-button>',
-      '    </template>',
+      '  </template>',
+      /* 具名插槽必须是 el-dialog 直接子节点(嵌在 template v-if 内会破坏 slots 规范化, 导致整页渲染崩溃) */
+      '  <template #footer>',
+      '    <el-button @click="edit.visible = false">取消</el-button>',
+      '    <el-button v-if="edit.mode===\'override\' && edit.row && edit.row.override_value != null && String(edit.row.override_value) !== \'\'" type="warning" plain :loading="edit.saving" @click="deleteOverride(edit.row)">恢复继承</el-button>',
+      '    <el-button type="primary" :loading="edit.saving" @click="saveEdit">保存</el-button>',
       '  </template>',
       '</el-dialog>',
       /* ---- 参数定义弹窗(仅超管) ---- */

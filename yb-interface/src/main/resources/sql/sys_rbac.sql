@@ -114,6 +114,24 @@ CREATE TABLE sys_role_menu (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='角色-菜单关联';
 
 -- ------------------------------------------------------------
+-- 用户-角色关联(医共体一人多角色, 权限=各角色并集; 2026-09 多角色改造)
+-- 走租户插件自动隔离(不入 IGNORE_TABLES, 与 sys_user_org 同套路);
+-- sys_user.role/role_id 降级为"主角色"(显示与无关联行时兜底)。
+-- 实际由 SysUserRoleService.ensureTable(@PostConstruct) 幂等建表,
+-- 存量回填在其 ApplicationRunner(@Order(5)) 中完成; 此处仅存档。
+-- ------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS sys_user_role (
+    id         BIGINT   NOT NULL AUTO_INCREMENT COMMENT '主键',
+    user_id    BIGINT   NOT NULL COMMENT '用户ID(sys_user)',
+    role_id    BIGINT   NOT NULL COMMENT '角色ID(sys_role)',
+    tenant_id  BIGINT   DEFAULT NULL COMMENT '租户ID(随用户, 二期可扩展为角色绑机构)',
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+    PRIMARY KEY (id),
+    UNIQUE KEY uk_user_role (user_id, role_id),
+    KEY idx_ur_user (user_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='用户角色关联(一人多角色)';
+
+-- ------------------------------------------------------------
 -- 已有数据表增列(由部署脚本按 information_schema 幂等执行, 此处仅存档):
 --   ALTER TABLE sys_user    ADD COLUMN org_id  BIGINT DEFAULT NULL COMMENT '归属机构ID';
 --   ALTER TABLE sys_user    ADD COLUMN role_id BIGINT DEFAULT NULL COMMENT '角色ID(sys_role)';

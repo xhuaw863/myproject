@@ -63,7 +63,7 @@ public class SysTenantController {
     /** 仅平台超级管理员可操作跨租户医院管理 */
     private void requireSuper() {
         LoginUser u = UserContext.get();
-        if (u == null || !Roles.SUPER_ADMIN.equals(u.getRole())) {
+        if (u == null || !u.hasRole(Roles.SUPER_ADMIN)) {
             throw new BizException(403, "仅平台超级管理员可操作");
         }
     }
@@ -123,8 +123,8 @@ public class SysTenantController {
         if (u == null) {
             throw new BizException(401, "未登录");
         }
-        boolean superAdmin = Roles.SUPER_ADMIN.equals(u.getRole());
-        boolean leadAdmin = Roles.ADMIN.equals(u.getRole()) && orgAccessGuard.isLead(u);
+        boolean superAdmin = u.hasRole(Roles.SUPER_ADMIN);
+        boolean leadAdmin = u.hasRole(Roles.ADMIN) && orgAccessGuard.isLead(u);
         if (!superAdmin && !leadAdmin) {
             throw new BizException(403, "仅牵头机构管理员或平台超管可维护医共体默认配置, 本机构配置请在\"本机构\"范围维护");
         }

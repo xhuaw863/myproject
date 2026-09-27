@@ -246,9 +246,7 @@ public class PharmacyController {
         if (lu == null) {
             throw new BizException(401, "未登录");
         }
-        String role = lu.getRole();
-        if (!Roles.ADMIN.equals(role) && !Roles.ORG_ADMIN.equals(role)
-                && !Roles.PHARMACIST.equals(role) && !Roles.SUPER_ADMIN.equals(role)) {
+        if (!lu.hasAnyRole(Roles.ADMIN, Roles.ORG_ADMIN, Roles.PHARMACIST, Roles.SUPER_ADMIN)) {
             throw new BizException(403, "仅本机构管理员或药师可维护药房定价");
         }
         if (lu.getOrgId() == null) {

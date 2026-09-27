@@ -171,23 +171,23 @@ public class SystemParamController {
     /** 仅平台超级管理员可维护分组与全局定义 */
     private void requireSuper() {
         LoginUser u = UserContext.get();
-        if (u == null || !Roles.SUPER_ADMIN.equals(u.getRole())) {
+        if (u == null || !u.hasRole(Roles.SUPER_ADMIN)) {
             throw new BizException(403, "仅平台超级管理员可操作");
         }
     }
 
     /** 牵头机构管理员或平台超管可读 */
     private void requireAdmin() {
-        String role = UserContext.get() == null ? null : UserContext.get().getRole();
-        if (!Roles.ADMIN.equals(role) && !Roles.SUPER_ADMIN.equals(role)) {
+        LoginUser u = UserContext.get();
+        if (u == null || !u.hasAnyRole(Roles.ADMIN, Roles.SUPER_ADMIN)) {
             throw new BizException(403, "无权访问系统参数维护");
         }
     }
 
     /** 机构管理员(牵头ADMIN / 非牵头 ORG_ADMIN / 超管)可维护本机构/科室参数 */
     private void requireOrgAdmin() {
-        String role = UserContext.get() == null ? null : UserContext.get().getRole();
-        if (!Roles.ADMIN.equals(role) && !Roles.ORG_ADMIN.equals(role) && !Roles.SUPER_ADMIN.equals(role)) {
+        LoginUser u = UserContext.get();
+        if (u == null || !u.hasAnyRole(Roles.ADMIN, Roles.ORG_ADMIN, Roles.SUPER_ADMIN)) {
             throw new BizException(403, "仅机构管理员可维护本机构参数");
         }
     }
@@ -198,7 +198,7 @@ public class SystemParamController {
         if (u == null) {
             throw new BizException(401, "未登录");
         }
-        if (Roles.SUPER_ADMIN.equals(u.getRole())) {
+        if (u.hasRole(Roles.SUPER_ADMIN)) {
             return;
         }
         orgAccessGuard.requireLeadWrite();

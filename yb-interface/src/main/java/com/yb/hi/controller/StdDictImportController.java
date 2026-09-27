@@ -63,7 +63,7 @@ public class StdDictImportController {
     /** 仅平台超级管理员可维护标准字典 */
     private void requireSuper() {
         LoginUser u = UserContext.get();
-        if (u == null || !Roles.SUPER_ADMIN.equals(u.getRole())) {
+        if (u == null || !u.hasRole(Roles.SUPER_ADMIN)) {
             throw new BizException(403, "标准字典仅平台超级管理员可维护, 其它用户只能浏览");
         }
     }

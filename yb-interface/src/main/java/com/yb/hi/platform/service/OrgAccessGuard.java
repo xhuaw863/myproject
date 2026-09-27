@@ -47,7 +47,7 @@ public class OrgAccessGuard {
         if (lu == null) {
             throw new BizException(401, "未登录");
         }
-        if (!Roles.ADMIN.equals(lu.getRole()) || !isLead(lu)) {
+        if (!lu.hasRole(Roles.ADMIN) || !isLead(lu)) {
             throw new BizException(403, msg);
         }
     }
@@ -84,8 +84,8 @@ public class OrgAccessGuard {
         if (lu.getOrgId() == null) {
             throw new BizException(403, "当前账号未归属任何机构, 无法维护本机构排班");
         }
-        boolean admin = Roles.ADMIN.equals(lu.getRole()) || Roles.ORG_ADMIN.equals(lu.getRole());
-        if (!admin && !Roles.SUPER_ADMIN.equals(lu.getRole())) {
+        boolean admin = lu.hasAnyRole(Roles.ADMIN, Roles.ORG_ADMIN);
+        if (!admin && !lu.hasRole(Roles.SUPER_ADMIN)) {
             throw new BizException(403, "仅本机构管理员可维护排班号源");
         }
     }

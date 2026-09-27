@@ -18,9 +18,11 @@ import org.springframework.util.StringUtils;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 /**
  * 角色服务: 全局预置角色(tenant_id=NULL, 只读) + 租户自定义角色(可增改删/授权)。
@@ -223,42 +225,59 @@ public class SysRoleService {
     }
 
     /**
-     * 解析当前登录用户的菜单树:
-     * - SUPER_ADMIN(平台超管): 工作台 + 医院管理(跨租户开通) + 标准字典(浏览+维护), 不下发医院业务菜单;
+     * 解析当前登录用户的菜单树(医共体一人多角色, 并集语义):
+     * 逐个角色算出允许菜单 id 集后取并, 再一次 treeByIds 成树(祖先目录自动补齐)。
+     * 单角色档位口径与改造前一致:
+     * - SUPER_ADMIN(平台超管): 工作台 + 医院管理(跨租户开通) + 标准字典(浏览+维护);
      * - ADMIN / all_menus=1 角色(医院端): 全量菜单, 但排除平台级"医院管理"与标准字典"提取入库"(维护);
      * - 其余角色: 按 sys_role_menu 授权过滤。
+     * roles 集合缺失(旧令牌)时回落主角色单角色逻辑。
      */
     public List<MenuNode> resolveMenuTree(LoginUser lu) {
         if (lu == null) {
             return new ArrayList<>();
         }
-        String code = lu.getRole();
+        List<String> codes = lu.getRoles();
+        if (codes == null || codes.isEmpty()) {
+            codes = lu.getRole() == null
+                    ? Collections.<String>emptyList() : Collections.singletonList(lu.getRole());
+        }
+        Set<Long> union = new HashSet<>();
+        for (String code : codes) {
+            union.addAll(menuIdsForRole(lu, code));
+        }
+        return menuService.treeByIds(union);
+    }
+
+    /** 单角色档位的菜单 id 集(排除集只作用于对应角色自身的档位) */
+    private Set<Long> menuIdsForRole(LoginUser lu, String code) {
         if (Roles.SUPER_ADMIN.equals(code)) {
-            return menuService.treeOnlyTopKeys(SUPER_ADMIN_MENUS);
+            return menuService.flattenIds(menuService.treeOnlyTopKeys(SUPER_ADMIN_MENUS));
         }
         if (Roles.ADMIN.equals(code)) {
-            return menuService.treeExcludingKeys(adminExcludedMenus(lu));
+            return menuService.flattenIds(menuService.treeExcludingKeys(adminExcludedMenus(lu)));
         }
         if (Roles.ORG_ADMIN.equals(code)) {
-            return menuService.treeExcludingKeys(orgAdminExcludedMenus(lu));
+            return menuService.flattenIds(menuService.treeExcludingKeys(orgAdminExcludedMenus(lu)));
         }
         SysRole role = null;
-        if (lu.getRoleId() != null) {
+        // 主角色优先用令牌里的权威 roleId(与改造前单角色逻辑同口径), 其余角色按编码在可见范围查找
+        if (code != null && code.equals(lu.getRole()) && lu.getRoleId() != null) {
             role = roleMapper.selectById(lu.getRoleId());
         }
         if (role == null) {
             role = findByCode(code);
         }
         if (role == null) {
-            return new ArrayList<>();
+            return Collections.emptySet();
         }
         if (role.getAllMenus() != null && role.getAllMenus() == 1) {
             if (Roles.ORG_ADMIN.equals(role.getRoleCode())) {
-                return menuService.treeExcludingKeys(orgAdminExcludedMenus(lu));
+                return menuService.flattenIds(menuService.treeExcludingKeys(orgAdminExcludedMenus(lu)));
             }
-            return menuService.treeExcludingKeys(adminExcludedMenus(lu));
+            return menuService.flattenIds(menuService.treeExcludingKeys(adminExcludedMenus(lu)));
         }
-        return menuService.treeByIds(getMenuIds(role.getId()));
+        return new HashSet<>(getMenuIds(role.getId()));
     }
 
     /**

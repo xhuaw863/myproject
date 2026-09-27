@@ -330,6 +330,8 @@ body {
   transition: background var(--yb-dur) var(--yb-ease), color var(--yb-dur) var(--yb-ease);
 }
 .layout-header a.hosp:hover { background: var(--yb-header-hover); color: #fff; }
+/* 顶栏日期徽标: 等宽数字防分钟刷新时宽度抖动 */
+.layout-header .hdr-date { font-variant-numeric: tabular-nums; letter-spacing: .02em; }
 .layout-header .spacer { flex: 1; }
 .layout-header .user {
   font-size: var(--yb-fs-sm); cursor: pointer; display: flex; align-items: center; gap: 8px;

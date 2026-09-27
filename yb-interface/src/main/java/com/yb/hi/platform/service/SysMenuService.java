@@ -160,6 +160,25 @@ public class SysMenuService {
         }
     }
 
+    /** 把树节点集(含全部后代)摊平成菜单 id 集; 供多角色菜单并集计算 */
+    public Set<Long> flattenIds(List<MenuNode> nodes) {
+        Set<Long> ids = new HashSet<>();
+        collectIds(nodes, ids);
+        return ids;
+    }
+
+    private void collectIds(List<MenuNode> nodes, Set<Long> acc) {
+        if (nodes == null) {
+            return;
+        }
+        for (MenuNode n : nodes) {
+            if (n.getId() != null) {
+                acc.add(n.getId());
+            }
+            collectIds(n.getChildren(), acc);
+        }
+    }
+
     /**
      * 按菜单 id 集合过滤成树: 命中集合的菜单, 及其祖先目录(保证树可渲染)保留;
      * 未被命中且无命中后代的目录会被剔除。ids 为空返回空树。

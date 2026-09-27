@@ -191,6 +191,7 @@ public class DemoDataInitializer implements ApplicationRunner {
                 {"system", "system.login_fail_lock_count", "登录失败锁定次数", "int", "5", null, "3", "10", 1, "0,1,2,3", "连续失败达到该次数锁定账号"},
                 {"system", "system.page_size_default", "默认分页行数", "enum", "20", "10,20,50,100", null, null, 1, "0,1,2,3", "列表页默认每页行数"},
                 {"system", "system.data_retain_months", "数据保留月数", "int", "36", null, "6", "120", 1, "0,1,2,3", "业务数据在线保留月数"},
+                {"system", "system.menu_default_collapsed", "左菜单默认折叠", "bool", "false", null, null, null, 0, "0,1,2", "登录后左侧菜单是否默认折叠为入口条; 机构级配置优先于租户级"},
                 {"outpatient", "outpatient.default_reg_fee", "默认挂号费(元)", "decimal", "15.00", null, "0", "1000", 0, "0,1,2,3", "普通号默认挂号费"},
                 {"outpatient", "outpatient.allow_same_day_refund", "允许当日退号", "bool", "true", null, null, null, 1, "0,1,2,3", "当日挂号是否允许退号"},
                 {"outpatient", "outpatient.queue_call_enabled", "叫号功能启用", "bool", "false", null, null, null, 0, "0,1,2,3", "候诊叫号屏开关"},

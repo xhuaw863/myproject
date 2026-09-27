@@ -474,7 +474,7 @@ public class SystemParamService {
         if (u == null) {
             throw new BizException(401, "未登录");
         }
-        if (Roles.SUPER_ADMIN.equals(u.getRole())) {
+        if (u.hasRole(Roles.SUPER_ADMIN)) {
             return;
         }
         Long tenantId = u.getTenantId();

@@ -76,7 +76,7 @@ public class AreaCodeController {
     /** 仅平台超级管理员可维护行政区划(基础字典); 读取接口(page/path/stats)对所有登录用户开放, 供地址级联/机构区划下拉 */
     private void requireSuper() {
         LoginUser u = UserContext.get();
-        if (u == null || !Roles.SUPER_ADMIN.equals(u.getRole())) {
+        if (u == null || !u.hasRole(Roles.SUPER_ADMIN)) {
             throw new BizException(403, "行政区划为基础字典, 仅平台超级管理员可维护");
         }
     }

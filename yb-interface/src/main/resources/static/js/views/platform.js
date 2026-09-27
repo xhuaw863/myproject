@@ -19,8 +19,7 @@
     computed: {
       /* 仅牵头机构管理员/平台超管可切换并维护医共体(租户)默认配置 */
       canTenantScope: function () {
-        var u = HIS.getUser() || {};
-        return HIS.isLead() || u.role === 'SUPER_ADMIN';
+        return HIS.isLead() || HIS.hasRole('SUPER_ADMIN');
       }
     },
     methods: {
@@ -286,7 +285,7 @@
     },
     methods: {
       emptyForm: function () {
-        return { id: null, username: '', password: '', realName: '', role: 'DOCTOR', roleId: null, orgId: null, staffId: null, deptId: null, deptScope: '', phone: '', status: 1, loginOrgIds: [] };
+        return { id: null, username: '', password: '', realName: '', role: 'DOCTOR', roleId: null, roleIds: [], orgId: null, staffId: null, deptId: null, deptScope: '', phone: '', status: 1, loginOrgIds: [] };
       },
       loadMeta: function () {
         var vm = this;
@@ -378,11 +377,18 @@
         try { localStorage.setItem('his.userPaged', this.paged ? '1' : '0'); } catch (e) { }
       },
       onQueryChange: function () { this.page = 1; },
-      /* 角色匹配: 兼容 roleId(自定义角色)与 role(内置枚举) */
+      /* 角色匹配: 兼容 roleId(自定义角色)/roleIds(多角色关联)与 role(内置枚举) */
       roleMatch: function (row, v) {
         if (!v) { return true; }
         for (var i = 0; i < this.roles.length; i++) {
-          if (this.roles[i].value === v) { return row.roleId === this.roles[i].id || row.role === v; }
+          if (this.roles[i].value === v) {
+            if (row.role === v) { return true; }
+            if (this.roles[i].id != null) {
+              if (row.roleId === this.roles[i].id) { return true; }
+              if (row.roleIds && row.roleIds.indexOf(this.roles[i].id) >= 0) { return true; }
+            }
+            return false;
+          }
         }
         return row.role === v;
       },
@@ -394,6 +400,20 @@
           if (this.roles[i].id === row.roleId || this.roles[i].value === row.role) { return this.roles[i].label; }
         }
         return HIS.roleLabel(row.role);
+      },
+      /* 列表多角色标签: 关联表 roleIds 口径(主角色置首), 无关联行回落主角色/旧 role 字符串 */
+      roleTags: function (row) {
+        var vm = this;
+        var ids = (row.roleIds && row.roleIds.length) ? row.roleIds : (row.roleId ? [row.roleId] : []);
+        var out = [];
+        ids.forEach(function (id) {
+          var label = null;
+          for (var i = 0; i < vm.roles.length; i++) { if (vm.roles[i].id === id) { label = vm.roles[i].label; break; } }
+          if (!label && id === row.roleId) { label = vm.roleDisplay(row); }
+          out.push(label || ('#' + id));
+        });
+        if (!out.length) { out.push(vm.roleDisplay(row)); }
+        return out;
       },
       orgName: function (id) {
         for (var i = 0; i < this.orgs.length; i++) { if (this.orgs[i].id === id) { return String(this.orgs[i].label).trim(); } }
@@ -438,10 +458,10 @@
       },
       openEdit: function (row) {
         this.editing = true;
-        this.form = { id: row.id, username: row.username, password: '', realName: row.realName, role: row.role, roleId: row.roleId, orgId: row.orgId, staffId: row.staffId, deptId: row.deptId, deptScope: row.deptScope || '', phone: row.phone, status: row.status == null ? 1 : row.status, loginOrgIds: (row.loginOrgIds && row.loginOrgIds.length) ? row.loginOrgIds.slice() : (row.orgId ? [row.orgId] : []) };
+        this.form = { id: row.id, username: row.username, password: '', realName: row.realName, role: row.role, roleId: row.roleId, roleIds: (function () { var arr = (row.roleIds && row.roleIds.length) ? row.roleIds.slice() : (row.roleId ? [row.roleId] : []); if (row.roleId) { var k = arr.indexOf(row.roleId); if (k > 0) { arr.splice(k, 1); arr.unshift(row.roleId); } else if (k < 0) { arr.unshift(row.roleId); } } return arr; })(), orgId: row.orgId, staffId: row.staffId, deptId: row.deptId, deptScope: row.deptScope || '', phone: row.phone, status: row.status == null ? 1 : row.status, loginOrgIds: (row.loginOrgIds && row.loginOrgIds.length) ? row.loginOrgIds.slice() : (row.orgId ? [row.orgId] : []) };
         this.deptScopeArr = row.deptScope ? String(row.deptScope).split(',').filter(function (x) { return x !== ''; }).map(function (x) { return Number(x); }) : [];
         this.activeTab = 'account';
-        this.loadRoleMenus(row.roleId);
+        this.loadRoleMenus(this.form.roleIds);
         this.dialogVisible = true;
       },
       /* 保存前基础校验: 新增账号/密码必填(密码至少6位), 姓名必填, 电话若填做格式约束 */
@@ -461,6 +481,8 @@
         var err = vm.validateForm();
         if (err) { ElementPlus.ElMessage.warning(err); return; }
         vm.form.deptScope = (vm.deptScopeArr || []).join(',');
+        /* 主角色同步: 首个选中角色即主角色(显示与 sys_user.role_id 口径) */
+        if (vm.form.roleIds && vm.form.roleIds.length) { vm.form.roleId = vm.form.roleIds[0]; }
         /* 归属机构(默认可登录机构)强制纳入可登录机构集 */
         if (vm.form.orgId && (vm.form.loginOrgIds || []).indexOf(vm.form.orgId) < 0) {
           vm.form.loginOrgIds = (vm.form.loginOrgIds || []).concat([vm.form.orgId]);
@@ -506,17 +528,34 @@
         });
         return map;
       },
-      /* 加载指定角色已授权菜单(只读预览): allMenus 角色显示"全部菜单" */
-      loadRoleMenus: function (roleId) {
+      /* 加载所选角色并集已授权菜单(只读预览): 任一 allMenus 角色即显示"全部菜单" */
+      loadRoleMenus: function (roleIds) {
         var vm = this;
         vm.roleMenuNames = []; vm.roleIsAll = false;
-        if (!roleId) { return; }
-        var role = null;
-        for (var i = 0; i < vm.roles.length; i++) { if (vm.roles[i].id === roleId) { role = vm.roles[i]; break; } }
-        if (role && role.allMenus === 1) { vm.roleIsAll = true; return; }
-        HIS.get('/api/sys/role/' + roleId + '/menus').then(function (ids) {
-          vm.roleMenuNames = (ids || []).map(function (id) { return vm.menuMap[id]; }).filter(function (n) { return !!n; });
-        }).catch(function () { vm.roleMenuNames = []; });
+        var ids = (roleIds || []).filter(function (x) { return x != null; });
+        if (!ids.length) { return; }
+        var rest = [];
+        ids.forEach(function (roleId) {
+          var role = null;
+          for (var i = 0; i < vm.roles.length; i++) { if (vm.roles[i].id === roleId) { role = vm.roles[i]; break; } }
+          if (role && role.allMenus === 1) { vm.roleIsAll = true; } else { rest.push(roleId); }
+        });
+        if (!rest.length) { return; }
+        Promise.all(rest.map(function (roleId) { return HIS.get('/api/sys/role/' + roleId + '/menus').catch(function () { return []; }); }))
+          .then(function (lists) {
+            var seen = {}; var names = [];
+            lists.forEach(function (midList) {
+              (midList || []).forEach(function (id) {
+                if (!seen[id]) { seen[id] = 1; var n = vm.menuMap[id]; if (n) { names.push(n); } }
+              });
+            });
+            vm.roleMenuNames = names;
+          });
+      },
+      /* 多角色变更: 首个选中项同步为主角色(显示口径), 菜单预览取各角色并集 */
+      onRolesChange: function (ids) {
+        this.form.roleId = ids && ids.length ? ids[0] : null;
+        this.loadRoleMenus(ids);
       },
       deptName: function (id) {
         for (var i = 0; i < this.depts.length; i++) { if (this.depts[i].id === id) { return this.depts[i].deptName; } }
@@ -591,7 +630,10 @@
       '    <el-table-column type="index" :index="seqNo" label="序号" width="60"></el-table-column>',
       '    <el-table-column prop="username" label="账号" width="140"></el-table-column>',
       '    <el-table-column prop="realName" label="姓名" width="120"></el-table-column>',
-      '    <el-table-column v-if="colShow(\'role\')" label="角色" width="130"><template #default="s"><el-tag size="small">{{ roleDisplay(s.row) }}</el-tag></template></el-table-column>',
+      '    <el-table-column v-if="colShow(\'role\')" label="角色" width="150"><template #default="s">',
+      '      <el-tag v-for="(n, i) in roleTags(s.row).slice(0, 2)" :key="i" size="small" :type="i===0?\'primary\':\'info\'" style="margin:1px 3px 1px 0;">{{ n }}</el-tag>',
+      '      <el-tag v-if="roleTags(s.row).length > 2" size="small" type="info" :title="roleTags(s.row).join(\' / \')" style="margin:1px 0;">+{{ roleTags(s.row).length - 2 }}</el-tag>',
+      '    </template></el-table-column>',
       '    <el-table-column v-if="colShow(\'homeOrg\')" label="归属机构" min-width="160" show-overflow-tooltip><template #default="s">{{ orgName(s.row.orgId) }}</template></el-table-column>',
       '    <el-table-column v-if="colShow(\'loginOrg\')" label="可登录机构" min-width="180" show-overflow-tooltip><template #default="s">{{ loginOrgText(s.row) }}</template></el-table-column>',
       '    <el-table-column v-if="colShow(\'phone\')" prop="phone" label="联系电话" width="140"></el-table-column>',
@@ -637,7 +679,8 @@
       '      </el-tab-pane>',
       '      <el-tab-pane label="角色权限" name="role">',
       '        <el-form :model="form" label-width="90px">',
-      '          <el-form-item label="角色"><el-select v-model="form.roleId" style="width:100%" placeholder="选择角色" @change="loadRoleMenus(form.roleId)"><el-option v-for="r in roles" :key="r.id || r.value" :label="r.label" :value="r.id"></el-option></el-select></el-form-item>',
+      '          <el-form-item label="角色"><el-select v-model="form.roleIds" multiple clearable style="width:100%" placeholder="选择角色(可多选, 首个为主角色)" @change="onRolesChange"><el-option v-for="r in roles" :key="r.id || r.value" :label="r.label" :value="r.id"></el-option></el-select></el-form-item>',
+      '          <el-form-item label=" "><span style="color:var(--yb-ink-2);font-size:12px;">医共体一人多角色: 权限为各角色并集; 首个选中项为主角色, 用于顶栏显示与旧数据兜底。</span></el-form-item>',
       '          <el-form-item label="菜单权限">',
       '            <div v-if="roleIsAll" style="line-height:24px;"><el-tag type="danger" size="small">全部菜单(管理员角色)</el-tag></div>',
       '            <div v-else-if="roleMenuNames.length" style="line-height:28px;"><el-tag v-for="(n,i) in roleMenuNames" :key="i" size="small" style="margin:2px 4px 2px 0;">{{ n }}</el-tag></div>',
