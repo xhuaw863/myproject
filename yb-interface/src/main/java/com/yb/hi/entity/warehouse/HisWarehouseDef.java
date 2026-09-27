@@ -27,6 +27,10 @@ public class HisWarehouseDef extends BaseEntity {
     private String name;
     /** 仓库类型: WESTERN-西药库 / TCM-中药库 / MIXED-混合库 */
     private String warehouseType;
+    /** 库存位类型: WAREHOUSE-药库(默认) / PHARMACY-药房库存位(承载药房自有库存, 两级库存基座) */
+    private String kind;
+    /** PHARMACY 型库存位回指的药房ID(his_pharmacy_def.id); WAREHOUSE 型为 null */
+    private Long refPharmacyId;
     /** 库房位置 */
     private String location;
     /** 负责人 */

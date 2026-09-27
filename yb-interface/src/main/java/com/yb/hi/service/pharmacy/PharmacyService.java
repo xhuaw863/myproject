@@ -249,11 +249,14 @@ public class PharmacyService {
             throw new BizException(400, "机构不能为空");
         }
 
-        // 4.1 药房: 非空时校验归属机构/启停, 并解析关联药库(发药必须从该药房供药的药库扣减)
+        // 4.1 药房: 非空时校验归属机构/启停, 并解析本药房库存位(两级库存: 发药从药房自有库存扣减)
+        //     stock_location_id 为空时回退旧 warehouse_id(兼容尚未迁移的存量药房)
         Long pharmacyId = req.getPharmacyId();
         Long warehouseId = null;
         if (pharmacyId != null) {
-            warehouseId = pharmacyDefService.requireEnabled(pharmacyId, orgId).getWarehouseId();
+            HisPharmacyDef pharmacyDef = pharmacyDefService.requireEnabled(pharmacyId, orgId);
+            warehouseId = pharmacyDef.getStockLocationId() != null
+                    ? pharmacyDef.getStockLocationId() : pharmacyDef.getWarehouseId();
         }
 
         // 5. 创建处方发药出库单并确认: 确认时按有效期 FIFO 乐观扣减库存并回填批次, 单次扣减可追溯
@@ -431,20 +434,23 @@ public class PharmacyService {
         if (dispense.getPrescriptionId() == null) {
             throw new BizException("原发药记录缺少处方关联, 无法回库");
         }
-        // 原发药药房关联药库(药库参数待药库单支持 warehouseId 后透传; 药房已停用不影响历史单据回溯)
+        // 原发药药房库存位(退药回库对称回到药房自有库存; stock_location_id 空则回退旧 warehouse_id)
         Long warehouseId = null;
         HisPharmacyDef pharmacyDef = pharmacyDefService.find(dispense.getPharmacyId());
         if (pharmacyDef != null) {
-            warehouseId = pharmacyDef.getWarehouseId();
+            warehouseId = pharmacyDef.getStockLocationId() != null
+                    ? pharmacyDef.getStockLocationId() : pharmacyDef.getWarehouseId();
         }
         List<Map<String, Object>> outItems = dispenseOutItems(dispense.getPrescriptionId());
         if (outItems.isEmpty()) {
             throw new BizException("未找到发药出库明细, 无法回库");
         }
 
-        // 2. 创建退药回库入库单并确认: 确认时按 (机构+药品+批次) upsert 库存加量, 单次回补可追溯
+        // 2. 创建退药回库入库单并确认: 确认时按 (机构+药房库存位+药品+批次) upsert 库存加量, 与发药同源对称回补
         StockInReq inReq = new StockInReq();
         inReq.setOrgId(dispense.getOrgId());
+        // 透传药房库存位: 与 doDispense 扣减同一维度, 保证退药回到发药的同一库存位
+        inReq.setWarehouseId(warehouseId);
         inReq.setInType(2);
         inReq.setRemark("退药回库: " + dr.getReturnNo() + ", 发药单 " + dispense.getDispenseNo());
         List<StockInItemReq> inItems = new ArrayList<>();

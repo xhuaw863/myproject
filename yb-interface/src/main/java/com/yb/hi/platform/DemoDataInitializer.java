@@ -6,6 +6,8 @@ import com.yb.hi.entity.cashier.HisChargeBillItem;
 import com.yb.hi.entity.community.HisDrugCatalog;
 import com.yb.hi.entity.doctor.HisVisit;
 import com.yb.hi.entity.warehouse.HisDrugStock;
+import com.yb.hi.entity.warehouse.HisWarehouseDef;
+import com.yb.hi.entity.pharmacy.HisPharmacyDef;
 import com.yb.hi.framework.tenant.TenantContext;
 import com.yb.hi.mapper.cashier.HisChargeBillItemMapper;
 import com.yb.hi.mapper.cashier.HisChargeBillMapper;
@@ -18,6 +20,8 @@ import com.yb.hi.platform.entity.SysTenant;
 import com.yb.hi.platform.mapper.SysOrgMapper;
 import com.yb.hi.platform.service.AuthService;
 import com.yb.hi.platform.service.SysTenantService;
+import com.yb.hi.service.pharmacy.PharmacyDefService;
+import com.yb.hi.service.warehouse.WarehouseDefService;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.ApplicationArguments;
@@ -58,6 +62,8 @@ public class DemoDataInitializer implements ApplicationRunner {
     private final HisVisitMapper visitMapper;
     private final SysOrgMapper orgMapper;
     private final JdbcTemplate jdbcTemplate;
+    private final WarehouseDefService warehouseDefService;
+    private final PharmacyDefService pharmacyDefService;
 
     @Value("${his.demo-data.enabled:true}")
     private boolean enabled;
@@ -66,7 +72,8 @@ public class DemoDataInitializer implements ApplicationRunner {
                                HisDrugStockMapper stockMapper, HisDrugCatalogMapper drugCatalogMapper,
                                HisChargeBillMapper billMapper, HisChargeBillItemMapper billItemMapper,
                                HisVisitMapper visitMapper, SysOrgMapper orgMapper,
-                               JdbcTemplate jdbcTemplate) {
+                               JdbcTemplate jdbcTemplate, WarehouseDefService warehouseDefService,
+                               PharmacyDefService pharmacyDefService) {
         this.tenantService = tenantService;
         this.authService = authService;
         this.stockMapper = stockMapper;
@@ -76,6 +83,8 @@ public class DemoDataInitializer implements ApplicationRunner {
         this.visitMapper = visitMapper;
         this.orgMapper = orgMapper;
         this.jdbcTemplate = jdbcTemplate;
+        this.warehouseDefService = warehouseDefService;
+        this.pharmacyDefService = pharmacyDefService;
     }
 
     @Override
@@ -135,15 +144,12 @@ public class DemoDataInitializer implements ApplicationRunner {
     /* ===================== 药品库存演示 ===================== */
 
     /**
-     * 药品库存演示数据: 从医共体药品目录(his_drug_catalog)取前20条启用药品, 每条1-2个批次生成库存记录。
-     * 批次号 PH+yyyyMM+3位序号; 数量50-200随机, 有效期当前日期+1~3年;
-     * 前3种药品造低库存(qty < warn_qty=20)供药库低库存预警测试。
-     * 幂等: 该租户已有库存记录则跳过; 目录未导入/机构未建则跳过(下次启动再试)。
+     * 两级库存演示数据: 为默认药库位与默认药房库存位各自播种基础库存(从医共体药品目录取前20种启用药品,
+     * 每条1-2个批次), 使"药库库存页"与"药房发药链路"开箱可用。
+     * 幂等: 按库位粒度判定(该库位已有库存则跳过), 存量库补种药房库位不会重复。
+     * 前3种药品造低库存(qty<warn_qty=20)供预警测试; 机构/目录未就绪则跳过。
      */
     private void seedDrugStock(Long tenantId) {
-        if (stockMapper.selectCount(null) > 0) {
-            return; // 已有库存
-        }
         Long orgId = leadOrgId();
         if (orgId == null) {
             return; // 机构未建(RBAC初始化未执行), 下次启动补
@@ -153,17 +159,46 @@ public class DemoDataInitializer implements ApplicationRunner {
         if (drugs.isEmpty()) {
             return; // 药品目录未导入
         }
+        // 两级库存目标库位: 默认药库 + 默认药房库存位(均由各自 Service 幂等确保存在)
+        List<Long> targets = new ArrayList<>();
+        List<HisWarehouseDef> whs = warehouseDefService.list(orgId);
+        if (!whs.isEmpty()) {
+            targets.add(whs.get(0).getId());
+        }
+        Long phLoc = defaultPharmacyStockLocation(orgId);
+        if (phLoc != null && !targets.contains(phLoc)) {
+            targets.add(phLoc);
+        }
+        if (targets.isEmpty()) {
+            return;
+        }
+        int total = 0;
+        for (Long locId : targets) {
+            total += seedLocationStock(orgId, locId, drugs);
+        }
+        if (total > 0) {
+            log.info("租户[{}] 两级库存演示数据初始化完成: 库位={}, 新增库存行={}", tenantId, targets, total);
+        }
+    }
+
+    /** 为指定库位播种基础库存(幂等: 该库位已有库存则跳过); 返回新增行数 */
+    private int seedLocationStock(Long orgId, Long warehouseId, List<HisDrugCatalog> drugs) {
+        if (stockMapper.selectCount(new QueryWrapper<HisDrugStock>()
+                .eq("org_id", orgId).eq("warehouse_id", warehouseId)) > 0) {
+            return 0;
+        }
         LocalDate today = LocalDate.now();
         String month = today.format(DateTimeFormatter.ofPattern("yyyyMM"));
-        Random rnd = new Random(20260925L);
+        Random rnd = new Random(20260925L + warehouseId); // 按库位偏移使批次量/效期有差异但可重现
         int batchSeq = 0;
         int inserted = 0;
         for (int i = 0; i < drugs.size(); i++) {
             HisDrugCatalog d = drugs.get(i);
-            int batches = (i % 3 == 0) ? 2 : 1; // 每3种药品含1个双批次, 验证批次级独立记账
+            int batches = (i % 3 == 0) ? 2 : 1;
             for (int b = 0; b < batches; b++) {
                 HisDrugStock s = new HisDrugStock();
                 s.setOrgId(orgId);
+                s.setWarehouseId(warehouseId);
                 s.setDrugCatalogId(d.getId());
                 s.setDrugCode(d.getDrugCode());
                 s.setDrugName(StringUtils.hasText(d.getGenericName()) ? d.getGenericName() : d.getDrugCode());
@@ -183,7 +218,18 @@ public class DemoDataInitializer implements ApplicationRunner {
                 inserted++;
             }
         }
-        log.info("租户[{}] 药品库存演示数据初始化完成({}条, 含低库存3种供预警测试)", tenantId, inserted);
+        return inserted;
+    }
+
+    /** 默认药房的库存位ID(触发 PharmacyDefService.list 幂等建默认药房及其 PHARMACY 库位) */
+    private Long defaultPharmacyStockLocation(Long orgId) {
+        List<HisPharmacyDef> phs = pharmacyDefService.list(orgId);
+        for (HisPharmacyDef p : phs) {
+            if (p.getStockLocationId() != null) {
+                return p.getStockLocationId();
+            }
+        }
+        return null;
     }
 
     /* ===================== 演示收费单 ===================== */

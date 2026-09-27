@@ -27,8 +27,10 @@ public class HisPharmacyDef extends BaseEntity {
     private String name;
     /** 药房类型: OUTPATIENT-门诊药房 / INPATIENT-住院药房 / TCM-中药房 */
     private String pharmacyType;
-    /** 关联药库ID(his_warehouse_def.id) */
+    /** 关联药库ID(his_warehouse_def.id): 请领来源药库(两级库存下不再用于发药扣减) */
     private Long warehouseId;
+    /** 本药房库存位ID(某 PHARMACY 型 his_warehouse_def.id): 发药/退药按此库存位记账 */
+    private Long stockLocationId;
     /** 药房位置 */
     private String location;
     /** 状态: 1启用 0停用 */

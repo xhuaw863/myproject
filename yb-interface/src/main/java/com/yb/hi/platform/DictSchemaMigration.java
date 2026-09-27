@@ -333,6 +333,8 @@ public class DictSchemaMigration implements ApplicationRunner {
             ensureInvoiceTable(conn);
             ensurePaymentDetailTable(conn);
             ensureStockCheckTables(conn);
+            // 二级库存专业化(P1-P5): 请领/调拨/调价/追溯码 新表(幂等, 新模块非启动关键路径)
+            ensureStockChainTables(conn);
             // 存量表补列: 药库/药房归属 + 混合支付/发票号/退费关联/部分退费已退数量(幂等, 列已存在则跳过)
             alterExistingTables(conn);
         } catch (Exception e) {
@@ -352,6 +354,8 @@ public class DictSchemaMigration implements ApplicationRunner {
             alterExistingTables(conn);
             // 库存唯一键重建依赖 his_warehouse_def 已存在(回填默认库), 因此必须排在补列之后
             ensureStockWarehouseIsolation(conn);
+            // 两级库存基座: 为存量药房幂等创建 PHARMACY 库存位并回填 stock_location_id(需在库存隔离之后)
+            ensurePharmacyStockLocations(conn);
         } catch (Exception e) {
             throw new IllegalStateException("HIS 门诊业务关键结构迁移失败, 拒绝启动(避免运行期缺列全线报错)", e);
         }
@@ -391,6 +395,83 @@ public class DictSchemaMigration implements ApplicationRunner {
                         + "(tenant_id, org_id, warehouse_id, drug_catalog_id, batch_no)");
             }
             log.info("his_drug_stock 唯一键已重建为含药库维度(warehouse_id)");
+        }
+    }
+
+    /**
+     * 两级库存基座(P0): 为每个存量药房幂等创建 PHARMACY 型库存位并回填 stock_location_id。
+     * 步骤: 先给两张存量表补列(kind/ref_pharmacy_id/stock_location_id) -> 将已有 PHARMACY 库存位
+     * 回填到对应药房 -> 对尚无库存位的药房创建(kind=PHARMACY, ref_pharmacy_id, code=PHLOC-药房编码)。
+     * 全程幂等: 仅处理 stock_location_id IS NULL 的药房; 建位撞唯一键(code 已存在)则回查已有位复用。
+     */
+    private void ensurePharmacyStockLocations(Connection conn) throws Exception {
+        if (!tableExists(conn, "his_warehouse_def") || !tableExists(conn, "his_pharmacy_def")) {
+            return;
+        }
+        addColumnIfNotExists(conn, "his_warehouse_def", "kind", "VARCHAR(20) NOT NULL DEFAULT 'WAREHOUSE' COMMENT '库存位类型:WAREHOUSE药库/PHARMACY药房库位'");
+        addColumnIfNotExists(conn, "his_warehouse_def", "ref_pharmacy_id", "BIGINT DEFAULT NULL COMMENT 'PHARMACY型回指药房ID(his_pharmacy_def.id)'");
+        addColumnIfNotExists(conn, "his_pharmacy_def", "stock_location_id", "BIGINT DEFAULT NULL COMMENT '本药房库存位ID(PHARMACY型 his_warehouse_def.id)'");
+        // 1. 存量 PHARMACY 库存位(ref_pharmacy_id 已存在)回填到药房(幂等, 仅命中未回填行)
+        try (Statement st = conn.createStatement()) {
+            st.executeUpdate("UPDATE his_pharmacy_def p JOIN his_warehouse_def w" + " ON w.kind = 'PHARMACY' AND w.ref_pharmacy_id = p.id AND w.deleted = 0" + " SET p.stock_location_id = w.id WHERE p.stock_location_id IS NULL AND p.deleted = 0");
+        }
+        // 2. 仍无库存位的药房: 逐个创建 PHARMACY 库存位并回填
+        List<Object[]> todo = new ArrayList<>();
+        try (Statement st = conn.createStatement();
+             ResultSet rs = st.executeQuery("SELECT id, tenant_id, org_id, code, name, pharmacy_type FROM his_pharmacy_def" + " WHERE stock_location_id IS NULL AND deleted = 0")) {
+            while (rs.next()) {
+                todo.add(new Object[]{rs.getLong("id"), rs.getLong("tenant_id"), rs.getLong("org_id"),
+                        rs.getString("code"), rs.getString("name"), rs.getString("pharmacy_type")});
+            }
+        }
+        for (Object[] p : todo) {
+            Long pharmacyId = (Long) p[0];
+            long tenantId = ((Number) p[1]).longValue();
+            long orgId = ((Number) p[2]).longValue();
+            String phCode = (String) p[3];
+            String phName = (String) p[4];
+            String phType = (String) p[5];
+            String whType = "TCM".equals(phType) ? "TCM" : "MIXED";
+            String locCode = "PHLOC-" + phCode;
+            long locId;
+            try (PreparedStatement ps = conn.prepareStatement("INSERT INTO his_warehouse_def" + " (tenant_id, org_id, code, name, warehouse_type, kind, ref_pharmacy_id, status, sort_no, create_time, deleted)" + " VALUES (?, ?, ?, ?, ?, 'PHARMACY', ?, 1, 0, NOW(), 0)", new String[]{"id"})) {
+                ps.setLong(1, tenantId);
+                ps.setLong(2, orgId);
+                ps.setString(3, locCode);
+                ps.setString(4, (phName == null ? phCode : phName) + "-库存位");
+                ps.setString(5, whType);
+                ps.setLong(6, pharmacyId);
+                ps.executeUpdate();
+                try (ResultSet keys = ps.getGeneratedKeys()) {
+                    locId = keys.next() ? keys.getLong(1) : 0L;
+                }
+            } catch (Exception e) {
+                // 撞唯一键(同 code 库存位已存在): 回查复用
+                Long existing = null;
+                try (PreparedStatement ps = conn.prepareStatement("SELECT id FROM his_warehouse_def WHERE tenant_id = ? AND org_id = ? AND code = ? AND deleted = 0 LIMIT 1")) {
+                    ps.setLong(1, tenantId);
+                    ps.setLong(2, orgId);
+                    ps.setString(3, locCode);
+                    try (ResultSet rs = ps.executeQuery()) {
+                        if (rs.next()) {
+                            existing = rs.getLong(1);
+                        }
+                    }
+                }
+                if (existing == null) {
+                    log.warn("药房库存位创建/回查失败, 跳过: pharmacyId={}, err={}", pharmacyId, e.getMessage());
+                    continue;
+                }
+                locId = existing;
+            }
+            if (locId > 0) {
+                try (PreparedStatement ps = conn.prepareStatement("UPDATE his_pharmacy_def SET stock_location_id = ? WHERE id = ? AND stock_location_id IS NULL")) {
+                    ps.setLong(1, locId);
+                    ps.setLong(2, pharmacyId);
+                    ps.executeUpdate();
+                }
+                log.info("两级库存: 为药房创建 PHARMACY 库存位: pharmacyId={}, stockLocationId={}", pharmacyId, locId);
+            }
         }
     }
 
@@ -1203,6 +1284,8 @@ public class DictSchemaMigration implements ApplicationRunner {
                     + "code VARCHAR(40) NOT NULL COMMENT '仓库编码(如WH-WEST-01)',"
                     + "name VARCHAR(100) NOT NULL COMMENT '仓库名称(如西药库)',"
                     + "warehouse_type VARCHAR(20) DEFAULT NULL COMMENT '仓库类型:WESTERN/TCM/MIXED',"
+                    + "kind VARCHAR(20) NOT NULL DEFAULT 'WAREHOUSE' COMMENT '库存位类型:WAREHOUSE药库/PHARMACY药房库位',"
+                    + "ref_pharmacy_id BIGINT DEFAULT NULL COMMENT 'PHARMACY型回指药房ID(his_pharmacy_def.id)',"
                     + "location VARCHAR(200) DEFAULT NULL COMMENT '库房位置',"
                     + "manager VARCHAR(50) DEFAULT NULL COMMENT '负责人',"
                     + "status TINYINT DEFAULT 1 COMMENT '状态:1启用 0停用',"
@@ -1212,7 +1295,8 @@ public class DictSchemaMigration implements ApplicationRunner {
                     + "PRIMARY KEY (id),"
                     + "UNIQUE KEY uk_tenant_org_code (tenant_id, org_id, code),"
                     + "KEY idx_tenant (tenant_id),"
-                    + "KEY idx_org (tenant_id, org_id)"
+                    + "KEY idx_org (tenant_id, org_id),"
+                    + "KEY idx_kind (tenant_id, org_id, kind)"
                     + ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='药库定义(机构级多药库)'");
         }
     }
@@ -1227,7 +1311,8 @@ public class DictSchemaMigration implements ApplicationRunner {
                     + "code VARCHAR(40) NOT NULL COMMENT '药房编码',"
                     + "name VARCHAR(100) NOT NULL COMMENT '药房名称(门诊药房/住院药房/中药房)',"
                     + "pharmacy_type VARCHAR(20) DEFAULT NULL COMMENT '药房类型:OUTPATIENT/INPATIENT/TCM',"
-                    + "warehouse_id BIGINT DEFAULT NULL COMMENT '关联药库ID(his_warehouse_def.id)',"
+                    + "warehouse_id BIGINT DEFAULT NULL COMMENT '关联药库ID(his_warehouse_def.id), 请领来源药库',"
+                    + "stock_location_id BIGINT DEFAULT NULL COMMENT '本药房库存位ID(PHARMACY型 his_warehouse_def.id), 发药/退药按此记账',"
                     + "location VARCHAR(200) DEFAULT NULL COMMENT '药房位置',"
                     + "status TINYINT DEFAULT 1 COMMENT '状态:1启用 0停用',"
                     + "sort_no INT DEFAULT 0 COMMENT '排序号',"
@@ -1359,6 +1444,168 @@ public class DictSchemaMigration implements ApplicationRunner {
                     + "KEY idx_tenant (tenant_id),"
                     + "KEY idx_stock_check (stock_check_id)"
                     + ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='盘点明细'");
+        }
+    }
+
+    /**
+     * 幂等建表: 二级库存专业化 P1-P5 新表 —— 药品请领(his_requisition/_item)、库存调拨(his_transfer/_item)、
+     * 药品调价单(his_drug_price_adjust/_item, 区别于医共体目录留痕 his_price_adjust)、医保药品追溯码(his_drug_trace_code)。均含 tenant_id(走租户插件)、逻辑删除。
+     */
+    private void ensureStockChainTables(Connection conn) throws Exception {
+        try (Statement st = conn.createStatement()) {
+            st.executeUpdate("CREATE TABLE IF NOT EXISTS his_requisition ("
+                    + "id BIGINT NOT NULL AUTO_INCREMENT COMMENT '主键',"
+                    + "tenant_id BIGINT NOT NULL COMMENT '租户ID',"
+                    + "org_id BIGINT NOT NULL COMMENT '机构ID',"
+                    + "req_no VARCHAR(30) NOT NULL COMMENT '请领单号(QL+yyyyMMdd+4位)',"
+                    + "pharmacy_id BIGINT DEFAULT NULL COMMENT '请领药房ID(his_pharmacy_def.id)',"
+                    + "to_warehouse_id BIGINT DEFAULT NULL COMMENT '发货来源药库ID(his_warehouse_def.id)',"
+                    + "status TINYINT DEFAULT 0 COMMENT '状态:0草稿 1待审核 2已发货 3已收货 -1已驳回 -2已作废',"
+                    + "apply_by VARCHAR(50) DEFAULT NULL COMMENT '申请人',"
+                    + "apply_time DATETIME DEFAULT NULL COMMENT '申请时间',"
+                    + "approve_by VARCHAR(50) DEFAULT NULL COMMENT '审核人',"
+                    + "approve_time DATETIME DEFAULT NULL COMMENT '审核时间',"
+                    + "receive_by VARCHAR(50) DEFAULT NULL COMMENT '收货人',"
+                    + "receive_time DATETIME DEFAULT NULL COMMENT '收货时间',"
+                    + "stock_out_id BIGINT DEFAULT NULL COMMENT '发货出库单ID(his_stock_out.id)',"
+                    + "stock_in_id BIGINT DEFAULT NULL COMMENT '收货入库单ID(his_stock_in.id)',"
+                    + "total_amount DECIMAL(12,2) DEFAULT 0 COMMENT '请领金额合计',"
+                    + "remark VARCHAR(500) DEFAULT NULL COMMENT '备注',"
+                    + "create_by VARCHAR(50) DEFAULT NULL, create_time DATETIME DEFAULT NULL,"
+                    + "update_by VARCHAR(50) DEFAULT NULL, update_time DATETIME DEFAULT NULL, deleted TINYINT DEFAULT 0,"
+                    + "PRIMARY KEY (id),"
+                    + "UNIQUE KEY uk_tenant_req_no (tenant_id, req_no),"
+                    + "KEY idx_tenant (tenant_id),"
+                    + "KEY idx_org_status (tenant_id, org_id, status)"
+                    + ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='药品请领单(药房→药库)'");
+            st.executeUpdate("CREATE TABLE IF NOT EXISTS his_requisition_item ("
+                    + "id BIGINT NOT NULL AUTO_INCREMENT COMMENT '主键',"
+                    + "tenant_id BIGINT NOT NULL COMMENT '租户ID',"
+                    + "requisition_id BIGINT NOT NULL COMMENT '请领单ID',"
+                    + "drug_catalog_id BIGINT DEFAULT NULL COMMENT '药品目录ID',"
+                    + "drug_code VARCHAR(50) DEFAULT NULL COMMENT '药品编码(快照)',"
+                    + "drug_name VARCHAR(200) DEFAULT NULL COMMENT '药品名称(快照)',"
+                    + "spec VARCHAR(200) DEFAULT NULL COMMENT '规格(快照)',"
+                    + "batch_no VARCHAR(50) DEFAULT NULL COMMENT '批次号(发货回填, 空=请领时不指定)',"
+                    + "qty_apply DECIMAL(12,2) DEFAULT 0 COMMENT '请领数量',"
+                    + "qty_approved DECIMAL(12,2) DEFAULT NULL COMMENT '审核(发货)数量',"
+                    + "qty_received DECIMAL(12,2) DEFAULT NULL COMMENT '实收数量',"
+                    + "retail_price DECIMAL(12,4) DEFAULT NULL COMMENT '零售价(快照)',"
+                    + "amount DECIMAL(12,2) DEFAULT NULL COMMENT '小计金额',"
+                    + "remark VARCHAR(500) DEFAULT NULL COMMENT '备注',"
+                    + "create_time DATETIME DEFAULT NULL, update_time DATETIME DEFAULT NULL, deleted TINYINT DEFAULT 0,"
+                    + "PRIMARY KEY (id),"
+                    + "KEY idx_tenant (tenant_id),"
+                    + "KEY idx_requisition (requisition_id)"
+                    + ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='药品请领明细'");
+            st.executeUpdate("CREATE TABLE IF NOT EXISTS his_transfer ("
+                    + "id BIGINT NOT NULL AUTO_INCREMENT COMMENT '主键',"
+                    + "tenant_id BIGINT NOT NULL COMMENT '租户ID',"
+                    + "org_id BIGINT NOT NULL COMMENT '机构ID',"
+                    + "transfer_no VARCHAR(30) NOT NULL COMMENT '调拨单号(DB+yyyyMMdd+4位)',"
+                    + "from_location_id BIGINT DEFAULT NULL COMMENT '调出库位ID(药库或药房库存位)',"
+                    + "to_location_id BIGINT DEFAULT NULL COMMENT '调入库位ID',"
+                    + "kind VARCHAR(24) DEFAULT NULL COMMENT '调拨类型:WH2PHARMACY/PHARMACY2PHARMACY/WH2WH',"
+                    + "status TINYINT DEFAULT 0 COMMENT '状态:0草稿 1待调出确认 2已调出 3已调入 -2已作废',"
+                    + "ship_by VARCHAR(50) DEFAULT NULL COMMENT '调出人',"
+                    + "ship_time DATETIME DEFAULT NULL COMMENT '调出时间',"
+                    + "receive_by VARCHAR(50) DEFAULT NULL COMMENT '调入人',"
+                    + "receive_time DATETIME DEFAULT NULL COMMENT '调入时间',"
+                    + "stock_out_id BIGINT DEFAULT NULL COMMENT '调出出库单ID',"
+                    + "stock_in_id BIGINT DEFAULT NULL COMMENT '调入入库单ID',"
+                    + "total_amount DECIMAL(12,2) DEFAULT 0 COMMENT '调拨金额合计',"
+                    + "remark VARCHAR(500) DEFAULT NULL COMMENT '备注',"
+                    + "create_by VARCHAR(50) DEFAULT NULL, create_time DATETIME DEFAULT NULL,"
+                    + "update_by VARCHAR(50) DEFAULT NULL, update_time DATETIME DEFAULT NULL, deleted TINYINT DEFAULT 0,"
+                    + "PRIMARY KEY (id),"
+                    + "UNIQUE KEY uk_tenant_transfer_no (tenant_id, transfer_no),"
+                    + "KEY idx_tenant (tenant_id),"
+                    + "KEY idx_org_status (tenant_id, org_id, status)"
+                    + ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='库存调拨单'");
+            st.executeUpdate("CREATE TABLE IF NOT EXISTS his_transfer_item ("
+                    + "id BIGINT NOT NULL AUTO_INCREMENT COMMENT '主键',"
+                    + "tenant_id BIGINT NOT NULL COMMENT '租户ID',"
+                    + "transfer_id BIGINT NOT NULL COMMENT '调拨单ID',"
+                    + "drug_catalog_id BIGINT DEFAULT NULL COMMENT '药品目录ID',"
+                    + "drug_code VARCHAR(50) DEFAULT NULL COMMENT '药品编码(快照)',"
+                    + "drug_name VARCHAR(200) DEFAULT NULL COMMENT '药品名称(快照)',"
+                    + "spec VARCHAR(200) DEFAULT NULL COMMENT '规格(快照)',"
+                    + "batch_no VARCHAR(50) DEFAULT NULL COMMENT '批次号(随行调拨)',"
+                    + "qty DECIMAL(12,2) DEFAULT 0 COMMENT '调拨数量',"
+                    + "cost_price DECIMAL(12,4) DEFAULT NULL COMMENT '进价(快照)',"
+                    + "retail_price DECIMAL(12,4) DEFAULT NULL COMMENT '零售价(快照)',"
+                    + "amount DECIMAL(12,2) DEFAULT NULL COMMENT '小计金额',"
+                    + "create_time DATETIME DEFAULT NULL, update_time DATETIME DEFAULT NULL, deleted TINYINT DEFAULT 0,"
+                    + "PRIMARY KEY (id),"
+                    + "KEY idx_tenant (tenant_id),"
+                    + "KEY idx_transfer (transfer_id)"
+                    + ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='库存调拨明细'");
+            /* 药品调价单(药库/药房统一, 草稿→生效批次单): 与医共体目录逐字段留痕 his_price_adjust 不同, 故独立命名避免冲突 */
+            st.executeUpdate("CREATE TABLE IF NOT EXISTS his_drug_price_adjust ("
+                    + "id BIGINT NOT NULL AUTO_INCREMENT COMMENT '主键',"
+                    + "tenant_id BIGINT NOT NULL COMMENT '租户ID',"
+                    + "org_id BIGINT DEFAULT NULL COMMENT '机构ID(空=全医共体调价)',"
+                    + "adjust_no VARCHAR(30) NOT NULL COMMENT '调价单号(TJ+yyyyMMdd+4位)',"
+                    + "scope VARCHAR(20) DEFAULT 'DRUG' COMMENT '范围:ALL/DRUG',"
+                    + "effective_date DATE DEFAULT NULL COMMENT '生效日期',"
+                    + "status TINYINT DEFAULT 0 COMMENT '状态:0草稿 1已生效 2已作废',"
+                    + "reason VARCHAR(500) DEFAULT NULL COMMENT '调价原因',"
+                    + "operator VARCHAR(50) DEFAULT NULL COMMENT '操作人',"
+                    + "effect_time DATETIME DEFAULT NULL COMMENT '生效时间',"
+                    + "total_diff_amount DECIMAL(14,2) DEFAULT 0 COMMENT '在库金额影响合计',"
+                    + "remark VARCHAR(500) DEFAULT NULL COMMENT '备注',"
+                    + "create_by VARCHAR(50) DEFAULT NULL, create_time DATETIME DEFAULT NULL,"
+                    + "update_by VARCHAR(50) DEFAULT NULL, update_time DATETIME DEFAULT NULL, deleted TINYINT DEFAULT 0,"
+                    + "PRIMARY KEY (id),"
+                    + "UNIQUE KEY uk_tenant_adjust_no (tenant_id, adjust_no),"
+                    + "KEY idx_tenant (tenant_id),"
+                    + "KEY idx_org_status (tenant_id, org_id, status)"
+                    + ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='药品调价单(草稿→生效批次)'");
+            st.executeUpdate("CREATE TABLE IF NOT EXISTS his_drug_price_adjust_item ("
+                    + "id BIGINT NOT NULL AUTO_INCREMENT COMMENT '主键',"
+                    + "tenant_id BIGINT NOT NULL COMMENT '租户ID',"
+                    + "price_adjust_id BIGINT NOT NULL COMMENT '调价单ID',"
+                    + "drug_catalog_id BIGINT DEFAULT NULL COMMENT '药品目录ID',"
+                    + "drug_code VARCHAR(50) DEFAULT NULL COMMENT '药品编码(快照)',"
+                    + "drug_name VARCHAR(200) DEFAULT NULL COMMENT '药品名称(快照)',"
+                    + "spec VARCHAR(200) DEFAULT NULL COMMENT '规格(快照)',"
+                    + "old_purchase DECIMAL(12,4) DEFAULT NULL COMMENT '原进价',"
+                    + "new_purchase DECIMAL(12,4) DEFAULT NULL COMMENT '新进价',"
+                    + "old_retail DECIMAL(12,4) DEFAULT NULL COMMENT '原零售价',"
+                    + "new_retail DECIMAL(12,4) DEFAULT NULL COMMENT '新零售价',"
+                    + "impact_stock_qty DECIMAL(14,2) DEFAULT 0 COMMENT '当前在库数量(预览影响)',"
+                    + "create_time DATETIME DEFAULT NULL, update_time DATETIME DEFAULT NULL, deleted TINYINT DEFAULT 0,"
+                    + "PRIMARY KEY (id),"
+                    + "KEY idx_tenant (tenant_id),"
+                    + "KEY idx_adjust (price_adjust_id)"
+                    + ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='调价明细'");
+            st.executeUpdate("CREATE TABLE IF NOT EXISTS his_drug_trace_code ("
+                    + "id BIGINT NOT NULL AUTO_INCREMENT COMMENT '主键',"
+                    + "tenant_id BIGINT NOT NULL COMMENT '租户ID',"
+                    + "org_id BIGINT DEFAULT NULL COMMENT '机构ID',"
+                    + "location_id BIGINT DEFAULT NULL COMMENT '所属库位ID(药库/药房库存位)',"
+                    + "drug_catalog_id BIGINT DEFAULT NULL COMMENT '药品目录ID',"
+                    + "drug_code VARCHAR(50) DEFAULT NULL COMMENT '药品编码(快照)',"
+                    + "batch_no VARCHAR(50) DEFAULT NULL COMMENT '批次号(快照)',"
+                    + "trace_code VARCHAR(64) NOT NULL COMMENT '医保药品追溯码',"
+                    + "status TINYINT DEFAULT 0 COMMENT '状态:0在库 1已发药 2已退货 3已报废/调拨在途 9已上报',"
+                    + "min_pack_qty DECIMAL(12,2) DEFAULT 1 COMMENT '最小包装数量',"
+                    + "ref_bill_type VARCHAR(20) DEFAULT NULL COMMENT '关联单据类型(in/dispense/return/transfer)',"
+                    + "ref_bill_id BIGINT DEFAULT NULL COMMENT '关联单据ID',"
+                    + "patient_id BIGINT DEFAULT NULL COMMENT '发药绑定患者ID',"
+                    + "visit_id BIGINT DEFAULT NULL COMMENT '发药绑定就诊ID',"
+                    + "dispense_id BIGINT DEFAULT NULL COMMENT '发药记录ID',"
+                    + "upload_status TINYINT DEFAULT 0 COMMENT '报送状态:0未报送 9已报送',"
+                    + "upload_time DATETIME DEFAULT NULL COMMENT '报送时间',"
+                    + "upload_receipt VARCHAR(200) DEFAULT NULL COMMENT '报送回执( Mock)',"
+                    + "create_by VARCHAR(50) DEFAULT NULL, create_time DATETIME DEFAULT NULL,"
+                    + "update_by VARCHAR(50) DEFAULT NULL, update_time DATETIME DEFAULT NULL, deleted TINYINT DEFAULT 0,"
+                    + "PRIMARY KEY (id),"
+                    + "UNIQUE KEY uk_tenant_trace (tenant_id, trace_code),"
+                    + "KEY idx_tenant (tenant_id),"
+                    + "KEY idx_loc_drug (tenant_id, location_id, drug_catalog_id),"
+                    + "KEY idx_status (tenant_id, status)"
+                    + ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='医保药品追溯码'");
         }
     }
 

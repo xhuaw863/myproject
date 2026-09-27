@@ -107,6 +107,7 @@ public class RbacInitializer implements ApplicationRunner {
             ensureNewPharmacyMenus(menuIds);
             ensureNewWarehouseMenus(menuIds);
             ensureNewChargeMenus(menuIds);
+            ensureStockChainMenus(menuIds);
             migrateDictMapToCatalogMap();
             activateReportMenus();
             mergeDoctorMenus(menuIds);
@@ -174,6 +175,9 @@ public class RbacInitializer implements ApplicationRunner {
         ids.put("drug-return", menuK("drug-return", "退药", "DrugReturn", null, g7, ++sort[0]));
         ids.put("pharmacy-def", menuK("pharmacy-def", "药房管理", "PharmacyDef", null, g7, ++sort[0]));
         ids.put("pharmacy-rpt", menuK("pharmacy-rpt", "药房统计", "PharmacyReport", null, g7, ++sort[0]));
+        // 药房药库协同二期(2026-09): 请领/调拨/调价/进销存台账/医保追溯码
+        ids.put("req-mgr", menuK("req-mgr", "药品请领", "RequisitionManage", null, g7, ++sort[0]));
+        ids.put("trace-code", menuK("trace-code", "药品追溯码", "TraceCodeManage", null, g7, ++sort[0]));
         // 药库(采购入库/出库管理/库存流水已上线; P2 药品目录/盘点绑定组件, 药库管理/药库统计上线)
         long g8 = dir("warehouse", "药库", 0L, ++sort[0]);
         ids.put("wh-drug", menuK("wh-drug", "药品目录", "DrugCatalogView", null, g8, ++sort[0]));
@@ -183,6 +187,9 @@ public class RbacInitializer implements ApplicationRunner {
         ids.put("wh-check", menuK("wh-check", "盘点", "StockCheck", null, g8, ++sort[0]));
         ids.put("warehouse-def", menuK("warehouse-def", "药库管理", "WarehouseDef", null, g8, ++sort[0]));
         ids.put("warehouse-rpt", menuK("warehouse-rpt", "药库统计", "WarehouseReport", null, g8, ++sort[0]));
+        ids.put("trf-mgr", menuK("trf-mgr", "库存调拨", "TransferManage", null, g8, ++sort[0]));
+        ids.put("price-adjust", menuK("price-adjust", "药品调价", "PriceAdjust", null, g8, ++sort[0]));
+        ids.put("stock-ledger", menuK("stock-ledger", "进销存台账", "DrugLedger", null, g8, ++sort[0]));
         // 收费结算台(2026-09 P1e 交付: 待收费/医保结算/退费前端已上线; P2 发票管理/收费统计上线)
         long g9 = dir("charge", "收费结算台", 0L, ++sort[0]);
         ids.put("charge-todo", menuK("charge-todo", "待收费", "ChargeTodo", null, g9, ++sort[0]));
@@ -315,7 +322,7 @@ public class RbacInitializer implements ApplicationRunner {
         Map<String, String[]> grants = new HashMap<>();
         grants.put(Roles.REGISTRAR, new String[]{"dashboard", "patient", "register", "unregister", "reg_stats", "reg_detail"});
         grants.put(Roles.DOCTOR, new String[]{"dashboard", "doctor-ws", "patient", "doctor-worklog"});
-        grants.put(Roles.PHARMACIST, new String[]{"dashboard", "dispense-todo", "dispense", "drug-return", "pharmacy-def", "pharmacy-rpt", "wh-stock", "wh-in", "wh-out", "warehouse-def", "warehouse-rpt", "wh-check"});
+        grants.put(Roles.PHARMACIST, new String[]{"dashboard", "dispense-todo", "dispense", "drug-return", "pharmacy-def", "pharmacy-rpt", "wh-stock", "wh-in", "wh-out", "warehouse-def", "warehouse-rpt", "wh-check", "req-mgr", "trf-mgr", "price-adjust", "stock-ledger", "trace-code"});
         grants.put(Roles.CASHIER, new String[]{"dashboard", "charge-todo", "charge-setl", "charge-refund", "invoice-mgr", "charge-rpt", "rpt-setl", "rpt-daily"});
         grants.put(Roles.NURSE, new String[]{"dashboard", "patient", "doctor-ws", "doctor-worklog"});
         for (Map.Entry<String, String[]> e : grants.entrySet()) {
@@ -340,7 +347,7 @@ public class RbacInitializer implements ApplicationRunner {
      */
     private void ensureBizRoleGrants(Map<String, Long> menuIds, Map<String, Long> roleIds) {
         Map<String, String[]> grants = new HashMap<>();
-        grants.put(Roles.PHARMACIST, new String[]{"wh-stock", "wh-in", "wh-out", "wh-check", "pharmacy-def", "pharmacy-rpt", "warehouse-def", "warehouse-rpt"});
+        grants.put(Roles.PHARMACIST, new String[]{"wh-stock", "wh-in", "wh-out", "wh-check", "pharmacy-def", "pharmacy-rpt", "warehouse-def", "warehouse-rpt", "req-mgr", "trf-mgr", "price-adjust", "stock-ledger", "trace-code"});
         grants.put(Roles.CASHIER, new String[]{"rpt-setl", "rpt-daily", "invoice-mgr", "charge-rpt"});
         grants.put(Roles.REGISTRAR, new String[]{"reg_stats", "reg_detail"});
         grants.put(Roles.DOCTOR, new String[]{"doctor-ws", "doctor-worklog"});
@@ -365,7 +372,7 @@ public class RbacInitializer implements ApplicationRunner {
             }
         }
         if (added > 0) {
-            log.info("业务角色新菜单授权已补充: 药师(药库+管理统计+盘点)/收费员(报表+发票管理收费统计)/挂号员(挂号统计与明细)/医生护士(门诊医生站+医生工作日志) 共 {} 条", added);
+            log.info("业务角色新菜单授权已补充: 药师(药库+管理统计+盘点+请领调拨调价台账追溯码)/收费员(报表+发票管理收费统计)/挂号员(挂号统计与明细)/医生护士(门诊医生站+医生工作日志) 共 {} 条", added);
         }
     }
 
@@ -779,6 +786,19 @@ public class RbacInitializer implements ApplicationRunner {
     private void ensureNewChargeMenus(Map<String, Long> menuIds) {
         ensureChildMenu(menuIds, "charge", "invoice-mgr", "发票管理", "InvoiceManage");
         ensureChildMenu(menuIds, "charge", "charge-rpt", "收费统计", "ChargeReport");
+    }
+
+    /**
+     * 幂等补种药房药库协同二期菜单(2026-09: 请领/调拨/调价/进销存台账/医保追溯码)。既有库 seedMenus
+     * 表非空即跳过, 故在此按 menu_key 判存补种: 请领/追溯码挂 pharmacy 目录, 调拨/调价/台账挂
+     * warehouse 目录; 并将 id 回填 menuIds 供角色补授权(ensureBizRoleGrants 给药师)。
+     */
+    private void ensureStockChainMenus(Map<String, Long> menuIds) {
+        ensureChildMenu(menuIds, "pharmacy", "req-mgr", "药品请领", "RequisitionManage");
+        ensureChildMenu(menuIds, "pharmacy", "trace-code", "药品追溯码", "TraceCodeManage");
+        ensureChildMenu(menuIds, "warehouse", "trf-mgr", "库存调拨", "TransferManage");
+        ensureChildMenu(menuIds, "warehouse", "price-adjust", "药品调价", "PriceAdjust");
+        ensureChildMenu(menuIds, "warehouse", "stock-ledger", "进销存台账", "DrugLedger");
     }
 
     /**

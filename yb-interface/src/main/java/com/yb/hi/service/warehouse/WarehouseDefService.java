@@ -30,6 +30,11 @@ public class WarehouseDefService {
     /** 药库类型合法值 */
     private static final List<String> TYPES = Arrays.asList("WESTERN", "TCM", "MIXED");
 
+    /** 库存位类型: 药库(默认) */
+    public static final String KIND_WAREHOUSE = "WAREHOUSE";
+    /** 库存位类型: 药房库存位(两级库存基座, 不在药库下拉/默认库创建中出现) */
+    public static final String KIND_PHARMACY = "PHARMACY";
+
     private final HisWarehouseDefMapper defMapper;
     private final HisDrugStockMapper stockMapper;
 
@@ -48,16 +53,18 @@ public class WarehouseDefService {
         LambdaQueryWrapper<HisWarehouseDef> w = new LambdaQueryWrapper<>();
         w.eq(orgId != null, HisWarehouseDef::getOrgId, orgId)
                 .eq(HisWarehouseDef::getStatus, 1)
+                .and(q -> q.isNull(HisWarehouseDef::getKind).or().eq(HisWarehouseDef::getKind, KIND_WAREHOUSE))
                 .orderByAsc(HisWarehouseDef::getSortNo)
                 .orderByAsc(HisWarehouseDef::getId);
         return defMapper.selectList(w);
     }
 
-    /** 全量药库列表(维护页含停用, 便于重新启用): 按 sortNo,id 排序 */
+    /** 全量药库列表(维护页含停用, 便于重新启用): 按 sortNo,id 排序; 仅 WAREHOUSE 型(排除药房库存位) */
     public List<HisWarehouseDef> listAll(Long orgId) {
         ensureDefault(orgId);
         LambdaQueryWrapper<HisWarehouseDef> w = new LambdaQueryWrapper<>();
         w.eq(orgId != null, HisWarehouseDef::getOrgId, orgId)
+                .and(q -> q.isNull(HisWarehouseDef::getKind).or().eq(HisWarehouseDef::getKind, KIND_WAREHOUSE))
                 .orderByAsc(HisWarehouseDef::getSortNo)
                 .orderByAsc(HisWarehouseDef::getId);
         return defMapper.selectList(w);
@@ -99,6 +106,8 @@ public class WarehouseDefService {
         if (def.getId() == null) {
             def.setStatus(def.getStatus() == null ? 1 : def.getStatus());
             def.setSortNo(def.getSortNo() == null ? 0 : def.getSortNo());
+            // 新建一律为药库型(药房库存位由 PharmacyDefService 专建)
+            def.setKind(KIND_WAREHOUSE);
             defMapper.insert(def);
             log.info("新增药库: id={}, orgId={}, code={}, name={}, type={}",
                     def.getId(), def.getOrgId(), def.getCode(), def.getName(), type);
@@ -162,7 +171,8 @@ public class WarehouseDefService {
             return;
         }
         Long cnt = defMapper.selectCount(new LambdaQueryWrapper<HisWarehouseDef>()
-                .eq(HisWarehouseDef::getOrgId, orgId));
+                .eq(HisWarehouseDef::getOrgId, orgId)
+                .and(q -> q.isNull(HisWarehouseDef::getKind).or().eq(HisWarehouseDef::getKind, KIND_WAREHOUSE)));
         if (cnt != null && cnt > 0) {
             return;
         }

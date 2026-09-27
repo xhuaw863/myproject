@@ -2,9 +2,11 @@ package com.yb.hi.service.pharmacy;
 
 import com.baomidou.mybatisplus.core.toolkit.Wrappers;
 import com.yb.hi.entity.pharmacy.HisPharmacyDef;
+import com.yb.hi.entity.warehouse.HisWarehouseDef;
 import com.yb.hi.framework.common.BizException;
 import com.yb.hi.framework.tenant.TenantContext;
 import com.yb.hi.mapper.pharmacy.HisPharmacyDefMapper;
+import com.yb.hi.mapper.warehouse.HisWarehouseDefMapper;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -38,10 +40,13 @@ public class PharmacyDefService {
     private static final String DEFAULT_CODE = "DEFAULT";
 
     private final HisPharmacyDefMapper pharmacyDefMapper;
+    private final HisWarehouseDefMapper warehouseDefMapper;
     private final JdbcTemplate jdbcTemplate;
 
-    public PharmacyDefService(HisPharmacyDefMapper pharmacyDefMapper, JdbcTemplate jdbcTemplate) {
+    public PharmacyDefService(HisPharmacyDefMapper pharmacyDefMapper, HisWarehouseDefMapper warehouseDefMapper,
+                             JdbcTemplate jdbcTemplate) {
         this.pharmacyDefMapper = pharmacyDefMapper;
+        this.warehouseDefMapper = warehouseDefMapper;
         this.jdbcTemplate = jdbcTemplate;
     }
 
@@ -143,10 +148,13 @@ public class PharmacyDefService {
             log.info("新增药房: id={}, orgId={}, code={}, name={}, type={}",
                     def.getId(), def.getOrgId(), def.getCode(), def.getName(), def.getPharmacyType());
         } else {
+            def.setStockLocationId(exist.getStockLocationId());
             pharmacyDefMapper.updateById(def);
             log.info("编辑药房: id={}, code={}, name={}, status={}, warehouseId={}",
                     def.getId(), def.getCode(), def.getName(), def.getStatus(), def.getWarehouseId());
         }
+        // 两级库存基座: 无论文新建/编辑, 确保本药房拥有 PHARMACY 库存位并回填 stock_location_id
+        ensureStockLocation(pharmacyDefMapper.selectById(def.getId()));
         return pharmacyDefMapper.selectById(def.getId());
     }
 
@@ -196,9 +204,67 @@ public class PharmacyDefService {
         def.setSortNo(0);
         try {
             pharmacyDefMapper.insert(def);
+            ensureStockLocation(pharmacyDefMapper.selectById(def.getId()));
             log.info("自动创建默认药房: orgId={}, id={}", orgId, def.getId());
         } catch (DuplicateKeyException e) {
             log.info("默认药房已存在(并发首访), 复用: orgId={}", orgId);
+        }
+    }
+
+    /**
+     * 两级库存基座: 为药房确保一个 PHARMACY 型库存位并回填 stock_location_id(幂等)。
+     * 优先按 ref_pharmacy_id 命中(可抵御药房编码变更), 其次按 PHLOC-编码 命中并回填 ref,
+     * 均无则新建; 撞唯一键回查复用。调用前提: def.getId() 非空(已落库)。
+     */
+    private void ensureStockLocation(HisPharmacyDef def) {
+        if (def == null || def.getId() == null || def.getOrgId() == null) {
+            return;
+        }
+        String locCode = "PHLOC-" + def.getCode();
+        String whType = TYPE_TCM.equals(def.getPharmacyType()) ? "TCM" : "MIXED";
+        HisWarehouseDef loc = warehouseDefMapper.selectOne(Wrappers.<HisWarehouseDef>lambdaQuery()
+                .eq(HisWarehouseDef::getOrgId, def.getOrgId())
+                .eq(HisWarehouseDef::getKind, "PHARMACY")
+                .eq(HisWarehouseDef::getRefPharmacyId, def.getId())
+                .last("LIMIT 1"));
+        if (loc == null) {
+            loc = warehouseDefMapper.selectOne(Wrappers.<HisWarehouseDef>lambdaQuery()
+                    .eq(HisWarehouseDef::getOrgId, def.getOrgId())
+                    .eq(HisWarehouseDef::getCode, locCode)
+                    .last("LIMIT 1"));
+            if (loc == null) {
+                loc = new HisWarehouseDef();
+                loc.setOrgId(def.getOrgId());
+                loc.setCode(locCode);
+                loc.setName((def.getName() == null ? def.getCode() : def.getName()) + "-库存位");
+                loc.setWarehouseType(whType);
+                loc.setKind("PHARMACY");
+                loc.setRefPharmacyId(def.getId());
+                loc.setStatus(1);
+                loc.setSortNo(0);
+                try {
+                    warehouseDefMapper.insert(loc);
+                } catch (DuplicateKeyException e) {
+                    loc = warehouseDefMapper.selectOne(Wrappers.<HisWarehouseDef>lambdaQuery()
+                            .eq(HisWarehouseDef::getOrgId, def.getOrgId())
+                            .eq(HisWarehouseDef::getCode, locCode)
+                            .last("LIMIT 1"));
+                }
+            } else if (loc.getKind() == null || !"PHARMACY".equals(loc.getKind())
+                    || !def.getId().equals(loc.getRefPharmacyId())) {
+                HisWarehouseDef locUpd = new HisWarehouseDef();
+                locUpd.setId(loc.getId());
+                locUpd.setKind("PHARMACY");
+                locUpd.setRefPharmacyId(def.getId());
+                warehouseDefMapper.updateById(locUpd);
+            }
+        }
+        if (loc != null && loc.getId() != null && !loc.getId().equals(def.getStockLocationId())) {
+            HisPharmacyDef upd = new HisPharmacyDef();
+            upd.setId(def.getId());
+            upd.setStockLocationId(loc.getId());
+            pharmacyDefMapper.updateById(upd);
+            log.info("药房库存位回填: pharmacyId={}, stockLocationId={}", def.getId(), loc.getId());
         }
     }
 
