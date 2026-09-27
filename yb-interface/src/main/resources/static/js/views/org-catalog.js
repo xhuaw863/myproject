@@ -81,7 +81,7 @@
     },
     template: [
       '<div class="page-card">',
-      '  <div class="page-title">机构目录选用 <span style="font-size:12px;color:#909399;font-weight:normal;">(勾选本院能开展的项目 · 只能启停, 价格由牵头机构统一定义)</span></div>',
+      '  <div class="page-title">机构目录选用 <span style="font-size:12px;color:var(--yb-ink-2);font-weight:normal;">(勾选本院能开展的项目 · 只能启停, 价格由牵头机构统一定义)</span></div>',
       '  <el-alert v-if="lead" type="info" :closable="false" show-icon style="margin-bottom:10px;" title="本机构为牵头机构: 导入目录面向全医共体, 牵头机构同样需勾选本院实际开展的项目, 未勾选项医生站/收费不可用。"></el-alert>',
       '  <el-tabs v-model="activeTab" @tab-change="onTab">',
       '    <el-tab-pane v-for="t in tabs" :key="t.name" :label="t.label" :name="t.name"></el-tab-pane>',
@@ -93,7 +93,7 @@
       '    <el-button type="success" @click="batch(1)">批量开展</el-button>',
       '    <el-button type="info" @click="batch(0)">批量停用</el-button>',
       '    <el-button :loading="exporting" @click="exportRows">导出</el-button>',
-      '    <span style="color:#909399;font-size:13px;">共 {{ total }} 项</span>',
+      '    <span style="color:var(--yb-ink-2);font-size:13px;">共 {{ total }} 项</span>',
       '  </div>',
       '  <el-table :data="list" v-loading="loading" border stripe size="small" @selection-change="onSelChange">',
       '    <el-table-column type="selection" width="45"></el-table-column>',

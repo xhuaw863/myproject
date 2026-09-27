@@ -10,23 +10,23 @@
     st.id = 'nurse-style';
     st.textContent = [
       /* 过敏史患者整行淡红警示 */
-      '.el-table__body tr.ns-allergy-row > td.el-table__cell { background-color:#fef0f0 !important; }',
+      '.el-table__body tr.ns-allergy-row > td.el-table__cell { background-color:var(--yb-danger-bg) !important; }',
       /* 急诊/到窗红色闪烁 */
       '@keyframes nsBlink { 50% { opacity:.2; } }',
-      '.ns-blink { animation: nsBlink 1s infinite; font-weight:800; color:#f56c6c; }',
-      '.ns-emergency { font-weight:800; color:#f56c6c; }',
-      '.ns-overdue { color:#f56c6c; font-weight:700; }',
-      '.ns-soft { color:#909399; font-size:12px; }',
-      '.ns-strong { color:#303133; font-weight:600; }',
+      '.ns-blink { animation: nsBlink 1s infinite; font-weight:800; color:var(--yb-danger); }',
+      '.ns-emergency { font-weight:800; color:var(--yb-danger); }',
+      '.ns-overdue { color:var(--yb-danger); font-weight:700; }',
+      '.ns-soft { color:var(--yb-ink-2); font-size:12px; }',
+      '.ns-strong { color:var(--yb-ink-1); font-weight:600; }',
       '.ns-check-item { display:block; margin:4px 0; }',
       /* 患者信息横幅(弹窗内) */
-      '.ns-banner { background:linear-gradient(135deg,#f0f7ff 0%,#fafcff 100%); border:1px solid #d9ecff; border-radius:8px; padding:10px 14px; margin-bottom:12px; }',
-      '.ns-banner .name { font-size:17px; font-weight:700; color:#303133; margin-right:10px; }',
-      '.ns-banner .row { color:#606266; font-size:13px; margin-top:4px; }',
+      '.ns-banner { background:linear-gradient(135deg,#f0f7ff 0%,#fafcff 100%); border:1px solid var(--yb-brand-subtle); border-radius:8px; padding:10px 14px; margin-bottom:12px; }',
+      '.ns-banner .name { font-size:17px; font-weight:700; color:var(--yb-ink-1); margin-right:10px; }',
+      '.ns-banner .row { color:var(--yb-ink-2); font-size:13px; margin-top:4px; }',
       /* 过敏警示横幅(弹窗内) */
-      '.ns-allergy-alert { background:#fef0f0; border:1px solid #fbc4c4; border-radius:8px; padding:8px 14px; margin-bottom:12px; color:#c45656; font-weight:600; font-size:13px; }',
+      '.ns-allergy-alert { background:var(--yb-danger-bg); border:1px solid var(--yb-danger-border); border-radius:8px; padding:8px 14px; margin-bottom:12px; color:var(--yb-danger-strong); font-weight:600; font-size:13px; }',
       /* 时间线小字 */
-      '.ns-timeline-time { color:#909399; font-size:12px; margin-left:8px; }'
+      '.ns-timeline-time { color:var(--yb-ink-2); font-size:12px; margin-left:8px; }'
     ].join('\n');
     document.head.appendChild(st);
   })();
@@ -259,9 +259,9 @@
     },
     template: [
       '<div class="page-card">',
-      '  <div class="page-title">待执行医嘱 <span style="font-size:12px;color:#909399;font-weight:normal;">(已缴费的注射/输液/皮试/换药 · 急诊优先先开先做 · 列表每30秒自动刷新)</span></div>',
+      '  <div class="page-title">待执行医嘱 <span style="font-size:12px;color:var(--yb-ink-2);font-weight:normal;">(已缴费的注射/输液/皮试/换药 · 急诊优先先开先做 · 列表每30秒自动刷新)</span></div>',
       '  <div class="toolbar">',
-      '    <span style="font-weight:600;color:#303133;">科室</span>',
+      '    <span style="font-weight:600;color:var(--yb-ink-1);">科室</span>',
       '    <el-select v-model="deptId" clearable placeholder="全部科室" style="width:170px" @change="search">',
       '      <el-option v-for="d in deptDefs" :key="d.id" :label="d.deptName" :value="d.id"></el-option>',
       '    </el-select>',
@@ -273,7 +273,7 @@
       '    <el-button type="primary" @click="search">查询</el-button>',
       '    <el-button @click="load()">刷新</el-button>',
       '    <span style="flex:1;"></span>',
-      '    <span style="color:#909399;font-size:13px;">共 {{ list.length }} 条</span>',
+      '    <span style="color:var(--yb-ink-2);font-size:13px;">共 {{ list.length }} 条</span>',
       '  </div>',
       '  <el-tabs v-model="tab" @tab-change="search">',
       '    <el-tab-pane label="全部" name=""></el-tab-pane>',
@@ -516,7 +516,7 @@
     },
     template: [
       '<div class="page-card">',
-      '  <div class="page-title">皮试管理 <span style="font-size:12px;color:#909399;font-weight:normal;">(皮内注射 · 观察窗20分钟 · 到窗须录入结果)</span></div>',
+      '  <div class="page-title">皮试管理 <span style="font-size:12px;color:var(--yb-ink-2);font-weight:normal;">(皮内注射 · 观察窗20分钟 · 到窗须录入结果)</span></div>',
       '  <el-tabs v-model="tab" @tab-change="onTab">',
       '    <el-tab-pane label="待皮试" name="0"></el-tab-pane>',
       '    <el-tab-pane label="观察中" name="1"></el-tab-pane>',
@@ -525,7 +525,7 @@
       '  <div class="toolbar">',
       '    <el-button @click="load()">刷新</el-button>',
       '    <span style="flex:1;"></span>',
-      '    <span style="color:#909399;font-size:13px;">共 {{ total }} 条 · 每30秒自动刷新</span>',
+      '    <span style="color:var(--yb-ink-2);font-size:13px;">共 {{ total }} 条 · 每30秒自动刷新</span>',
       '  </div>',
 
       /* 待皮试 */
@@ -799,7 +799,7 @@
     },
     template: [
       '<div class="page-card">',
-      '  <div class="page-title">输液管理 <span style="font-size:12px;color:#909399;font-weight:normal;">(配液 · 穿刺 · 巡视 · 拔针 · 到预计结束自动转"待拔针")</span></div>',
+      '  <div class="page-title">输液管理 <span style="font-size:12px;color:var(--yb-ink-2);font-weight:normal;">(配液 · 穿刺 · 巡视 · 拔针 · 到预计结束自动转"待拔针")</span></div>',
       '  <el-tabs v-model="tab" @tab-change="onTab">',
       '    <el-tab-pane label="待配液" name="prepare"></el-tab-pane>',
       '    <el-tab-pane label="输液中" name="infusing"></el-tab-pane>',
@@ -809,7 +809,7 @@
       '  <div class="toolbar">',
       '    <el-button @click="load()">刷新</el-button>',
       '    <span style="flex:1;"></span>',
-      '    <span style="color:#909399;font-size:13px;">共 {{ total }} 条 · 每30秒自动刷新</span>',
+      '    <span style="color:var(--yb-ink-2);font-size:13px;">共 {{ total }} 条 · 每30秒自动刷新</span>',
       '  </div>',
 
       /* 待配液 */
@@ -1032,7 +1032,7 @@
     },
     template: [
       '<div class="page-card">',
-      '  <div class="page-title">过敏档案 <span style="font-size:12px;color:#909399;font-weight:normal;">(有效过敏记录 · 皮试阳性自动写入 · 执行前核对警示数据源)</span></div>',
+      '  <div class="page-title">过敏档案 <span style="font-size:12px;color:var(--yb-ink-2);font-weight:normal;">(有效过敏记录 · 皮试阳性自动写入 · 执行前核对警示数据源)</span></div>',
       '  <div class="toolbar">',
       '    <el-input v-model="keyword" placeholder="患者姓名/患者ID/过敏原名称" clearable style="width:240px" @keyup.enter="search"></el-input>',
       '    <el-button type="primary" @click="search">查询</el-button>',
@@ -1167,7 +1167,7 @@
     },
     template: [
       '<div class="page-card">',
-      '  <div class="page-title">执行记录 <span style="font-size:12px;color:#909399;font-weight:normal;">(全状态执行台账 · 点击行首展开完整时间线)</span></div>',
+      '  <div class="page-title">执行记录 <span style="font-size:12px;color:var(--yb-ink-2);font-weight:normal;">(全状态执行台账 · 点击行首展开完整时间线)</span></div>',
       '  <div class="toolbar">',
       '    <el-date-picker v-model="dateRange" type="daterange" value-format="YYYY-MM-DD" range-separator="至" start-placeholder="开始日期" end-placeholder="结束日期" style="width:260px" @change="search"></el-date-picker>',
       '    <el-select v-model="execType" clearable placeholder="全部类型" style="width:120px" @change="search">',
@@ -1179,7 +1179,7 @@
       '    <el-button type="primary" @click="search">查询</el-button>',
       '    <el-button @click="reset">重置</el-button>',
       '    <span style="flex:1;"></span>',
-      '    <span style="color:#909399;font-size:13px;">共 {{ total }} 条</span>',
+      '    <span style="color:var(--yb-ink-2);font-size:13px;">共 {{ total }} 条</span>',
       '  </div>',
       '  <el-table :data="list" v-loading="loading" border stripe size="small">',
       '    <el-table-column type="expand">',

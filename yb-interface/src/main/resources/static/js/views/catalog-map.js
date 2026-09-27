@@ -160,10 +160,10 @@
           ElementPlus.ElMessageBox.confirm(
             '院内条目: <b>' + vm.escText(vm.cur.name) + '</b><br/>'
             + '当前对照: ' + vm.escText(oldCode) + (vm.cur.ybName ? ' (' + vm.escText(vm.cur.ybName) + ')' : '') + '<br/>'
-            + '变更为: <b style="color:#e6a23c;">' + vm.escText(newCode) + '</b>' + (vm.candSel.name ? ' (' + vm.escText(vm.candSel.name) + ')' : '') + '<br/>'
+            + '变更为: <b style="color:var(--yb-warning);">' + vm.escText(newCode) + '</b>' + (vm.candSel.name ? ' (' + vm.escText(vm.candSel.name) + ')' : '') + '<br/>'
             + (vm.cur.ybValid === false
-              ? '<span style="color:#f56c6c;font-size:12px;">当前医保码在标准字典中' + vm.escText(vm.cur.ybInvalidReason || '已失效') + ', 应重新对照到有效的医保项目。</span><br/>' : '')
-            + '<span style="color:#909399;font-size:12px;">确认后原医保码记入“变更前码”, 生效时间更新为当前时刻, 并写入变更记录(CHANGE)。</span>',
+              ? '<span style="color:var(--yb-danger);font-size:12px;">当前医保码在标准字典中' + vm.escText(vm.cur.ybInvalidReason || '已失效') + ', 应重新对照到有效的医保项目。</span><br/>' : '')
+            + '<span style="color:var(--yb-ink-2);font-size:12px;">确认后原医保码记入“变更前码”, 生效时间更新为当前时刻, 并写入变更记录(CHANGE)。</span>',
             '变更对照确认',
             { type: 'warning', confirmButtonText: '确认变更对照', cancelButtonText: '取消', dangerouslyUseHTMLString: true }
           ).then(function () { vm.doApply(true, '已变更对照'); }).catch(function () {});
@@ -284,7 +284,7 @@
     },
     template: [
       '<div class="page-card">',
-      '  <div class="page-title">医保目录对照 <span style="font-size:12px;color:#909399;font-weight:normal;">(医疗机构目录 → 标准字典医保目录)</span></div>',
+      '  <div class="page-title">医保目录对照 <span style="font-size:12px;color:var(--yb-ink-2);font-weight:normal;">(医疗机构目录 → 标准字典医保目录)</span></div>',
       '  <el-alert type="info" :closable="false" show-icon style="margin-bottom:12px;"',
       '    title="从院内已有条目出发补/改医保标准编码: 左栏选院内条目, 右栏按名称/规格/厂家打分给出医保候选; 高置信度可批量自动对照, 其余人工确认。"></el-alert>',
       '  <el-alert v-if="mappedFilter===\'2\'" type="warning" :closable="false" show-icon style="margin-bottom:12px;"',
@@ -295,9 +295,9 @@
       '      <el-radio-button v-for="c in catalogs" :key="c.v" :label="c.v">{{ c.l }}</el-radio-button>',
       '    </el-radio-group>',
       '    <el-progress style="width:220px;" :percentage="cov.pct" :format="function(){return cov.mapped+\'/\'+cov.total;}"></el-progress>',
-      '    <span style="color:#909399;font-size:13px;">未对照 {{ cov.unmapped }}</span>',
-      '    <span v-if="cov.invalid" title="已对照的医保码在标准字典中已作废/过期/删除, 点击筛出后重新对照" style="color:#f56c6c;font-size:13px;cursor:pointer;text-decoration:underline;" @click="filterInvalid">对照失效 {{ cov.invalid }}</span>',
-      '    <span v-else style="color:#67c23a;font-size:13px;">对照失效 0</span>',
+      '    <span style="color:var(--yb-ink-2);font-size:13px;">未对照 {{ cov.unmapped }}</span>',
+      '    <span v-if="cov.invalid" title="已对照的医保码在标准字典中已作废/过期/删除, 点击筛出后重新对照" style="color:var(--yb-danger);font-size:13px;cursor:pointer;text-decoration:underline;" @click="filterInvalid">对照失效 {{ cov.invalid }}</span>',
+      '    <span v-else style="color:var(--yb-success);font-size:13px;">对照失效 0</span>',
       '    <el-button @click="loadSummary();loadItems()">刷新</el-button>',
       '  </div>',
 
@@ -310,13 +310,13 @@
       '    <el-button type="danger" plain :disabled="!selection.length" @click="clearMap(selection)">清除选中对照</el-button>',
       '    <el-button @click="openLogDlg">变更记录</el-button>',
       '    <el-button :loading="exporting" @click="exportRows">导出结果</el-button>',
-      '    <span style="color:#909399;font-size:13px;">共 {{ total }} 条, 已选 {{ selection.length }}</span>',
+      '    <span style="color:var(--yb-ink-2);font-size:13px;">共 {{ total }} 条, 已选 {{ selection.length }}</span>',
       '  </div>',
 
       '  <el-row :gutter="12">',
       '    <el-col :span="leftSpan">',
       '      <div v-if="panelMode!==\'right\'">',
-      '      <div style="margin-bottom:6px;color:#606266;font-size:13px;">院内工作队列<span style="float:right;"><el-button link type="primary" size="small" @click="togglePanel(\'left\')">{{ panelMode===\'left\'?\'还原布局\':\'扩展左栏\' }}</el-button></span></div>',
+      '      <div style="margin-bottom:6px;color:var(--yb-ink-2);font-size:13px;">院内工作队列<span style="float:right;"><el-button link type="primary" size="small" @click="togglePanel(\'left\')">{{ panelMode===\'left\'?\'还原布局\':\'扩展左栏\' }}</el-button></span></div>',
       '      <el-table :data="list" v-loading="loading" border stripe size="small" height="620" highlight-current-row :row-class-name="rowCls" @current-change="pickRow" @selection-change="onSelChange">',
       '        <el-table-column type="selection" width="42"></el-table-column>',
       '        <el-table-column type="index" label="序号" width="60" :index="seq"></el-table-column>',
@@ -338,8 +338,8 @@
       '    </el-col>',
 
       '    <el-col :span="rightSpan">',
-      '      <div v-if="panelMode!==\'left\'" style="border:1px solid #ebeef5;border-radius:4px;padding:10px;">',
-      '        <div style="margin-bottom:8px;color:#606266;font-size:13px;">院内条目: <b>{{ cur ? cur.name : "(未选择)" }}</b>',
+      '      <div v-if="panelMode!==\'left\'" style="border:1px solid var(--yb-border-light);border-radius:4px;padding:10px;">',
+      '        <div style="margin-bottom:8px;color:var(--yb-ink-2);font-size:13px;">院内条目: <b>{{ cur ? cur.name : "(未选择)" }}</b>',
       '          <span style="float:right;"><el-button link type="primary" size="small" @click="togglePanel(\'right\')">{{ panelMode===\'right\'?\'还原布局\':\'扩展右栏\' }}</el-button>',
       '          <el-button type="primary" size="small" :disabled="!cur||!candSel" @click="confirmMap">确认对照</el-button>',
       '          <el-button size="small" :disabled="!cur||!cur.mapped" @click="clearMap([cur])">清除</el-button></span>',
@@ -348,8 +348,8 @@
       '          <el-input v-model="candKeyword" placeholder="检索医保目录(名称/编码/拼音简码)" clearable size="small" style="width:210px" @keyup.enter="searchCand" @clear="searchCand"></el-input>',
       '          <el-button size="small" @click="searchCand">检索</el-button>',
       '          <el-button size="small" link @click="resetCand">自动推荐</el-button>',
-      '          <span v-if="candKeyword" style="color:#909399;font-size:12px;">人工检索模式, 可任选一行对照</span>',
-      '          <span style="color:#909399;font-size:12px;margin-left:8px;">共 {{ candList.length }} 条</span>',
+      '          <span v-if="candKeyword" style="color:var(--yb-ink-2);font-size:12px;">人工检索模式, 可任选一行对照</span>',
+      '          <span style="color:var(--yb-ink-2);font-size:12px;margin-left:8px;">共 {{ candList.length }} 条</span>',
       '        </div>',
       '        <el-table :data="candList" v-loading="candLoading" border stripe size="small" height="560" highlight-current-row @current-change="chooseCand">',
       '          <el-table-column type="index" label="序号" width="60" align="right"></el-table-column>',
@@ -388,7 +388,7 @@
       '          <el-table-column prop="score" label="置信度" width="70"></el-table-column>',
       '          <el-table-column label="依据" min-width="120" show-overflow-tooltip><template #default="s">{{ (s.row.reasons||[]).join(" / ") }}</template></el-table-column>',
       '        </el-table>',
-      '        <div v-if="cur && !candLoading && !candList.length" style="color:#909399;font-size:13px;margin-top:8px;">无匹配候选, 可在上方输入关键字检索医保目录后任选一行对照。</div>',
+      '        <div v-if="cur && !candLoading && !candList.length" style="color:var(--yb-ink-2);font-size:13px;margin-top:8px;">无匹配候选, 可在上方输入关键字检索医保目录后任选一行对照。</div>',
       '      </div>',
       '      <div v-else style="padding:6px 0;"><el-button size="small" @click="togglePanel(\'\')">展开右栏 ›</el-button></div>',
       '    </el-col>',
@@ -399,11 +399,11 @@
       '    <el-alert type="info" :closable="false" show-icon style="margin-bottom:10px"',
       '      title="对未对照条目跑匹配器, 仅名称+规格全同(默认阈值0.95)进入预览; 勾选后提交写入, 未达标条目留人工复核。"></el-alert>',
       '    <div class="toolbar">',
-      '      <span style="color:#606266;font-size:13px;">阈值</span>',
+      '      <span style="color:var(--yb-ink-2);font-size:13px;">阈值</span>',
       '      <el-input-number v-model="autoThreshold" :min="0.5" :max="0.99" :step="0.05" :precision="2" style="width:120px"></el-input-number>',
       '      <el-button @click="runAuto(true)" :loading="autoLoading">重新预览</el-button>',
-      '      <span style="color:#909399;font-size:13px;">达标 {{ autoStats.matched||0 }} · 待复核 {{ autoStats.reviewed||0 }} · 跳过 {{ autoStats.skipped||0 }}</span>',
-      '      <span style="color:#909399;font-size:13px;">{{ selection.length? "(仅选中 "+selection.length+" 条)": "(全部未对照)" }}</span>',
+      '      <span style="color:var(--yb-ink-2);font-size:13px;">达标 {{ autoStats.matched||0 }} · 待复核 {{ autoStats.reviewed||0 }} · 跳过 {{ autoStats.skipped||0 }}</span>',
+      '      <span style="color:var(--yb-ink-2);font-size:13px;">{{ selection.length? "(仅选中 "+selection.length+" 条)": "(全部未对照)" }}</span>',
       '    </div>',
       '    <el-table :data="autoPreview" v-loading="autoLoading" border stripe size="small" height="380" @selection-change="onAutoSel">',
       '      <el-table-column type="selection" width="42"></el-table-column>',
@@ -423,7 +423,7 @@
       '      <el-date-picker v-model="logRange" type="daterange" value-format="YYYY-MM-DD" start-placeholder="开始日期" end-placeholder="结束日期" style="width:240px" @change="onLogFilter"></el-date-picker>',
       '      <el-input v-model="logKw" placeholder="院内码/院内名/医保码/医保名称" clearable style="width:210px" @keyup.enter="onLogFilter" @clear="onLogFilter"></el-input>',
       '      <el-button type="primary" size="small" @click="onLogFilter">查询</el-button>',
-      '      <span style="color:#909399;font-size:13px;">每次新增/变更/清除对照均留痕; 变更时间之前用原医保码、之后用新医保码, 可回溯任意时点生效码。</span>',
+      '      <span style="color:var(--yb-ink-2);font-size:13px;">每次新增/变更/清除对照均留痕; 变更时间之前用原医保码、之后用新医保码, 可回溯任意时点生效码。</span>',
       '    </div>',
       '    <el-table :data="logList" v-loading="logLoading" border stripe size="small" height="420">',
       '      <el-table-column type="index" label="序号" width="60" :index="logSeq"></el-table-column>',

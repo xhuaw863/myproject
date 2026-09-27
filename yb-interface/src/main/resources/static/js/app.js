@@ -225,10 +225,10 @@
       '      <el-form-item label="医院码"><el-input v-model="loginForm.tenantCode" placeholder="医院登录码"></el-input></el-form-item>',
       '      <el-form-item label="账号"><el-input v-model="loginForm.username" placeholder="账号"></el-input></el-form-item>',
       '      <el-form-item label="密码"><el-input v-model="loginForm.password" type="password" show-password @keyup.enter="doLogin" placeholder="密码"></el-input></el-form-item>',
-      '      <div style="margin:-6px 0 12px 80px;"><el-checkbox v-model="rememberPwd">记住密码</el-checkbox><span style="color:#909399;font-size:12px;margin-left:8px;">默认不保存密码; 勾选后密码存于本机浏览器, 共享终端请勿勾选</span></div>',
+      '      <div style="margin:-6px 0 12px 80px;"><el-checkbox v-model="rememberPwd">记住密码</el-checkbox><span style="color:var(--yb-ink-2);font-size:12px;margin-left:8px;">默认不保存密码; 勾选后密码存于本机浏览器, 共享终端请勿勾选</span></div>',
       '      <el-button type="primary" style="width:100%" :loading="loading" @click="doLogin">登 录</el-button>',
-      '      <div class="login-links"><span style="color:#909399;">医院管理员：H42010000000 / admin / admin123</span></div>',
-      '      <div class="login-links"><span style="color:#909399;">平台超管(开通医院)：PLATFORM / superadmin / admin123</span></div>',
+      '      <div class="login-links"><span style="color:var(--yb-ink-2);">医院管理员：H42010000000 / admin / admin123</span></div>',
+      '      <div class="login-links"><span style="color:var(--yb-ink-2);">平台超管(开通医院)：PLATFORM / superadmin / admin123</span></div>',
       '    </el-form>',
       '  </div>',
       '</div>'
@@ -285,6 +285,12 @@
       roleName: function () {
         var u = this.user || {};
         return u.roleName || HIS.roleLabel(u.role);
+      },
+      /* 顶栏头像圈取姓氏一字(中文姓名取首字; 无姓名则退到账号首字母) */
+      avatarChar: function () {
+        var u = this.user || {};
+        var s = u.realName || u.username || '';
+        return s.charAt(0).toUpperCase();
       },
       /* 可登录机构(多点执业): >1 时顶栏展示"切换机构" */
       allowedOrgs: function () { return (this.user || {}).allowedOrgs || []; }
@@ -351,7 +357,7 @@
       '    <span class="spacer"></span>',
       '    <a class="hosp" href="/verify/index.html" target="_blank" style="text-decoration:none;cursor:pointer;">医保验证台</a>',
       '    <el-dropdown @command="onCmd">',
-      '      <span class="user">{{ user.realName || user.username }}（{{ roleName }}）<span style="margin-left:4px;">▾</span></span>',
+      '      <span class="user" :data-avatar="avatarChar">{{ user.realName || user.username }}（{{ roleName }}）<span style="margin-left:4px;">▾</span></span>',
       '      <template #dropdown>',
       '        <el-dropdown-menu><el-dropdown-item command="logout">退出登录</el-dropdown-item></el-dropdown-menu>',
       '      </template>',

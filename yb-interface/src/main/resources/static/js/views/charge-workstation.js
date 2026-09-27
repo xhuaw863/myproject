@@ -82,13 +82,13 @@
       + '<div class="foot"><span>收费员: ' + esc(b.chargeBy) + '</span><span>此收据为门急诊收费凭证, 退费须凭本收据办理</span></div>'
       + '</div>';
     openPrintDoc('门诊收费收据', '@page{size:A4;margin:14mm}body{font-family:SimSun,serif;font-size:13px;color:#111;margin:24px}'
-      + '.sheet{max-width:720px;margin:0 auto;border:1px solid #333;padding:18px 24px;background:#fffef9}'
+      + '.sheet{max-width:720px;margin:0 auto;border:1px solid var(--yb-ink-1);padding:18px 24px;background:#fffef9}'
       + '.t1{text-align:center;font-size:19px;font-weight:bold;letter-spacing:2px}.t2{text-align:center;font-size:16px;font-weight:bold;letter-spacing:10px;margin:6px 0 10px}'
       + 'table{width:100%;border-collapse:collapse}td,th{padding:4px 6px;font-size:12px;text-align:left;vertical-align:top}'
       + '.meta td{line-height:1.9}.r{text-align:right}'
-      + '.items th{border-bottom:1px solid #333}.items td{border-bottom:1px dashed #bbb;padding:3px 6px}'
+      + '.items th{border-bottom:1px solid var(--yb-ink-1)}.items td{border-bottom:1px dashed #bbb;padding:3px 6px}'
       + '.items .spec{color:#777;font-size:11px}'
-      + '.total{border-top:2px solid #333;margin-top:8px;padding-top:8px;text-align:right;font-size:15px}'
+      + '.total{border-top:2px solid var(--yb-ink-1);margin-top:8px;padding-top:8px;text-align:right;font-size:15px}'
       + '.total b{color:#c00}'
       + '.foot{border-top:1px dashed #999;margin-top:12px;padding-top:8px;display:flex;justify-content:space-between;font-size:12px;color:#444}'
       + '</style>', html);
@@ -134,23 +134,23 @@
       + '<div class="note">本票据为财政监制门诊收费票据式样演示: 明细含报销类别/自费自理/医保政策范围外自费, 汇总按诊察/检查/化验/治疗/手术/卫生材料/西药/中草药/中成药/药事服务/一般诊疗 11 类归集。</div>'
       + '</div>';
     openPrintDoc('门诊收费票据', '@page{size:A4;margin:12mm}body{font-family:SimSun,serif;font-size:12px;color:#111;margin:20px}'
-      + '.sheet{max-width:780px;margin:0 auto;border:2px double #1a5c9e;padding:14px 18px}'
+      + '.sheet{max-width:780px;margin:0 auto;border:2px double var(--yb-brand);padding:14px 18px}'
       + '.code{color:#666;font-size:11px}.t1{text-align:center;font-size:15px;font-weight:bold;margin-top:2px}'
-      + '.t2{text-align:center;font-size:19px;font-weight:bold;letter-spacing:6px;color:#1a5c9e;border-bottom:2px solid #1a5c9e;padding-bottom:6px;margin-bottom:4px}'
+      + '.t2{text-align:center;font-size:19px;font-weight:bold;letter-spacing:6px;color:var(--yb-brand);border-bottom:2px solid var(--yb-brand);padding-bottom:6px;margin-bottom:4px}'
       + '.t2 .neg{color:#c00;font-size:13px;letter-spacing:2px}'
-      + '.bar{display:flex;justify-content:space-between;font-size:11px;color:#444;border-bottom:1px solid #1a5c9e;padding-bottom:3px}'
+      + '.bar{display:flex;justify-content:space-between;font-size:11px;color:#444;border-bottom:1px solid var(--yb-brand);padding-bottom:3px}'
       + '.bar .no{font-family:Consolas,monospace;font-weight:bold;color:#c00}'
-      + 'table{width:100%;border-collapse:collapse}td,th{border:1px solid #1a5c9e;padding:3px 6px;font-size:11px;text-align:left;vertical-align:top}'
+      + 'table{width:100%;border-collapse:collapse}td,th{border:1px solid var(--yb-brand);padding:3px 6px;font-size:11px;text-align:left;vertical-align:top}'
       + '.prow{margin:4px 0}.prow td{border:none;padding:2px 4px}'
       + '.det th{background:#eef4fa;text-align:left}.det .r,.det td.r{text-align:right}.det .c{text-align:center}'
       + '.det .spec{color:#777;font-size:10px}'
-      + '.sumline{border:1px solid #1a5c9e;border-top:none;padding:5px 8px;display:flex;align-items:baseline;gap:8px}'
-      + '.sumline .lbl{color:#333}.upper{font-size:15px;font-weight:bold;letter-spacing:1px;border-bottom:1px solid #999;min-width:220px}'
+      + '.sumline{border:1px solid var(--yb-brand);border-top:none;padding:5px 8px;display:flex;align-items:baseline;gap:8px}'
+      + '.sumline .lbl{color:var(--yb-ink-1)}.upper{font-size:15px;font-weight:bold;letter-spacing:1px;border-bottom:1px solid #999;min-width:220px}'
       + '.lower{font-size:15px;font-weight:bold;color:#c00;margin-left:auto}'
-      + '.pays{border:1px solid #1a5c9e;border-top:none;padding:6px 8px;display:flex;flex-direction:column;gap:4px}'
-      + '.pay-lbl{font-weight:bold;color:#1a5c9e;font-size:11px}.pay-grid{display:flex;gap:24px;flex-wrap:wrap;font-size:12px}'
+      + '.pays{border:1px solid var(--yb-brand);border-top:none;padding:6px 8px;display:flex;flex-direction:column;gap:4px}'
+      + '.pay-lbl{font-weight:bold;color:var(--yb-brand);font-size:11px}.pay-grid{display:flex;gap:24px;flex-wrap:wrap;font-size:12px}'
       + '.pay-grid b{font-family:Consolas,monospace}'
-      + '.foot{display:flex;justify-content:space-between;border:1px solid #1a5c9e;border-top:none;padding:6px 8px;font-size:11px}'
+      + '.foot{display:flex;justify-content:space-between;border:1px solid var(--yb-brand);border-top:none;padding:6px 8px;font-size:11px}'
       + '.sn{font-size:10px;color:#888;margin-top:3px}'
       + '.cats{margin-top:14px}.cats-t{font-weight:bold;font-size:12px;margin-bottom:4px}'
       + '.cats td{font-size:11px}.cats .ca{background:#f6f9fc;width:16%}.cats .cb{width:16%}.cats td.wide{width:20%}'
@@ -325,7 +325,7 @@
           payDesc = vm.payRows.map(function (p) { return payMethodLabel(p.payMethod) + ' ¥' + money(p.amount); }).join(' + ');
         }
         var msg = '患者: <b>' + orDash(vm.patient.name) + '</b><br/>'
-          + '待收金额: <b style="color:#F56C6C;font-size:15px;">' + fYen(vm.detailSummary.totalAmount) + '</b><br/>'
+          + '待收金额: <b style="color:var(--yb-danger);font-size:15px;">' + fYen(vm.detailSummary.totalAmount) + '</b><br/>'
           + (vm.payType === 'yb'
             ? '结算方式: <b>医保结算</b> (2206预结算+2207结算, 自付部分默认现金)<br/>'
             : '结算方式: <b>自费结算</b><br/>支付明细: <b>' + payDesc + '</b><br/>')
@@ -377,7 +377,7 @@
         var b = vm.refundBill || {};
         var msg = '确认退费？退费后将撤销医保结算<br/>'
           + '单号: <b>' + orDash(b.billNo) + '</b>　患者: <b>' + orDash(b.patientName) + '</b><br/>'
-          + '退费金额: <b style="color:#F56C6C;font-size:15px;">¥' + money(b.totalAmount) + '</b>';
+          + '退费金额: <b style="color:var(--yb-danger);font-size:15px;">¥' + money(b.totalAmount) + '</b>';
         ElementPlus.ElMessageBox.confirm(msg, '退费确认', {
           type: 'warning', dangerouslyUseHTMLString: true, confirmButtonText: '确认退费', cancelButtonText: '取消'
         }).then(function () {
@@ -439,8 +439,8 @@
         if (!vm.partialReason || !vm.partialReason.trim()) { ElementPlus.ElMessage.warning('请填写退费原因'); return; }
         var b = vm.partialBill || {};
         var msg = '确认部分退费？<br/>原单: <b>' + orDash(b.billNo) + '</b>　患者: <b>' + orDash(b.patientName) + '</b><br/>'
-          + '退费金额: <b style="color:#F56C6C;font-size:15px;">¥' + money(vm.partialTotal()) + '</b><br/>'
-          + '<span style="color:#909399;font-size:12px;">医保单部分退费不线上撤销结算, 需线下处理</span>';
+          + '退费金额: <b style="color:var(--yb-danger);font-size:15px;">¥' + money(vm.partialTotal()) + '</b><br/>'
+          + '<span style="color:var(--yb-ink-2);font-size:12px;">医保单部分退费不线上撤销结算, 需线下处理</span>';
         ElementPlus.ElMessageBox.confirm(msg, '部分退费确认', {
           type: 'warning', dangerouslyUseHTMLString: true, confirmButtonText: '确认退费', cancelButtonText: '取消'
         }).then(function () {
@@ -532,7 +532,7 @@
       '          <span class="dim">就诊号 {{ orDash(patient.visitNo) }}</span>',
       '          <span class="dim" v-if="patient.mdtrtId">医保就诊ID {{ patient.mdtrtId }}</span>',
       '          <span class="dim">{{ orDash(patient.idCard) }}</span>',
-      '          <span style="margin-left:auto;color:#F56C6C;font-weight:700;font-size:18px;">{{ fYen(detailSummary.totalAmount) }}</span>',
+      '          <span style="margin-left:auto;color:var(--yb-danger);font-weight:700;font-size:18px;">{{ fYen(detailSummary.totalAmount) }}</span>',
       '        </div>',
       /* ---- 费用明细(含票据口径三列) ---- */
       '        <el-table :data="items" border size="small" max-height="330" :span-method="groupSpan" show-summary :summary-method="summaryMethod" class="cw-items">',
@@ -553,7 +553,7 @@
       '          <span>检查费 <b>{{ fYen(detailSummary.examAmount) }}</b></span>',
       '          <span>治疗费 <b>{{ fYen(detailSummary.treatAmount) }}</b></span>',
       '          <span>材料费 <b>{{ fYen(detailSummary.materialAmount) }}</b></span>',
-      '          <span style="margin-left:auto;">自费自理 <b style="color:#e6a23c;">{{ fYen(selfCostTotal) }}</b>　范围外自费 <b style="color:#f56c6c;">{{ fYen(outOfScopeTotal) }}</b></span>',
+      '          <span style="margin-left:auto;">自费自理 <b style="color:var(--yb-warning);">{{ fYen(selfCostTotal) }}</b>　范围外自费 <b style="color:var(--yb-danger);">{{ fYen(outOfScopeTotal) }}</b></span>',
       '        </div>',
       /* ---- 结算区 ---- */
       '        <div class="cw-settle-area">',
@@ -572,7 +572,7 @@
       '              </div>',
       '              <div style="display:flex;align-items:center;gap:10px;">',
       '                <el-button size="small" type="primary" plain @click="addPayRow">+ 混合支付</el-button>',
-      '                <span :style="payOk ? \'color:#67c23a;\' : \'color:#f56c6c;\'">合计 ¥{{ money(payTotal) }}{{ payOk ? \'\' : \' (须等于应付 \' + fYen(detailSummary.totalAmount) + \')\' }}</span>',
+      '                <span :style="payOk ? \'color:var(--yb-success);\' : \'color:var(--yb-danger);\'">合计 ¥{{ money(payTotal) }}{{ payOk ? \'\' : \' (须等于应付 \' + fYen(detailSummary.totalAmount) + \')\' }}</span>',
       '              </div>',
       '            </div>',
       '          </div>',
@@ -587,7 +587,7 @@
       '          <el-table-column prop="billNo" label="单号" width="150"></el-table-column>',
       '          <el-table-column prop="patientName" label="患者" width="90"></el-table-column>',
       '          <el-table-column label="类型" width="70" align="center"><template #default="s"><el-tag size="small" :type="s.row.billType===2 ? \'danger\' : \'primary\'">{{ s.row.billType===2 ? "退费" : "收费" }}</el-tag></template></el-table-column>',
-      '          <el-table-column label="金额" width="96" align="right"><template #default="s"><span style="font-weight:700;" :style="s.row.billType===2 ? \'color:#67c23a\' : \'color:#F56C6C\'">{{ s.row.billType===2 ? \'-¥\' : \'¥\' }}{{ money(s.row.totalAmount) }}</span></template></el-table-column>',
+      '          <el-table-column label="金额" width="96" align="right"><template #default="s"><span style="font-weight:700;" :style="s.row.billType===2 ? \'color:var(--yb-success)\' : \'color:var(--yb-danger)\'">{{ s.row.billType===2 ? \'-¥\' : \'¥\' }}{{ money(s.row.totalAmount) }}</span></template></el-table-column>',
       '          <el-table-column label="基金/个账" width="118" align="right"><template #default="s">{{ money(s.row.fundPay) }} / {{ money(s.row.acctPay) }}</template></el-table-column>',
       '          <el-table-column label="支付" width="66" align="center"><template #default="s">{{ payMethodLabel(s.row.payMethod) }}</template></el-table-column>',
       '          <el-table-column label="发票号" width="126"><template #default="s">{{ s.row.invoiceNo || \'--\' }}</template></el-table-column>',
@@ -670,11 +670,11 @@
       '    <el-descriptions :column="2" border size="small" style="margin-bottom:12px;">',
       '      <el-descriptions-item label="收费单号">{{ orDash(refundBill && refundBill.billNo) }}</el-descriptions-item>',
       '      <el-descriptions-item label="患者姓名">{{ orDash(refundBill && refundBill.patientName) }}</el-descriptions-item>',
-      '      <el-descriptions-item label="收费金额"><span style="color:#F56C6C;font-weight:700;">¥{{ money(refundBill && refundBill.totalAmount) }}</span></el-descriptions-item>',
+      '      <el-descriptions-item label="收费金额"><span style="color:var(--yb-danger);font-weight:700;">¥{{ money(refundBill && refundBill.totalAmount) }}</span></el-descriptions-item>',
       '      <el-descriptions-item label="收费时间">{{ orDash(refundBill && refundBill.chargeTime) }}</el-descriptions-item>',
       '    </el-descriptions>',
       '    <el-alert type="warning" :closable="false" show-icon title="退费后撤销医保结算并回写就诊为未收费; 已日结的收费单不可退费" style="margin-bottom:12px;"></el-alert>',
-      '    <div style="margin-bottom:8px;font-weight:600;">退费原因 <span style="color:#F56C6C;">*</span></div>',
+      '    <div style="margin-bottom:8px;font-weight:600;">退费原因 <span style="color:var(--yb-danger);">*</span></div>',
       '    <el-input v-model="refundReason" type="textarea" :rows="3" maxlength="200" show-word-limit placeholder="请输入退费原因(必填)"></el-input>',
       '    <template #footer>',
       '      <el-button @click="refundVisible=false">取消</el-button>',
@@ -687,7 +687,7 @@
       '      <el-descriptions :column="3" border size="small" style="margin-bottom:12px;">',
       '        <el-descriptions-item label="原单号">{{ orDash(partialBill && partialBill.billNo) }}</el-descriptions-item>',
       '        <el-descriptions-item label="患者姓名">{{ orDash(partialBill && partialBill.patientName) }}</el-descriptions-item>',
-      '        <el-descriptions-item label="收费金额"><span style="color:#F56C6C;font-weight:700;">¥{{ money(partialBill && partialBill.totalAmount) }}</span></el-descriptions-item>',
+      '        <el-descriptions-item label="收费金额"><span style="color:var(--yb-danger);font-weight:700;">¥{{ money(partialBill && partialBill.totalAmount) }}</span></el-descriptions-item>',
       '      </el-descriptions>',
       '      <el-table :data="partialItems" border size="small" max-height="320">',
       '        <el-table-column width="46" align="center"><template #default="s"><el-checkbox v-model="s.row.checked" :disabled="partialRemain(s.row)<=0" @change="onPartialCheck(s.row)"></el-checkbox></template></el-table-column>',
@@ -698,11 +698,11 @@
       '        <el-table-column label="可退" width="68" align="right"><template #default="s">{{ qtyFmt(partialRemain(s.row)) }}</template></el-table-column>',
       '        <el-table-column label="本次退费" width="110" align="center"><template #default="s"><el-input-number v-model="s.row.refundQty" :min="0" :max="partialRemain(s.row)" :disabled="!s.row.checked" :controls="false" size="small" style="width:90px;"></el-input-number></template></el-table-column>',
       '        <el-table-column label="单价" width="86" align="right"><template #default="s">{{ money4(s.row.price) }}</template></el-table-column>',
-      '        <el-table-column label="退费金额" width="96" align="right"><template #default="s"><span v-if="s.row.checked" style="color:#F56C6C;">¥{{ partialLineAmount(s.row) }}</span><span v-else style="color:#c0c4cc;">-</span></template></el-table-column>',
+      '        <el-table-column label="退费金额" width="96" align="right"><template #default="s"><span v-if="s.row.checked" style="color:var(--yb-danger);">¥{{ partialLineAmount(s.row) }}</span><span v-else style="color:var(--yb-ink-4);">-</span></template></el-table-column>',
       '      </el-table>',
-      '      <div style="margin-top:12px;font-weight:600;">退费原因 <span style="color:#F56C6C;">*</span></div>',
+      '      <div style="margin-top:12px;font-weight:600;">退费原因 <span style="color:var(--yb-danger);">*</span></div>',
       '      <el-input v-model="partialReason" type="textarea" :rows="2" maxlength="200" show-word-limit placeholder="请输入退费原因(必填)" style="margin-top:6px;"></el-input>',
-      '      <div style="display:flex;justify-content:flex-end;align-items:center;margin-top:10px;font-size:14px;">退费合计: <b style="color:#F56C6C;font-size:18px;margin-left:6px;">¥{{ money(partialTotal()) }}</b></div>',
+      '      <div style="display:flex;justify-content:flex-end;align-items:center;margin-top:10px;font-size:14px;">退费合计: <b style="color:var(--yb-danger);font-size:18px;margin-left:6px;">¥{{ money(partialTotal()) }}</b></div>',
       '    </div>',
       '    <template #footer>',
       '      <el-button @click="partialVisible=false">取消</el-button>',

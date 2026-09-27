@@ -181,7 +181,7 @@
     '        <el-option v-for="s in csStaffOptions" :key="s.id" :label="s.staffName" :value="s.id"></el-option>',
     '      </el-select>',
     '      <el-button type="primary" size="small" :loading="csLoading" @click="csLoadSchedules">查询号源</el-button>',
-    '      <span style="color:#909399;font-size:12px;">单击行选中目标号源(余号为0不可选)</span>',
+    '      <span style="color:var(--yb-ink-2);font-size:12px;">单击行选中目标号源(余号为0不可选)</span>',
     '    </div>',
     '    <el-table :data="csSchedules" v-loading="csLoading" border stripe size="small" max-height="280" highlight-current-row @row-click="csPickRow">',
     '      <el-table-column type="index" label="序号" width="56"></el-table-column>',
@@ -191,9 +191,9 @@
     '      <el-table-column label="时段" width="70"><template #default="s">{{ timeLabel(s.row.timeType) }}</template></el-table-column>',
     '      <el-table-column prop="regLevelName" label="号别" width="90" show-overflow-tooltip></el-table-column>',
     '      <el-table-column label="挂号费" width="80" align="right"><template #default="s">¥{{ csMoney(s.row.regFee) }}</template></el-table-column>',
-    '      <el-table-column label="余号/总数" width="90" align="center"><template #default="s"><span :style="s.row.leftNum <= 0 ? \'color:#F56C6C;font-weight:600;\' : \'color:#67C23A;\'">{{ s.row.leftNum }}/{{ s.row.totalNum }}</span></template></el-table-column>',
+    '      <el-table-column label="余号/总数" width="90" align="center"><template #default="s"><span :style="s.row.leftNum <= 0 ? \'color:var(--yb-danger);font-weight:600;\' : \'color:var(--yb-success);\'">{{ s.row.leftNum }}/{{ s.row.totalNum }}</span></template></el-table-column>',
     '    </el-table>',
-    '    <div v-if="csSelected" style="margin-top:8px;font-size:13px;color:#409EFF;">已选目标: {{ csSelected.deptName }} · {{ csSelected.staffName || \'-\' }} · {{ csSelected.workDate }} {{ timeLabel(csSelected.timeType) }} · {{ csSelected.regLevelName || \'-\' }} ¥{{ csMoney(csSelected.regFee) }}</div>',
+    '    <div v-if="csSelected" style="margin-top:8px;font-size:13px;color:var(--yb-link);">已选目标: {{ csSelected.deptName }} · {{ csSelected.staffName || \'-\' }} · {{ csSelected.workDate }} {{ timeLabel(csSelected.timeType) }} · {{ csSelected.regLevelName || \'-\' }} ¥{{ csMoney(csSelected.regFee) }}</div>',
     '    <el-input v-model="csReason" maxlength="100" placeholder="换号原因(选填, 将并入退号原因留痕)" style="margin-top:10px;"></el-input>',
     '  </div>',
     '  <template #footer>',
@@ -425,7 +425,7 @@
       '    <el-input v-model="keyword" placeholder="姓名/患者号/身份证/医保号/电话/拼音简码" clearable style="width:280px" @keyup.enter="search"></el-input>',
       '    <el-button type="primary" @click="search">查询</el-button>',
       '    <el-button @click="add">新增建档</el-button>',
-      '    <span style="color:#909399;font-size:13px;">共 {{ total }} 人</span>',
+      '    <span style="color:var(--yb-ink-2);font-size:13px;">共 {{ total }} 人</span>',
       '  </div>',
       '  <el-table :data="list" v-loading="loading" border stripe size="small">',
       '    <el-table-column type="index" label="序号" width="60" :index="seqNo"></el-table-column>',
@@ -511,7 +511,7 @@
       '      <div class="toolbar">',
       '        <el-button type="primary" size="small" :loading="insuLoading" @click="syncInsu">读卡同步参保信息</el-button>',
       '        <el-button size="small" @click="loadInsu(form.id)">刷新</el-button>',
-      '        <span style="color:#909399;font-size:12px;">共 {{ insuList.length }} 条参保记录; 读卡按来源"医保读卡(1101)"覆盖保存, 重复读卡不产生重复</span>',
+      '        <span style="color:var(--yb-ink-2);font-size:12px;">共 {{ insuList.length }} 条参保记录; 读卡按来源"医保读卡(1101)"覆盖保存, 重复读卡不产生重复</span>',
       '      </div>',
       '      <el-table :data="insuList" v-loading="insuLoading" border stripe size="small" style="width:100%">',
       '        <el-table-column type="index" label="序号" width="60"></el-table-column>',
@@ -1002,9 +1002,9 @@
       timeTagType: function (v) { return v === 'am' ? 'primary' : (v === 'pm' ? 'warning' : 'info'); },
       /* 余号文本着色: 无号置灰/号紧(≤5)橙/充足绿 */
       progressColor: function (row) {
-        if (row.leftNum <= 0) { return '#c0c4cc'; }
-        if (row.leftNum <= 5) { return '#e6a23c'; }
-        return '#67c23a';
+        if (row.leftNum <= 0) { return 'var(--yb-ink-4)'; }
+        if (row.leftNum <= 5) { return 'var(--yb-warning)'; }
+        return 'var(--yb-success)';
       },
       deptName: function (id) { for (var i = 0; i < this.depts.length; i++) { if (this.depts[i].id === id) { return this.depts[i].deptName; } } return '-'; },
       staffName: function (id) { for (var i = 0; i < this.staffs.length; i++) { if (this.staffs[i].id === id) { return this.staffs[i].staffName; } } return '-'; },
@@ -1227,8 +1227,8 @@
       '        </div>',
       '        <div v-if="lastVisit" class="patient-last-visit">上次就诊: {{ lastVisit.workDate }} {{ lastVisit.deptName }} {{ lastVisit.drName }}</div>',
       '      </div>',
-      '      <div v-else class="reg-patient-card" style="border-left-color:#dcdfe6;">',
-      '        <div style="color:#909399;font-size:13px;text-align:center;padding:16px 0;">尚未选择患者<br>F3读医保卡 / F4读身份证 / 输入检索后点选</div>',
+      '      <div v-else class="reg-patient-card" style="border-left-color:var(--yb-border-strong);">',
+      '        <div style="color:var(--yb-ink-2);font-size:13px;text-align:center;padding:16px 0;">尚未选择患者<br>F3读医保卡 / F4读身份证 / 输入检索后点选</div>',
       '      </div>',
       '      <div class="reg-section-title">挂号信息</div>',
       '      <el-form class="reg-form" label-position="top" size="small">',
@@ -1253,7 +1253,7 @@
       '    </div>',
       '    <div class="reg-right">',
       '      <div class="reg-right-top">',
-      '        <div class="reg-section-title">号源选择 <span style="font-weight:normal;color:#909399;font-size:12px;">(科室联动医师, 双击行选号, 余号=0可加号)</span></div>',
+      '        <div class="reg-section-title">号源选择 <span style="font-weight:normal;color:var(--yb-ink-2);font-size:12px;">(科室联动医师, 双击行选号, 余号=0可加号)</span></div>',
       '        <div class="toolbar" style="margin-bottom:8px;">',
       '          <el-select v-model="filterDept" placeholder="全部科室(可输拼音简码)" clearable filterable style="width:170px" :filter-method="kwFilter(\'rdDept\')" @change="onDeptChange"><el-option v-for="d in kwOptions(\'rdDept\', deptFilterOptions, [\'deptName\',\'deptCode\',\'pyCode\',\'abbrCode\'])" :key="d.id" :label="d.deptName" :value="d.id"></el-option></el-select>',
       '          <el-select v-model="filterStaff" placeholder="全部医师" clearable filterable style="width:130px"><el-option v-for="s in staffOptions" :key="s.id" :label="s.staffName" :value="s.id"></el-option></el-select>',
@@ -1280,12 +1280,12 @@
       '          <el-table-column label="余号/总号" width="92" align="center"><template #default="s"><span :style="\'font-weight:600;color:\' + progressColor(s.row)">{{ s.row.leftNum }}/{{ s.row.totalNum }}</span></template></el-table-column>',
       '          <el-table-column label="操作" width="64"><template #default="s">',
       '            <el-button v-if="s.row.leftNum<=0" link type="warning" size="small" @click="doAddSlot(s.row)">加号</el-button>',
-      '            <span v-else :style="selectedSchedule && selectedSchedule.id===s.row.id ? \'color:#67c23a;font-weight:700;\' : \'\'">{{ selectedSchedule && selectedSchedule.id===s.row.id ? "已选" : "" }}</span>',
+      '            <span v-else :style="selectedSchedule && selectedSchedule.id===s.row.id ? \'color:var(--yb-success);font-weight:700;\' : \'\'">{{ selectedSchedule && selectedSchedule.id===s.row.id ? "已选" : "" }}</span>',
       '          </template></el-table-column>',
       '        </el-table>',
       '      </div>',
       '      <div class="reg-right-bottom">',
-      '        <div class="reg-section-title">今日挂号记录 <span style="font-weight:normal;color:#909399;font-size:12px;">(30秒自动刷新, 共 {{ regTotal }} 条)</span></div>',
+      '        <div class="reg-section-title">今日挂号记录 <span style="font-weight:normal;color:var(--yb-ink-2);font-size:12px;">(30秒自动刷新, 共 {{ regTotal }} 条)</span></div>',
       '        <div class="toolbar" style="margin-bottom:8px;">',
       '          <el-input v-model="regKeyword" placeholder="患者/挂号单号/门诊号(支持拼音简码)" clearable style="width:210px" size="small" @keyup.enter="regSearch"></el-input>',
       '          <el-select v-model="regStatus" placeholder="全部状态" clearable size="small" style="width:104px" @change="regSearch"><el-option v-for="s in regStatusOpts" :key="s.v" :label="s.l" :value="s.v"></el-option></el-select>',
@@ -1301,7 +1301,7 @@
       '            <el-table-column prop="drName" label="医师" width="76"></el-table-column>',
       '            <el-table-column label="时段" width="58"><template #default="s">{{ timeLabel(s.row.timeType) }}</template></el-table-column>',
       '            <el-table-column prop="queueNo" label="候诊号" width="84"></el-table-column>',
-      '            <el-table-column label="实收" width="78" align="right"><template #default="s"><span :style="Number(s.row.actualFee) < Number(s.row.regFee) ? \'color:#f56c6c;\' : \'\'">¥{{ fmtMoney(s.row.actualFee) }}</span></template></el-table-column>',
+      '            <el-table-column label="实收" width="78" align="right"><template #default="s"><span :style="Number(s.row.actualFee) < Number(s.row.regFee) ? \'color:var(--yb-danger);\' : \'\'">¥{{ fmtMoney(s.row.actualFee) }}</span></template></el-table-column>',
       '            <el-table-column label="状态" width="70"><template #default="s"><el-tag size="small" :type="statusTag(s.row.status)">{{ statusLabel(s.row.status) }}</el-tag></template></el-table-column>',
       '            <el-table-column label="操作" width="150" fixed="right"><template #default="s">',
       '              <el-button v-if="s.row.status===1" link type="danger" size="small" @click="doCancel(s.row)">退号</el-button>',
@@ -1688,14 +1688,14 @@
         var html = [
           '<!DOCTYPE html><html><head><meta charset="utf-8"><title>退号查询打印</title><style>',
           '@page { size: A4 landscape; margin: 10mm; }',
-          'body { font-family: "Microsoft YaHei", sans-serif; color: #303133; margin: 0; }',
+          'body { font-family: "Microsoft YaHei", sans-serif; color: var(--yb-ink-1); margin: 0; }',
           'h2 { text-align: center; font-size: 17px; margin: 8px 0 4px; }',
-          '.meta { text-align: center; font-size: 11px; color: #606266; margin-bottom: 8px; }',
+          '.meta { text-align: center; font-size: 11px; color: var(--yb-ink-2); margin-bottom: 8px; }',
           'table { width: 100%; border-collapse: collapse; font-size: 10px; }',
-          'th, td { border: 1px solid #909399; padding: 3px 4px; word-break: break-all; }',
-          'th { background: #f5f7fa; font-weight: 600; }',
+          'th, td { border: 1px solid var(--yb-ink-2); padding: 3px 4px; word-break: break-all; }',
+          'th { background: var(--yb-surface-2); font-weight: 600; }',
           'tr { page-break-inside: avoid; }',
-          '.foot { margin-top: 8px; font-size: 10px; color: #909399; display: flex; justify-content: space-between; }',
+          '.foot { margin-top: 8px; font-size: 10px; color: var(--yb-ink-2); display: flex; justify-content: space-between; }',
           '</style></head><body>',
           '<h2>退号查询表</h2>',
           '<div class="meta">' + printEsc(vm.printSummary()) + '</div>',
@@ -1724,7 +1724,7 @@
     },
     template: [
       '<div class="page-card">',
-      '  <div class="page-title">退号 <span style="font-size:12px;color:#909399;font-weight:normal;">(跨日/历史退号专用页面; 当天刚挂的号可在挂号工作站“今日挂号记录”中快捷退号)</span></div>',
+      '  <div class="page-title">退号 <span style="font-size:12px;color:var(--yb-ink-2);font-weight:normal;">(跨日/历史退号专用页面; 当天刚挂的号可在挂号工作站“今日挂号记录”中快捷退号)</span></div>',
       '  <div class="toolbar">',
       '    <el-date-picker v-model="dateRange" type="daterange" value-format="YYYY-MM-DD" range-separator="至" start-placeholder="开始日期" end-placeholder="结束日期" style="width:250px"></el-date-picker>',
       '    <el-select v-model="filterDept" placeholder="全部科室" clearable filterable style="width:170px" @change="onDeptChange">',
@@ -1742,7 +1742,7 @@
       '    <el-button type="success" plain :loading="exporting" @click="doExport">导出Excel</el-button>',
       '    <el-button :disabled="!list.length" @click="doPrintPage">打印本页</el-button>',
       '    <el-button :loading="printing" @click="doPrintAll">打印全部</el-button>',
-      '    <span style="color:#909399;font-size:13px;">共 {{ total }} 条</span>',
+      '    <span style="color:var(--yb-ink-2);font-size:13px;">共 {{ total }} 条</span>',
       '  </div>',
       '  <el-table :data="list" v-loading="loading" border stripe size="small">',
       '    <el-table-column type="index" label="序号" width="56" :index="seqNo"></el-table-column>',
@@ -1757,7 +1757,7 @@
       '    <el-table-column label="时段" width="60"><template #default="s"><el-tag size="small" :type="timeTagType(s.row.timeType)" :class="{\'reg-tag--night\': s.row.timeType===\'night\'}">{{ timeLabel(s.row.timeType) }}</el-tag></template></el-table-column>',
       '    <el-table-column prop="regLevelName" label="号别" width="90" show-overflow-tooltip></el-table-column>',
       '    <el-table-column label="挂号费" width="76" align="right"><template #default="s">¥{{ fmtMoney(s.row.regFee) }}</template></el-table-column>',
-      '    <el-table-column label="减免金额" width="80" align="right"><template #default="s"><span :style="Number(s.row.discountAmount) > 0 ? \'color:#f56c6c;\' : \'\'">{{ fmtMoney(s.row.discountAmount) }}</span></template></el-table-column>',
+      '    <el-table-column label="减免金额" width="80" align="right"><template #default="s"><span :style="Number(s.row.discountAmount) > 0 ? \'color:var(--yb-danger);\' : \'\'">{{ fmtMoney(s.row.discountAmount) }}</span></template></el-table-column>',
       '    <el-table-column label="实收金额" width="82" align="right"><template #default="s"><b>¥{{ fmtMoney(s.row.actualFee) }}</b></template></el-table-column>',
       '    <el-table-column label="费别" width="66"><template #default="s">{{ feeTypeLabel(s.row.feeType) }}</template></el-table-column>',
       '    <el-table-column label="支付方式" width="84"><template #default="s">{{ payMethodLabel(s.row.payMethod) }}</template></el-table-column>',
@@ -1946,13 +1946,13 @@
       },
       cards: function () {
         return [
-          { cls: 'ds-card tone-blue', icon: '📋', title: '挂号总量', color: '#409EFF', fs: '26px',
+          { cls: 'ds-card tone-blue', icon: '📋', title: '挂号总量', color: 'var(--yb-link)', fs: '26px',
             num: int(this.sumReg), sub: '人次(含已就诊, 不含已退号)' },
-          { cls: 'ds-card tone-red', icon: '↩', title: '退号量 / 退号率', color: '#F56C6C', fs: '20px',
+          { cls: 'ds-card tone-red', icon: '↩', title: '退号量 / 退号率', color: 'var(--yb-danger)', fs: '20px',
             num: int(this.sumCancel) + ' 笔 / ' + this.cancelRate + '%', sub: '退号笔数 / 退号占全部挂号比例' },
-          { cls: 'ds-card tone-green', icon: '💰', title: '收费 / 减免汇总', color: '#67C23A', fs: '20px',
+          { cls: 'ds-card tone-green', icon: '💰', title: '收费 / 减免汇总', color: 'var(--yb-success)', fs: '20px',
             num: '¥ ' + money(this.sumFee), sub: '其中减免 ¥ ' + money(this.sumDiscount) },
-          { cls: 'ds-card tone-orange', icon: '📈', title: '号源利用率', color: '#E6A23C', fs: '26px',
+          { cls: 'ds-card tone-orange', icon: '📈', title: '号源利用率', color: 'var(--yb-warning)', fs: '26px',
             num: this.utilization === null ? '—' : (this.utilization + '%'),
             sub: this.slotTotal ? ('已用 ' + int(this.slotUsed) + ' / 总号源 ' + int(this.slotTotal)) : '按有效排班总号源计算' }
         ];
@@ -2127,14 +2127,14 @@
           ElementPlus.ElMessage.warning('图表库(echarts)未加载, 仅显示统计卡片与明细');
           return;
         }
-        vm.chartDept = echarts.init(vm.$refs.chartDept);
-        vm.chartTime = echarts.init(vm.$refs.chartTime);
-        vm.chartTrend = echarts.init(vm.$refs.chartTrend);
-        vm.chartStaff = echarts.init(vm.$refs.chartStaff);
-        vm.chartFee = echarts.init(vm.$refs.chartFee);
-        vm.chartPay = echarts.init(vm.$refs.chartPay);
+        vm.chartDept = echarts.init(vm.$refs.chartDept, 'yb');
+        vm.chartTime = echarts.init(vm.$refs.chartTime, 'yb');
+        vm.chartTrend = echarts.init(vm.$refs.chartTrend, 'yb');
+        vm.chartStaff = echarts.init(vm.$refs.chartStaff, 'yb');
+        vm.chartFee = echarts.init(vm.$refs.chartFee, 'yb');
+        vm.chartPay = echarts.init(vm.$refs.chartPay, 'yb');
         vm.chartList().forEach(function (c) {
-          c.showLoading('default', { text: '加载中...', color: '#409EFF', maskColor: 'rgba(255,255,255,.6)' });
+          c.showLoading('default', { text: '加载中...', color: HIS.theme.link, maskColor: 'rgba(255,255,255,.6)' });
         });
         vm.renderCharts();
         vm._onResize = function () {
@@ -2166,25 +2166,25 @@
         vm.chartDept.setOption({
           tooltip: { trigger: 'axis', axisPointer: { type: 'shadow' }, formatter: '{b}<br/>挂号量: <b>{c}</b> 人次' },
           grid: { left: 10, right: 44, top: 16, bottom: 10, containLabel: true },
-          xAxis: { type: 'value', minInterval: 1, axisLabel: { color: '#909399' }, splitLine: { lineStyle: { color: '#ebeef5' } } },
+          xAxis: { type: 'value', minInterval: 1, axisLabel: { color: HIS.theme.ink3 }, splitLine: { lineStyle: { color: HIS.theme.split } } },
           yAxis: {
             type: 'category',
             data: data.map(function (r) { return r.dept_name || r.deptName || '-'; }),
-            axisLabel: { color: '#606266', fontSize: 11, formatter: function (v) { return String(v).length > 7 ? String(v).slice(0, 6) + '…' : v; } },
+            axisLabel: { color: HIS.theme.ink3, fontSize: 11, formatter: function (v) { return String(v).length > 7 ? String(v).slice(0, 6) + '…' : v; } },
             axisTick: { show: false }
           },
           series: [{
             name: '挂号量', type: 'bar', barMaxWidth: 16,
             data: data.map(function (r) { return Number(r['count']) || 0; }),
-            itemStyle: { color: '#409eff', borderRadius: [0, 4, 4, 0] },
-            label: { show: true, position: 'right', color: '#409eff', fontSize: 11 }
+            itemStyle: { color: HIS.theme.link, borderRadius: [0, 4, 4, 0] },
+            label: { show: true, position: 'right', color: HIS.theme.link, fontSize: 11 }
           }]
         });
       },
       /* 图2: 时段分布饼图(上午/下午/晚间固定三色) */
       renderTimeChart: function (rows) {
         var vm = this;
-        var meta = { am: { n: '上午', c: '#409eff' }, pm: { n: '下午', c: '#e6a23c' }, night: { n: '晚间', c: '#9b59b6' } };
+        var meta = { am: { n: '上午', c: HIS.theme.link }, pm: { n: '下午', c: HIS.theme.warning }, night: { n: '晚间', c: HIS.theme.purple } };
         var seen = {}, data = [];
         ['am', 'pm', 'night'].forEach(function (k) {
           rows.forEach(function (r) {
@@ -2199,7 +2199,7 @@
         });
         vm.chartTime.setOption({
           tooltip: { trigger: 'item', formatter: '{b}: {c} 笔 ({d}%)' },
-          legend: { bottom: 0, icon: 'circle', itemWidth: 8, itemHeight: 8, textStyle: { color: '#606266', fontSize: 11 } },
+          legend: { bottom: 0, icon: 'circle', itemWidth: 8, itemHeight: 8, textStyle: { color: HIS.theme.ink3, fontSize: 11 } },
           series: [{
             name: '时段分布', type: 'pie', radius: ['42%', '66%'], center: ['50%', '44%'],
             itemStyle: { borderColor: '#fff', borderWidth: 2, borderRadius: 4 },
@@ -2223,12 +2223,12 @@
           discounts.push(Number(r.discountCount) || 0);
         });
         vm.chartTrend.setOption({
-          color: ['#409eff', '#f56c6c', '#9b59b6'],
+          color: [HIS.theme.link, HIS.theme.danger, HIS.theme.purple],
           tooltip: { trigger: 'axis' },
-          legend: { top: 0, icon: 'circle', itemWidth: 8, itemHeight: 8, textStyle: { color: '#606266', fontSize: 11 } },
+          legend: { top: 0, icon: 'circle', itemWidth: 8, itemHeight: 8, textStyle: { color: HIS.theme.ink3, fontSize: 11 } },
           grid: { left: 40, right: 20, top: 36, bottom: 28 },
-          xAxis: { type: 'category', boundaryGap: false, data: days.map(mmdd), axisLabel: { color: '#909399' } },
-          yAxis: { type: 'value', minInterval: 1, axisLabel: { color: '#909399' }, splitLine: { lineStyle: { color: '#ebeef5' } } },
+          xAxis: { type: 'category', boundaryGap: false, data: days.map(mmdd), axisLabel: { color: HIS.theme.ink3 } },
+          yAxis: { type: 'value', minInterval: 1, axisLabel: { color: HIS.theme.ink3 }, splitLine: { lineStyle: { color: HIS.theme.split } } },
           series: [
             { name: '挂号量', type: 'line', smooth: true, symbolSize: 5, data: regs, lineStyle: { width: 2.5 } },
             { name: '退号量', type: 'line', smooth: true, symbolSize: 5, data: cancels, lineStyle: { width: 2.5 } },
@@ -2243,17 +2243,17 @@
         vm.chartStaff.setOption({
           tooltip: { trigger: 'axis', axisPointer: { type: 'shadow' }, formatter: '{b}<br/>挂号量: <b>{c}</b> 人次' },
           grid: { left: 10, right: 44, top: 16, bottom: 10, containLabel: true },
-          xAxis: { type: 'value', minInterval: 1, axisLabel: { color: '#909399' }, splitLine: { lineStyle: { color: '#ebeef5' } } },
+          xAxis: { type: 'value', minInterval: 1, axisLabel: { color: HIS.theme.ink3 }, splitLine: { lineStyle: { color: HIS.theme.split } } },
           yAxis: {
             type: 'category',
             data: data.map(function (r) { return r.dr_name || r.staffName || '-'; }),
-            axisLabel: { color: '#606266', fontSize: 11 }, axisTick: { show: false }
+            axisLabel: { color: HIS.theme.ink3, fontSize: 11 }, axisTick: { show: false }
           },
           series: [{
             name: '挂号量', type: 'bar', barMaxWidth: 16,
             data: data.map(function (r) { return Number(r['count']) || 0; }),
-            itemStyle: { color: '#67c23a', borderRadius: [0, 4, 4, 0] },
-            label: { show: true, position: 'right', color: '#67c23a', fontSize: 11 }
+            itemStyle: { color: HIS.theme.success, borderRadius: [0, 4, 4, 0] },
+            label: { show: true, position: 'right', color: HIS.theme.success, fontSize: 11 }
           }]
         });
       },
@@ -2270,15 +2270,15 @@
         });
         vm.chartFee.setOption({
           tooltip: { trigger: 'item', formatter: function (p) { return p.name + ': <b>¥ ' + money(p.value) + '</b> (' + p.percent + '%)'; } },
-          legend: { bottom: 0, icon: 'circle', itemWidth: 8, itemHeight: 8, textStyle: { color: '#606266', fontSize: 11 } },
+          legend: { bottom: 0, icon: 'circle', itemWidth: 8, itemHeight: 8, textStyle: { color: HIS.theme.ink3, fontSize: 11 } },
           series: [{
             name: '收费/减免构成', type: 'pie', radius: ['42%', '66%'], center: ['50%', '44%'],
             itemStyle: { borderColor: '#fff', borderWidth: 2, borderRadius: 4 },
             label: { formatter: function (p) { return p.name + ' ¥' + money(p.value); }, fontSize: 11 },
             data: [
-              { name: '医保', value: yb, itemStyle: { color: '#409eff' } },
-              { name: '自费', value: self, itemStyle: { color: '#e6a23c' } },
-              { name: '减免', value: disc, itemStyle: { color: '#67c23a' } }
+              { name: '医保', value: yb, itemStyle: { color: HIS.theme.link } },
+              { name: '自费', value: self, itemStyle: { color: HIS.theme.warning } },
+              { name: '减免', value: disc, itemStyle: { color: HIS.theme.success } }
             ]
           }]
         });
@@ -2296,9 +2296,9 @@
         order.forEach(function (n) { if (agg[n] != null) { data.push({ name: n, value: agg[n] }); delete agg[n]; } });
         Object.keys(agg).forEach(function (n) { data.push({ name: n, value: agg[n] }); });
         vm.chartPay.setOption({
-          color: ['#409eff', '#e6a23c', '#67c23a', '#8e6fff', '#f56c6c', '#909399', '#00c9a7', '#ff7b9c'],
+          color: [HIS.theme.link, HIS.theme.warning, HIS.theme.success, '#8e6fff', HIS.theme.danger, HIS.theme.ink3, '#00c9a7', '#ff7b9c'],
           tooltip: { trigger: 'item', formatter: '{b}: {c} 笔 ({d}%)' },
-          legend: { bottom: 0, icon: 'circle', itemWidth: 8, itemHeight: 8, textStyle: { color: '#606266', fontSize: 11 } },
+          legend: { bottom: 0, icon: 'circle', itemWidth: 8, itemHeight: 8, textStyle: { color: HIS.theme.ink3, fontSize: 11 } },
           series: [{
             name: '支付方式', type: 'pie', radius: ['42%', '66%'], center: ['50%', '44%'],
             itemStyle: { borderColor: '#fff', borderWidth: 2, borderRadius: 4 },
@@ -2312,7 +2312,7 @@
       '<div>',
       /* A. 查询条件栏 */
       '  <div class="page-card">',
-      '    <div class="page-title">挂号统计 <span style="font-size:12px;color:#909399;font-weight:normal;">(按出诊日期区间统计, 全部数据由挂号记录实时计算)</span></div>',
+      '    <div class="page-title">挂号统计 <span style="font-size:12px;color:var(--yb-ink-2);font-weight:normal;">(按出诊日期区间统计, 全部数据由挂号记录实时计算)</span></div>',
       '    <div class="toolbar" style="margin-bottom:0;">',
       '      <el-date-picker v-model="dateRange" type="daterange" value-format="YYYY-MM-DD" range-separator="至" start-placeholder="开始日期" end-placeholder="结束日期" style="width:250px"></el-date-picker>',
       '      <el-select v-model="filterDept" placeholder="全部科室" clearable filterable style="width:170px" @change="onDeptChange">',
@@ -2334,38 +2334,38 @@
       '          <div class="ds-title">{{ c.title }}</div>',
       '        </div>',
       '        <div class="ds-num" :style="{ color: c.color, fontSize: c.fs }">{{ c.num }}</div>',
-      '        <div style="color:#909399;font-size:12px;margin-top:6px;">{{ c.sub }}</div>',
+      '        <div style="color:var(--yb-ink-2);font-size:12px;margin-top:6px;">{{ c.sub }}</div>',
       '      </div>',
       '    </el-col>',
       '  </el-row>',
       /* C. 图表区(3行2列, 每图300px) */
       '  <el-row :gutter="16" style="margin-bottom:14px;">',
       '    <el-col :span="12">',
-      '      <el-card shadow="never"><template #header><span style="font-weight:600;font-size:14px;color:#303133;">科室挂号量排行 TOP10</span></template>',
+      '      <el-card shadow="never"><template #header><span style="font-weight:600;font-size:14px;color:var(--yb-ink-1);">科室挂号量排行 TOP10</span></template>',
       '        <div ref="chartDept" style="height:300px;"></div></el-card>',
       '    </el-col>',
       '    <el-col :span="12">',
-      '      <el-card shadow="never"><template #header><span style="font-weight:600;font-size:14px;color:#303133;">时段分布(上午/下午/晚间)</span></template>',
+      '      <el-card shadow="never"><template #header><span style="font-weight:600;font-size:14px;color:var(--yb-ink-1);">时段分布(上午/下午/晚间)</span></template>',
       '        <div ref="chartTime" style="height:300px;"></div></el-card>',
       '    </el-col>',
       '  </el-row>',
       '  <el-row :gutter="16" style="margin-bottom:14px;">',
       '    <el-col :span="12">',
-      '      <el-card shadow="never"><template #header><span style="font-weight:600;font-size:14px;color:#303133;">每日趋势(挂号/退号/减免)</span></template>',
+      '      <el-card shadow="never"><template #header><span style="font-weight:600;font-size:14px;color:var(--yb-ink-1);">每日趋势(挂号/退号/减免)</span></template>',
       '        <div ref="chartTrend" style="height:300px;"></div></el-card>',
       '    </el-col>',
       '    <el-col :span="12">',
-      '      <el-card shadow="never"><template #header><span style="font-weight:600;font-size:14px;color:#303133;">医师工作量排行 TOP10</span></template>',
+      '      <el-card shadow="never"><template #header><span style="font-weight:600;font-size:14px;color:var(--yb-ink-1);">医师工作量排行 TOP10</span></template>',
       '        <div ref="chartStaff" style="height:300px;"></div></el-card>',
       '    </el-col>',
       '  </el-row>',
       '  <el-row :gutter="16" style="margin-bottom:14px;">',
       '    <el-col :span="12">',
-      '      <el-card shadow="never"><template #header><span style="font-weight:600;font-size:14px;color:#303133;">收费/减免构成</span></template>',
+      '      <el-card shadow="never"><template #header><span style="font-weight:600;font-size:14px;color:var(--yb-ink-1);">收费/减免构成</span></template>',
       '        <div ref="chartFee" style="height:300px;"></div></el-card>',
       '    </el-col>',
       '    <el-col :span="12">',
-      '      <el-card shadow="never"><template #header><span style="font-weight:600;font-size:14px;color:#303133;">支付方式占比</span></template>',
+      '      <el-card shadow="never"><template #header><span style="font-weight:600;font-size:14px;color:var(--yb-ink-1);">支付方式占比</span></template>',
       '        <div ref="chartPay" style="height:300px;"></div></el-card>',
       '    </el-col>',
       '  </el-row>',
@@ -2374,12 +2374,12 @@
       '    <el-collapse v-model="activeCollapse">',
       '      <el-collapse-item name="detail">',
       '        <template #title>',
-      '          <span style="font-weight:600;font-size:14px;color:#303133;">挂号明细',
-      '            <span style="font-size:12px;color:#909399;font-weight:normal;">(点击展开/收起, 共 {{ dTotal }} 条)</span></span>',
+      '          <span style="font-weight:600;font-size:14px;color:var(--yb-ink-1);">挂号明细',
+      '            <span style="font-size:12px;color:var(--yb-ink-2);font-weight:normal;">(点击展开/收起, 共 {{ dTotal }} 条)</span></span>',
       '        </template>',
       '        <div class="toolbar">',
       '          <el-button type="success" plain size="small" :loading="exporting" @click="doExport">导出Excel</el-button>',
-      '          <span style="color:#909399;font-size:12px;">导出与当前筛选条件一致(全量不分页)</span>',
+      '          <span style="color:var(--yb-ink-2);font-size:12px;">导出与当前筛选条件一致(全量不分页)</span>',
       '        </div>',
       '        <el-table :data="dList" v-loading="dLoading" border stripe size="small">',
       '          <el-table-column type="index" label="序号" width="60" :index="dSeqNo"></el-table-column>',
@@ -2393,7 +2393,7 @@
       '          <el-table-column label="费别" width="70"><template #default="s">{{ feeTypeLabel(s.row.fee_type) }}</template></el-table-column>',
       '          <el-table-column label="挂号费" width="85" align="right" header-align="right"><template #default="s">{{ money(s.row.reg_fee) }}</template></el-table-column>',
       '          <el-table-column label="减免" width="85" align="right" header-align="right"><template #default="s">{{ money(s.row.discount_amount) }}</template></el-table-column>',
-      '          <el-table-column label="实收" width="85" align="right" header-align="right"><template #default="s"><b style="color:#67C23A;">{{ money(s.row.actual_fee) }}</b></template></el-table-column>',
+      '          <el-table-column label="实收" width="85" align="right" header-align="right"><template #default="s"><b style="color:var(--yb-success);">{{ money(s.row.actual_fee) }}</b></template></el-table-column>',
       '          <el-table-column label="支付方式" width="90"><template #default="s">{{ payLabel(s.row.pay_method) }}</template></el-table-column>',
       '          <el-table-column label="状态" width="84" align="center"><template #default="s"><el-tag size="small" :type="statusTag(s.row.status)">{{ statusLabel(s.row.status) }}</el-tag></template></el-table-column>',
       '        </el-table>',
@@ -2622,7 +2622,7 @@
       '<div>',
       /* A. 查询条件栏 */
       '  <div class="page-card">',
-      '    <div class="page-title">挂号明细 <span style="font-size:12px;color:#909399;font-weight:normal;">(只读查询: 挂号/退号完整明细数据, 不含退号操作)</span></div>',
+      '    <div class="page-title">挂号明细 <span style="font-size:12px;color:var(--yb-ink-2);font-weight:normal;">(只读查询: 挂号/退号完整明细数据, 不含退号操作)</span></div>',
       '    <div class="toolbar" style="margin-bottom:0;">',
       '      <el-date-picker v-model="dateRange" type="daterange" value-format="YYYY-MM-DD" range-separator="至" start-placeholder="开始日期" end-placeholder="结束日期" style="width:250px"></el-date-picker>',
       '      <el-select v-model="filterDept" placeholder="全部科室" clearable filterable style="width:160px" @change="onDeptChange">',
@@ -2658,7 +2658,7 @@
       '      <el-button @click="reset">重置</el-button>',
       '      <el-button type="success" plain :loading="exporting" @click="doExport">导出Excel</el-button>',
       '    </div>',
-      '    <div v-if="clientFiltered" style="margin-top:10px;color:#e6a23c;font-size:12px;">',
+      '    <div v-if="clientFiltered" style="margin-top:10px;color:var(--yb-warning);font-size:12px;">',
       '      已按所选状态/费别/减免类型/支付方式在当前页前端过滤(后端暂不支持多维组合条件; 导出为全量精确过滤; 汇总卡片按日期/科室/医师口径)',
       '    </div>',
       '  </div>',
@@ -2667,37 +2667,37 @@
       '    <el-col :span="6">',
       '      <div class="ds-card tone-blue" v-loading="statsLoading">',
       '        <div class="ds-head"><div class="ds-ico">📋</div><div class="ds-title">查询结果总数</div></div>',
-      '        <div class="ds-num" style="color:#409EFF;">{{ int(sumTotal) }}</div>',
-      '        <div style="color:#909399;font-size:12px;margin-top:6px;">有效挂号 + 退号(按日期/科室/医师)</div>',
+      '        <div class="ds-num" style="color:var(--yb-link);">{{ int(sumTotal) }}</div>',
+      '        <div style="color:var(--yb-ink-2);font-size:12px;margin-top:6px;">有效挂号 + 退号(按日期/科室/医师)</div>',
       '      </div>',
       '    </el-col>',
       '    <el-col :span="6">',
       '      <div class="ds-card tone-green" v-loading="statsLoading">',
       '        <div class="ds-head"><div class="ds-ico">✅</div><div class="ds-title">有效挂号数</div></div>',
-      '        <div class="ds-num" style="color:#67C23A;">{{ int(sumReg) }}</div>',
-      '        <div style="color:#909399;font-size:12px;margin-top:6px;">状态为已挂号/已就诊</div>',
+      '        <div class="ds-num" style="color:var(--yb-success);">{{ int(sumReg) }}</div>',
+      '        <div style="color:var(--yb-ink-2);font-size:12px;margin-top:6px;">状态为已挂号/已就诊</div>',
       '      </div>',
       '    </el-col>',
       '    <el-col :span="6">',
       '      <div class="ds-card tone-red" v-loading="statsLoading">',
       '        <div class="ds-head"><div class="ds-ico">↩</div><div class="ds-title">退号数</div></div>',
-      '        <div class="ds-num" style="color:#F56C6C;">{{ int(sumCancel) }}</div>',
-      '        <div style="color:#909399;font-size:12px;margin-top:6px;">状态为已退号</div>',
+      '        <div class="ds-num" style="color:var(--yb-danger);">{{ int(sumCancel) }}</div>',
+      '        <div style="color:var(--yb-ink-2);font-size:12px;margin-top:6px;">状态为已退号</div>',
       '      </div>',
       '    </el-col>',
       '    <el-col :span="6">',
       '      <div class="ds-card tone-gold" v-loading="statsLoading">',
       '        <div class="ds-head"><div class="ds-ico">💰</div><div class="ds-title">合计实收金额</div></div>',
-      '        <div class="ds-num" style="color:#b88230;">¥ {{ money(sumFee) }}</div>',
-      '        <div style="color:#909399;font-size:12px;margin-top:6px;">SUM(actual_fee)</div>',
+      '        <div class="ds-num" style="color:var(--yb-gold);">¥ {{ money(sumFee) }}</div>',
+      '        <div style="color:var(--yb-ink-2);font-size:12px;margin-top:6px;">SUM(actual_fee)</div>',
       '      </div>',
       '    </el-col>',
       '  </el-row>',
       /* C. 明细表格(24列, 挂号时间/挂号费/实收金额可排序) */
       '  <div class="page-card">',
       '    <div class="toolbar" style="margin-bottom:10px;">',
-      '      <span style="font-weight:600;font-size:14px;color:#303133;">明细列表</span>',
-      '      <span style="color:#909399;font-size:12px;">共 {{ total }} 条 · 挂号时间/挂号费/实收金额可点击表头排序</span>',
+      '      <span style="font-weight:600;font-size:14px;color:var(--yb-ink-1);">明细列表</span>',
+      '      <span style="color:var(--yb-ink-2);font-size:12px;">共 {{ total }} 条 · 挂号时间/挂号费/实收金额可点击表头排序</span>',
       '      <span style="margin-left:auto;"></span>',
       '      <el-button type="success" plain size="small" :loading="exporting" @click="doExport">导出Excel</el-button>',
       '    </div>',
@@ -2717,8 +2717,8 @@
       '      <el-table-column prop="reg_level_name" label="号别" width="90" show-overflow-tooltip></el-table-column>',
       '      <el-table-column label="挂号费" width="80" align="right" sortable :sort-method="sortByNum(\'reg_fee\')"><template #default="s">{{ money(s.row.reg_fee) }}</template></el-table-column>',
       '      <el-table-column label="减免类型" width="110"><template #default="s">{{ discountLabel(s.row.discount_type) }}</template></el-table-column>',
-      '      <el-table-column label="减免金额" width="84" align="right"><template #default="s"><span v-if="Number(s.row.discount_amount) > 0" style="color:#f56c6c;">{{ money(s.row.discount_amount) }}</span><span v-else>-</span></template></el-table-column>',
-      '      <el-table-column label="实收金额" width="84" align="right" sortable :sort-method="sortByNum(\'actual_fee\')"><template #default="s"><b style="color:#67C23A;">{{ money(s.row.actual_fee) }}</b></template></el-table-column>',
+      '      <el-table-column label="减免金额" width="84" align="right"><template #default="s"><span v-if="Number(s.row.discount_amount) > 0" style="color:var(--yb-danger);">{{ money(s.row.discount_amount) }}</span><span v-else>-</span></template></el-table-column>',
+      '      <el-table-column label="实收金额" width="84" align="right" sortable :sort-method="sortByNum(\'actual_fee\')"><template #default="s"><b style="color:var(--yb-success);">{{ money(s.row.actual_fee) }}</b></template></el-table-column>',
       '      <el-table-column label="费别" width="66"><template #default="s">{{ feeTypeLabel(s.row.fee_type) }}</template></el-table-column>',
       '      <el-table-column label="支付方式" width="84"><template #default="s">{{ payLabel(s.row.pay_method) }}</template></el-table-column>',
       '      <el-table-column prop="mdtrt_id" label="医保就诊ID" width="145" show-overflow-tooltip></el-table-column>',

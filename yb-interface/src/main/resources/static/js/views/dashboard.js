@@ -16,7 +16,7 @@
   function money(n) { return (n === null || n === undefined) ? '0.00' : Number(n).toFixed(2); }
 
   /* Element Plus 风格图表调色板 */
-  var PALETTE = ['#409EFF', '#67C23A', '#E6A23C', '#F56C6C', '#909399', '#00A3E0', '#8E6FFF', '#FF7B9C', '#00C9A7', '#FFB81C'];
+  var PALETTE = HIS.theme.palette;
 
   /* ================= 工作台(Dashboard) ================= */
   HIS.views.Dashboard = {
@@ -99,14 +99,14 @@
           ElementPlus.ElMessage.warning('图表库(echarts)未加载, 仅显示统计卡片');
           return;
         }
-        vm.revenueChart = echarts.init(vm.$refs.revenueChart);
-        vm.deptChart = echarts.init(vm.$refs.deptChart);
-        vm.visitChart = echarts.init(vm.$refs.visitChart);
-        vm.drugChart = echarts.init(vm.$refs.drugChart);
+        vm.revenueChart = echarts.init(vm.$refs.revenueChart, 'yb');
+        vm.deptChart = echarts.init(vm.$refs.deptChart, 'yb');
+        vm.visitChart = echarts.init(vm.$refs.visitChart, 'yb');
+        vm.drugChart = echarts.init(vm.$refs.drugChart, 'yb');
         vm.chartReady = true;
         /* 空态骨架: 数据到达前显示loading动画 */
         [vm.revenueChart, vm.deptChart, vm.visitChart, vm.drugChart].forEach(function (c) {
-          c.showLoading('default', { text: '加载中...', color: '#409EFF', maskColor: 'rgba(255,255,255,.6)' });
+          c.showLoading('default', { text: '加载中...', color: HIS.theme.link, maskColor: 'rgba(255,255,255,.6)' });
         });
         vm.loadRevenue(); vm.loadDeptRevenue(); vm.loadVisits(); vm.loadDrugUsage();
         /* 窗口resize自适应 */
@@ -139,8 +139,8 @@
         return '--';
       },
       ratioColor: function (r) {
-        if (r === null || r === undefined || r === 0) { return '#909399'; }
-        return r > 0 ? '#67C23A' : '#F56C6C';
+        if (r === null || r === undefined || r === 0) { return HIS.theme.ink3; }
+        return r > 0 ? HIS.theme.success : HIS.theme.danger;
       },
       /* ===== 危急值待确认(2026-09 集成: 医技危急值闭环 status=2 已通知待接收) =====
        * 接口不可用(无机构/无权限)时静默置 0, 不阻断工作台; 定时随概览一并刷新 */
@@ -165,7 +165,7 @@
           var rows = data || [];
           vm.revenueChart.hideLoading();
           vm.revenueChart.setOption({
-            color: ['#409EFF'],
+            color: [HIS.theme.link],
             tooltip: {
               trigger: 'axis',
               formatter: function (ps) {
@@ -174,8 +174,8 @@
               }
             },
             grid: { left: 64, right: 20, top: 40, bottom: 32 },
-            xAxis: { type: 'category', boundaryGap: false, data: rows.map(function (d) { return d.date; }), axisLabel: { color: '#909399' } },
-            yAxis: { type: 'value', name: '金额(元)', nameTextStyle: { color: '#909399' }, axisLabel: { color: '#909399', formatter: function (v) { return v >= 10000 ? (v / 10000) + '万' : v; } }, splitLine: { lineStyle: { color: '#ebeef5' } } },
+            xAxis: { type: 'category', boundaryGap: false, data: rows.map(function (d) { return d.date; }), axisLabel: { color: HIS.theme.ink3 } },
+            yAxis: { type: 'value', name: '金额(元)', nameTextStyle: { color: HIS.theme.ink3 }, axisLabel: { color: HIS.theme.ink3, formatter: function (v) { return v >= 10000 ? (v / 10000) + '万' : v; } }, splitLine: { lineStyle: { color: HIS.theme.split } } },
             series: [{
               name: '收入', type: 'line', smooth: true, symbol: 'circle', symbolSize: 6, showSymbol: false,
               data: rows.map(function (d) { return d.amount; }),
@@ -213,7 +213,7 @@
               trigger: 'item',
               formatter: function (p) { return p.name + '<br/>金额: <b>¥ ' + money(p.value) + '</b> (' + p.percent + '%)'; }
             },
-            legend: { bottom: 0, icon: 'circle', itemWidth: 8, itemHeight: 8, textStyle: { color: '#606266', fontSize: 11 } },
+            legend: { bottom: 0, icon: 'circle', itemWidth: 8, itemHeight: 8, textStyle: { color: HIS.theme.ink3, fontSize: 11 } },
             series: [{
               name: '科室收入', type: 'pie', radius: ['42%', '66%'], center: ['50%', '44%'],
               avoidLabelOverlap: true,
@@ -244,16 +244,16 @@
           }
           vm.visitChart.hideLoading();
           vm.visitChart.setOption({
-            color: ['#67C23A'],
+            color: [HIS.theme.success],
             tooltip: { trigger: 'axis', formatter: function (ps) { var p = ps[0]; return p.name + '<br/>就诊量: <b>' + p.value + '</b> 人次'; } },
             grid: { left: 44, right: 20, top: 40, bottom: 32 },
-            xAxis: { type: 'category', data: days, axisLabel: { color: '#909399' } },
-            yAxis: { type: 'value', name: '人次', nameTextStyle: { color: '#909399' }, minInterval: 1, axisLabel: { color: '#909399' }, splitLine: { lineStyle: { color: '#ebeef5' } } },
+            xAxis: { type: 'category', data: days, axisLabel: { color: HIS.theme.ink3 } },
+            yAxis: { type: 'value', name: '人次', nameTextStyle: { color: HIS.theme.ink3 }, minInterval: 1, axisLabel: { color: HIS.theme.ink3 }, splitLine: { lineStyle: { color: HIS.theme.split } } },
             series: [{
               name: '就诊量', type: 'bar', barMaxWidth: 26,
               data: counts,
               itemStyle: { borderRadius: [4, 4, 0, 0] },
-              label: { show: true, position: 'top', color: '#67C23A', fontSize: 11 }
+              label: { show: true, position: 'top', color: HIS.theme.success, fontSize: 11 }
             }]
           });
         }).catch(HIS.notifyError);
@@ -266,7 +266,7 @@
           var rows = (data || []).slice().reverse();   /* yAxis自下而上, 反转后最大在顶部 */
           vm.drugChart.hideLoading();
           vm.drugChart.setOption({
-            color: ['#E6A23C'],
+            color: [HIS.theme.warning],
             tooltip: {
               trigger: 'axis', axisPointer: { type: 'shadow' },
               formatter: function (ps) {
@@ -276,11 +276,11 @@
               }
             },
             grid: { left: 10, right: 56, top: 16, bottom: 10, containLabel: true },
-            xAxis: { type: 'value', axisLabel: { color: '#909399', formatter: function (v) { return v >= 10000 ? (v / 10000) + '万' : v; } }, splitLine: { lineStyle: { color: '#ebeef5' } } },
+            xAxis: { type: 'value', axisLabel: { color: HIS.theme.ink3, formatter: function (v) { return v >= 10000 ? (v / 10000) + '万' : v; } }, splitLine: { lineStyle: { color: HIS.theme.split } } },
             yAxis: {
               type: 'category', data: rows.map(function (d) { return d.drugName; }),
               axisLabel: {
-                color: '#606266', fontSize: 11,
+                color: HIS.theme.ink3, fontSize: 11,
                 formatter: function (s) { return s.length > 6 ? s.slice(0, 5) + '…' : s; }
               },
               axisTick: { show: false }
@@ -289,7 +289,7 @@
               name: '药品金额', type: 'bar', barMaxWidth: 14,
               data: rows.map(function (d) { return d.amount; }),
               itemStyle: { borderRadius: [0, 4, 4, 0] },
-              label: { show: true, position: 'right', color: '#E6A23C', fontSize: 11, formatter: function (p) { var v = Number(p.value) || 0; return v >= 10000 ? (v / 10000).toFixed(1) + '万' : String(v); } }
+              label: { show: true, position: 'right', color: HIS.theme.warning, fontSize: 11, formatter: function (p) { var v = Number(p.value) || 0; return v >= 10000 ? (v / 10000).toFixed(1) + '万' : String(v); } }
             }]
           });
         }).catch(HIS.notifyError);
@@ -301,22 +301,22 @@
       /* ---- 欢迎条 ---- */
       '  <div class="page-card" style="display:flex;align-items:center;justify-content:space-between;">',
       '    <div>',
-      '      <div style="font-size:16px;color:#303133;font-weight:600;">{{ user.realName || user.username }}，欢迎回来</div>',
-      '      <div style="color:#909399;font-size:13px;margin-top:6px;">',
+      '      <div style="font-size:16px;color:var(--yb-ink-1);font-weight:600;">{{ user.realName || user.username }}，欢迎回来</div>',
+      '      <div style="color:var(--yb-ink-2);font-size:13px;margin-top:6px;">',
       '        {{ user.tenantName || "-" }} · {{ user.orgName || "-" }} · {{ roleName }} · 数据每5分钟自动刷新',
       '        <el-tag v-if="overviewLoading" size="small" type="info" style="margin-left:8px;">刷新中...</el-tag>',
       '      </div>',
       '    </div>',
-      '    <div style="text-align:right;color:#909399;font-size:12px;line-height:1.8;">',
+      '    <div style="text-align:right;color:var(--yb-ink-2);font-size:12px;line-height:1.8;">',
       '      <div v-loading="criticalLoading" @click="goCritical" style="cursor:pointer;margin-bottom:4px;" title="已通知待接收的危急值记录">',
       '        <el-badge :value="criticalTodo" :max="99" type="danger" :hidden="criticalTodo <= 0">',
       '          <span :class="criticalTodo > 0 ? \'ds-critical-tag-on\' : \'ds-critical-tag-off\'">危急值待确认</span>',
       '        </el-badge>',
-      '        <span :style="{ marginLeft: \'6px\', fontWeight: \'700\', color: criticalTodo > 0 ? \'#f56c6c\' : \'#909399\' }">{{ criticalTodo }} 项已通知待接收</span>',
-      '        <span style="color:#1a5fb4;">前往处理 →</span>',
+      '        <span :style="{ marginLeft: \'6px\', fontWeight: \'700\', color: criticalTodo > 0 ? \'var(--yb-danger)\' : \'var(--yb-ink-2)\' }">{{ criticalTodo }} 项已通知待接收</span>',
+      '        <span style="color:var(--yb-brand);">前往处理 →</span>',
       '      </div>',
-      '      <div>今日: <b style="color:#409EFF;">{{ todayStr }}</b></div>',
-      '      <div><a href="/verify/index.html" target="_blank" style="color:#1a5fb4;text-decoration:none;">医保接口验证台 →</a></div>',
+      '      <div>今日: <b style="color:var(--yb-link);">{{ todayStr }}</b></div>',
+      '      <div><a href="/verify/index.html" target="_blank" style="color:var(--yb-brand);text-decoration:none;">医保接口验证台 →</a></div>',
       '    </div>',
       '  </div>',
       /* ---- 第一行: 四个统计卡片 ---- */
@@ -388,8 +388,8 @@
       '<div class="page-card">',
       '  <div class="placeholder">',
       '    <div class="big">🚧</div>',
-      '    <h3 style="color:#303133;">{{ title }}</h3>',
-      '    <p style="margin-top:10px;color:#909399;">该模块建设中，计划在 <b style="color:#1a5fb4;">{{ phase }}</b> 阶段交付。</p>',
+      '    <h3 style="color:var(--yb-ink-1);">{{ title }}</h3>',
+      '    <p style="margin-top:10px;color:var(--yb-ink-2);">该模块建设中，计划在 <b style="color:var(--yb-brand);">{{ phase }}</b> 阶段交付。</p>',
       '  </div>',
       '</div>'
     ].join('\n')

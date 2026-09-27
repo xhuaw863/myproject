@@ -5,6 +5,8 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>医保原生HIS - 多租户医院信息系统</title>
   <link rel="stylesheet" href="/vendor/element-plus-index.css">
+  <!-- 设计令牌层: 必须在 EP 默认主题之后、业务样式之前, 以便重映射 --el-* 并供 his.css 引用 -->
+  <link rel="stylesheet" href="/css/theme.css">
   <link rel="stylesheet" href="/css/his.css">
 </head>
 <body>
@@ -20,6 +22,8 @@
 
   <!-- 应用脚本 -->
   <script src="/js/api.js"></script>
+  <!-- 图表色源(canvas 不识别 CSS 变量, 图表必须从字面量主题取色) -->
+  <script src="/js/theme.js"></script>
   <!-- 全局当前库房/药房上下文与作用域混入(须在各 views 之前加载) -->
   <script src="/js/scope.js"></script>
   <script src="/js/views/platform.js"></script>

@@ -175,7 +175,7 @@
     template: [
       '<div class="doctor-worklog-wrap">',
       '  <div class="page-card">',
-      '    <div class="page-title">医生工作日志 <span style="font-size:12px;color:#909399;font-weight:normal;">(按医师汇总接诊/完成/处方/检查工作量, 金额单位: 元)</span></div>',
+      '    <div class="page-title">医生工作日志 <span style="font-size:12px;color:var(--yb-ink-2);font-weight:normal;">(按医师汇总接诊/完成/处方/检查工作量, 金额单位: 元)</span></div>',
       /* 打印标题(仅打印时显示, 屏显时隐藏) */
       '    <div class="doctor-worklog-print-title">医生工作日志</div>',
       '    <div class="doctor-worklog-print-sub">统计区间: {{ startDate || \'-\' }} 至 {{ endDate || \'-\' }} · {{ activeTab===\'summary\' ? (\'工作量汇总, 共 \' + summaryList.length + \' 名医生\') : (\'接诊明细, 共 \' + detailTotal + \' 条记录\') }}</div>',
@@ -194,7 +194,7 @@
       '      <el-button @click="reset">重置</el-button>',
       '      <el-button @click="print">打印</el-button>',
       '      <el-button type="success" plain :loading="exporting" @click="exportExcel">导出Excel</el-button>',
-      '      <span style="margin-left:auto;color:#909399;font-size:13px;">{{ activeTab===\'summary\' ? (\'共 \' + summaryList.length + \' 名医生\') : (\'共 \' + detailTotal + \' 条记录\') }}</span>',
+      '      <span style="margin-left:auto;color:var(--yb-ink-2);font-size:13px;">{{ activeTab===\'summary\' ? (\'共 \' + summaryList.length + \' 名医生\') : (\'共 \' + detailTotal + \' 条记录\') }}</span>',
       '    </div>',
       /* Tab切换(打印时隐藏) */
       '    <div class="doctor-worklog-tabs" style="margin-bottom:12px;">',
@@ -214,11 +214,11 @@
       '      <el-table-column prop="finishRate" label="完成率" width="80" align="right" header-align="right"></el-table-column>',
       '      <el-table-column prop="rxCount" label="处方数" width="80" align="right" header-align="right"></el-table-column>',
       '      <el-table-column prop="rxAmount" label="处方金额" width="100" align="right" header-align="right"><template #default="s">',
-      '        <b style="color:#303133;">{{ money(s.row.rxAmount) }}</b>',
+      '        <b style="color:var(--yb-ink-1);">{{ money(s.row.rxAmount) }}</b>',
       '      </template></el-table-column>',
       '      <el-table-column prop="orderCount" label="检查单数" width="84" align="right" header-align="right"></el-table-column>',
       '      <el-table-column prop="orderAmount" label="检查金额" width="100" align="right" header-align="right"><template #default="s">',
-      '        <b style="color:#303133;">{{ money(s.row.orderAmount) }}</b>',
+      '        <b style="color:var(--yb-ink-1);">{{ money(s.row.orderAmount) }}</b>',
       '      </template></el-table-column>',
       '    </el-table>',
       /* 接诊明细表(分页, 序号跨页连续) */
@@ -259,7 +259,7 @@
       '      .doctor-worklog-wrap .el-radio-group,',
       '      .doctor-worklog-wrap .el-pagination { display: none !important; }',
       '      .doctor-worklog-print-title { display: block !important; text-align: center; font-size: 18px; font-weight: bold; margin-bottom: 6px; }',
-      '      .doctor-worklog-print-sub { display: block !important; text-align: center; font-size: 12px; color: #606266; font-weight: normal; margin-bottom: 16px; }',
+      '      .doctor-worklog-print-sub { display: block !important; text-align: center; font-size: 12px; color: var(--yb-ink-2); font-weight: normal; margin-bottom: 16px; }',
       '    }',
       '  </style>',
       '</div>'

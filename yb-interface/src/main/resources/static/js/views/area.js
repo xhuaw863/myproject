@@ -119,7 +119,7 @@
     },
     template: [
       '<div class="page-card">',
-      '  <div class="page-title">行政区划管理 <span style="font-size:12px;color:#909399;font-weight:normal;">(国家统计局2021版 area_code_2021 · 全局共享)</span></div>',
+      '  <div class="page-title">行政区划管理 <span style="font-size:12px;color:var(--yb-ink-2);font-weight:normal;">(国家统计局2021版 area_code_2021 · 全局共享)</span></div>',
       '  <el-alert type="info" :closable="false" show-icon style="margin-bottom:12px;"',
       '    title="5级行政区划(省/市/县/镇/村)。可点“查看下级”逐级下钻, 或按名称/代码检索; 支持新增、修改、删除(有下级的节点需先删下级)。"></el-alert>',
       '  <div class="toolbar" style="flex-wrap:wrap;gap:8px;">',
@@ -133,7 +133,7 @@
       '    <el-button type="primary" @click="search">检索</el-button>',
       '    <el-button @click="resetRoot">回到全部</el-button>',
       '    <el-button type="success" @click="openCreate">新增区划</el-button>',
-      '    <span style="color:#909399;font-size:13px;">共 {{ total }} 条</span>',
+      '    <span style="color:var(--yb-ink-2);font-size:13px;">共 {{ total }} 条</span>',
       '  </div>',
       '  <el-breadcrumb separator="/" style="margin:6px 0 10px;">',
       '    <el-breadcrumb-item><a href="javascript:;" @click="resetRoot">全部</a></el-breadcrumb-item>',

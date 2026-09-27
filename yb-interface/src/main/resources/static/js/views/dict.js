@@ -56,10 +56,10 @@
       '    <el-table-column prop="label" label="字典" min-width="200"></el-table-column>',
       '    <el-table-column label="结果" min-width="200"><template #default="s">',
       '      <el-tag size="small" :type="s.row.ok?\'success\':\'danger\'">{{ s.row.ok?"成功":"失败" }}</el-tag>',
-      '      <span style="margin-left:8px;color:#606266;">{{ s.row.msg }}</span>',
+      '      <span style="margin-left:8px;color:var(--yb-ink-2);">{{ s.row.msg }}</span>',
       '    </template></el-table-column>',
       '  </el-table>',
-      '  <div v-if="!results.length" style="color:#909399;font-size:13px;margin-top:8px;">尚未执行下载。</div>',
+      '  <div v-if="!results.length" style="color:var(--yb-ink-2);font-size:13px;margin-top:8px;">尚未执行下载。</div>',
       '</div>'
     ].join('\n')
   };
@@ -78,7 +78,7 @@
       '<div class="page-card">',
       '  <div class="page-title">字典版本状态(本院)</div>',
       '  <div class="toolbar"><el-button @click="load">刷新</el-button>',
-      '    <span style="color:#909399;font-size:13px;">共 {{ list.length }} 类字典</span></div>',
+      '    <span style="color:var(--yb-ink-2);font-size:13px;">共 {{ list.length }} 类字典</span></div>',
       '  <el-table :data="list" v-loading="loading" border stripe size="small">',
       '    <el-table-column type="index" label="序号" width="60"></el-table-column>',
       '    <el-table-column prop="dictType" label="字典类型" width="180"></el-table-column>',
@@ -87,7 +87,7 @@
       '    <el-table-column prop="maxVer" label="本地版本" width="140"></el-table-column>',
       '    <el-table-column prop="lastDldTime" label="最近下载" min-width="170"></el-table-column>',
       '  </el-table>',
-      '  <div v-if="!loading && !list.length" style="color:#909399;font-size:13px;margin-top:8px;">本院尚未下载任何字典, 请先到“字典下载”页执行。</div>',
+      '  <div v-if="!loading && !list.length" style="color:var(--yb-ink-2);font-size:13px;margin-top:8px;">本院尚未下载任何字典, 请先到“字典下载”页执行。</div>',
       '</div>'
     ].join('\n')
   };

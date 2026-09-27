@@ -85,7 +85,7 @@
     },
     template: [
       '<div class="page-card">',
-      '  <div class="page-title">结算记录 <span style="font-size:12px;color:#909399;font-weight:normal;">(门诊收费单 + 住院医保结算留存, 金额单位: 元)</span></div>',
+      '  <div class="page-title">结算记录 <span style="font-size:12px;color:var(--yb-ink-2);font-weight:normal;">(门诊收费单 + 住院医保结算留存, 金额单位: 元)</span></div>',
       '  <div class="toolbar">',
       '    <el-select v-model="type" style="width:110px" @change="search">',
       '      <el-option label="全部类型" value=""></el-option>',
@@ -97,7 +97,7 @@
       '    <el-input v-model="keyword" placeholder="患者姓名 / 收费单号" clearable style="width:210px" @keyup.enter="search"></el-input>',
       '    <el-button type="primary" @click="search">查询</el-button>',
       '    <el-button type="success" plain :loading="exporting" @click="doExport">导出Excel</el-button>',
-      '    <span style="color:#909399;font-size:13px;">共 {{ total }} 笔</span>',
+      '    <span style="color:var(--yb-ink-2);font-size:13px;">共 {{ total }} 笔</span>',
       '  </div>',
       '  <el-table :data="list" v-loading="loading" border stripe size="small">',
       '    <el-table-column type="index" label="序号" width="60" :index="seqNo"></el-table-column>',
@@ -107,7 +107,7 @@
       '      <el-tag size="small" :type="bizTag(s.row)" effect="light">{{ bizLabel(s.row) }}</el-tag>',
       '    </template></el-table-column>',
       '    <el-table-column label="总金额" prop="totalAmount" width="110" align="right" header-align="right"><template #default="s">',
-      '      <b style="color:#303133;">{{ money(s.row.totalAmount) }}</b>',
+      '      <b style="color:var(--yb-ink-1);">{{ money(s.row.totalAmount) }}</b>',
       '    </template></el-table-column>',
       '    <el-table-column label="基金支付" prop="fundPay" width="100" align="right" header-align="right"><template #default="s">{{ money(s.row.fundPay) }}</template></el-table-column>',
       '    <el-table-column label="个账支付" prop="acctPay" width="100" align="right" header-align="right"><template #default="s">{{ money(s.row.acctPay) }}</template></el-table-column>',
@@ -191,7 +191,7 @@
         var msg = '将对 ' + vm.settleDate + ' 执行门诊日结:<br/>'
           + '收费 ' + num(p && p.totalCount) + ' 笔 / ¥' + money(p && p.totalAmount)
           + ', 退费 ' + num(p && p.refundCount) + ' 笔 / ¥' + money(p && p.refundAmount)
-          + '<br/><b style="color:#E6A23C;">日结后当日单据不可再退费</b>, 确认执行?';
+          + '<br/><b style="color:var(--yb-warning);">日结后当日单据不可再退费</b>, 确认执行?';
         ElementPlus.ElMessageBox.confirm(msg, '日结确认', {
           type: 'warning', dangerouslyUseHTMLString: true, confirmButtonText: '执行日结', cancelButtonText: '再想想'
         }).then(function () {
@@ -231,9 +231,9 @@
       '  <el-card shadow="never" class="settle-card" style="margin-bottom:14px;">',
       '    <template #header>',
       '      <div style="display:flex;align-items:center;justify-content:space-between;">',
-      '        <div><span style="font-size:15px;font-weight:600;color:#303133;">门诊日结</span>',
-      '          <span style="font-size:12px;color:#909399;margin-left:10px;">按收费单汇总当日交易(收费/退费冲减), 日结后当日不可再退费</span></div>',
-      '        <span style="font-size:12px;color:#909399;">日结日期: <b style="color:#409EFF;">{{ settleDate || "-" }}</b></span>',
+      '        <div><span style="font-size:15px;font-weight:600;color:var(--yb-ink-1);">门诊日结</span>',
+      '          <span style="font-size:12px;color:var(--yb-ink-2);margin-left:10px;">按收费单汇总当日交易(收费/退费冲减), 日结后当日不可再退费</span></div>',
+      '        <span style="font-size:12px;color:var(--yb-ink-2);">日结日期: <b style="color:var(--yb-link);">{{ settleDate || "-" }}</b></span>',
       '      </div>',
       '    </template>',
       '    <div class="toolbar" style="margin-bottom:12px;">',
@@ -256,12 +256,12 @@
       '  </el-card>',
       /* ---- 下半部分: 日结记录列表 ---- */
       '  <div class="page-card">',
-      '    <div class="page-title">日结记录 <span style="font-size:12px;color:#909399;font-weight:normal;">(按结算日期降序, 金额单位: 元)</span></div>',
+      '    <div class="page-title">日结记录 <span style="font-size:12px;color:var(--yb-ink-2);font-weight:normal;">(按结算日期降序, 金额单位: 元)</span></div>',
       '    <div class="toolbar">',
       '      <el-date-picker v-model="dateRange" type="daterange" value-format="YYYY-MM-DD" range-separator="至"',
       '        start-placeholder="开始日期" end-placeholder="结束日期" style="width:250px" @change="search"></el-date-picker>',
       '      <el-button type="primary" @click="search">查询</el-button>',
-      '      <span style="color:#909399;font-size:13px;">共 {{ total }} 条</span>',
+      '      <span style="color:var(--yb-ink-2);font-size:13px;">共 {{ total }} 条</span>',
       '    </div>',
       '    <el-table :data="list" v-loading="loading" border stripe size="small">',
       '      <el-table-column type="index" label="序号" width="60" :index="seqNo"></el-table-column>',

@@ -225,7 +225,7 @@
     },
     template: [
       '<div class="page-card">',
-      '  <div class="page-title">机构管理 <span style="font-size:12px;color:#909399;font-weight:normal;">(医共体县/乡/村三级 · 全医共体共享一套)</span></div>',
+      '  <div class="page-title">机构管理 <span style="font-size:12px;color:var(--yb-ink-2);font-weight:normal;">(医共体县/乡/村三级 · 全医共体共享一套)</span></div>',
       '  <el-alert type="info" :closable="false" show-icon style="margin-bottom:12px;"',
       '    title="牵头机构(ADMIN)统一维护全医共体机构树。机构仅作数据归属标注, 患者档案/基础字典在医共体内跨机构共享。"></el-alert>',
       '  <div class="toolbar">',
@@ -239,7 +239,7 @@
       '      <el-radio-button :label="false">全量</el-radio-button>',
       '      <el-radio-button :label="true">分页</el-radio-button>',
       '    </el-radio-group>',
-      '    <span style="color:#909399;font-size:13px;">共 {{ filteredCount }} 个机构</span>',
+      '    <span style="color:var(--yb-ink-2);font-size:13px;">共 {{ filteredCount }} 个机构</span>',
       '  </div>',
       '  <el-table :data="pagedTree" v-loading="loading" border stripe size="small" row-key="id" :tree-props="{ children: \'children\' }" default-expand-all>',
       '    <el-table-column type="index" :index="seqNo" label="序号" width="60"></el-table-column>',

@@ -31,7 +31,7 @@
   }
 
   /* Element Plus 风格图表调色板(同 dashboard.js) */
-  var PALETTE = ['#409EFF', '#67C23A', '#E6A23C', '#F56C6C', '#909399', '#00A3E0', '#8E6FFF', '#FF7B9C', '#00C9A7', '#FFB81C'];
+  var PALETTE = HIS.theme.palette;
 
   /* 统计表合计行通用: cnt 列求和, amount 列求和(入/出库统计、按日发药明细共用) */
   function sumSummary(param) {
@@ -111,7 +111,7 @@
     },
     template: [
       '<div class="page-card">',
-      '  <div class="page-title">药库统计 <span style="font-size:12px;color:#909399;font-weight:normal;">(库存概况 + 已确认入出库单汇总, 金额单位: 元)</span></div>',
+      '  <div class="page-title">药库统计 <span style="font-size:12px;color:var(--yb-ink-2);font-weight:normal;">(库存概况 + 已确认入出库单汇总, 金额单位: 元)</span></div>',
       '  <div class="toolbar">',
       '    <el-select v-model="warehouseId" placeholder="全部药库" clearable filterable style="width:180px" @change="search">',
       '      <el-option v-for="w in warehouseDefs" :key="w.id" :label="w.name" :value="w.id"></el-option>',
@@ -123,35 +123,35 @@
       '  </div>',
       '  <div class="stat-grid" v-loading="loading">',
       '    <div class="stat-card"><div class="num">{{ num(summary.drugCount) }}</div><div class="lbl">在库品种数</div></div>',
-      '    <div class="stat-card"><div class="num" style="color:#b88230;">¥ {{ money(summary.totalValue) }}</div><div class="lbl">库存总金额(零售价)</div></div>',
-      '    <div class="stat-card"><div class="num" style="color:#E6A23C;">{{ num(summary.lowStockCount) }}</div><div class="lbl">低库存批次(≤预警线且有余量)</div></div>',
-      '    <div class="stat-card"><div class="num" style="color:#F56C6C;">{{ num(summary.nearExpCount) }}</div><div class="lbl">近效期批次(30天内到期)</div></div>',
+      '    <div class="stat-card"><div class="num" style="color:var(--yb-gold);">¥ {{ money(summary.totalValue) }}</div><div class="lbl">库存总金额(零售价)</div></div>',
+      '    <div class="stat-card"><div class="num" style="color:var(--yb-warning);">{{ num(summary.lowStockCount) }}</div><div class="lbl">低库存批次(≤预警线且有余量)</div></div>',
+      '    <div class="stat-card"><div class="num" style="color:var(--yb-danger);">{{ num(summary.nearExpCount) }}</div><div class="lbl">近效期批次(30天内到期)</div></div>',
       '  </div>',
       '  <el-row :gutter="16">',
       '    <el-col :span="12">',
       '      <el-card shadow="never">',
-      '        <template #header><span style="font-weight:600;font-size:14px;color:#303133;">入库统计</span>',
-      '          <span style="font-size:12px;color:#909399;margin-left:8px;">已确认入库单(确认时间口径)</span></template>',
+      '        <template #header><span style="font-weight:600;font-size:14px;color:var(--yb-ink-1);">入库统计</span>',
+      '          <span style="font-size:12px;color:var(--yb-ink-2);margin-left:8px;">已确认入库单(确认时间口径)</span></template>',
       '        <el-table :data="inflows" v-loading="loading" border stripe size="small" show-summary :summary-method="sumSummary" empty-text="暂无入库数据">',
       '          <el-table-column type="index" label="序号" width="60"></el-table-column>',
       '          <el-table-column prop="typeName" label="类型" min-width="100"></el-table-column>',
       '          <el-table-column prop="cnt" label="笔数" width="80" align="right" header-align="right"></el-table-column>',
       '          <el-table-column label="金额" width="120" align="right" header-align="right"><template #default="s">',
-      '            <b style="color:#303133;">{{ money(s.row.amount) }}</b>',
+      '            <b style="color:var(--yb-ink-1);">{{ money(s.row.amount) }}</b>',
       '          </template></el-table-column>',
       '        </el-table>',
       '      </el-card>',
       '    </el-col>',
       '    <el-col :span="12">',
       '      <el-card shadow="never">',
-      '        <template #header><span style="font-weight:600;font-size:14px;color:#303133;">出库统计</span>',
-      '          <span style="font-size:12px;color:#909399;margin-left:8px;">已确认出库单(确认时间口径)</span></template>',
+      '        <template #header><span style="font-weight:600;font-size:14px;color:var(--yb-ink-1);">出库统计</span>',
+      '          <span style="font-size:12px;color:var(--yb-ink-2);margin-left:8px;">已确认出库单(确认时间口径)</span></template>',
       '        <el-table :data="outflows" v-loading="loading" border stripe size="small" show-summary :summary-method="sumSummary" empty-text="暂无出库数据">',
       '          <el-table-column type="index" label="序号" width="60"></el-table-column>',
       '          <el-table-column prop="typeName" label="类型" min-width="100"></el-table-column>',
       '          <el-table-column prop="cnt" label="笔数" width="80" align="right" header-align="right"></el-table-column>',
       '          <el-table-column label="金额" width="120" align="right" header-align="right"><template #default="s">',
-      '            <b style="color:#303133;">{{ money(s.row.amount) }}</b>',
+      '            <b style="color:var(--yb-ink-1);">{{ money(s.row.amount) }}</b>',
       '          </template></el-table-column>',
       '        </el-table>',
       '      </el-card>',
@@ -191,8 +191,8 @@
       /* 图表容器已渲染(首屏可见), 先init再取数; $nextTick 保证 DOM 尺寸可用 */
       vm.$nextTick(function () {
         if (window.echarts && vm.$refs.pharmacyChart) {
-          vm.chart = echarts.init(vm.$refs.pharmacyChart);
-          vm.chart.showLoading('default', { text: '加载中...', color: '#409EFF', maskColor: 'rgba(255,255,255,.6)' });
+          vm.chart = echarts.init(vm.$refs.pharmacyChart, 'yb');
+          vm.chart.showLoading('default', { text: '加载中...', color: HIS.theme.link, maskColor: 'rgba(255,255,255,.6)' });
         } else if (!window.echarts) {
           ElementPlus.ElMessage.warning('图表库(echarts)未加载, 仅显示统计卡片与明细');
         }
@@ -245,12 +245,12 @@
         if (!rows.length) {
           vm.chart.clear();
           vm.chart.setOption({
-            title: { text: '暂无发药数据', left: 'center', top: 'middle', textStyle: { color: '#909399', fontSize: 13, fontWeight: 'normal' } }
+            title: { text: '暂无发药数据', left: 'center', top: 'middle', textStyle: { color: HIS.theme.ink3, fontSize: 13, fontWeight: 'normal' } }
           });
           return;
         }
         vm.chart.setOption({
-          color: ['#409EFF', '#E6A23C'],
+          color: [HIS.theme.link, HIS.theme.warning],
           tooltip: {
             trigger: 'axis',
             formatter: function (ps) {
@@ -264,23 +264,23 @@
               return html;
             }
           },
-          legend: { top: 0, icon: 'roundRect', itemWidth: 12, itemHeight: 8, textStyle: { color: '#606266', fontSize: 11 } },
+          legend: { top: 0, icon: 'roundRect', itemWidth: 12, itemHeight: 8, textStyle: { color: HIS.theme.ink3, fontSize: 11 } },
           grid: { left: 64, right: 68, top: 36, bottom: 30 },
           xAxis: {
             type: 'category', boundaryGap: false,
             data: rows.map(function (d) { return d.dt; }),
-            axisLabel: { color: '#909399' }
+            axisLabel: { color: HIS.theme.ink3 }
           },
           yAxis: [
             {
               type: 'value', name: '笔数', minInterval: 1,
-              nameTextStyle: { color: '#909399' }, axisLabel: { color: '#909399' },
-              splitLine: { lineStyle: { color: '#ebeef5' } }
+              nameTextStyle: { color: HIS.theme.ink3 }, axisLabel: { color: HIS.theme.ink3 },
+              splitLine: { lineStyle: { color: HIS.theme.split } }
             },
             {
               type: 'value', name: '金额(元)',
-              nameTextStyle: { color: '#909399' },
-              axisLabel: { color: '#909399', formatter: amtLabel },
+              nameTextStyle: { color: HIS.theme.ink3 },
+              axisLabel: { color: HIS.theme.ink3, formatter: amtLabel },
               splitLine: { show: false }
             }
           ],
@@ -310,7 +310,7 @@
     },
     template: [
       '<div class="page-card">',
-      '  <div class="page-title">药房统计 <span style="font-size:12px;color:#909399;font-weight:normal;">(发药/退药统计, 金额单位: 元)</span></div>',
+      '  <div class="page-title">药房统计 <span style="font-size:12px;color:var(--yb-ink-2);font-weight:normal;">(发药/退药统计, 金额单位: 元)</span></div>',
       '  <div class="toolbar">',
       '    <el-select v-model="pharmacyId" placeholder="全部药房" clearable filterable style="width:180px" @change="search">',
       '      <el-option v-for="p in pharmacyDefs" :key="p.id" :label="p.name" :value="p.id"></el-option>',
@@ -322,24 +322,24 @@
       '  </div>',
       '  <div class="stat-grid" v-loading="loading">',
       '    <div class="stat-card"><div class="num">{{ num(totalCnt) }}</div><div class="lbl">发药笔数</div></div>',
-      '    <div class="stat-card"><div class="num" style="color:#b88230;">¥ {{ money(totalAmount) }}</div><div class="lbl">发药金额</div></div>',
-      '    <div class="stat-card"><div class="num" style="color:#E6A23C;">{{ num(ret.returnCount) }}</div><div class="lbl">退药单数(已审批)</div></div>',
-      '    <div class="stat-card"><div class="num" style="color:#F56C6C;">{{ ret.returnRate || \'0.0%\' }}</div><div class="lbl">退药率(退药数/发药数)</div></div>',
+      '    <div class="stat-card"><div class="num" style="color:var(--yb-gold);">¥ {{ money(totalAmount) }}</div><div class="lbl">发药金额</div></div>',
+      '    <div class="stat-card"><div class="num" style="color:var(--yb-warning);">{{ num(ret.returnCount) }}</div><div class="lbl">退药单数(已审批)</div></div>',
+      '    <div class="stat-card"><div class="num" style="color:var(--yb-danger);">{{ ret.returnRate || \'0.0%\' }}</div><div class="lbl">退药率(退药数/发药数)</div></div>',
       '  </div>',
       '  <el-card shadow="never" style="margin-bottom:14px;">',
-      '    <template #header><span style="font-weight:600;font-size:14px;color:#303133;">按日发药趋势</span>',
-      '      <span style="font-size:12px;color:#909399;margin-left:8px;">蓝=发药笔数(左轴) 橙=发药金额(右轴)</span></template>',
+      '    <template #header><span style="font-weight:600;font-size:14px;color:var(--yb-ink-1);">按日发药趋势</span>',
+      '      <span style="font-size:12px;color:var(--yb-ink-2);margin-left:8px;">蓝=发药笔数(左轴) 橙=发药金额(右轴)</span></template>',
       '    <div ref="pharmacyChart" style="width:100%;height:300px;"></div>',
       '  </el-card>',
       '  <el-card shadow="never">',
-      '    <template #header><span style="font-weight:600;font-size:14px;color:#303133;">按日发药明细</span>',
-      '      <span style="font-size:12px;color:#909399;margin-left:8px;">退药金额合计 ¥ {{ money(ret.returnAmount) }} · 退药率 {{ ret.returnRate || \'0.0%\' }}</span></template>',
+      '    <template #header><span style="font-weight:600;font-size:14px;color:var(--yb-ink-1);">按日发药明细</span>',
+      '      <span style="font-size:12px;color:var(--yb-ink-2);margin-left:8px;">退药金额合计 ¥ {{ money(ret.returnAmount) }} · 退药率 {{ ret.returnRate || \'0.0%\' }}</span></template>',
       '    <el-table :data="dailyStats" v-loading="loading" border stripe size="small" show-summary :summary-method="sumSummary" empty-text="暂无发药数据">',
       '      <el-table-column type="index" label="序号" width="60"></el-table-column>',
       '      <el-table-column prop="dt" label="日期" width="130"></el-table-column>',
       '      <el-table-column prop="cnt" label="发药笔数" width="110" align="right" header-align="right"></el-table-column>',
       '      <el-table-column label="发药金额" min-width="130" align="right" header-align="right"><template #default="s">',
-      '        <b style="color:#303133;">{{ money(s.row.amount) }}</b>',
+      '        <b style="color:var(--yb-ink-1);">{{ money(s.row.amount) }}</b>',
       '      </template></el-table-column>',
       '    </el-table>',
       '  </el-card>',
@@ -374,8 +374,8 @@
       /* 首屏Tab(支付方式)可见, 先init再取数; $nextTick 保证 DOM 尺寸可用 */
       vm.$nextTick(function () {
         if (window.echarts && vm.$refs.payChart) {
-          vm.payChart = echarts.init(vm.$refs.payChart);
-          vm.payChart.showLoading('default', { text: '加载中...', color: '#409EFF', maskColor: 'rgba(255,255,255,.6)' });
+          vm.payChart = echarts.init(vm.$refs.payChart, 'yb');
+          vm.payChart.showLoading('default', { text: '加载中...', color: HIS.theme.link, maskColor: 'rgba(255,255,255,.6)' });
         } else if (!window.echarts) {
           ElementPlus.ElMessage.warning('图表库(echarts)未加载, 仅显示表格与统计卡片');
         }
@@ -426,7 +426,7 @@
         if (!rows.length) {
           vm.payChart.clear();
           vm.payChart.setOption({
-            title: { text: '暂无支付数据', left: 'center', top: 'middle', textStyle: { color: '#909399', fontSize: 13, fontWeight: 'normal' } }
+            title: { text: '暂无支付数据', left: 'center', top: 'middle', textStyle: { color: HIS.theme.ink3, fontSize: 13, fontWeight: 'normal' } }
           });
           return;
         }
@@ -436,11 +436,11 @@
             trigger: 'item',
             formatter: function (p) { return p.name + '<br/>金额: <b>¥ ' + money(p.value) + '</b> (' + p.percent + '%)'; }
           },
-          legend: { bottom: 0, icon: 'circle', itemWidth: 8, itemHeight: 8, textStyle: { color: '#606266', fontSize: 11 } },
+          legend: { bottom: 0, icon: 'circle', itemWidth: 8, itemHeight: 8, textStyle: { color: HIS.theme.ink3, fontSize: 11 } },
           series: [{
             name: '支付方式', type: 'pie', radius: ['40%', '66%'], center: ['50%', '44%'],
             avoidLabelOverlap: true,
-            label: { formatter: '{b}\n{d}%', color: '#606266', fontSize: 11 },
+            label: { formatter: '{b}\n{d}%', color: HIS.theme.ink3, fontSize: 11 },
             data: rows.map(function (d) {
               return { name: d.payMethodName || d.payMethod || '-', value: Number(d.amount) || 0 };
             })
@@ -480,13 +480,13 @@
     },
     template: [
       '<div class="page-card">',
-      '  <div class="page-title">收费统计 <span style="font-size:12px;color:#909399;font-weight:normal;">(支付方式 / 退费 / 发票, 金额单位: 元)</span></div>',
+      '  <div class="page-title">收费统计 <span style="font-size:12px;color:var(--yb-ink-2);font-weight:normal;">(支付方式 / 退费 / 发票, 金额单位: 元)</span></div>',
       '  <div class="toolbar">',
       '    <el-date-picker v-model="dateRange" type="daterange" value-format="YYYY-MM-DD" range-separator="至"',
       '      start-placeholder="开始日期" end-placeholder="结束日期" style="width:250px" @change="search"></el-date-picker>',
       '    <el-button type="primary" @click="search">查询</el-button>',
       '    <el-button type="success" plain :loading="exporting" @click="doExport">导出Excel</el-button>',
-      '    <span style="margin-left:auto;color:#909399;font-size:13px;">统计区间: {{ startDate || \'-\' }} 至 {{ endDate || \'-\' }}</span>',
+      '    <span style="margin-left:auto;color:var(--yb-ink-2);font-size:13px;">统计区间: {{ startDate || \'-\' }} 至 {{ endDate || \'-\' }}</span>',
       '  </div>',
       '  <div style="margin-bottom:12px;">',
       '    <el-radio-group v-model="activeTab" @change="onTabChange">',
@@ -499,21 +499,21 @@
       '  <el-row v-show="activeTab===\'paymethod\'" :gutter="16">',
       '    <el-col :span="12">',
       '      <el-card shadow="never">',
-      '        <template #header><span style="font-weight:600;font-size:14px;color:#303133;">支付方式构成</span>',
-      '          <span style="font-size:12px;color:#909399;margin-left:8px;">按金额占比</span></template>',
+      '        <template #header><span style="font-weight:600;font-size:14px;color:var(--yb-ink-1);">支付方式构成</span>',
+      '          <span style="font-size:12px;color:var(--yb-ink-2);margin-left:8px;">按金额占比</span></template>',
       '        <div ref="payChart" style="width:100%;height:320px;"></div>',
       '      </el-card>',
       '    </el-col>',
       '    <el-col :span="12">',
       '      <el-card shadow="never">',
-      '        <template #header><span style="font-weight:600;font-size:14px;color:#303133;">支付方式明细</span>',
-      '          <span style="font-size:12px;color:#909399;margin-left:8px;">按金额降序, 共计 ¥ {{ money(payAmountSum) }}</span></template>',
+      '        <template #header><span style="font-weight:600;font-size:14px;color:var(--yb-ink-1);">支付方式明细</span>',
+      '          <span style="font-size:12px;color:var(--yb-ink-2);margin-left:8px;">按金额降序, 共计 ¥ {{ money(payAmountSum) }}</span></template>',
       '        <el-table :data="payList" v-loading="loading" border stripe size="small" empty-text="暂无支付数据">',
       '          <el-table-column type="index" label="序号" width="60"></el-table-column>',
       '          <el-table-column label="支付方式" min-width="110"><template #default="s">{{ s.row.payMethodName || s.row.payMethod || \'-\' }}</template></el-table-column>',
       '          <el-table-column prop="cnt" label="笔数" width="80" align="right" header-align="right"></el-table-column>',
       '          <el-table-column label="金额" width="120" align="right" header-align="right"><template #default="s">',
-      '            <b style="color:#303133;">{{ money(s.row.amount) }}</b>',
+      '            <b style="color:var(--yb-ink-1);">{{ money(s.row.amount) }}</b>',
       '          </template></el-table-column>',
       '          <el-table-column label="占比" width="90" align="right" header-align="right"><template #default="s">',
       '            {{ percentText(s.row.amount, payAmountSum) }}',
@@ -526,21 +526,21 @@
       '  <div v-show="activeTab===\'refund\'">',
       '    <div class="stat-grid" v-loading="loading">',
       '      <div class="stat-card"><div class="num">{{ num(refund.refundCount) }}</div><div class="lbl">退费笔数</div></div>',
-      '      <div class="stat-card"><div class="num" style="color:#F56C6C;">¥ {{ money(refund.refundAmount) }}</div><div class="lbl">退费金额</div></div>',
+      '      <div class="stat-card"><div class="num" style="color:var(--yb-danger);">¥ {{ money(refund.refundAmount) }}</div><div class="lbl">退费金额</div></div>',
       '      <div class="stat-card"><div class="num">{{ num(refund.fullRefundCount) }}</div><div class="lbl">全额退费(未关联原单)</div></div>',
-      '      <div class="stat-card"><div class="num" style="color:#E6A23C;">{{ num(refund.partialRefundCount) }}</div><div class="lbl">部分退费(关联原单)</div></div>',
+      '      <div class="stat-card"><div class="num" style="color:var(--yb-warning);">{{ num(refund.partialRefundCount) }}</div><div class="lbl">部分退费(关联原单)</div></div>',
       '    </div>',
-      '    <div style="color:#909399;font-size:12px;">口径: 按退费单(收费时间)统计; 关联原单的差额退款记为部分退费, 未关联原单的整单退款记为全额退费</div>',
+      '    <div style="color:var(--yb-ink-2);font-size:12px;">口径: 按退费单(收费时间)统计; 关联原单的差额退款记为部分退费, 未关联原单的整单退款记为全额退费</div>',
       '  </div>',
       /* 发票统计Tab: 汇总卡片 */
       '  <div v-show="activeTab===\'invoice\'">',
       '    <div class="stat-grid" v-loading="loading">',
-      '      <div class="stat-card"><div class="num" style="color:#67C23A;">{{ num(invoice.normalCount) }}</div><div class="lbl">正常发票(已开具)</div></div>',
-      '      <div class="stat-card"><div class="num" style="color:#E6A23C;">{{ num(invoice.voidCount) }}</div><div class="lbl">已作废</div></div>',
-      '      <div class="stat-card"><div class="num" style="color:#F56C6C;">{{ num(invoice.redCount) }}</div><div class="lbl">已红冲</div></div>',
+      '      <div class="stat-card"><div class="num" style="color:var(--yb-success);">{{ num(invoice.normalCount) }}</div><div class="lbl">正常发票(已开具)</div></div>',
+      '      <div class="stat-card"><div class="num" style="color:var(--yb-warning);">{{ num(invoice.voidCount) }}</div><div class="lbl">已作废</div></div>',
+      '      <div class="stat-card"><div class="num" style="color:var(--yb-danger);">{{ num(invoice.redCount) }}</div><div class="lbl">已红冲</div></div>',
       '      <div class="stat-card"><div class="num">{{ num(invoice.totalCount) }}</div><div class="lbl">发票总计</div></div>',
       '    </div>',
-      '    <div style="color:#909399;font-size:12px;">口径: 按发票创建时间统计; 正常=类型NORMAL且状态已开具, 作废/红冲按发票状态统计</div>',
+      '    <div style="color:var(--yb-ink-2);font-size:12px;">口径: 按发票创建时间统计; 正常=类型NORMAL且状态已开具, 作废/红冲按发票状态统计</div>',
       '  </div>',
       '</div>'
     ].join('\n')
