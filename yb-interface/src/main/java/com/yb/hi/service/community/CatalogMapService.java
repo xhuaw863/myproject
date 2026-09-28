@@ -55,17 +55,20 @@ public class CatalogMapService {
     private final HisChargeItemService chargeService;
     private final StdDictMaintainService stdMaintain;
     private final HisYbMapLogMapper ybMapLogMapper;
+    private final com.yb.hi.service.yb.CatalogUploadService catalogUploadService;
 
     public CatalogMapService(HisDrugCatalogService drugService,
                              HisConsCatalogService consService,
                              HisChargeItemService chargeService,
                              StdDictMaintainService stdMaintain,
-                             HisYbMapLogMapper ybMapLogMapper) {
+                             HisYbMapLogMapper ybMapLogMapper,
+                             com.yb.hi.service.yb.CatalogUploadService catalogUploadService) {
         this.drugService = drugService;
         this.consService = consService;
         this.chargeService = chargeService;
         this.stdMaintain = stdMaintain;
         this.ybMapLogMapper = ybMapLogMapper;
+        this.catalogUploadService = catalogUploadService;
     }
 
     /** 目录 -> 标准字典 key */
@@ -795,6 +798,10 @@ public class CatalogMapService {
         rec.setChangeTime(LocalDateTime.now());
         rec.setMemo(memo);
         ybMapLogMapper.insert(rec);
+        // 3301/3302 上报事件源(M4): MAP->3301, CLEAR->3302, CHANGE->先3302后3301; EFF 不触发平台交易
+        if (!HisYbMapLog.TYPE_EFF.equals(type)) {
+            catalogUploadService.enqueue(catalog, itemId, itemCode, itemName, oldCode, newCode, type);
+        }
     }
 
     /* ================= 批量自动对照 ================= */

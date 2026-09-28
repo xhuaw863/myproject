@@ -37,6 +37,9 @@
         panelMode: '',
         /* 对照变更留痕 */
         logDlg: false, logLoading: false, logList: [], logTotal: 0, logPage: 1, logSize: 20, logOnlyCur: true, logRange: [], logKw: '',
+        /* 3301/3302 上报队列(M4) */
+        upDlg: false, upLoading: false, upRunning: false, upRetrying: false,
+        upCatalog: '', upStatus: null, upList: [], upTotal: 0, upPage: 1, upSize: 20,
         /* 导出对照结果 */
         exporting: false,
         /* 已自动将"仅未对照"切为"全部"(避免空列表), 每次查询/切目录重置 */
@@ -280,6 +283,39 @@
         HIS.get(q).then(function (d) {
           vm.logList = (d && d.records) || []; vm.logTotal = (d && d.total) || 0;
         }).catch(HIS.notifyError).finally(function () { vm.logLoading = false; });
+      },
+
+      /* ==== 3301/3302 上报队列(M4): 对照变更自动入队, 手动触发先撤(3302)后传(3301), 每批≤100条 ==== */
+      openUpDlg: function () { this.upDlg = true; this.upPage = 1; this.loadQueue(); },
+      onUpFilter: function () { this.upPage = 1; this.loadQueue(); },
+      onUpPage: function (p) { this.upPage = p; this.loadQueue(); },
+      onUpSize: function (s) { this.upSize = s; this.onUpPage(1); },
+      upSeq: function (i) { return (this.upPage - 1) * this.upSize + i + 1; },
+      upCatalogText: function (t) { return { drug: '药品', cons: '耗材', charge: '医疗服务项目' }[t] || t; },
+      upActionText: function (t) {
+        return { MAP: '新增对照→3301', CHANGE: '变更对照→先撤后传', CLEAR: '清除对照→3302' }[t] || t;
+      },
+      loadQueue: function () {
+        var vm = this; vm.upLoading = true;
+        var q = '/api/yb/catalog-upload/queue?page=' + vm.upPage + '&size=' + vm.upSize;
+        if (vm.upCatalog) { q += '&catalog=' + vm.upCatalog; }
+        if (vm.upStatus !== null && vm.upStatus !== undefined && vm.upStatus !== '') { q += '&status=' + vm.upStatus; }
+        HIS.get(q).then(function (d) {
+          vm.upList = (d && d.records) || []; vm.upTotal = (d && d.total) || 0;
+        }).catch(HIS.notifyError).finally(function () { vm.upLoading = false; });
+      },
+      runUp: function () {
+        var vm = this; vm.upRunning = true;
+        HIS.post('/api/yb/catalog-upload/run', {}).then(function (d) {
+          HIS.notifySuccess('上报完成: 撤销 ' + (d.revoked || 0) + ' 条 / 上传 ' + (d.uploaded || 0) + ' 条 / 失败 ' + (d.failed || 0) + ' 条');
+          vm.loadQueue();
+        }).catch(HIS.notifyError).finally(function () { vm.upRunning = false; });
+      },
+      retryUp: function () {
+        var vm = this; vm.upRetrying = true;
+        HIS.post('/api/yb/catalog-upload/retry', {}).then(function (msg) {
+          HIS.notifySuccess(msg); vm.loadQueue();
+        }).catch(HIS.notifyError).finally(function () { vm.upRetrying = false; });
       }
     },
     template: [
@@ -309,6 +345,7 @@
       '    <el-button type="warning" @click="openAuto">批量自动对照</el-button>',
       '    <el-button type="danger" plain :disabled="!selection.length" @click="clearMap(selection)">清除选中对照</el-button>',
       '    <el-button @click="openLogDlg">变更记录</el-button>',
+      '    <el-button type="primary" plain @click="openUpDlg">3301/3302 上报队列</el-button>',
       '    <el-button :loading="exporting" @click="exportRows">导出结果</el-button>',
       '    <span style="color:var(--yb-ink-2);font-size:13px;">共 {{ total }} 条, 已选 {{ selection.length }}</span>',
       '  </div>',
@@ -438,6 +475,38 @@
       '      <el-table-column prop="memo" label="备注" min-width="140" show-overflow-tooltip><template #default="s">{{ s.row.memo || "—" }}</template></el-table-column>',
       '    </el-table>',
       '    <el-pagination style="margin-top:10px;justify-content:flex-end;" background layout="total, sizes, prev, pager, next" :total="logTotal" :page-size="logSize" :page-sizes="[10,20,50,100]" :current-page="logPage" @current-change="onLogPage" @size-change="onLogSize"></el-pagination>',
+      '  </el-dialog>',
+
+      /* ==== 3301/3302 上报队列弹窗(M4) ==== */
+      '  <el-dialog v-model="upDlg" title="医保目录对照上报队列(3301/3302)" width="1050px" top="6vh">',
+      '    <el-alert type="info" :closable="false" show-icon style="margin-bottom:10px"',
+      '      title="对照变更自动入队: 新增对照→3301 上传; 清除对照→3302 撤销; 变更对照→先 3302 撤销原码后 3301 上传新码。每批 ≤100 条; list_type 未配置(application.yml yb.list-type-*)时对应目录类型拒绝上报。"></el-alert>',
+      '    <div class="toolbar">',
+      '      <el-select v-model="upCatalog" placeholder="目录类型" clearable style="width:140px" @change="onUpFilter">',
+      '        <el-option v-for="c in catalogs" :key="c.v" :label="c.l" :value="c.v"></el-option>',
+      '      </el-select>',
+      '      <el-select v-model="upStatus" placeholder="状态" clearable style="width:120px" @change="onUpFilter">',
+      '        <el-option label="待传" :value="0"></el-option>',
+      '        <el-option label="已传" :value="1"></el-option>',
+      '        <el-option label="失败" :value="2"></el-option>',
+      '      </el-select>',
+      '      <el-button type="primary" :loading="upRunning" @click="runUp">立即上报(先撤后传)</el-button>',
+      '      <el-button :loading="upRetrying" @click="retryUp">失败重传(复位待传)</el-button>',
+      '      <span style="color:var(--yb-ink-2);font-size:13px;">共 {{ upTotal }} 条</span>',
+      '    </div>',
+      '    <el-table :data="upList" v-loading="upLoading" border stripe size="small" height="420">',
+      '      <el-table-column type="index" label="序号" width="60" :index="upSeq"></el-table-column>',
+      '      <el-table-column label="目录" width="110"><template #default="s">{{ upCatalogText(s.row.catalogType) }}</template></el-table-column>',
+      '      <el-table-column prop="itemCode" label="院内码" width="110" show-overflow-tooltip></el-table-column>',
+      '      <el-table-column prop="itemName" label="名称" min-width="130" show-overflow-tooltip></el-table-column>',
+      '      <el-table-column label="动作" width="150"><template #default="s">{{ upActionText(s.row.action) }}</template></el-table-column>',
+      '      <el-table-column label="原码→新码" min-width="160" show-overflow-tooltip><template #default="s">{{ s.row.oldCode || "—" }} → {{ s.row.newCode || "—" }}</template></el-table-column>',
+      '      <el-table-column label="状态" width="80"><template #default="s"><el-tag size="small" :type="s.row.status===1?\'success\':(s.row.status===2?\'danger\':\'info\')">{{ s.row.status===1?\'已传\':(s.row.status===2?\'失败\':\'待传\') }}</el-tag></template></el-table-column>',
+      '      <el-table-column prop="batchNo" label="批次号" width="130" show-overflow-tooltip><template #default="s">{{ s.row.batchNo || "—" }}</template></el-table-column>',
+      '      <el-table-column prop="uploadTime" label="上传时间" width="150"><template #default="s">{{ s.row.uploadTime || "—" }}</template></el-table-column>',
+      '      <el-table-column prop="lastErr" label="失败原因" min-width="180" show-overflow-tooltip><template #default="s">{{ s.row.lastErr || "—" }}</template></el-table-column>',
+      '    </el-table>',
+      '    <el-pagination style="margin-top:10px;justify-content:flex-end;" background layout="total, sizes, prev, pager, next" :total="upTotal" :page-size="upSize" :page-sizes="[10,20,50,100]" :current-page="upPage" @current-change="onUpPage" @size-change="onUpSize"></el-pagination>',
       '  </el-dialog>',
       '</div>'
     ].join('\n')

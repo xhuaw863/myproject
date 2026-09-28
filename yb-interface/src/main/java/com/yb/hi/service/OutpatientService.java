@@ -199,4 +199,26 @@ public class OutpatientService {
         input.put("fsUploadIn", req);
         return ybHttpClient.call("9101", input, null);
     }
+
+    /**
+     * 【3301】目录对照上传(规范表206)
+     * 输入节点: data(多行, 每行 CatalogUploadReq 严格按表206字段, ≤100 条/批); 输出: 无。
+     */
+    public YbResponse catalogUpload(List<CatalogUploadReq> rows) {
+        log.info("目录对照上传3301: {} 条", rows == null ? 0 : rows.size());
+        Map<String, Object> input = new LinkedHashMap<>();
+        input.put("data", rows);
+        return ybHttpClient.call("3301", input, null);
+    }
+
+    /**
+     * 【3302】目录对照撤销(规范表208)
+     * 输入节点: data(多行, 每行 CatalogRevokeReq 严格按表208字段); 输出: 无。
+     */
+    public YbResponse catalogRevoke(List<CatalogRevokeReq> rows) {
+        log.info("目录对照撤销3302: {} 条", rows == null ? 0 : rows.size());
+        Map<String, Object> input = new LinkedHashMap<>();
+        input.put("data", rows);
+        return ybHttpClient.call("3302", input, null);
+    }
 }

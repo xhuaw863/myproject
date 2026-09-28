@@ -112,6 +112,14 @@ public class MockYbServer {
             case "2401":
                 output = mockAdmission(input);
                 break;
+            case "3301":
+                // 目录对照上传(M4): 受理入库 mock 对照表, 规范输出无节点, infcode=0 即成功
+                mockCatalogUpload(input);
+                break;
+            case "3302":
+                // 目录对照撤销(M4): 移除 mock 对照, 规范输出无节点, infcode=0 即成功
+                mockCatalogRevoke(input);
+                break;
             default:
                 // 2203/2402 等无输出交易
                 break;
@@ -335,6 +343,60 @@ public class MockYbServer {
     /** 结算是否已撤销(2208 受理登记; 补偿任务 RESOLVE_UNKNOWN 用) */
     public boolean isSetlCancelled(String setlId) {
         return setlId != null && mockCancelledSetls.contains(setlId);
+    }
+
+    // ==================== 目录对照模拟(M4: 3301/3302) ====================
+
+    /** mock 平台侧目录对照表: key = fixmedins_hilist_id|list_type|med_list_codg */
+    private final Map<String, JSONObject> mockCatalog = new ConcurrentHashMap<>();
+
+    /** 3301 受理入库 mock 对照表(表206 多行; 输出无) */
+    private void mockCatalogUpload(JSONObject input) {
+        JSONArray rows = input.getJSONArray("data");
+        if (rows == null) {
+            return;
+        }
+        int n = 0;
+        for (int i = 0; i < rows.size(); i++) {
+            JSONObject r = rows.getJSONObject(i);
+            if (r == null) {
+                continue;
+            }
+            String key = r.getString("fixmedins_hilist_id") + "|" + r.getString("list_type") + "|" + r.getString("med_list_codg");
+            mockCatalog.put(key, r);
+            n++;
+        }
+        log.info("【模拟医保平台】3301 对照受理入库 {} 条, 现有对照 {} 条", n, mockCatalog.size());
+    }
+
+    /** 3302 移除 mock 对照(表208 多行; 输出无) */
+    private void mockCatalogRevoke(JSONObject input) {
+        JSONArray rows = input.getJSONArray("data");
+        if (rows == null) {
+            return;
+        }
+        int n = 0;
+        for (int i = 0; i < rows.size(); i++) {
+            JSONObject r = rows.getJSONObject(i);
+            if (r == null) {
+                continue;
+            }
+            String key = r.getString("fixmedins_hilist_id") + "|" + r.getString("list_type") + "|" + r.getString("med_list_codg");
+            if (mockCatalog.remove(key) != null) {
+                n++;
+            }
+        }
+        log.info("【模拟医保平台】3302 对照撤销 {} 条, 现有对照 {} 条", n, mockCatalog.size());
+    }
+
+    /** mock 平台侧现存对照条数(联调断言用) */
+    public int mockCatalogCount() {
+        return mockCatalog.size();
+    }
+
+    /** mock 平台侧是否存有该对照(联调断言用) */
+    public boolean mockCatalogContains(String hilistId, String listType, String medListCodg) {
+        return mockCatalog.containsKey(hilistId + "|" + listType + "|" + medListCodg);
     }
 
     /**

@@ -40,4 +40,10 @@ public class YbConfig {
     private String refdSetlFlag3202;
     /** 对账任务 cron(默认每日 07:00 对 T-1; 避开平台结算高峰期) */
     private String reconCron = "0 0 7 * * *";
+    /** 目录对照上传(3301/3302)list_type 目录类别(规范第6章值域, 与平台确认后按目录类型配置; 未配置时对应目录类型拒绝上传) */
+    private String listTypeDrug;
+    /** 3301/3302 list_type: 耗材目录类别 */
+    private String listTypeCons;
+    /** 3301/3302 list_type: 医疗服务项目目录类别 */
+    private String listTypeCharge;
 }

@@ -53,6 +53,8 @@ public class BizRoleInterceptor implements HandlerInterceptor {
         WRITE_ROLES.put("/api/medtech/", new String[]{Roles.TECHNICIAN});
         // 医保对账台(3201/3202 触发与差异处置; ADMIN/ORG_ADMIN 全局放行)
         WRITE_ROLES.put("/api/yb/recon/", new String[]{Roles.CASHIER});
+        // 医保目录对照上报管理端(3301/3302 队列触发与重传; 对照管理为管理端职责, 仅管理员)
+        WRITE_ROLES.put("/api/yb/catalog-upload/", new String[]{Roles.ADMIN});
     }
 
     @Override

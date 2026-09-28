@@ -74,6 +74,10 @@ yb:
   # refd-setl-flag-3202: "000"
   # 对账调度 cron(默认每日 07:00 对 T-1 结算日)
   recon-cron: "0 0 7 * * *"
+  # 目录对照上传(3301/3302)list_type 目录类别(规范第6章值域, 与平台确认后按目录类型配置; 未配置时对应目录类型拒绝上传)
+  list-type-drug: ${YB_LIST_TYPE_DRUG:}
+  list-type-cons: ${YB_LIST_TYPE_CONS:}
+  list-type-charge: ${YB_LIST_TYPE_CHARGE:}
   # 签名证书编号
   sign-no: ""
   # SM2 私钥(Base64), 配置后启用真实SM2签名

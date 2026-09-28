@@ -840,6 +840,28 @@ public class DictSchemaMigration implements ApplicationRunner {
                     + "KEY idx_setl_mdtrt (mdtrt_id),"
                     + "KEY idx_setl_tenant_time (tenant_id, setl_time)"
                     + ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='结算记录表'");
+            /* 3301/3302 对照上传队列(M4, 事件源: his_yb_map_log; MAP->3301, CLEAR->3302, CHANGE->先3302后3301) */
+            st.executeUpdate("CREATE TABLE IF NOT EXISTS his_yb_upload_queue ("
+                    + "id BIGINT NOT NULL AUTO_INCREMENT COMMENT '主键',"
+                    + "tenant_id BIGINT NOT NULL DEFAULT 0 COMMENT '租户(医共体)ID',"
+                    + "catalog_type VARCHAR(10) DEFAULT NULL COMMENT '目录类型: charge/drug/cons',"
+                    + "catalog_id BIGINT DEFAULT NULL COMMENT '院内条目ID',"
+                    + "item_code VARCHAR(100) DEFAULT NULL COMMENT '院内编码=fixmedins_hilist_id',"
+                    + "item_name VARCHAR(200) DEFAULT NULL COMMENT '院内名称=fixmedins_hilist_name',"
+                    + "list_type VARCHAR(30) DEFAULT NULL COMMENT '目录类别(3301/3302 必填, 与平台确认后配置)',"
+                    + "old_code VARCHAR(50) DEFAULT NULL COMMENT '变更前医保码(撤销用)',"
+                    + "new_code VARCHAR(50) DEFAULT NULL COMMENT '变更后医保码(上传用)',"
+                    + "action VARCHAR(10) DEFAULT NULL COMMENT '动作: MAP/CHANGE/CLEAR',"
+                    + "status TINYINT DEFAULT 0 COMMENT '状态: 0待传 1已传 2失败',"
+                    + "batch_no VARCHAR(40) DEFAULT NULL COMMENT '上传批次号(平台回执报文ID)',"
+                    + "upload_time DATETIME DEFAULT NULL COMMENT '上传时间',"
+                    + "last_err VARCHAR(500) DEFAULT NULL COMMENT '失败原因',"
+                    + "create_by VARCHAR(50) DEFAULT NULL, create_time DATETIME DEFAULT NULL,"
+                    + "update_by VARCHAR(50) DEFAULT NULL, update_time DATETIME DEFAULT NULL, deleted TINYINT DEFAULT 0,"
+                    + "PRIMARY KEY (id),"
+                    + "KEY idx_upload_status (tenant_id, status),"
+                    + "KEY idx_upload_catalog (tenant_id, catalog_type, status)"
+                    + ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='医保对照上传队列(批次4 M4: 3301/3302)'");
         }
     }
 
