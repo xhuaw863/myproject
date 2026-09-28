@@ -33,7 +33,7 @@
         withSubOrgs: false,
         exporting: false,
         /* 右侧明细显示模式: paged=true 分页(默认, 科室基数大须分页浏览) / false 全量(localStorage 持久化用户偏好) */
-        paged: (function () { try { return localStorage.getItem('his.deptPaged') !== '0'; } catch (e) { return true; } })(),
+        paged: (function () { try { return localStorage.getItem('his.deptPaged2') !== '0'; } catch (e) { return true; } })(),
         page: 1, size: 20,
         /* 左栏机构列表收缩态(localStorage 持久化, 与主侧栏收展同策略) */
         orgsCollapsed: (function () { try { return localStorage.getItem('his.deptOrgsCollapsed') === '1'; } catch (e) { return false; } })(),
@@ -289,10 +289,16 @@
         if (vm.filterOrg) { q += '&orgId=' + vm.filterOrg + '&withSubOrgs=' + vm.withSubOrgs; }
         HIS.get(q).then(function (d) { vm.tree = d || []; vm.rebuildMap(); vm.page = 1; }).catch(HIS.notifyError).finally(function () { vm.loading = false; });
       },
-      /* 分页/全量模式切换(持久化)与翻页 */
+      /* 分页/全量模式切换(持久化): 超阈禁切全量防渲染冻结; 键升级 deptPaged2 一次性作废旧偏好 */
       onPagedToggle: function () {
+        if (!this.paged && this.flatRows.length > 2000) {
+          this.paged = true;
+          ElementPlus.ElMessage.warning('当前共 ' + this.flatRows.length + ' 行, 数据量过大全量显示会长时间卡顿, 已自动保持分页');
+          try { localStorage.setItem('his.deptPaged2', '1'); } catch (e) { }
+          return;
+        }
         this.page = 1;
-        try { localStorage.setItem('his.deptPaged', this.paged ? '1' : '0'); } catch (e) { }
+        try { localStorage.setItem('his.deptPaged2', this.paged ? '1' : '0'); } catch (e) { }
       },
       /* 序号列: 分页模式跨页连续编号 */
       seqNo: function (i) { return this.paged ? (this.page - 1) * this.size + i + 1 : i + 1; },
@@ -508,7 +514,7 @@
         /* 左栏树过滤关键字(按机构/科室名, 命中节点连同其父级链保留显示) */
         treeKw: '',
         /* 右侧明细显示模式: paged=true 分页(默认, 职工基数大须分页浏览) / false 全量(localStorage 持久化用户偏好) */
-        paged: (function () { try { return localStorage.getItem('his.staffPaged') !== '0'; } catch (e) { return true; } })(),
+        paged: (function () { try { return localStorage.getItem('his.staffPaged2') !== '0'; } catch (e) { return true; } })(),
         page: 1, size: 20,
         /* 左栏机构/科室树收缩态(localStorage 持久化, 与科室管理同策略) */
         orgsCollapsed: (function () { try { return localStorage.getItem('his.staffOrgsCollapsed') === '1'; } catch (e) { return false; } })(),
@@ -794,10 +800,16 @@
       typeTag: function (t) {
         return { '医师': 'primary', '药师': 'success', '护士': 'warning', '技师': 'info' }[t] || 'info';
       },
-      /* 分页/全量模式切换(持久化)与翻页 */
+      /* 分页/全量模式切换(持久化): 超阈禁切全量防渲染冻结; 键升级 staffPaged2 一次性作废旧偏好 */
       onPagedToggle: function () {
+        if (!this.paged && this.list.length > 2000) {
+          this.paged = true;
+          ElementPlus.ElMessage.warning('当前共 ' + this.list.length + ' 行, 数据量过大全量显示会长时间卡顿, 已自动保持分页');
+          try { localStorage.setItem('his.staffPaged2', '1'); } catch (e) { }
+          return;
+        }
         this.page = 1;
-        try { localStorage.setItem('his.staffPaged', this.paged ? '1' : '0'); } catch (e) { }
+        try { localStorage.setItem('his.staffPaged2', this.paged ? '1' : '0'); } catch (e) { }
       },
       onPage: function (p) { this.page = p; },
       onSize: function (s) { this.size = s; this.page = 1; },
