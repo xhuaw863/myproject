@@ -296,6 +296,13 @@ public class DictSchemaMigration implements ApplicationRunner {
                 {"his_diagnosis", "diag_class", "VARCHAR(20) NULL COMMENT '诊断类别: west/tcm/symp/oper/tumor(源自医共体诊断字典dict_type)'"},
                 /* ---------- 批次4: 收费单医保结算状态(两阶段化中间态, 存量库补列; 新库由 ensureCashierTables 建列) ---------- */
                 {"his_charge_bill", "yb_status", "TINYINT NOT NULL DEFAULT 0 COMMENT '医保结算状态:0未结算 1结算中 2已结算 3撤销中 4已撤销 9冲正中'"},
+                /* ---------- 批次4 M3: 日结口径补挂号费与全渠道分项(存量库补列; 新库由 ensureCashierTables 建列) ---------- */
+                {"his_daily_settle", "reg_count", "INT DEFAULT 0 COMMENT '挂号笔数(净额: 挂号-退号)'"},
+                {"his_daily_settle", "reg_amount", "DECIMAL(12,2) DEFAULT 0 COMMENT '挂号费净额(挂号-退号)'"},
+                {"his_daily_settle", "wechat_total", "DECIMAL(12,2) DEFAULT 0 COMMENT '微信合计(收费-退费净额)'"},
+                {"his_daily_settle", "alipay_total", "DECIMAL(12,2) DEFAULT 0 COMMENT '支付宝合计(收费-退费净额)'"},
+                {"his_daily_settle", "card_total", "DECIMAL(12,2) DEFAULT 0 COMMENT '银行卡合计(收费-退费净额)'"},
+                {"his_daily_settle", "free_total", "DECIMAL(12,2) DEFAULT 0 COMMENT '减免合计(收费-退费净额)'"},
         };
         int added = 0;
         try (Connection conn = dataSource.getConnection()) {
@@ -370,6 +377,7 @@ public class DictSchemaMigration implements ApplicationRunner {
             ensurePaymentDetailTable(conn);
             ensureStockCheckTables(conn);
             ensurePharmacyPriceTable(conn);
+            ensureRegPaymentTable(conn);
             alterExistingTables(conn);
             // 四期: 药房/药库归属科室与科室一一对应的唯一约束(补列之后才建, NULL 不参与唯一碰撞)
             ensureDeptUniqueIndex(conn);
@@ -751,6 +759,87 @@ public class DictSchemaMigration implements ApplicationRunner {
                     + "KEY idx_comptask_next (next_run),"
                     + "KEY idx_comptask_status (status)"
                     + ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='医保补偿任务(批次4: UNKNOWN交易收敛)'");
+            /* 批次4 M3: 对账任务(3201总账/3202明细账)与差异明细留痕 */
+            st.executeUpdate("CREATE TABLE IF NOT EXISTS his_recon_task ("
+                    + "id BIGINT NOT NULL AUTO_INCREMENT COMMENT '主键',"
+                    + "tenant_id BIGINT NOT NULL COMMENT '租户(医共体)ID',"
+                    + "org_id BIGINT DEFAULT NULL COMMENT '机构ID(租户级对账为空)',"
+                    + "stmt_date DATE NOT NULL COMMENT '对账日期(T-1结算日)',"
+                    + "insutype VARCHAR(6) DEFAULT NULL COMMENT '险种类型(3201分组维度)',"
+                    + "recon_type VARCHAR(10) NOT NULL COMMENT '对账类型:TOTAL(3201)/DETAIL(3202)',"
+                    + "result VARCHAR(2) NOT NULL COMMENT '结果:1平 2不平 9失败',"
+                    + "medfee_local DECIMAL(16,2) DEFAULT 0 COMMENT '医疗费总额-院内口径',"
+                    + "medfee_remote DECIMAL(16,2) DEFAULT 0 COMMENT '医疗费总额-平台回执口径',"
+                    + "fund_local DECIMAL(16,2) DEFAULT 0 COMMENT '基金支付总额-院内口径',"
+                    + "fund_remote DECIMAL(16,2) DEFAULT 0 COMMENT '基金支付总额-平台回执口径',"
+                    + "acct_local DECIMAL(16,2) DEFAULT 0 COMMENT '个账支付-院内口径(3202为现金)',"
+                    + "acct_remote DECIMAL(16,2) DEFAULT 0 COMMENT '个账支付-平台回执口径',"
+                    + "cnt_local INT DEFAULT 0 COMMENT '结算笔数-院内口径',"
+                    + "cnt_remote INT DEFAULT 0 COMMENT '结算笔数-平台回执口径',"
+                    + "file_qury_no VARCHAR(30) DEFAULT NULL COMMENT '3202明细文件查询号(9101返回)',"
+                    + "stmt_rslt VARCHAR(500) DEFAULT NULL COMMENT '平台回执(表197stmt_rslt/stmt_rslt_dscr或差异说明)',"
+                    + "recon_time DATETIME DEFAULT NULL COMMENT '对账执行时间',"
+                    + "memo VARCHAR(500) DEFAULT NULL COMMENT '备注',"
+                    + "create_by VARCHAR(50) DEFAULT NULL, create_time DATETIME DEFAULT NULL,"
+                    + "update_by VARCHAR(50) DEFAULT NULL, update_time DATETIME DEFAULT NULL, deleted TINYINT DEFAULT 0,"
+                    + "PRIMARY KEY (id),"
+                    + "KEY idx_recontask_tenant (tenant_id),"
+                    + "KEY idx_recontask_date (tenant_id, org_id, stmt_date),"
+                    + "KEY idx_recontask_type (recon_type)"
+                    + ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='医保对账任务(批次4 M3: 3201/3202)'");
+            st.executeUpdate("CREATE TABLE IF NOT EXISTS his_recon_diff ("
+                    + "id BIGINT NOT NULL AUTO_INCREMENT COMMENT '主键',"
+                    + "tenant_id BIGINT NOT NULL COMMENT '租户(医共体)ID',"
+                    + "org_id BIGINT DEFAULT NULL COMMENT '机构ID(租户级对账为空)',"
+                    + "recon_task_id BIGINT DEFAULT NULL COMMENT '对账任务ID(his_recon_task.id)',"
+                    + "stmt_date DATE DEFAULT NULL COMMENT '对账日期',"
+                    + "setl_id VARCHAR(30) DEFAULT NULL COMMENT '结算ID(中心端多条时为空, 规范表201说明7)',"
+                    + "mdtrt_id VARCHAR(30) DEFAULT NULL COMMENT '就诊ID(中心端多条时为空)',"
+                    + "psn_no VARCHAR(30) DEFAULT NULL COMMENT '人员编号',"
+                    + "msgid VARCHAR(50) DEFAULT NULL COMMENT '原交易报文ID',"
+                    + "stmt_rslt VARCHAR(6) DEFAULT NULL COMMENT '核对结果(表201stmt_rslt)',"
+                    + "refd_setl_flag VARCHAR(3) DEFAULT NULL COMMENT '退费结算标志(3位)',"
+                    + "memo VARCHAR(500) DEFAULT NULL COMMENT '说明(表201memo)',"
+                    + "medfee_sumamt DECIMAL(16,2) DEFAULT 0 COMMENT '医疗费总额-平台',"
+                    + "fund_pay_sumamt DECIMAL(16,2) DEFAULT 0 COMMENT '基金支付总额-平台',"
+                    + "acct_pay DECIMAL(16,2) DEFAULT 0 COMMENT '个账支付-平台',"
+                    + "status TINYINT DEFAULT 0 COMMENT '处理状态:0待处理 1已核对 2已平账',"
+                    + "handle_memo VARCHAR(500) DEFAULT NULL COMMENT '处理备注',"
+                    + "handle_time DATETIME DEFAULT NULL COMMENT '处理时间',"
+                    + "handle_by VARCHAR(50) DEFAULT NULL COMMENT '处理人',"
+                    + "create_by VARCHAR(50) DEFAULT NULL, create_time DATETIME DEFAULT NULL,"
+                    + "update_by VARCHAR(50) DEFAULT NULL, update_time DATETIME DEFAULT NULL, deleted TINYINT DEFAULT 0,"
+                    + "PRIMARY KEY (id),"
+                    + "KEY idx_recondiff_tenant (tenant_id),"
+                    + "KEY idx_recondiff_task (recon_task_id),"
+                    + "KEY idx_recondiff_status (tenant_id, org_id, status)"
+                    + ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='医保对账差异明细(批次4 M3)'");
+            /* 结算留存表(2207/2208): 存量库由 his_migration.sql 建, 新库幂等补建(含 tenant_id), 对账/补偿依赖 */
+            st.executeUpdate("CREATE TABLE IF NOT EXISTS setl_record ("
+                    + "id BIGINT NOT NULL AUTO_INCREMENT COMMENT '主键',"
+                    + "tenant_id BIGINT NOT NULL DEFAULT 0 COMMENT '租户ID',"
+                    + "setl_id VARCHAR(30) DEFAULT NULL COMMENT '结算ID',"
+                    + "mdtrt_id VARCHAR(30) DEFAULT NULL COMMENT '就诊ID',"
+                    + "psn_no VARCHAR(30) DEFAULT NULL COMMENT '人员编号',"
+                    + "psn_name VARCHAR(50) DEFAULT NULL COMMENT '人员姓名',"
+                    + "insutype VARCHAR(6) DEFAULT NULL COMMENT '险种类型',"
+                    + "med_type VARCHAR(6) DEFAULT NULL COMMENT '医疗类别',"
+                    + "biz_type VARCHAR(20) DEFAULT NULL COMMENT '业务类型 outpatient/inpatient',"
+                    + "infno VARCHAR(10) DEFAULT NULL COMMENT '交易编号',"
+                    + "setl_time VARCHAR(30) DEFAULT NULL COMMENT '结算时间',"
+                    + "medfee_sumamt DECIMAL(16,2) DEFAULT NULL COMMENT '医疗费总额',"
+                    + "fund_pay_sumamt DECIMAL(16,2) DEFAULT NULL COMMENT '基金支付总额',"
+                    + "psn_part_amt DECIMAL(16,2) DEFAULT NULL COMMENT '个人负担总金额',"
+                    + "acct_pay DECIMAL(16,2) DEFAULT NULL COMMENT '个人账户支出',"
+                    + "psn_cash_pay DECIMAL(16,2) DEFAULT NULL COMMENT '个人现金支出',"
+                    + "status VARCHAR(3) DEFAULT '1' COMMENT '状态 1-已结算 0-已撤销',"
+                    + "setlinfo_json LONGTEXT DEFAULT NULL COMMENT '结算信息原始JSON',"
+                    + "crte_time DATETIME DEFAULT NULL COMMENT '创建时间',"
+                    + "PRIMARY KEY (id),"
+                    + "KEY idx_setl_id (setl_id),"
+                    + "KEY idx_setl_mdtrt (mdtrt_id),"
+                    + "KEY idx_setl_tenant_time (tenant_id, setl_time)"
+                    + ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='结算记录表'");
         }
     }
 
@@ -1423,6 +1512,12 @@ public class DictSchemaMigration implements ApplicationRunner {
                     + "cash_total DECIMAL(12,2) DEFAULT 0 COMMENT '现金合计',"
                     + "fund_total DECIMAL(12,2) DEFAULT 0 COMMENT '基金合计',"
                     + "acct_total DECIMAL(12,2) DEFAULT 0 COMMENT '个账合计',"
+                    + "reg_count INT DEFAULT 0 COMMENT '挂号笔数(净额: 挂号-退号)',"
+                    + "reg_amount DECIMAL(12,2) DEFAULT 0 COMMENT '挂号费净额(挂号-退号)',"
+                    + "wechat_total DECIMAL(12,2) DEFAULT 0 COMMENT '微信合计(收费-退费净额)',"
+                    + "alipay_total DECIMAL(12,2) DEFAULT 0 COMMENT '支付宝合计(收费-退费净额)',"
+                    + "card_total DECIMAL(12,2) DEFAULT 0 COMMENT '银行卡合计(收费-退费净额)',"
+                    + "free_total DECIMAL(12,2) DEFAULT 0 COMMENT '减免合计(收费-退费净额)',"
                     + "status TINYINT DEFAULT 0 COMMENT '状态:0未日结 1已日结',"
                     + "settle_time DATETIME DEFAULT NULL COMMENT '日结时间',"
                     + "create_by VARCHAR(50) DEFAULT NULL, create_time DATETIME DEFAULT NULL,"
@@ -1431,6 +1526,36 @@ public class DictSchemaMigration implements ApplicationRunner {
                     + "UNIQUE KEY uk_tenant_org_date (tenant_id, org_id, settle_date),"
                     + "KEY idx_tenant (tenant_id)"
                     + ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='门诊日结'");
+            /* 批次4 M3(P1-18): 挂号收费流水(挂号/退号逐笔正负流水, 日结挂号费与全渠道支付分项记账依据) */
+            ensureRegPaymentTable(conn);
+        }
+    }
+
+    /** 幂等建表: 挂号收费流水(P1-18, 挂号/退号逐笔正负流水)。 */
+    private void ensureRegPaymentTable(Connection conn) throws Exception {
+        try (Statement st = conn.createStatement()) {
+        st.executeUpdate("CREATE TABLE IF NOT EXISTS his_reg_payment ("
+                + "id BIGINT NOT NULL AUTO_INCREMENT COMMENT '主键',"
+                + "tenant_id BIGINT NOT NULL COMMENT '租户ID',"
+                + "org_id BIGINT DEFAULT NULL COMMENT '机构ID(科室未归属机构的历史数据为空)',"
+                + "registration_id BIGINT NOT NULL COMMENT '挂号记录ID(his_registration.id)',"
+                + "reg_no VARCHAR(30) DEFAULT NULL COMMENT '挂号单号',"
+                + "patient_id BIGINT DEFAULT NULL COMMENT '患者ID',"
+                + "patient_name VARCHAR(50) DEFAULT NULL COMMENT '患者姓名',"
+                + "direction TINYINT NOT NULL COMMENT '流水方向:1挂号收款 -1退号退款',"
+                + "amount DECIMAL(12,2) NOT NULL DEFAULT 0 COMMENT '金额(正数, 方向由direction表达)',"
+                + "pay_method VARCHAR(20) DEFAULT NULL COMMENT '支付方式全渠道:CASH/WECHAT/ALIPAY/CARD/INSURANCE/FREE',"
+                + "mdtrt_id VARCHAR(50) DEFAULT NULL COMMENT '医保就诊ID(挂号医保结算时落mdtrt_id)',"
+                + "biz_time DATETIME DEFAULT NULL COMMENT '业务时间(挂号/退号时间)',"
+                + "operator VARCHAR(50) DEFAULT NULL COMMENT '操作人',"
+                + "create_by VARCHAR(50) DEFAULT NULL, create_time DATETIME DEFAULT NULL,"
+                + "update_by VARCHAR(50) DEFAULT NULL, update_time DATETIME DEFAULT NULL, deleted TINYINT DEFAULT 0,"
+                + "PRIMARY KEY (id),"
+                + "KEY idx_regpay_tenant (tenant_id),"
+                + "KEY idx_regpay_org_time (tenant_id, org_id, biz_time),"
+                + "KEY idx_regpay_reg (registration_id),"
+                + "KEY idx_regpay_method (tenant_id, org_id, pay_method)"
+                + ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='挂号收费流水(P1-18)'");
         }
     }
 
@@ -2144,6 +2269,12 @@ public class DictSchemaMigration implements ApplicationRunner {
         /* 治疗执行: 患者签到时间(排队口径) + 取消原因(执行状态:0待执行 1执行中 2已完成 3已取消) */
         addColumnIfNotExists(conn, "his_treatment_exec", "checkin_time", "DATETIME DEFAULT NULL COMMENT '患者签到时间(非空=已签到, 排队口径)'");
         addColumnIfNotExists(conn, "his_treatment_exec", "cancel_reason", "VARCHAR(200) DEFAULT NULL COMMENT '取消原因'");
+        /* 对账差异表 org_id 可空修正: 租户级对账无机构归属(早期 DDL 误为 NOT NULL, 存量库需 MODIFY) */
+        if (tableExists(conn, "his_recon_diff") && "NO".equals(columnNullable(conn, "his_recon_diff", "org_id"))) {
+            try (Statement st = conn.createStatement()) {
+                st.executeUpdate("ALTER TABLE his_recon_diff MODIFY org_id BIGINT DEFAULT NULL COMMENT '机构ID(租户级对账为空)'");
+            }
+        }
     }
 
     /** 幂等补列: 表存在且列不存在时 ALTER TABLE ADD COLUMN(与 cols 循环同语义, 供建表后存量表补列使用)。 */
@@ -2202,6 +2333,19 @@ public class DictSchemaMigration implements ApplicationRunner {
     /** 查列的数据类型(information_schema.columns.data_type), 不存在返回 null。 */
     private String columnDataType(Connection conn, String table, String column) throws Exception {
         String sql = "SELECT data_type FROM information_schema.columns "
+                + "WHERE table_schema = DATABASE() AND table_name = ? AND column_name = ?";
+        try (PreparedStatement ps = conn.prepareStatement(sql)) {
+            ps.setString(1, table);
+            ps.setString(2, column);
+            try (ResultSet rs = ps.executeQuery()) {
+                return rs.next() ? rs.getString(1) : null;
+            }
+        }
+    }
+
+    /** 查列是否可空(information_schema.columns.is_nullable: YES/NO), 表或列不存在返回 null。 */
+    private String columnNullable(Connection conn, String table, String column) throws Exception {
+        String sql = "SELECT is_nullable FROM information_schema.columns "
                 + "WHERE table_schema = DATABASE() AND table_name = ? AND column_name = ?";
         try (PreparedStatement ps = conn.prepareStatement(sql)) {
             ps.setString(1, table);

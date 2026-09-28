@@ -96,6 +96,13 @@ public class ReportController {
         return R.ok(reportService.dailySettlePage(guard.scopeOrgId(orgId), startDate, endDate, page, size));
     }
 
+    /** 日结挂号费预览(P1-15): 当日挂号/退号净额与全渠道分项 */
+    @GetMapping("/reg-preview")
+    public R<Map<String, Object>> regPreview(@RequestParam(required = false) Long orgId,
+                                             @RequestParam String date) {
+        return R.ok(reportService.regPaymentPreview(guard.scopeOrgId(orgId), date));
+    }
+
     /** 医生工作量汇总: 按医师聚合接诊/完成/处方/检查单量与金额(含完成率), 接诊数降序 */
     @GetMapping("/doctor-worklog")
     public R<List<Map<String, Object>>> doctorWorklog(@RequestParam(required = false) Long orgId,

@@ -12,11 +12,13 @@ import com.yb.hi.dto.OutpatientRegisterReq;
 import com.yb.hi.entity.basedata.HisDept;
 import com.yb.hi.entity.basedata.HisSchedule;
 import com.yb.hi.entity.basedata.HisStaff;
+import com.yb.hi.entity.cashier.HisRegPayment;
 import com.yb.hi.entity.outpatient.HisPatient;
 import com.yb.hi.entity.outpatient.HisRegistration;
 import com.yb.hi.framework.common.BizException;
 import com.yb.hi.framework.tenant.TenantContext;
 import com.yb.hi.framework.tenant.UserContext;
+import com.yb.hi.mapper.cashier.HisRegPaymentMapper;
 import com.yb.hi.mapper.outpatient.HisRegistrationMapper;
 import com.yb.hi.service.OutpatientService;
 import com.yb.hi.service.basedata.HisDeptService;
@@ -63,11 +65,12 @@ public class HisRegistrationService extends ServiceImpl<HisRegistrationMapper, H
     private final OutpatientService outpatientService;
     private final HisVisitService visitService;
     private final JdbcTemplate jdbcTemplate;
+    private final HisRegPaymentMapper regPaymentMapper;
 
     public HisRegistrationService(HisPatientService patientService, HisScheduleService scheduleService,
                                   HisStaffService staffService, HisDeptService deptService,
                                   OutpatientService outpatientService, HisVisitService visitService,
-                                  JdbcTemplate jdbcTemplate) {
+                                  JdbcTemplate jdbcTemplate, HisRegPaymentMapper regPaymentMapper) {
         this.patientService = patientService;
         this.scheduleService = scheduleService;
         this.staffService = staffService;
@@ -75,6 +78,7 @@ public class HisRegistrationService extends ServiceImpl<HisRegistrationMapper, H
         this.outpatientService = outpatientService;
         this.visitService = visitService;
         this.jdbcTemplate = jdbcTemplate;
+        this.regPaymentMapper = regPaymentMapper;
     }
 
     /** 分页查询挂号记录(按日期区间/状态/患者关键字) */
@@ -253,6 +257,9 @@ public class HisRegistrationService extends ServiceImpl<HisRegistrationMapper, H
         reg.setQueueNo(queueNo);
         save(reg);
 
+        // 挂号收费流水(P1-18): 正向流水, 日结挂号费与全渠道支付分项的记账依据
+        saveRegPayment(reg, patient, dept == null ? null : dept.getOrgId(), 1, actualFee, LocalDateTime.now());
+
         // 扣减号源(原子UPDATE, 防并发超扣; affected=0 说明并发下号源已被抢完)
         int affected = jdbcTemplate.update(
                 "UPDATE his_schedule SET left_num = left_num - 1, update_time = NOW() WHERE id = ? AND left_num > 0 AND deleted = 0",
@@ -317,6 +324,11 @@ public class HisRegistrationService extends ServiceImpl<HisRegistrationMapper, H
         reg.setCancelTime(LocalDateTime.now());
         reg.setCancelReason(reason);
         updateById(reg);
+
+        // 挂号收费流水(P1-18): 退号负向流水(金额与渠道同原流水, 日结净额扣减)
+        HisDept regDept = reg.getDeptId() == null ? null : deptService.getById(reg.getDeptId());
+        saveRegPayment(reg, regPatient, regDept == null ? null : regDept.getOrgId(), -1,
+                reg.getActualFee() == null ? BigDecimal.ZERO : reg.getActualFee(), reg.getCancelTime());
 
         // 取消候诊就诊记录
         visitService.cancelByRegistration(reg.getId());
@@ -581,6 +593,31 @@ public class HisRegistrationService extends ServiceImpl<HisRegistrationMapper, H
         result.put("sameDept", sameDept);
         result.put("sameDeptInfo", sameDeptInfo);
         return result;
+    }
+
+    /**
+     * 挂号收费流水落账(P1-18): direction 1挂号收款/-1退号退款, 金额为正数由方向表达;
+     * 渠道缺省按实收判定(实收0按FREE, 其余按CASH), 全渠道分项供日结(P1-15)记账。
+     */
+    private void saveRegPayment(HisRegistration reg, HisPatient patient, Long orgId, int direction,
+                                BigDecimal amount, LocalDateTime bizTime) {
+        String method = reg.getPayMethod();
+        if (!StringUtils.hasText(method)) {
+            method = amount != null && amount.signum() <= 0 ? "FREE" : "CASH";
+        }
+        HisRegPayment p = new HisRegPayment();
+        p.setOrgId(orgId);
+        p.setRegistrationId(reg.getId());
+        p.setRegNo(reg.getRegNo());
+        p.setPatientId(reg.getPatientId());
+        p.setPatientName(reg.getPatientName());
+        p.setDirection(direction);
+        p.setAmount(amount);
+        p.setPayMethod(method);
+        p.setMdtrtId(reg.getMdtrtId());
+        p.setBizTime(bizTime);
+        p.setOperator(UserContext.username());
+        regPaymentMapper.insert(p);
     }
 
     private String genNo(String prefix) {

@@ -330,14 +330,43 @@ public class ReportService {
         }
         String cols = "SELECT DATE_FORMAT(settle_date, '%Y-%m-%d') AS settleDate, operator, total_count AS totalCount,"
                 + " total_amount AS totalAmount, refund_count AS refundCount, refund_amount AS refundAmount,"
-                + " cash_total AS cashTotal, fund_total AS fundTotal, acct_total AS acctTotal, status,"
-                + " DATE_FORMAT(settle_time, '%Y-%m-%d %H:%i:%s') AS settleTime";
+                + " cash_total AS cashTotal, fund_total AS fundTotal, acct_total AS acctTotal,"
+                + " reg_count AS regCount, reg_amount AS regAmount,"
+                + " wechat_total AS wechatTotal, alipay_total AS alipayTotal, card_total AS cardTotal, free_total AS freeTotal,"
+                + " status, DATE_FORMAT(settle_time, '%Y-%m-%d %H:%i:%s') AS settleTime";
         long total = jdbc.queryForObject("SELECT COUNT(*)" + where, Long.class, args.toArray());
         long[] ps = normPage(page, size);
         List<Map<String, Object>> rows = jdbc.queryForList(
                 cols + where + " ORDER BY settle_date DESC, id DESC LIMIT ?, ?",
                 appendArgs(args, (ps[0] - 1) * ps[1], ps[1]));
         return pageOf(rows, total, ps[0], ps[1]);
+    }
+
+    /**
+     * 日结挂号费预览(P1-15): 按 his_reg_payment 汇总当日挂号/退号净额与全渠道分项,
+     * 口径对齐 CashierService.dailySettle 的挂号侧聚合(方向1收款/-1退款)。
+     */
+    public Map<String, Object> regPaymentPreview(Long orgId, String date) {
+        Long tid = TenantContext.require();
+        if (!StringUtils.hasText(date)) {
+            throw new BizException(400, "日期不能为空(yyyy-MM-dd)");
+        }
+        StringBuilder where = new StringBuilder(
+                " FROM his_reg_payment WHERE tenant_id=? AND deleted=0 AND biz_time>=? AND biz_time<?");
+        List<Object> args = new ArrayList<>(Arrays.asList(tid, date + " 00:00:00", date + " 23:59:59"));
+        if (orgId != null) {
+            where.append(" AND org_id=?");
+            args.add(orgId);
+        }
+        return jdbc.queryForMap(
+                "SELECT"
+                        + " IFNULL(SUM(direction), 0) AS regCount,"
+                        + " IFNULL(SUM(direction * amount), 0) AS regAmount,"
+                        + " IFNULL(SUM(CASE WHEN pay_method = 'WECHAT' THEN direction * amount ELSE 0 END), 0) AS wechatTotal,"
+                        + " IFNULL(SUM(CASE WHEN pay_method = 'ALIPAY' THEN direction * amount ELSE 0 END), 0) AS alipayTotal,"
+                        + " IFNULL(SUM(CASE WHEN pay_method = 'CARD' THEN direction * amount ELSE 0 END), 0) AS cardTotal,"
+                        + " IFNULL(SUM(CASE WHEN pay_method = 'FREE' THEN direction * amount ELSE 0 END), 0) AS freeTotal"
+                        + where, args.toArray());
     }
 
     // ============================== 医生工作日志 ==============================

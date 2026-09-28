@@ -44,6 +44,18 @@ public class HisDailySettle extends BaseEntity {
     private BigDecimal fundTotal;
     /** 个账合计(收费-退费净额) */
     private BigDecimal acctTotal;
+    /** 挂号笔数(净额: 挂号-退号, P1-15 日结口径补挂号费) */
+    private Integer regCount;
+    /** 挂号费净额(挂号-退号) */
+    private BigDecimal regAmount;
+    /** 微信合计(收费-退费净额, 全渠道分项) */
+    private BigDecimal wechatTotal;
+    /** 支付宝合计(收费-退费净额) */
+    private BigDecimal alipayTotal;
+    /** 银行卡合计(收费-退费净额) */
+    private BigDecimal cardTotal;
+    /** 减免合计(收费-退费净额, 减免/免费渠道) */
+    private BigDecimal freeTotal;
     /** 状态: 0未日结 1已日结 */
     private Integer status;
     /** 日结时间 */

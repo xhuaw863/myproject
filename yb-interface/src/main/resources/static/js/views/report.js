@@ -135,6 +135,7 @@
         settleDate: today(),
         previewLoading: false,
         preview: null,          /* 当日汇总预览(与后端日结SQL同口径) */
+        regPreview: null,       /* 当日挂号费预览(挂号/退号净额, P1-15) */
         truncated: false,       /* 当日单据超过500笔时预览不完整提示 */
         submitting: false,
         /* 日结记录列表 */
@@ -153,7 +154,7 @@
       this.load();
     },
     methods: {
-      /* ---- 日结预览: 拉当日收费单(含退费单), 前端按日结SQL口径聚合 ---- */
+      /* ---- 日结预览: 拉当日收费单(含退费单), 前端按日结SQL口径聚合 + 挂号费预览(P1-15) ---- */
       loadPreview: function () {
         var vm = this;
         if (!vm.settleDate) { vm.preview = null; return; }
@@ -182,15 +183,20 @@
           })
           .catch(HIS.notifyError)
           .finally(function () { vm.previewLoading = false; });
+        HIS.get('/api/his/report/reg-preview?date=' + vm.settleDate)
+          .then(function (d) { vm.regPreview = d; })
+          .catch(function () { vm.regPreview = null; });
       },
       /* ---- 执行日结: 二次确认后提交(后端幂等, 已日结直接返回) ---- */
       doSettle: function () {
         var vm = this;
         if (!vm.settleDate) { ElementPlus.ElMessage.warning('请先选择日结日期'); return; }
         var p = vm.preview;
+        var rp = vm.regPreview;
         var msg = '将对 ' + vm.settleDate + ' 执行门诊日结:<br/>'
           + '收费 ' + num(p && p.totalCount) + ' 笔 / ¥' + money(p && p.totalAmount)
           + ', 退费 ' + num(p && p.refundCount) + ' 笔 / ¥' + money(p && p.refundAmount)
+          + ', 挂号净 ' + num(rp && rp.regCount) + ' 笔 / ¥' + money(rp && rp.regAmount)
           + '<br/><b style="color:var(--yb-warning);">日结后当日单据不可再退费</b>, 确认执行?';
         ElementPlus.ElMessageBox.confirm(msg, '日结确认', {
           type: 'warning', dangerouslyUseHTMLString: true, confirmButtonText: '执行日结', cancelButtonText: '再想想'
@@ -252,6 +258,10 @@
       '      <el-descriptions-item label="基金合计"><b class="sd-money">¥ {{ money(preview && preview.fundTotal) }}</b></el-descriptions-item>',
       '      <el-descriptions-item label="个账合计"><b class="sd-money">¥ {{ money(preview && preview.acctTotal) }}</b></el-descriptions-item>',
       '      <el-descriptions-item label="净收入(收费-退费)"><b class="sd-money">¥ {{ money(preview ? (preview.totalAmount - preview.refundAmount) : 0) }}</b></el-descriptions-item>',
+      '      <el-descriptions-item label="挂号净笔数"><b class="sd-plain">{{ num(regPreview && regPreview.regCount) }}</b> 笔</el-descriptions-item>',
+      '      <el-descriptions-item label="挂号费净额"><b class="sd-money">¥ {{ money(regPreview && regPreview.regAmount) }}</b></el-descriptions-item>',
+      '      <el-descriptions-item label="挂号渠道(微信/支付宝/银行卡/减免)"><b class="sd-money">¥ {{ money(regPreview && regPreview.wechatTotal) }} / ¥ {{ money(regPreview && regPreview.alipayTotal) }} / ¥ {{ money(regPreview && regPreview.cardTotal) }} / ¥ {{ money(regPreview && regPreview.freeTotal) }}</b></el-descriptions-item>',
+      '      <el-descriptions-item label="营收合计(含挂号)"><b class="sd-money">¥ {{ money((preview ? (preview.totalAmount - preview.refundAmount) : 0) + (regPreview ? Number(regPreview.regAmount) : 0)) }}</b></el-descriptions-item>',
       '    </el-descriptions>',
       '  </el-card>',
       /* ---- 下半部分: 日结记录列表 ---- */
@@ -273,6 +283,12 @@
       '      <el-table-column label="现金合计" prop="cashTotal" width="110" align="right" header-align="right"><template #default="s">{{ money(s.row.cashTotal) }}</template></el-table-column>',
       '      <el-table-column label="基金合计" prop="fundTotal" width="110" align="right" header-align="right"><template #default="s">{{ money(s.row.fundTotal) }}</template></el-table-column>',
       '      <el-table-column label="个账合计" prop="acctTotal" width="110" align="right" header-align="right"><template #default="s">{{ money(s.row.acctTotal) }}</template></el-table-column>',
+      '      <el-table-column label="挂号净笔数" prop="regCount" width="95" align="right" header-align="right"></el-table-column>',
+      '      <el-table-column label="挂号费净额" prop="regAmount" width="110" align="right" header-align="right"><template #default="s">{{ money(s.row.regAmount) }}</template></el-table-column>',
+      '      <el-table-column label="微信" prop="wechatTotal" width="100" align="right" header-align="right"><template #default="s">{{ money(s.row.wechatTotal) }}</template></el-table-column>',
+      '      <el-table-column label="支付宝" prop="alipayTotal" width="100" align="right" header-align="right"><template #default="s">{{ money(s.row.alipayTotal) }}</template></el-table-column>',
+      '      <el-table-column label="银行卡" prop="cardTotal" width="100" align="right" header-align="right"><template #default="s">{{ money(s.row.cardTotal) }}</template></el-table-column>',
+      '      <el-table-column label="减免" prop="freeTotal" width="100" align="right" header-align="right"><template #default="s">{{ money(s.row.freeTotal) }}</template></el-table-column>',
       '      <el-table-column label="状态" width="84" align="center"><template #default="s">',
       '        <el-tag size="small" :type="statusTag(s.row.status)">{{ statusLabel(s.row.status) }}</el-tag>',
       '      </template></el-table-column>',

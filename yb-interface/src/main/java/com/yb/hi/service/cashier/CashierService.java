@@ -2819,6 +2819,35 @@ public class CashierService {
                         + " FROM his_charge_bill"
                         + " WHERE tenant_id = ? AND org_id = ? AND deleted = 0 AND status >= 1 AND DATE(charge_time) = ?",
                 tenantId(), targetOrg, d);
+        // P1-15: 挂号费并入日结(笔数/金额净额: 挂号-退号)
+        Map<String, Object> regAgg = jdbcTemplate.queryForMap(
+                "SELECT"
+                        + " IFNULL(SUM(direction), 0) AS reg_count,"
+                        + " IFNULL(SUM(direction * amount), 0) AS reg_amount"
+                        + " FROM his_reg_payment"
+                        + " WHERE tenant_id = ? AND org_id = ? AND deleted = 0 AND DATE(biz_time) = ?",
+                tenantId(), targetOrg, d);
+        // 全渠道分项(收费侧): 混合支付明细自带正负方向(退费单明细为负), 直接按渠道汇总
+        Map<String, Object> chAgg = jdbcTemplate.queryForMap(
+                "SELECT"
+                        + " IFNULL(SUM(CASE WHEN d.pay_method = 'WECHAT' THEN d.amount ELSE 0 END), 0) AS wechat_total,"
+                        + " IFNULL(SUM(CASE WHEN d.pay_method = 'ALIPAY' THEN d.amount ELSE 0 END), 0) AS alipay_total,"
+                        + " IFNULL(SUM(CASE WHEN d.pay_method = 'CARD' THEN d.amount ELSE 0 END), 0) AS card_total,"
+                        + " IFNULL(SUM(CASE WHEN d.pay_method = 'FREE' THEN d.amount ELSE 0 END), 0) AS free_total"
+                        + " FROM his_payment_detail d"
+                        + " JOIN his_charge_bill b ON b.id = d.bill_id AND b.deleted = 0"
+                        + " WHERE b.tenant_id = ? AND b.org_id = ? AND b.status >= 1 AND DATE(b.charge_time) = ?",
+                tenantId(), targetOrg, d);
+        // 全渠道分项(挂号侧): direction*amount 表达净额
+        Map<String, Object> regChAgg = jdbcTemplate.queryForMap(
+                "SELECT"
+                        + " IFNULL(SUM(CASE WHEN pay_method = 'WECHAT' THEN direction * amount ELSE 0 END), 0) AS wechat_total,"
+                        + " IFNULL(SUM(CASE WHEN pay_method = 'ALIPAY' THEN direction * amount ELSE 0 END), 0) AS alipay_total,"
+                        + " IFNULL(SUM(CASE WHEN pay_method = 'CARD' THEN direction * amount ELSE 0 END), 0) AS card_total,"
+                        + " IFNULL(SUM(CASE WHEN pay_method = 'FREE' THEN direction * amount ELSE 0 END), 0) AS free_total"
+                        + " FROM his_reg_payment"
+                        + " WHERE tenant_id = ? AND org_id = ? AND deleted = 0 AND DATE(biz_time) = ?",
+                tenantId(), targetOrg, d);
         HisDailySettle settle = new HisDailySettle();
         settle.setOrgId(targetOrg);
         settle.setSettleDate(d);
@@ -2830,12 +2859,19 @@ public class CashierService {
         settle.setCashTotal(toBd(agg.get("cash_total")));
         settle.setFundTotal(toBd(agg.get("fund_total")));
         settle.setAcctTotal(toBd(agg.get("acct_total")));
+        settle.setRegCount(toInt(regAgg.get("reg_count")));
+        settle.setRegAmount(toBd(regAgg.get("reg_amount")));
+        settle.setWechatTotal(toBd(chAgg.get("wechat_total")).add(toBd(regChAgg.get("wechat_total"))));
+        settle.setAlipayTotal(toBd(chAgg.get("alipay_total")).add(toBd(regChAgg.get("alipay_total"))));
+        settle.setCardTotal(toBd(chAgg.get("card_total")).add(toBd(regChAgg.get("card_total"))));
+        settle.setFreeTotal(toBd(chAgg.get("free_total")).add(toBd(regChAgg.get("free_total"))));
         settle.setStatus(1);
         settle.setSettleTime(LocalDateTime.now());
         dailySettleMapper.insert(settle);
-        log.info("日结完成: orgId={}, date={}, 收费{}笔/{}元, 退费{}笔/{}元",
+        log.info("日结完成: orgId={}, date={}, 收费{}笔/{}元, 退费{}笔/{}元, 挂号净{}笔/{}元",
                 targetOrg, d, settle.getTotalCount(), settle.getTotalAmount(),
-                settle.getRefundCount(), settle.getRefundAmount());
+                settle.getRefundCount(), settle.getRefundAmount(),
+                settle.getRegCount(), settle.getRegAmount());
         return settle;
     }
 

@@ -67,6 +67,13 @@ yb:
   opter: admin
   # 经办人姓名
   opter-name: 管理员
+  # 对账(3201/3202): 结算经办机构/清算类别/退费结算标志(取值与平台确认后配置; 3201标志6位, 3202标志3位)
+  # setl-optins: ""
+  # clr-type: ""
+  # refd-setl-flag-3201: "000000"
+  # refd-setl-flag-3202: "000"
+  # 对账调度 cron(默认每日 07:00 对 T-1 结算日)
+  recon-cron: "0 0 7 * * *"
   # 签名证书编号
   sign-no: ""
   # SM2 私钥(Base64), 配置后启用真实SM2签名

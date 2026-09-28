@@ -10,6 +10,7 @@ import java.io.ByteArrayOutputStream;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.nio.charset.StandardCharsets;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
@@ -31,6 +32,9 @@ public class MockYbServer {
 
     /** 字典文件缓存: file_qury_no -> zip字节 */
     private final Map<String, byte[]> dictFiles = new ConcurrentHashMap<>();
+
+    /** 文件流缓存(9101 上传/3202 差异结果): file_qury_no -> 字节 */
+    private final Map<String, byte[]> mockFiles = new ConcurrentHashMap<>();
 
     /** 模拟结算流水: setl_id -> setlinfo(2207 落库, 2208 按 setl_id 取原单, 2601 冲正移除) */
     private final Map<String, JSONObject> mockSetls = new ConcurrentHashMap<>();
@@ -99,11 +103,11 @@ public class MockYbServer {
                 mockReverse(input);
                 break;
             case "3201": case "3202":
-                // 对账(M3 落地): 骨架先按成功空集返回, 字段布局待 M3 按规范表196-199 实现
-                output = mockReconcile(infno);
+                // 对账(M3): 平台侧按模拟结算流水核对, 不平生成表201差异明细文件
+                output = mockReconcile(infno, input);
                 break;
             case "9101":
-                output = mockFileUpload();
+                output = mockFileUpload(input);
                 break;
             case "2401":
                 output = mockAdmission(input);
@@ -333,20 +337,193 @@ public class MockYbServer {
         return setlId != null && mockCancelledSetls.contains(setlId);
     }
 
-    /** 对总账/对明细账(3201/3202): M3 落地, 骨架按成功空集返回 */
-    private JSONObject mockReconcile(String infno) {
+    /**
+     * 对总账/对明细账(3201/3202, M3):
+     * 3201 按区间内未撤销模拟结算流水汇总, 与院内上报金额比对, 平/不平按表197 stmtinfo 回执
+     * (stmt_rslt: 000000平/000103数据不一致, 规范字典对账结果);
+     * 3202 解析院内上传明细文件(表200, 按 file_qury_no 定位), 逐条核对模拟流水,
+     * 差异按表201生成结果文件(ZIP+TXT, TAB分隔, 空值null)并以 fileinfo 返回查询号。
+     */
+    private JSONObject mockReconcile(String infno, JSONObject input) {
+        JSONObject data = input.getJSONObject("data");
+        String beg = data == null ? null : data.getString("stmt_begndate");
+        String end = data == null ? null : data.getString("stmt_enddate");
         JSONObject output = new JSONObject();
-        output.put(infno.equals("3201") ? "data" : "setldetail", new JSONArray());
+        if ("3201".equals(infno)) {
+            JSONObject stmtinfo = new JSONObject();
+            stmtinfo.put("setl_optins", data == null ? null : data.getString("setl_optins"));
+            // 平台口径: setl_time 在 [beg, end] 内且未撤销的结算流水
+            BigDecimal remoteMedfee = BigDecimal.ZERO;
+            BigDecimal remoteFund = BigDecimal.ZERO;
+            BigDecimal remoteAcct = BigDecimal.ZERO;
+            int remoteCnt = 0;
+            for (JSONObject s : mockSetls.values()) {
+                String t = s.getString("setl_time");
+                if (t != null && inRange(t, beg, end) && !mockCancelledSetls.contains(s.getString("setl_id"))) {
+                    remoteMedfee = remoteMedfee.add(toBd(s.getString("medfee_sumamt")));
+                    remoteFund = remoteFund.add(toBd(s.getString("fund_pay_sumamt")));
+                    remoteAcct = remoteAcct.add(toBd(s.getString("acct_pay")));
+                    remoteCnt++;
+                }
+            }
+            BigDecimal medfee = toBd(data == null ? null : data.getString("medfee_sumamt"));
+            BigDecimal fund = toBd(data == null ? null : data.getString("fund_pay_sumamt"));
+            BigDecimal acct = toBd(data == null ? null : data.getString("acct_pay"));
+            int cnt = data == null || data.getString("fixmedins_setl_cnt") == null ? 0
+                    : Integer.parseInt(data.getString("fixmedins_setl_cnt"));
+            boolean match = remoteCnt == cnt && remoteMedfee.compareTo(medfee) == 0
+                    && remoteFund.compareTo(fund) == 0 && remoteAcct.compareTo(acct) == 0;
+            stmtinfo.put("stmt_rslt", match ? "000000" : "000103");
+            stmtinfo.put("stmt_rslt_dscr", match ? "对总账成功: 数据一致"
+                    : "对总账失败: 数据不一致(平台: 笔数" + remoteCnt + "/总额" + remoteMedfee.toPlainString() + ")");
+            stmtinfo.put("exp_content", "");
+            output.put("stmtinfo", stmtinfo);
+            return output;
+        }
+        // 3202: 解析院内明细文件, 逐条核对, 差异生成表201结果文件
+        String fqn = data == null ? null : data.getString("file_qury_no");
+        byte[] upload = fqn == null ? null : mockFiles.get(fqn);
+        StringBuilder diffTxt = new StringBuilder();
+        List<String[]> rows = upload == null ? new java.util.ArrayList<>() : parseDetailTxt(upload);
+        for (String[] r : rows) {
+            String setlId = r[0];
+            String[] diff = null;
+            if (setlId == null || setlId.isEmpty()) {
+                diff = new String[]{"null", "null", setlId, "null", "000102", r[6],
+                        "结算ID为空, 平台无法核对", r[3], r[4], r[5], "null"};
+            } else {
+                JSONObject s = mockSetls.get(setlId);
+                if (s == null) {
+                    diff = new String[]{"null", "null", setlId, "null", "000102", r[6],
+                            "平台无此结算流水(医药机构多)", r[3], r[4], r[5], "null"};
+                } else if (!amountsMatch(s, r)) {
+                    diff = new String[]{s.getString("psn_no"), s.getString("mdtrt_id"), setlId,
+                            s.getString("medins_setl_id"), "000103", r[6], "结算数据不一致", r[3], r[4], r[5], "null"};
+                }
+            }
+            if (diff != null) {
+                for (String cell : diff) {
+                    diffTxt.append(cell == null || cell.isEmpty() ? "null" : cell).append('\t');
+                }
+                diffTxt.setLength(diffTxt.length() - 1);
+                diffTxt.append('\n');
+            }
+        }
+        String resultFqn = "RQC" + SEQ.incrementAndGet();
+        mockFiles.put(resultFqn, zipTxt(diffTxt.toString(), "recon_result.txt"));
+        JSONObject fileinfo = new JSONObject();
+        fileinfo.put("file_qury_no", resultFqn);
+        fileinfo.put("filename", "3202_result_" + DateUtil.currentTimeCompact() + ".zip");
+        fileinfo.put("dld_endtime", DateUtil.currentDate());
+        output.put("fileinfo", fileinfo);
         return output;
     }
 
-    /** 文件上传(9101): 返回文件查询号 */
-    private JSONObject mockFileUpload() {
+    /** 结算时间是否落在 [beg, end](yyyy-MM-dd) 区间 */
+    private boolean inRange(String setlTime, String beg, String end) {
+        if (beg == null || end == null) {
+            return true;
+        }
+        String day = setlTime.length() >= 10 ? setlTime.substring(0, 10) : setlTime;
+        return day.compareTo(beg) >= 0 && day.compareTo(end) <= 0;
+    }
+
+    /** 3202 明细行与平台流水核对: 退费反向行(负数)取绝对值比对且要求已撤销 */
+    private boolean amountsMatch(JSONObject s, String[] r) {
+        BigDecimal medfee = toBd(r[3]);
+        BigDecimal fund = toBd(r[4]);
+        BigDecimal acct = toBd(r[5]);
+        boolean negative = medfee.signum() < 0;
+        BigDecimal pm = negative ? medfee.negate() : medfee;
+        BigDecimal pf = negative ? fund.negate() : fund;
+        BigDecimal pa = negative ? acct.negate() : acct;
+        boolean match = pm.compareTo(toBd(s.getString("medfee_sumamt"))) == 0
+                && pf.compareTo(toBd(s.getString("fund_pay_sumamt"))) == 0
+                && pa.compareTo(toBd(s.getString("acct_pay"))) == 0;
+        if (negative) {
+            // 退费反向行: 平台侧该结算须已撤销, 否则数据不一致
+            return match && mockCancelledSetls.contains(s.getString("setl_id"));
+        }
+        return match;
+    }
+
+    private BigDecimal toBd(String v) {
+        return v == null || v.isEmpty() || "null".equals(v) ? BigDecimal.ZERO : new BigDecimal(v);
+    }
+
+    /** 解析 3202 明细 ZIP(内含TXT, TAB分隔): 每行 8 列(表200) */
+    private List<String[]> parseDetailTxt(byte[] zip) {
+        List<String[]> rows = new java.util.ArrayList<>();
+        try (java.util.zip.ZipInputStream zis = new java.util.zip.ZipInputStream(new java.io.ByteArrayInputStream(zip))) {
+            ZipEntry entry;
+            while ((entry = zis.getNextEntry()) != null) {
+                if (entry.isDirectory()) {
+                    continue;
+                }
+                ByteArrayOutputStream bos = new ByteArrayOutputStream();
+                byte[] buf = new byte[4096];
+                int n;
+                while ((n = zis.read(buf)) > 0) {
+                    bos.write(buf, 0, n);
+                }
+                String txt = new String(bos.toByteArray(), StandardCharsets.UTF_8);
+                for (String line : txt.split("\n")) {
+                    if (line.trim().isEmpty()) {
+                        continue;
+                    }
+                    String[] cells = line.split("\t", -1);
+                    String[] r = new String[8];
+                    for (int i = 0; i < r.length; i++) {
+                        String c = i < cells.length ? cells[i] : "null";
+                        r[i] = "null".equals(c) || c.isEmpty() ? null : c;
+                    }
+                    rows.add(r);
+                }
+            }
+        } catch (Exception e) {
+            log.warn("【模拟医保平台】3202 明细文件解析失败: {}", e.getMessage());
+        }
+        return rows;
+    }
+
+    /** TXT 内容压缩为 ZIP(9101/3202 文件流格式) */
+    private byte[] zipTxt(String txt, String innerName) {
+        try {
+            ByteArrayOutputStream bos = new ByteArrayOutputStream();
+            try (ZipOutputStream zos = new ZipOutputStream(bos)) {
+                zos.putNextEntry(new ZipEntry(innerName));
+                zos.write(txt.getBytes(StandardCharsets.UTF_8));
+                zos.closeEntry();
+            }
+            return bos.toByteArray();
+        } catch (Exception e) {
+            log.warn("【模拟医保平台】ZIP 生成失败: {}", e.getMessage());
+            return new byte[0];
+        }
+    }
+
+    /** 文件上传(9101): 存储文件流并返回文件查询号(输出节点: 无节点, 根下直挂 file_qury_no 等) */
+    private JSONObject mockFileUpload(JSONObject input) {
+        JSONObject fs = input == null ? null : input.getJSONObject("fsUploadIn");
+        String filename = fs == null ? null : fs.getString("filename");
+        byte[] bytes = fs == null ? null : fs.getBytes("in");
+        String fqn = "FQ" + SEQ.incrementAndGet();
+        if (bytes != null) {
+            mockFiles.put(fqn, bytes);
+        }
         JSONObject output = new JSONObject();
-        output.put("file_qury_no", "FQ" + SEQ.incrementAndGet());
-        output.put("filename", "upload_" + DateUtil.currentTimeCompact() + ".txt");
+        output.put("file_qury_no", fqn);
+        output.put("filename", filename);
+        output.put("fixmedins_code", fs == null ? null : fs.getString("fixmedins_code"));
         output.put("dld_endtime", DateUtil.currentDate());
+        log.info("【模拟医保平台】9101 文件上传受理: file_qury_no={}, filename={}, bytes={}",
+                fqn, filename, bytes == null ? 0 : bytes.length);
         return output;
+    }
+
+    /** 按文件查询号取文件流(3202 差异明细文件下载解析; 9101 回查) */
+    public byte[] getMockFile(String fileQuryNo) {
+        return fileQuryNo == null ? null : mockFiles.get(fileQuryNo);
     }
 
     /**

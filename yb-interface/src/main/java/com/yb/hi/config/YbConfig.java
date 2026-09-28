@@ -30,4 +30,14 @@ public class YbConfig {
     private boolean mockEnabled = true;
     private int connectTimeout = 30000;
     private int readTimeout = 60000;
+    /** 结算经办机构(3201/3202 setl_optins, 表: 6位; 与平台确认后配置) */
+    private String setlOptins;
+    /** 清算类别(3201/3202 clr_type, 6位; 与平台确认后配置) */
+    private String clrType;
+    /** 退费结算标志-3201(6位, 规范表196; 与平台确认后配置) */
+    private String refdSetlFlag3201;
+    /** 退费结算标志-3202(3位, 规范表198; 注意与 3201 长度不同) */
+    private String refdSetlFlag3202;
+    /** 对账任务 cron(默认每日 07:00 对 T-1; 避开平台结算高峰期) */
+    private String reconCron = "0 0 7 * * *";
 }

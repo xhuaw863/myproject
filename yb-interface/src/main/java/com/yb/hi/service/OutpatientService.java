@@ -165,4 +165,38 @@ public class OutpatientService {
         }
         return resp;
     }
+
+    /**
+     * 【3201】医药机构费用结算对总账(规范表196/197)
+     * 输入节点: data(单行, ReconTotalReq 严格按表196字段); 输出节点: stmtinfo。
+     */
+    public YbResponse reconcileTotal(ReconTotalReq req) {
+        log.info("对总账3201: insutype={}, stmt={}~{}", req.getInsutype(), req.getStmtBegndate(), req.getStmtEnddate());
+        Map<String, Object> input = new LinkedHashMap<>();
+        input.put("data", req);
+        return ybHttpClient.call("3201", input, null);
+    }
+
+    /**
+     * 【3202】医药机构费用结算对明细账(规范表198/199)
+     * 输入节点: data(单行, ReconDetailReq 严格按表198字段, refd_setl_flag 3位);
+     * 输出节点: fileinfo(file_qury_no 下载差异明细文件, 内容见表201)。
+     */
+    public YbResponse reconcileDetail(ReconDetailReq req) {
+        log.info("对明细账3202: file_qury_no={}, stmt={}~{}", req.getFileQuryNo(), req.getStmtBegndate(), req.getStmtEnddate());
+        Map<String, Object> input = new LinkedHashMap<>();
+        input.put("data", req);
+        return ybHttpClient.call("3202", input, null);
+    }
+
+    /**
+     * 【9101】文件上传(规范表415/416)
+     * 输入节点: fsUploadIn(in 字节数组/filename/fixmedins_code); 输出节点: 无节点(根下直接 file_qury_no 等)。
+     */
+    public YbResponse fileUpload(FileUploadReq req) {
+        log.info("文件上传9101: filename={}", req.getFilename());
+        Map<String, Object> input = new LinkedHashMap<>();
+        input.put("fsUploadIn", req);
+        return ybHttpClient.call("9101", input, null);
+    }
 }
