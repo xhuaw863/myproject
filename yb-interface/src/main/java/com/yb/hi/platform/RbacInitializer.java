@@ -131,6 +131,7 @@ public class RbacInitializer implements ApplicationRunner {
             renameNurseTreatmentMedtechMenus();
             ensureSystemParamMenu(menuIds);
             ensureVerifyConsoleMenu(menuIds);
+            ensureUploadCenterMenu(menuIds);
             Map<String, Long> roleIds = seedGlobalRoles();
             ensureOrgAdminRole();
             ensureTherapistTechnicianRoles(roleIds);
@@ -676,6 +677,37 @@ public class RbacInitializer implements ApplicationRunner {
             log.info("医保验证台菜单已补充(verify-console, 外链 /verify/index.html)");
         }
         menuIds.put("verify-console", m.getId());
+    }
+
+    /**
+     * 幂等确保"医保上报中心"菜单存在(批次4 M5: his_upload_status 上传管线监控台,
+     * 按业务类型/状态筛选 + 失败待补手动重传)。挂"医保字典"子目录末尾,
+     * ADMIN/ORG_ADMIN/SUPER_ADMIN 走 all_menus 自动可见; 业务角色需在角色权限页勾选授权。
+     */
+    private void ensureUploadCenterMenu(Map<String, Long> menuIds) {
+        SysMenu m = menuMapper.selectOne(new QueryWrapper<SysMenu>().eq("menu_key", "upload-center").last("LIMIT 1"));
+        if (m == null) {
+            SysMenu ybDir = menuMapper.selectOne(new QueryWrapper<SysMenu>().eq("menu_key", "yb-dict").last("LIMIT 1"));
+            if (ybDir == null) {
+                return;
+            }
+            int maxSort = 0;
+            for (SysMenu c : menuMapper.selectList(new QueryWrapper<SysMenu>().eq("parent_id", ybDir.getId()))) {
+                maxSort = Math.max(maxSort, c.getSortNo() == null ? 0 : c.getSortNo());
+            }
+            m = new SysMenu();
+            m.setParentId(ybDir.getId());
+            m.setMenuKey("upload-center");
+            m.setMenuName("医保上报中心");
+            m.setMenuType(2);
+            m.setComp("UploadCenter");
+            m.setSortNo(maxSort + 1);
+            m.setVisible(1);
+            m.setStatus(1);
+            menuMapper.insert(m);
+            log.info("医保上报中心菜单已补充(upload-center/UploadCenter)");
+        }
+        menuIds.put("upload-center", m.getId());
     }
 
     /**

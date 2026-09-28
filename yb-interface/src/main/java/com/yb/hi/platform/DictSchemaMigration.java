@@ -862,6 +862,26 @@ public class DictSchemaMigration implements ApplicationRunner {
                     + "KEY idx_upload_status (tenant_id, status),"
                     + "KEY idx_upload_catalog (tenant_id, catalog_type, status)"
                     + ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='医保对照上传队列(批次4 M4: 3301/3302)'");
+            /* 上传管线状态机(M5, 设计 §6.1/6.2): 2203 等逐单状态; 0待传 1已传 2失败待补 3已撤销;
+               retry_count/next_retry 指数退避 1/5/15/60min, max 6 次转人工; uk_biz 一单一状态 */
+            st.executeUpdate("CREATE TABLE IF NOT EXISTS his_upload_status ("
+                    + "id BIGINT NOT NULL AUTO_INCREMENT COMMENT '主键',"
+                    + "tenant_id BIGINT NOT NULL DEFAULT 0 COMMENT '租户(医共体)ID',"
+                    + "org_id BIGINT DEFAULT NULL COMMENT '机构ID',"
+                    + "biz_type VARCHAR(10) DEFAULT NULL COMMENT '业务类型: REG/VISIT/RX/FEE/SETL/CANCEL',"
+                    + "biz_id BIGINT DEFAULT NULL COMMENT '业务主键(如就诊ID)',"
+                    + "mdtrt_id VARCHAR(30) DEFAULT NULL COMMENT '医保就诊ID',"
+                    + "status TINYINT DEFAULT 0 COMMENT '状态: 0待传 1已传 2失败待补 3已撤销',"
+                    + "retry_count INT DEFAULT 0 COMMENT '已重试次数(max 6 次转人工)',"
+                    + "next_retry DATETIME DEFAULT NULL COMMENT '下次重试时间(指数退避)',"
+                    + "last_err VARCHAR(500) DEFAULT NULL COMMENT '最近失败原因',"
+                    + "msgid VARCHAR(40) DEFAULT NULL COMMENT '成功报文ID(回执)',"
+                    + "create_by VARCHAR(50) DEFAULT NULL, create_time DATETIME DEFAULT NULL,"
+                    + "update_by VARCHAR(50) DEFAULT NULL, update_time DATETIME DEFAULT NULL, deleted TINYINT DEFAULT 0,"
+                    + "PRIMARY KEY (id),"
+                    + "UNIQUE KEY uk_biz (tenant_id, biz_type, biz_id),"
+                    + "KEY idx_retry (status, retry_count, next_retry)"
+                    + ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='医保上传状态机(批次4 M5: 上传管线逐单状态)'");
         }
     }
 

@@ -21,7 +21,9 @@ import com.yb.hi.entity.doctor.HisVisit;
 import com.yb.hi.entity.outpatient.HisPatient;
 import com.yb.hi.entity.outpatient.HisPatientInsu;
 import com.yb.hi.entity.outpatient.HisRegistration;
+import com.yb.hi.entity.yb.HisUploadStatus;
 import com.yb.hi.framework.common.BizException;
+import com.yb.hi.framework.tenant.TenantContext;
 import com.yb.hi.mapper.doctor.HisOrderMapper;
 import com.yb.hi.mapper.doctor.HisPrescriptionMapper;
 import com.yb.hi.mapper.doctor.HisVisitMapper;
@@ -29,6 +31,7 @@ import com.yb.hi.mapper.outpatient.HisPatientInsuMapper;
 import com.yb.hi.mapper.outpatient.HisRegistrationMapper;
 import com.yb.hi.platform.service.DeptScopeResolver;
 import com.yb.hi.service.OutpatientService;
+import com.yb.hi.service.yb.UploadStatusService;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -62,11 +65,14 @@ public class HisVisitService extends ServiceImpl<HisVisitMapper, HisVisit> {
     private final HisRegistrationMapper registrationMapper;
     // 医生站就诊级科室判权(DeptScopeResolver 唯一口径)
     private final DeptScopeResolver deptScopeResolver;
+    // 上传管线状态机(M5: 2203 结果落库/收费入口守卫/退号撤销)
+    private final UploadStatusService uploadStatusService;
 
     public HisVisitService(OutpatientService outpatientService, HisDiagnosisService diagnosisService,
                            HisMedicalRecordService medicalRecordService, HisPrescriptionMapper prescriptionMapper,
                            HisOrderMapper orderMapper, HisPatientInsuMapper patientInsuMapper,
-                           HisRegistrationMapper registrationMapper, DeptScopeResolver deptScopeResolver) {
+                           HisRegistrationMapper registrationMapper, DeptScopeResolver deptScopeResolver,
+                           UploadStatusService uploadStatusService) {
         this.outpatientService = outpatientService;
         this.diagnosisService = diagnosisService;
         this.medicalRecordService = medicalRecordService;
@@ -75,6 +81,7 @@ public class HisVisitService extends ServiceImpl<HisVisitMapper, HisVisit> {
         this.patientInsuMapper = patientInsuMapper;
         this.registrationMapper = registrationMapper;
         this.deptScopeResolver = deptScopeResolver;
+        this.uploadStatusService = uploadStatusService;
     }
 
     /** 候诊/就诊队列分页查询 */
@@ -128,13 +135,14 @@ public class HisVisitService extends ServiceImpl<HisVisitMapper, HisVisit> {
         return v;
     }
 
-    /** 挂号退号时取消候诊就诊(visit_status=4) */
+    /** 挂号退号时取消候诊就诊(visit_status=4), 并撤销上传管线 VISIT 状态(不再补传, 收费守卫阻断) */
     @Transactional(rollbackFor = Exception.class)
     public void cancelByRegistration(Long registrationId) {
         HisVisit v = lambdaQuery().eq(HisVisit::getRegistrationId, registrationId).one();
         if (v != null && v.getVisitStatus() != null && v.getVisitStatus() == 1) {
             v.setVisitStatus(4);
             updateById(v);
+            uploadStatusService.markRevoked(TenantContext.require(), HisUploadStatus.BIZ_VISIT, v.getId(), v.getMdtrtId());
         }
     }
 
@@ -236,22 +244,105 @@ public class HisVisitService extends ServiceImpl<HisVisitMapper, HisVisit> {
         record.setDrSign(v.getDrName());
         medicalRecordService.saveRecord(record);
 
-        // 医保2203就诊信息上传
+        // 医保2203就诊信息上传(M5: 结果落 his_upload_status 状态机, 失败不阻断接诊完成,
+        // 由收费入口守卫强制补传 + 定时扫描指数退避重试)
         boolean upload = req.getUploadYb() == null || req.getUploadYb();
         if (upload && StringUtils.hasText(v.getMdtrtId())) {
+            boolean ok = false;
+            String msgid = null;
+            String err = "2203未执行";
             try {
-                uploadVisitInfo(v, savedDiag);
+                YbResponse resp = tryUploadVisitInfo(v, savedDiag);
+                ok = resp != null && resp.isSuccess();
+                msgid = resp == null || resp.getInfRefmsgid() == null ? null : resp.getInfRefmsgid();
+                if (!ok) {
+                    err = resp == null ? "医保无响应" : (resp.isUnknown() ? "医保响应未知(超时)" : resp.getErrMsg());
+                }
             } catch (Exception e) {
                 // 上传失败不阻断接诊完成, 仅记录日志
+                err = e.getMessage();
                 log.warn("2203就诊信息上传失败: visitId={}, err={}", v.getId(), e.getMessage());
             }
+            uploadStatusService.recordVisit(TenantContext.require(), v.getId(), v.getMdtrtId(), ok, msgid, err);
         }
         log.info("完成接诊: visitId={}, patient={}", v.getId(), v.getPatientName());
         return v;
     }
 
-    /** 组装并调用医保2203 */
-    private void uploadVisitInfo(HisVisit v, List<HisDiagnosis> diagnoses) {
+    /**
+     * 补传 2203(收费入口守卫与定时扫描共用): 显式租户上下文加载就诊与诊断后调用医保 2203;
+     * 失败不抛异常, 返回回执供调用方判定落状态。
+     */
+    public YbResponse uploadVisitYb(Long tenantId, Long visitId) {
+        // 嵌套租户上下文: 保存外层(请求线程可能已有租户上下文)并在 finally 恢复, 不得 clear 掉请求上下文
+        Long outer = TenantContext.get();
+        TenantContext.set(tenantId);
+        try {
+            HisVisit v = lambdaQuery()
+                    .eq(HisVisit::getId, visitId)
+                    .eq(HisVisit::getDeleted, 0)
+                    .last("LIMIT 1")
+                    .one();
+            if (v == null) {
+                return null;
+            }
+            if (v.getVisitStatus() != null && v.getVisitStatus() == 4) {
+                throw new BizException("就诊已退号撤销, 无需补传");
+            }
+            List<HisDiagnosis> diagnoses = diagnosisService.listByVisit(visitId);
+            return tryUploadVisitInfo(v, diagnoses);
+        } catch (BizException e) {
+            log.warn("2203补传拒绝: visitId={}, err={}", visitId, e.getMessage());
+            return null;
+        } catch (Exception e) {
+            log.warn("2203补传异常: visitId={}, err={}", visitId, e.getMessage());
+            return null;
+        } finally {
+            if (outer == null) {
+                TenantContext.clear();
+            } else {
+                TenantContext.set(outer);
+            }
+        }
+    }
+
+    /**
+     * 收费入口守卫(设计 §3.5): 规范顺序上就诊上传(2203)是结算前置,
+     * VISIT 未传成功时先补传 2203, 成功才继续 2204/2206/2207; 失败抛异常阻断收费。
+     */
+    public void ensureVisitUploaded(Long visitId) {
+        HisVisit v = getById(visitId);
+        if (v == null) {
+            throw new BizException(400, "就诊记录不存在");
+        }
+        if (!StringUtils.hasText(v.getMdtrtId())) {
+            // 无医保就诊信息: 由收费建单前置校验拒绝(提示改用自费), 上传状态无意义
+            return;
+        }
+        HisUploadStatus row = uploadStatusService.findByBiz(TenantContext.require(),
+                HisUploadStatus.BIZ_VISIT, visitId);
+        if (row != null && row.getStatus() != null
+                && row.getStatus() == HisUploadStatus.STATUS_UPLOADED) {
+            return;
+        }
+        if (row != null && row.getStatus() != null
+                && row.getStatus() == HisUploadStatus.STATUS_REVOKED) {
+            throw new BizException("该就诊已退号撤销, 不能收费");
+        }
+        // 待传/失败待补: 先补传 2203, 成功才继续收费链
+        YbResponse resp = uploadVisitYb(TenantContext.require(), visitId);
+        boolean ok = resp != null && resp.isSuccess();
+        String err = resp == null ? "医保无响应" : (resp.isUnknown() ? "医保响应未知(超时)" : resp.getErrMsg());
+        uploadStatusService.recordVisit(TenantContext.require(), visitId, v.getMdtrtId(), ok,
+                ok ? resp.getInfRefmsgid() : null, ok ? null : err);
+        if (!ok) {
+            throw new BizException("医保就诊信息(2203)尚未上传成功, 本次补传失败: "
+                    + err + "; 已记录待补传, 系统将自动重试, 稍后重试收费");
+        }
+    }
+
+    /** 组装并调用医保2203(失败不抛异常, 由调用方按回执判定) */
+    private YbResponse tryUploadVisitInfo(HisVisit v, List<HisDiagnosis> diagnoses) {
         MdtrtInfoReq mdtrt = new MdtrtInfoReq();
         mdtrt.setMdtrtId(v.getMdtrtId());
         mdtrt.setPsnNo(v.getPsnNo());
@@ -289,11 +380,7 @@ public class HisVisitService extends ServiceImpl<HisVisitMapper, HisVisit> {
             }
         }
         // 带患者参保地区划(规范表3: 2203输入含psn_no时insuplc_admdvs必填)
-        YbResponse resp = outpatientService.uploadVisitInfo(mdtrt, diseList, insuplcAdmdvsOf(v));
-        if (resp == null || !resp.isSuccess()) {
-            String err = resp == null ? "医保无响应" : resp.getErrMsg();
-            throw new BizException("2203上传失败: " + err);
-        }
+        return outpatientService.uploadVisitInfo(mdtrt, diseList, insuplcAdmdvsOf(v));
     }
 
     /* ==================== 病历草稿 / 历史 / 费用 / 参保 ==================== */

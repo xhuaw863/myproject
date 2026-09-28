@@ -133,7 +133,14 @@ public class MockYbServer {
         resp.put("err_msg", "");
         resp.put("output", output.toJSONString());
 
-        YbResponse ybResp = JSON.parseObject(resp.toJSONString(), YbResponse.class);
+        // 与真实模式 parseResponse 同口径逐字段映射(parseObject 不做 snake_case->camelCase, 会丢 inf_refmsgid/err_msg)
+        YbResponse ybResp = new YbResponse();
+        ybResp.setInfcode(resp.getString("infcode"));
+        ybResp.setInfRefmsgid(resp.getString("inf_refmsgid"));
+        ybResp.setRefmsgTime(resp.getString("refmsg_time"));
+        ybResp.setRespondTime(resp.getString("respond_time"));
+        ybResp.setErrMsg(resp.getString("err_msg"));
+        ybResp.setOutput(resp.getString("output"));
         ybResp.setRawJson(resp.toJSONString());
         log.info("【模拟医保平台】infno={} 已生成模拟响应", infno);
         return ybResp;

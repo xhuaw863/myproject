@@ -30,6 +30,7 @@
           group: '医保字典', children: [
             { key: 'dict-download', label: '字典下载', comp: 'DictDownload' },
             { key: 'dict-version', label: '版本状态', comp: 'DictVersion' },
+            { key: 'upload-center', label: '医保上报中心', comp: 'UploadCenter' },
             { key: 'verify-console', label: '医保验证台' }
           ]
         },

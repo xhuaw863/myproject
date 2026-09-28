@@ -35,6 +35,7 @@ import com.yb.hi.mapper.cashier.HisPaymentDetailMapper;
 import com.yb.hi.mapper.yb.HisCompTaskMapper;
 import com.yb.hi.platform.service.OrgAccessGuard;
 import com.yb.hi.service.OutpatientService;
+import com.yb.hi.service.doctor.HisVisitService;
 import com.yb.hi.service.medtech.SpecimenService;
 import com.yb.hi.service.nurse.NurseExecService;
 import com.yb.hi.service.treatment.TreatmentPlanService;
@@ -102,6 +103,8 @@ public class CashierService {
     private final SpecimenService specimenService;
     /** 补偿任务 Mapper(批次4: UNKNOWN 交易登记) */
     private final HisCompTaskMapper compTaskMapper;
+    /** 就诊服务(M5: 收费前校验 2203 就诊上传状态) */
+    private final HisVisitService visitService;
     /** 两阶段化事务模板(T1/T3 显式事务边界, T2 医保调用不占事务) */
     private final TransactionTemplate txTemplate;
 
@@ -114,7 +117,8 @@ public class CashierService {
                           @Lazy TreatmentPlanService treatmentPlanService,
                           @Lazy SpecimenService specimenService,
                           PlatformTransactionManager transactionManager,
-                          HisCompTaskMapper compTaskMapper) {
+                          HisCompTaskMapper compTaskMapper,
+                          HisVisitService visitService) {
         this.billMapper = billMapper;
         this.billItemMapper = billItemMapper;
         this.dailySettleMapper = dailySettleMapper;
@@ -128,6 +132,7 @@ public class CashierService {
         this.treatmentPlanService = treatmentPlanService;
         this.specimenService = specimenService;
         this.compTaskMapper = compTaskMapper;
+        this.visitService = visitService;
         this.txTemplate = new TransactionTemplate(transactionManager);
     }
 
@@ -418,6 +423,12 @@ public class CashierService {
     private Map<String, Object> doCharge(ChargeReq req, boolean ybFlow) {
         if (req == null || req.getVisitId() == null) {
             throw new BizException(400, "就诊ID不能为空");
+        }
+        // M5 收费入口守卫(设计 §3.5): 规范顺序上就诊上传(2203)是结算前置,
+        // VISIT 未传成功时先补传 2203(无事务, 不占行锁), 成功才继续 2204/2206/2207;
+        // 自费单不走医保链, 不适用
+        if (ybFlow) {
+            visitService.ensureVisitUploaded(req.getVisitId());
         }
         ChargeCtx ctx = txTemplate.execute(status -> buildStage1(req, ybFlow));
         if (!ybFlow) {

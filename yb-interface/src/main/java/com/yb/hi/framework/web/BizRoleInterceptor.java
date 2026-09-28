@@ -55,6 +55,8 @@ public class BizRoleInterceptor implements HandlerInterceptor {
         WRITE_ROLES.put("/api/yb/recon/", new String[]{Roles.CASHIER});
         // 医保目录对照上报管理端(3301/3302 队列触发与重传; 对照管理为管理端职责, 仅管理员)
         WRITE_ROLES.put("/api/yb/catalog-upload/", new String[]{Roles.ADMIN});
+        // 医保上报中心(M5: 上传状态手动重传; 管理端职责, 仅管理员)
+        WRITE_ROLES.put("/api/yb/upload-status/", new String[]{Roles.ADMIN});
     }
 
     @Override
