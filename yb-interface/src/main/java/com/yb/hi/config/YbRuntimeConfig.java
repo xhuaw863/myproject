@@ -13,6 +13,8 @@ public class YbRuntimeConfig {
     private String fixmedinsCode;
     private String fixmedinsName;
     private String mdtrtareaAdmvs;
+    /** 参保地医保区划(规范表3: 交易输入含人员编号时必填; 机构/租户配置的默认参保地, 患者级以 HisPatientInsu 为准) */
+    private String insuplcAdmdvs;
     private String recerSysCode;
     private String infver;
     private String opterType;

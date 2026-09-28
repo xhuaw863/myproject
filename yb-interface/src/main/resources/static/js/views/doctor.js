@@ -1,4 +1,4 @@
-/* 门诊医生工作站主编排器：共享就诊状态、三栏布局、事件中继与快捷键。 */
+/* 门诊医生工作站主编排器：共享就诊状态、左队列+双栏独立滚动 Tab 布局、事件中继与快捷键。 */
 ;(function () {
   var HIS = (window.HIS = window.HIS || {});
   HIS.views = HIS.views || {};
@@ -25,7 +25,8 @@
       'dw-diagnosis-panel': HIS.components.DwDiagnosisPanel,
       'dw-prescription-panel': HIS.components.DwPrescriptionPanel,
       'dw-order-panel': HIS.components.DwOrderPanel,
-      'dw-documents-panel': HIS.components.DwDocumentsPanel
+      'dw-documents-panel': HIS.components.DwDocumentsPanel,
+      'dw-orders-overview': HIS.components.DwOrdersOverview
     },
     data: function () {
       return {
@@ -33,7 +34,9 @@
         currentPatient: null,
         visitHistory: [],
         diagnoses: [],
-        expandedPanel: null,
+        activeTab: 'clinic',
+        rxCount: 0,
+        orderCount: 0,
         leftCollapsed: false,
         feeSummary: null,
         currentTime: '',
@@ -49,9 +52,7 @@
         currentPatient: Vue.computed(function () { return vm.currentPatient; }),
         visitHistory: Vue.computed(function () { return vm.visitHistory; }),
         diagnoses: Vue.computed(function () { return vm.diagnoses; }),
-        expandedPanel: Vue.computed(function () {
-          return vm.expandedPanel === 'diag' ? 'diagnosis' : vm.expandedPanel;
-        }),
+        visitDuration: Vue.computed(function () { return vm.visitDuration; }),
         feeSummary: Vue.computed(function () { return vm.feeSummary; })
       };
     },
@@ -110,11 +111,22 @@
         if (event.key === 'F5') { event.preventDefault(); this.focusPanelSearch('rx'); return; }
         if (event.key === 'F6') { event.preventDefault(); this.focusPanelSearch('order'); return; }
         if (event.key === 'F8') { event.preventDefault(); this.refreshQueue(); return; }
-        if (event.key === 'Escape') { this.expandedPanel = null; return; }
-        if (!editing && event.ctrlKey && event.key === '1') { event.preventDefault(); this.expandedPanel = 'emr'; }
-        if (!editing && event.ctrlKey && event.key === '2') { event.preventDefault(); this.expandedPanel = 'diag'; }
-        if (!editing && event.ctrlKey && event.key === '3') { event.preventDefault(); this.expandedPanel = 'rx'; }
-        if (!editing && event.ctrlKey && event.key === '4') { event.preventDefault(); this.expandedPanel = 'order'; }
+        if (!editing && event.ctrlKey && event.key === '1') { event.preventDefault(); this.switchTab('clinic'); }
+        if (!editing && event.ctrlKey && event.key === '2') { event.preventDefault(); this.switchTab('docs'); }
+        if (!editing && event.ctrlKey && event.key === '3') { event.preventDefault(); this.switchTab('overview'); }
+      },
+      switchTab: function (tab) {
+        this.activeTab = tab;
+        /* dw-main 不再整体滚动: 复位当前可见页签内各滚动容器(栏内/整页) */
+        var root = this.$el;
+        if (!root) { return; }
+        var bodies = root.querySelectorAll('.dw-tab-body');
+        for (var i = 0; i < bodies.length; i++) {
+          if (bodies[i].style.display === 'none') { continue; }
+          bodies[i].scrollTop = 0;
+          var cols = bodies[i].querySelectorAll('.dw-col');
+          for (var j = 0; j < cols.length; j++) { cols[j].scrollTop = 0; }
+        }
       },
       onSelectVisit: function (visit) {
         if (!visitIdOf(visit)) { return; }
@@ -123,7 +135,9 @@
         this.visitHistory = [];
         this.diagnoses = [];
         this.feeSummary = null;
-        this.expandedPanel = null;
+        this.rxCount = 0;
+        this.orderCount = 0;
+        this.activeTab = 'clinic';
         this.visitTimer = 0;
         this.loadPatientDetail(visit);
         this.loadVisitHistory(visit);
@@ -197,18 +211,35 @@
       onRxSaved: function () {
         this.loadFeeSummary(this.currentVisit);
         this.refreshDocuments();
+        this.refreshOrdersOverview();
       },
       onOrderSaved: function () {
         this.loadFeeSummary(this.currentVisit);
         this.refreshDocuments();
+        this.refreshOrdersOverview();
       },
+      refreshOrdersOverview: function () {
+        var ov = this.$refs.ordersOverview;
+        if (ov && typeof ov.refresh === 'function') { ov.refresh(); }
+      },
+      /* 病历摘要引用中继: 处方/医嘱面板【插入病历】发射 insert-to-record, 转调病历面板追加方法 */
+      onInsertToRecord: function (payload) {
+        payload = payload || {};
+        var emr = this.$refs.emrPanel;
+        if (!emr) { ElementPlus.ElMessage.warning('请先打开诊疗工作台页签'); return; }
+        if (payload.target === 'auxExam') {
+          if (typeof emr.appendAuxExam === 'function') { emr.appendAuxExam(payload.text); return; }
+        } else if (typeof emr.appendTreatment === 'function') {
+          emr.appendTreatment(payload.text); return;
+        }
+        ElementPlus.ElMessage.warning('病历面板不可用, 无法插入摘要');
+      },
+      /* 弹窗跳转/快捷入口: 面板名映射到 Tab */
       onRequestExpand: function (panelName) {
-        var names = { diagnosis: 'diag', prescription: 'rx', orders: 'order' };
-        this.expandedPanel = names[panelName] || panelName;
+        this.switchTab(panelName === 'documents' ? 'docs' : 'clinic');
       },
-      onRequestCollapse: function () {
-        this.expandedPanel = null;
-      },
+      onRxCount: function (n) { this.rxCount = Number(n) || 0; },
+      onOrderCount: function (n) { this.orderCount = Number(n) || 0; },
       onFeeUpdated: function (summary) {
         this.feeSummary = summary || null;
       },
@@ -317,15 +348,15 @@
       focusPanelSearch: function (panelName) {
         var vm = this;
         if (!vm.currentVisit) { ElementPlus.ElMessage.warning('请先选择患者'); return; }
-        vm.expandedPanel = panelName;
+        vm.switchTab('clinic');
         vm.$nextTick(function () {
           var panel = panelName === 'rx' ? vm.$refs.rxPanel : vm.$refs.orderPanel;
           if (!panel) { return; }
           if (panelName === 'rx') {
-            var control = panel.$refs.rxSearchExpanded || panel.$refs.rxSearch;
+            var control = panel.$refs.rxPick || panel.$refs.rxSearchExpanded || panel.$refs.rxSearch;
             if (control && typeof control.focus === 'function') { control.focus(); return; }
           }
-          var input = panel.$el && panel.$el.querySelector('.dw-order-search input');
+          var input = panel.$el && panel.$el.querySelector('.dw-order-pick input');
           if (input) { input.focus(); }
         });
       }
@@ -337,15 +368,6 @@
             <button class="dw-btn-icon" style="color:var(--dw-header-text)" :title="leftCollapsed ? '展开候诊栏' : '折叠候诊栏'" @click="leftCollapsed=!leftCollapsed">{{ leftCollapsed ? '≫' : '≪' }}</button>
             <span class="dw-header-title" style="font-size:16px;font-weight:700;letter-spacing:.08em">门诊医生工作站</span>
           </div>
-          <div class="dw-patient-summary">
-            <template v-if="currentVisit">
-              <span class="name">{{ currentVisit.patientName || '-' }}</span>
-              <span class="dim">{{ currentVisit.deptName || '-' }} · {{ currentVisit.drName || '-' }}</span>
-              <span class="dim">接诊计时 {{ visitDuration }}</span>
-            </template>
-            <span v-else class="dim">请从候诊队列选择患者</span>
-          </div>
-          <span v-if="currentVisit" class="dw-fee-badge">本次费用 ￥{{ feeTotal.toFixed(2) }}</span>
           <div class="dw-header-right dw-actions">
             <el-button size="small" @click="startVisit" :disabled="!canStart">F2 接诊</el-button>
             <el-button size="small" @click="saveDraft" :loading="submitting" :disabled="!canEdit">F3 暂存</el-button>
@@ -357,21 +379,39 @@
         <div class="dw-body">
           <dw-queue-panel ref="queuePanel" :class="{'is-collapsed': leftCollapsed}" @select-visit="onSelectVisit" @start-visit="onStartVisit"></dw-queue-panel>
 
-          <div class="dw-center">
-            <dw-patient-banner></dw-patient-banner>
-            <dw-emr-panel ref="emrPanel" @save-draft="onSaveDraft" @request-expand="onRequestExpand" @request-collapse="onRequestCollapse"></dw-emr-panel>
-            <dw-diagnosis-panel @update-diagnoses="onUpdateDiagnoses" @request-expand="onRequestExpand" @request-collapse="onRequestCollapse"></dw-diagnosis-panel>
-          </div>
+          <div class="dw-main" ref="dwMain">
+            <div class="dw-contextbar">
+              <dw-patient-banner></dw-patient-banner>
+              <nav class="dw-tabnav" role="tablist">
+                <button class="dw-tabnav-item" :class="{'is-active': activeTab==='clinic'}" role="tab" :aria-selected="activeTab==='clinic'" @click="switchTab('clinic')">诊疗工作台<span class="dw-tab-count" v-if="diagnoses.length || rxCount || orderCount">诊{{ diagnoses.length }} 方{{ rxCount }} 嘱{{ orderCount }}</span></button>
+                <button class="dw-tabnav-item" :class="{'is-active': activeTab==='overview'}" role="tab" :aria-selected="activeTab==='overview'" @click="switchTab('overview')">医嘱总览<span class="dw-tab-count" v-if="rxCount || orderCount">{{ rxCount + orderCount }}</span></button>
+                <button class="dw-tabnav-item" :class="{'is-active': activeTab==='docs'}" role="tab" :aria-selected="activeTab==='docs'" @click="switchTab('docs')">处置与历史</button>
+              </nav>
+            </div>
 
-          <div class="dw-right">
-            <dw-prescription-panel ref="rxPanel" @rx-saved="onRxSaved" @request-expand="onRequestExpand" @request-collapse="onRequestCollapse" @print-rx="onPrintRx"></dw-prescription-panel>
-            <dw-order-panel ref="orderPanel" @order-saved="onOrderSaved" @request-expand="onRequestExpand" @request-collapse="onRequestCollapse" @print-order="onPrintOrder"></dw-order-panel>
-            <dw-documents-panel ref="documentsPanel" @print="onPrint" @fee-updated="onFeeUpdated"></dw-documents-panel>
+            <div class="dw-tab-body dw-clinic" v-show="activeTab==='clinic'">
+              <div class="dw-col dw-col-left">
+                <dw-diagnosis-panel @update-diagnoses="onUpdateDiagnoses"></dw-diagnosis-panel>
+                <dw-emr-panel ref="emrPanel" @save-draft="onSaveDraft"></dw-emr-panel>
+              </div>
+              <div class="dw-col dw-col-right">
+                <dw-prescription-panel ref="rxPanel" @rx-saved="onRxSaved" @count-update="onRxCount" @print-rx="onPrintRx" @insert-to-record="onInsertToRecord"></dw-prescription-panel>
+                <dw-order-panel ref="orderPanel" @order-saved="onOrderSaved" @count-update="onOrderCount" @print-order="onPrintOrder" @insert-to-record="onInsertToRecord"></dw-order-panel>
+              </div>
+            </div>
+
+            <div class="dw-tab-body" v-if="activeTab==='overview'">
+              <dw-orders-overview ref="ordersOverview" @print-rx="onPrintRx" @print-order="onPrintOrder"></dw-orders-overview>
+            </div>
+
+            <div class="dw-tab-body dw-tab-narrow" v-show="activeTab==='docs'">
+              <dw-documents-panel ref="documentsPanel" @print="onPrint" @fee-updated="onFeeUpdated"></dw-documents-panel>
+            </div>
           </div>
         </div>
 
         <div class="dw-footer">
-          <span>F2接诊 F3暂存 F4完成 F5处方 F6检查 F8刷新 | Ctrl+1病历 Ctrl+2诊断 Ctrl+3处方 Ctrl+4检查 Esc还原</span>
+          <span>F2接诊 F3暂存 F4完成 F5药品 F6医嘱 F8刷新 | Ctrl+1诊疗 Ctrl+2处置 Ctrl+3总览</span>
           <span class="dw-footer-time" style="margin-left:auto;font-variant-numeric:tabular-nums">{{ currentTime }}</span>
         </div>
       </div>

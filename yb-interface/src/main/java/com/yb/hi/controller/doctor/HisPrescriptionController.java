@@ -1,5 +1,6 @@
 package com.yb.hi.controller.doctor;
 
+import com.yb.hi.dto.doctor.PrescriptionBatchReq;
 import com.yb.hi.dto.doctor.PrescriptionReq;
 import com.yb.hi.entity.doctor.HisPrescription;
 import com.yb.hi.entity.doctor.HisPrescriptionItem;
@@ -39,6 +40,12 @@ public class HisPrescriptionController {
     @PostMapping("/create")
     public R<HisPrescription> create(@RequestBody PrescriptionReq req) {
         return R.ok(service.create(req));
+    }
+
+    /** 批量开处方(拆方原子提交, C7): 单事务开立全部批次, 任一批失败整体回滚 */
+    @PostMapping("/create-batch")
+    public R<List<HisPrescription>> createBatch(@RequestBody PrescriptionBatchReq req) {
+        return R.ok(service.createBatch(req));
     }
 
     /** 作废未收费处方 */

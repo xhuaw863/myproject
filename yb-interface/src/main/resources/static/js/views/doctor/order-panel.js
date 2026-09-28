@@ -38,12 +38,13 @@
 
   var DwOrderPanel = {
     name: 'DwOrderPanel',
-    inject: ['currentVisit', 'currentPatient', 'expandedPanel', 'diagnoses', 'visitHistory'],
-    emits: ['order-saved', 'request-expand', 'request-collapse', 'print-order'],
+    inject: ['currentVisit', 'currentPatient', 'diagnoses', 'visitHistory'],
+    emits: ['order-saved', 'count-update', 'print-order', 'insert-to-record'],
     data: function () {
       return {
         orderType: '检查',
         orderTypes: ['检查', '检验', '治疗'],
+        odPickId: null,
         buckets: { '检查': makeBucket(), '检验': makeBucket(), '治疗': makeBucket() },
         forms: { '检查': examForm(), '检验': labForm(), '治疗': treatmentForm() },
         specimenTypes: SPECIMEN_TYPES,
@@ -67,6 +68,7 @@
         mutualItem: null,
         mutualReason: '',
         mutualResolver: null,
+        folded: false,
         /* 过敏拦截(2026-09 集成: 开单前核对护士站过敏档案, 命中强制确认换药/脱敏) */
         allergyVisible: false,
         allergyHits: [],
@@ -85,7 +87,7 @@
       historyList: function () { return raw(this.visitHistory) || []; },
       visitId: function () { return this.visit && (this.visit.id || this.visit.visitId); },
       patientId: function () { return (this.patient && this.patient.id) || (this.visit && this.visit.patientId); },
-      isExpanded: function () { var v = raw(this.expandedPanel); return v === 'order' || v === 'orders'; },
+      isExpanded: function () { return true; },
       canEdit: function () { return !!this.visit && Number(this.visit.visitStatus) === 2; },
       activeBucket: function () { return this.buckets[this.orderType]; },
       activeForm: function () { return this.forms[this.orderType]; },
@@ -134,17 +136,32 @@
         this.buckets = { '检查': makeBucket(), '检验': makeBucket(), '治疗': makeBucket() };
         this.forms = { '检查': examForm(), '检验': labForm(), '治疗': treatmentForm() };
       },
-      switchType: function (type) { this.orderType = type; },
-      toggleExpand: function () { this.$emit(this.isExpanded ? 'request-collapse' : 'request-expand', 'order'); },
+      switchType: function (type) { this.orderType = type; this.odPickId = null; this.buckets[type].results = []; },
+      remoteSearchOd: function (query) {
+        var vm = this; var bucket = vm.activeBucket;
+        var kw = String(query || '').trim();
+        if (!kw) { bucket.results = []; return; }
+        bucket.loading = true;
+        vm.catalogSearch(kw).then(function (rows) { bucket.results = rows; })
+          .catch(function () { bucket.results = []; })
+          .finally(function () { bucket.loading = false; });
+      },
+      onPickOd: function (id) {
+        var vm = this; if (!id) { return; }
+        var row = vm.activeBucket.results.find(function (r) { return String(r.id) === String(id); });
+        vm.odPickId = null;
+        if (row) { vm.addOd(row); }
+      },
       loadOrders: function () {
         var vm = this;
         if (!vm.visitId) { return Promise.resolve([]); }
         vm.loadingOrders = true;
         return HIS.get('/api/his/order/list?visitId=' + encodeURIComponent(vm.visitId)).then(function (d) {
           vm.orders = Array.isArray(d) ? d : ((d && d.records) || []);
+          vm.$emit('count-update', vm.orders.length);
           return vm.orders;
         }).catch(function (e) {
-          vm.orders = []; if (HIS.notifyError) { HIS.notifyError(e); }
+          vm.orders = []; vm.$emit('count-update', 0); if (HIS.notifyError) { HIS.notifyError(e); }
           return [];
         }).finally(function () { vm.loadingOrders = false; });
       },
@@ -420,6 +437,19 @@
         }).catch(function (e) { if (e !== 'cancel' && e !== 'close' && HIS.notifyError) { HIS.notifyError(e); } });
       },
       printOrder: function (order) { this.$emit('print-order', order.id); },
+      /* 插入病历: 按类型生成暂存项目摘要追加到病历治疗意见(检查:部位·目的 / 检验:标本 / 治疗:次数) */
+      insertToRecord: function () {
+        var vm = this;
+        if (!vm.activeBucket.items.length) { ElementPlus.ElMessage.warning('当前没有可插入的暂存项目'); return; }
+        var f = vm.activeForm;
+        var names = vm.activeBucket.items.map(function (it) { return it.itemName; }).join('、');
+        var line = vm.orderType === '检查'
+          ? '检查:' + names + (f.examPart ? '(' + f.examPart + (f.examPurpose ? ' · ' + f.examPurpose : '') + ')' : '')
+          : (vm.orderType === '检验'
+            ? '检验:' + names + (f.specimenType ? '(' + f.specimenType + (f.collectionSite ? ' · ' + f.collectionSite : '') + ')' : '')
+            : '治疗:' + names + '(' + (f.treatmentTimes || 1) + '次)');
+        vm.$emit('insert-to-record', { target: 'treatment', text: '医嘱摘要：' + line });
+      },
       orderStatus: function (o) {
         /* 真实状态源: 医嘱表 paid_flag/exec_status(收费/执行回写) + 报告时间; 就诊级 charge_status 仅作兜底 */
         var ex = Number(o.execStatus || 0), paid = Number(o.paidFlag || 0);
@@ -471,30 +501,26 @@
       }
     },
     template: `
-      <div class="dw-panel dw-order-panel" :class="{'is-expanded':isExpanded}">
+      <div class="dw-panel dw-order-panel" :class="{ 'is-folded': folded }">
         <style>
-          .dw-order-panel .dw-order-toolbar{display:flex;align-items:center;gap:8px;padding:8px 10px}.dw-order-panel .dw-order-search{flex:1;min-width:140px}.dw-order-panel .dw-order-empty{padding:18px;text-align:center;color:var(--dw-text-hint);font-size:12px}.dw-order-panel .dw-order-split{display:grid;grid-template-columns:35% 65%;min-height:440px}.dw-order-panel .dw-order-catalog{padding:10px;border-right:1px solid var(--dw-border)}.dw-order-panel .dw-order-form{padding:10px 14px}.dw-order-panel .dw-package-row{display:flex;gap:5px;flex-wrap:wrap;margin:8px 0}.dw-order-panel .dw-form-readonly{padding:6px 9px;background:var(--dw-card-muted);border:1px solid var(--dw-border);border-radius:4px;color:var(--dw-text-secondary);min-height:30px}.dw-order-panel .dw-order-cards{padding:0 10px 8px}.dw-order-panel .dw-order-history{padding:10px 14px;border-top:1px solid var(--dw-border)}.dw-order-panel .dw-progress{color:var(--dw-primary);font-size:11px;white-space:nowrap}.dw-order-panel .dw-mutual-alert{padding:12px;border-left:4px solid var(--dw-warning);background:var(--dw-warning-light);line-height:1.8}.dw-order-panel .dw-report-result{font-weight:700}.dw-critical-value-dialog{width:100vw!important;max-width:none!important;height:100vh;margin:0!important;border:8px solid var(--dw-danger)!important;border-radius:0!important;background:var(--dw-danger-light)!important;display:flex;flex-direction:column;justify-content:center}.dw-critical-value-dialog .el-message-box__title,.dw-critical-value-dialog .el-message-box__message{color:var(--dw-danger)!important;font-size:22px;font-weight:700}.dw-critical-value-dialog .el-message-box__content{max-width:760px;margin:0 auto;white-space:pre-line}.dw-critical-value-dialog .el-message-box__btns{justify-content:center}.dw-critical-value-dialog .el-button{font-size:18px;padding:18px 42px}.dw-allergy-block-dialog .el-dialog__title{color:var(--dw-danger,var(--yb-danger));font-weight:700}.dw-order-panel .dw-allergy-alert{border:2px solid var(--dw-danger,var(--yb-danger));border-radius:6px;padding:14px 16px;background:rgba(245,108,108,.07)}.dw-order-panel .dw-allergy-alert .hd{color:var(--dw-danger,var(--yb-danger));font-weight:700;font-size:15px;margin-bottom:10px}.dw-order-panel .dw-allergy-alert .row{line-height:2;color:var(--yb-ink-1)}.dw-order-panel .dw-allergy-alert .row b{color:var(--dw-danger,var(--yb-danger))}.dw-order-panel .dw-allergy-alert .tip{margin-top:10px;color:var(--yb-ink-2);font-size:12px}
+          .dw-order-panel .dw-order-toolbar{display:flex;align-items:center;gap:8px;padding:8px 10px;flex-wrap:wrap}.dw-order-panel .dw-order-pick{flex:1 1 200px;min-width:190px}.dw-order-panel .dw-order-empty{padding:18px;text-align:center;color:var(--dw-text-hint);font-size:12px}.dw-order-panel .dw-order-split{display:grid;grid-template-columns:35% 65%;min-height:440px}.dw-order-panel .dw-order-catalog{padding:10px;border-right:1px solid var(--dw-border)}.dw-order-panel .dw-order-form{padding:10px 14px}.dw-order-panel .dw-package-row{display:flex;gap:5px;flex-wrap:wrap;margin:8px 0}.dw-order-panel .dw-form-readonly{padding:6px 9px;background:var(--dw-card-muted);border:1px solid var(--dw-border);border-radius:4px;color:var(--dw-text-secondary);min-height:30px}.dw-order-panel .dw-order-cards{padding:0 10px 8px}.dw-order-panel .dw-order-history{padding:10px 14px;border-top:1px solid var(--dw-border)}.dw-order-panel .dw-progress{color:var(--dw-primary);font-size:11px;white-space:nowrap}.dw-order-panel .dw-mutual-alert{padding:12px;border-left:4px solid var(--dw-warning);background:var(--dw-warning-light);line-height:1.8}.dw-order-panel .dw-report-result{font-weight:700}.dw-critical-value-dialog{width:100vw!important;max-width:none!important;height:100vh;margin:0!important;border:8px solid var(--dw-danger)!important;border-radius:0!important;background:var(--dw-danger-light)!important;display:flex;flex-direction:column;justify-content:center}.dw-critical-value-dialog .el-message-box__title,.dw-critical-value-dialog .el-message-box__message{color:var(--dw-danger)!important;font-size:22px;font-weight:700}.dw-critical-value-dialog .el-message-box__content{max-width:760px;margin:0 auto;white-space:pre-line}.dw-critical-value-dialog .el-message-box__btns{justify-content:center}.dw-critical-value-dialog .el-button{font-size:18px;padding:18px 42px}.dw-allergy-block-dialog .el-dialog__title{color:var(--dw-danger,var(--yb-danger));font-weight:700}.dw-order-panel .dw-allergy-alert{border:2px solid var(--dw-danger,var(--yb-danger));border-radius:6px;padding:14px 16px;background:rgba(245,108,108,.07)}.dw-order-panel .dw-allergy-alert .hd{color:var(--dw-danger,var(--yb-danger));font-weight:700;font-size:15px;margin-bottom:10px}.dw-order-panel .dw-allergy-alert .row{line-height:2;color:var(--yb-ink-1)}.dw-order-panel .dw-allergy-alert .row b{color:var(--dw-danger,var(--yb-danger))}.dw-order-panel .dw-allergy-alert .tip{margin-top:10px;color:var(--yb-ink-2);font-size:12px}
         </style>
         <div class="dw-panel-header">
-          <span>检查 · 检验 · 治疗申请</span>
-          <button class="dw-btn-icon dw-expand-btn" type="button" :title="isExpanded?'收起':'放大'" @click="toggleExpand">{{ isExpanded ? '↙' : '↗' }}</button>
+          <span>检查 · 检验 · 治疗申请 <span class="dim" v-if="orders.length">已开 {{ orders.length }} 单</span></span>
+          <button class="dw-collapse-btn" :title="folded ? '展开医嘱面板' : '折叠医嘱面板'" @click="folded=!folded">{{ folded ? '▸' : '▾' }}</button>
         </div>
-        <template v-if="visit">
+        <template v-if="visit && !folded">
           <div class="dw-order-toolbar">
             <el-radio-group v-model="orderType" size="small" @change="switchType"><el-radio-button v-for="t in orderTypes" :key="t" :label="t">{{ t }}</el-radio-button></el-radio-group>
-            <el-input v-model="activeBucket.keyword" class="dw-order-search" size="small" clearable placeholder="项目名称/编码/拼音简码" @keyup.enter="searchOd"><template #append><el-button :loading="activeBucket.loading" @click="searchOd">检索</el-button></template></el-input>
+            <el-select class="dw-order-pick" v-model="odPickId" size="small" filterable remote reserve-keyword clearable :remote-method="remoteSearchOd" :loading="activeBucket.loading" :disabled="!canEdit" placeholder="检索项目：名称 / 编码 / 拼音，选中即并入暂存" @change="onPickOd">
+              <el-option v-for="it in activeBucket.results" :key="it.id" :label="it.itemName" :value="it.id">
+                <div class="dw-rx-opt"><span class="nm">{{ it.itemName }}</span><span class="spec">{{ it.spec || '' }}</span><span class="price">￥{{ money(it.execPrice!=null?it.execPrice:it.price) }}</span></div>
+              </el-option>
+            </el-select>
           </div>
-          <div v-if="isExpanded" class="dw-order-split">
-            <div class="dw-order-catalog">
-              <div class="dw-section" style="margin-top:0">项目与套餐</div>
-              <div class="dw-package-row"><el-button v-for="p in allPackages" :key="p.name" size="small" plain :loading="packageLoading" @click="addPackage(p)">{{ p.name }}</el-button></div>
-              <el-table :data="activeBucket.results" v-loading="activeBucket.loading" border size="small" height="250">
-                <el-table-column type="index" label="序号" width="48"></el-table-column><el-table-column prop="itemName" label="项目" show-overflow-tooltip></el-table-column><el-table-column label="价格" width="72" align="right"><template #default="s">￥{{ money(s.row.execPrice!=null?s.row.execPrice:s.row.price) }}</template></el-table-column><el-table-column label="" width="48"><template #default="s"><el-button link type="primary" :disabled="!canEdit" @click="addOd(s.row)">加</el-button></template></el-table-column>
-              </el-table>
-              <div class="dw-section">互认提醒<span class="dw-section-extra">30天内 HR</span></div>
-              <div class="dim">添加项目时自动检索患者近期同类结果；继续开单须记录医学理由。</div>
-            </div>
-            <div class="dw-order-form">
+          <div class="dw-package-row" v-if="allPackages.length"><el-button v-for="p in allPackages" :key="p.name" size="small" plain :loading="packageLoading" @click="addPackage(p)">{{ p.name }}</el-button></div>
+          <div class="dim" style="padding:0 12px">添加项目时自动核对患者30天内同类结果（互认提醒）与过敏史。</div>
+          <div class="dw-order-form">
               <div class="dw-section" style="margin-top:0">{{ orderType }}申请单<span class="dw-section-extra">结构化录入</span></div>
               <el-form :model="activeForm" label-width="92px" size="small">
                 <div class="dw-form-grid"><el-form-item label="临床诊断"><div class="dw-form-readonly" style="width:100%">{{ diagnosisText || '尚未录入诊断' }}</div></el-form-item><el-form-item label="申请医师"><div class="dw-form-readonly" style="width:100%">{{ doctorName || '-' }}</div></el-form-item></div>
@@ -513,22 +539,19 @@
                   <div class="dw-form-grid"><el-form-item label="治疗部位" required><el-input v-model="activeForm.treatmentPart"></el-input></el-form-item><el-form-item label="治疗次数" required><el-input-number v-model="activeForm.treatmentTimes" :min="1" :max="999" style="width:100%"></el-input-number></el-form-item></div><el-form-item label="执行科室" required><el-select v-model="activeForm.execDept" style="width:100%"><el-option v-for="x in treatDepts" :key="x" :label="x" :value="x"></el-option></el-select></el-form-item>
                 </template>
               </el-form>
-              <div class="dw-section">暂存项目</div>
-              <el-table :data="activeBucket.items" border size="small" max-height="220"><el-table-column type="index" label="序号" width="48"></el-table-column><el-table-column prop="itemName" label="项目" show-overflow-tooltip></el-table-column><el-table-column label="数量" width="112"><template #default="s"><el-input-number v-model="s.row.quantity" :min="1" size="small" controls-position="right" style="width:96px"></el-input-number></template></el-table-column><el-table-column label="金额" width="82" align="right"><template #default="s">￥{{ lineAmount(s.row) }}</template></el-table-column><el-table-column label="" width="48"><template #default="s"><el-button link type="danger" @click="removeItem(s.$index)">删</el-button></template></el-table-column></el-table>
-            </div>
+            <div class="dw-section">暂存项目 <span class="dw-section-extra">共 {{ activeBucket.items.length }} 项</span></div>
+            <el-table v-if="activeBucket.items.length" class="dw-od-table" :data="activeBucket.items" border size="small" max-height="220"><el-table-column type="index" label="序号" width="48"></el-table-column><el-table-column prop="itemName" label="项目" show-overflow-tooltip></el-table-column><el-table-column label="数量" width="112"><template #default="s"><el-input-number v-model="s.row.quantity" :min="1" size="small" controls-position="right" style="width:96px"></el-input-number></template></el-table-column><el-table-column label="金额" width="82" align="right"><template #default="s">￥{{ lineAmount(s.row) }}</template></el-table-column><el-table-column label="" width="48"><template #default="s"><el-button link type="danger" @click="removeItem(s.$index)">删</el-button></template></el-table-column></el-table>
+            <div v-else class="dw-collapse-empty">检索并选中项目即并入暂存, 暂无待开项目</div>
           </div>
-          <div v-else class="dw-order-cards">
-            <div v-if="!activeBucket.items.length" class="dw-order-empty">检索并添加{{ orderType }}项目，放大后填写完整申请信息</div>
-            <div class="dw-od-item" v-for="(it,index) in activeBucket.items" :key="it.itemId+'-'+index"><div class="row1"><span class="nm">{{ it.itemName }}</span><span>×{{ it.quantity }}</span><span class="amt">￥{{ lineAmount(it) }}</span><el-button link type="danger" @click="removeItem(index)">删</el-button></div></div>
-          </div>
-          <div class="dw-foot-bar" v-if="activeBucket.items.length"><span>共 {{ activeBucket.items.length }} 项 · 合计 <b>￥{{ money(orderTotal) }}</b></span><el-button type="primary" size="small" :loading="saving" :disabled="!canEdit" @click="saveOd">开立{{ orderType }}单</el-button></div>
+          <div class="dw-foot-bar" v-if="activeBucket.items.length"><span>共 {{ activeBucket.items.length }} 项 · 合计 <b>￥{{ money(orderTotal) }}</b></span><div style="display:flex;gap:6px"><el-button size="small" :disabled="!canEdit" title="将暂存项目摘要追加到病历治疗意见" @click="insertToRecord">插入病历</el-button><el-button type="primary" size="small" :loading="saving" :disabled="!canEdit" @click="saveOd">开立{{ orderType }}单</el-button></div></div>
           <div class="dw-order-history" v-loading="loadingOrders">
             <div class="dw-section" style="margin-top:0">已开立单据 <el-button link size="small" :disabled="!patientId" @click="openReports">查看报告</el-button></div>
             <div v-if="!visibleOrders.length" class="dim">暂无{{ orderType }}单</div>
             <div class="dw-done-list"><div class="dw-done-item" v-for="o in visibleOrders" :key="o.id"><span class="no">{{ o.orderNo }}</span><span class="amt">￥{{ money(o.totalAmount) }}</span><span class="dw-progress">{{ orderProgress(o) }}</span><el-button link type="primary" @click="printOrder(o)">打印</el-button><el-button v-if="Number(o.status)===1" link type="danger" @click="cancelOrder(o)">作废</el-button></div></div>
           </div>
         </template>
-        <div v-else class="dw-order-empty"><el-empty description="请选择接诊患者"></el-empty></div>
+        <div v-else-if="visit && folded" class="dw-slim-empty">医嘱面板已折叠</div>
+        <div v-else class="dw-slim-empty">未选择患者, 医嘱面板暂不可用</div>
 
         <el-dialog v-model="mutualVisible" title="检查检验结果互认提醒" width="560px" :show-close="false" :close-on-click-modal="false" :close-on-press-escape="false" @closed="onMutualClosed">
           <div class="dw-mutual-alert">该患者30天内已有同类检查结果（<b>{{ mutualHit&&mutualHit.date }}</b> {{ mutualHit&&mutualHit.summary }} <el-tag type="warning" size="small">{{ mutualHit&&mutualHit.hr }}</el-tag>），是否仍需开单？</div>

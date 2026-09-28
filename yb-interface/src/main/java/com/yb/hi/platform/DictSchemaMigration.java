@@ -292,6 +292,10 @@ public class DictSchemaMigration implements ApplicationRunner {
                 {"his_order", "exec_status", "TINYINT DEFAULT 0 COMMENT '执行状态:0未执行 1已执行'"},
                 {"his_order", "exec_dept_id", "BIGINT DEFAULT NULL COMMENT '执行科室ID(his_dept.id)'"},
                 {"his_order", "paid_flag", "TINYINT DEFAULT 0 COMMENT '收费标志:0未收费 1已收费'"},
+                /* ---------- 医共体诊断字典: 就诊诊断落库带类别(west/tcm/symp/oper/tumor, 源自his_diag_dict.dict_type) ---------- */
+                {"his_diagnosis", "diag_class", "VARCHAR(20) NULL COMMENT '诊断类别: west/tcm/symp/oper/tumor(源自医共体诊断字典dict_type)'"},
+                /* ---------- 批次4: 收费单医保结算状态(两阶段化中间态, 存量库补列; 新库由 ensureCashierTables 建列) ---------- */
+                {"his_charge_bill", "yb_status", "TINYINT NOT NULL DEFAULT 0 COMMENT '医保结算状态:0未结算 1结算中 2已结算 3撤销中 4已撤销 9冲正中'"},
         };
         int added = 0;
         try (Connection conn = dataSource.getConnection()) {
@@ -302,6 +306,8 @@ public class DictSchemaMigration implements ApplicationRunner {
             ensureWarehouseTables(conn);
             ensurePharmacyTables(conn);
             ensureCashierTables(conn);
+            // 批次4: 医保出站交易日志 + 补偿任务
+            ensureYbTxnTables(conn);
             ensureYbMapLogTable(conn);
             ensureDictEditLogTable(conn);
             ensureScheduleTemplateTables(conn);
@@ -693,6 +699,58 @@ public class DictSchemaMigration implements ApplicationRunner {
                     + "update_by VARCHAR(50) NULL, update_time DATETIME NULL, deleted TINYINT DEFAULT 0,"
                     + "PRIMARY KEY (id), KEY idx_ymlog_tenant (tenant_id), KEY idx_ymlog_item (catalog_type, catalog_id), KEY idx_ymlog_time (change_time)"
                     + ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='医保对照变更留痕表(生效时间+变更前医保码可回溯)'");
+        }
+    }
+
+    /**
+     * 幂等建表(批次4 M1):
+     * 1) his_yb_txn_log 医保出站交易日志——每笔医保交易出站即落 PENDING, 回执后置 SUCCESS/FAIL/UNKNOWN(结果三分),
+     *    msgid 为 2601 冲正(omsgid)与补偿核对的唯一凭据; 2) his_comp_task 补偿任务——UNKNOWN 交易收敛的驱动队列。
+     */
+    private void ensureYbTxnTables(Connection conn) throws Exception {
+        try (Statement st = conn.createStatement()) {
+            st.executeUpdate("CREATE TABLE IF NOT EXISTS his_yb_txn_log ("
+                    + "id BIGINT NOT NULL AUTO_INCREMENT COMMENT '主键',"
+                    + "tenant_id BIGINT NULL COMMENT '租户(医共体)ID',"
+                    + "org_id BIGINT NULL COMMENT '发起机构ID',"
+                    + "infno VARCHAR(10) NOT NULL COMMENT '医保交易编号(2204/2206/2207/2208/2601/3201/3202/9101等)',"
+                    + "msgid VARCHAR(50) NOT NULL COMMENT '发送方报文ID(机构编号12+时间14+顺序号4)',"
+                    + "mdtrt_id VARCHAR(50) NULL COMMENT '医保就诊ID(自input抽取)',"
+                    + "psn_no VARCHAR(50) NULL COMMENT '人员编号(自input抽取)',"
+                    + "setl_id VARCHAR(50) NULL COMMENT '结算ID(2207/2208响应回填)',"
+                    + "chrg_bchno VARCHAR(50) NULL COMMENT '收费批次号(自input抽取)',"
+                    + "bill_id BIGINT NULL COMMENT '关联院内收费单ID',"
+                    + "status VARCHAR(10) NOT NULL DEFAULT 'PENDING' COMMENT 'PENDING待回执/SUCCESS成功/FAIL明确失败/UNKNOWN结果未知',"
+                    + "err_msg VARCHAR(500) NULL COMMENT '平台错误信息',"
+                    + "input_json MEDIUMTEXT NULL COMMENT '请求报文(含input节点)',"
+                    + "output_json MEDIUMTEXT NULL COMMENT '响应报文',"
+                    + "create_by VARCHAR(50) NULL, create_time DATETIME NULL,"
+                    + "update_by VARCHAR(50) NULL, update_time DATETIME NULL, deleted TINYINT DEFAULT 0,"
+                    + "PRIMARY KEY (id),"
+                    + "KEY idx_ybtxn_tenant (tenant_id),"
+                    + "KEY idx_ybtxn_msgid (msgid),"
+                    + "KEY idx_ybtxn_setl (setl_id),"
+                    + "KEY idx_ybtxn_mdtrt (mdtrt_id),"
+                    + "KEY idx_ybtxn_infno (infno)"
+                    + ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='医保出站交易日志(批次4: 结果三分与2601冲正凭据)'");
+            st.executeUpdate("CREATE TABLE IF NOT EXISTS his_comp_task ("
+                    + "id BIGINT NOT NULL AUTO_INCREMENT COMMENT '主键',"
+                    + "tenant_id BIGINT NOT NULL COMMENT '租户(医共体)ID',"
+                    + "biz_type VARCHAR(20) NOT NULL COMMENT '业务类型:CHARGE/REFUND/PARTIAL_REFUND',"
+                    + "ref_id BIGINT NULL COMMENT '关联业务主键(收费单ID等)',"
+                    + "action VARCHAR(30) NOT NULL COMMENT '动作:RESOLVE_UNKNOWN等',"
+                    + "txn_log_id BIGINT NULL COMMENT '触发任务的原交易日志ID(his_yb_txn_log.id)',"
+                    + "status VARCHAR(10) NOT NULL DEFAULT 'PENDING' COMMENT 'PENDING/RUNNING/DONE/DEAD',"
+                    + "attempts INT NOT NULL DEFAULT 0 COMMENT '已尝试次数',"
+                    + "next_run DATETIME NOT NULL COMMENT '下次执行时间(指数退避)',"
+                    + "memo VARCHAR(500) NULL COMMENT '备注/最近一次执行结果',"
+                    + "create_by VARCHAR(50) NULL, create_time DATETIME NULL,"
+                    + "update_by VARCHAR(50) NULL, update_time DATETIME NULL, deleted TINYINT DEFAULT 0,"
+                    + "PRIMARY KEY (id),"
+                    + "KEY idx_comptask_tenant (tenant_id),"
+                    + "KEY idx_comptask_next (next_run),"
+                    + "KEY idx_comptask_status (status)"
+                    + ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='医保补偿任务(批次4: UNKNOWN交易收敛)'");
         }
     }
 
@@ -1096,6 +1154,28 @@ public class DictSchemaMigration implements ApplicationRunner {
                     + "PRIMARY KEY (id), UNIQUE KEY uk_tenant_type_code (tenant_id, dict_type, code),"
                     + "KEY idx_md_type (dict_type), KEY idx_md_tenant (tenant_id)"
                     + ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='医共体用药字典(用法/用药频次, 牵头机构维护)'");
+            /* 医共体诊断字典: 西医诊断/中医诊断/症候/手术/肿瘤, 单表按 dict_type 区分, 牵头机构从标准字典(ICD-10/ICD-9/形态学/中医病证)导入 */
+            st.executeUpdate("CREATE TABLE IF NOT EXISTS his_diag_dict ("
+                    + "id BIGINT NOT NULL AUTO_INCREMENT COMMENT '主键',"
+                    + "tenant_id BIGINT NOT NULL COMMENT '租户(医共体)ID',"
+                    + "dict_type VARCHAR(10) NOT NULL COMMENT '字典类型:west-西医诊断(ICD-10) tcm-中医诊断 symp-中医症候 oper-手术操作(ICD-9) tumor-肿瘤形态学',"
+                    + "code VARCHAR(40) NOT NULL COMMENT '院内编码(租户内同类型唯一, 导入时取标准字典编码)',"
+                    + "name VARCHAR(200) NOT NULL COMMENT '名称(诊断/术式/症候名)',"
+                    + "yb_code VARCHAR(40) NULL COMMENT '医保编码(国标版源导入时=code, 如E11.900; 仅国标来源时留空待补)',"
+                    + "category VARCHAR(200) NULL COMMENT '类目(标准字典附加列: 章节/系统类目/亚目等)',"
+                    + "sort_no INT NULL DEFAULT 0 COMMENT '排序号',"
+                    + "status TINYINT NULL DEFAULT 1 COMMENT '状态:1启用 0停用',"
+                    + "memo VARCHAR(500) NULL COMMENT '备注',"
+                    + "src_type VARCHAR(30) NULL COMMENT '来源标准字典key(icd10/icd10_nat/icd9/icd9_nat/morphology/tcm_disease_new/tcm_disease/tcm_syndrome_new/tcm_syndrome)',"
+                    + "src_doc VARCHAR(200) NULL COMMENT '来源文档(标准字典行src_doc, 逐行不同)',"
+                    + "src_code VARCHAR(50) NULL COMMENT '来源编码(标准字典行编码)',"
+                    + "py_code VARCHAR(64) NULL COMMENT '拼音简码(名称首字母, 自动生成只读)',"
+                    + "abbr_code VARCHAR(64) NULL COMMENT '自定义简码(人工维护, 选填)',"
+                    + "create_by VARCHAR(50) NULL, create_time DATETIME NULL,"
+                    + "update_by VARCHAR(50) NULL, update_time DATETIME NULL, deleted TINYINT DEFAULT 0,"
+                    + "PRIMARY KEY (id), UNIQUE KEY uk_tenant_diag_type_code (tenant_id, dict_type, code),"
+                    + "KEY idx_dd_type (dict_type), KEY idx_dd_tenant (tenant_id)"
+                    + ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='医共体诊断字典(五类: 西医/中医/症候/手术/肿瘤, 牵头机构维护)'");
         }
     }
 
@@ -1293,7 +1373,8 @@ public class DictSchemaMigration implements ApplicationRunner {
                     + "cash_pay DECIMAL(12,2) DEFAULT 0 COMMENT '现金支付',"
                     + "acct_pay DECIMAL(12,2) DEFAULT 0 COMMENT '个账支付',"
                     + "setl_id VARCHAR(50) DEFAULT NULL COMMENT '医保结算ID',"
-                    + "status TINYINT DEFAULT 0 COMMENT '状态:0待收费 1已收费 2已退费',"
+                    + "status TINYINT DEFAULT 0 COMMENT '状态:0待收费 1已收费 2已退费(-1作废)',"
+                    + "yb_status TINYINT NOT NULL DEFAULT 0 COMMENT '医保结算状态:0未结算 1结算中 2已结算 3撤销中 4已撤销 9冲正中',"
                     + "charge_by VARCHAR(50) DEFAULT NULL COMMENT '收费员',"
                     + "charge_time DATETIME DEFAULT NULL COMMENT '收费时间',"
                     + "remark VARCHAR(500) DEFAULT NULL COMMENT '备注',"
@@ -2051,6 +2132,8 @@ public class DictSchemaMigration implements ApplicationRunner {
         addColumnIfNotExists(conn, "his_pharmacy_def", "dept_id", "BIGINT DEFAULT NULL COMMENT '归属科室(his_dept.id, 一一对应; 空=历史未绑定)'");
         addColumnIfNotExists(conn, "his_warehouse_def", "dept_id", "BIGINT DEFAULT NULL COMMENT '归属科室(his_dept.id, 仅kind=WAREHOUSE; 一一对应; 空=历史未绑定)'");
         addColumnIfNotExists(conn, "his_charge_bill", "pay_method", "VARCHAR(20) DEFAULT NULL COMMENT '主要支付方式:CASH/WECHAT/ALIPAY/CARD/INSURANCE/FREE'");
+        /* ---------- 批次4: 收费单医保结算状态(与 cols 双保险; NOT NULL DEFAULT 0 存量行自动回填) ---------- */
+        addColumnIfNotExists(conn, "his_charge_bill", "yb_status", "TINYINT NOT NULL DEFAULT 0 COMMENT '医保结算状态:0未结算 1结算中 2已结算 3撤销中 4已撤销 9冲正中'");
         addColumnIfNotExists(conn, "his_charge_bill", "origin_bill_id", "BIGINT DEFAULT NULL COMMENT '退费关联原单ID(退费单指向原收费单)'");
         addColumnIfNotExists(conn, "his_charge_bill", "invoice_no", "VARCHAR(50) DEFAULT NULL COMMENT '发票号'");
         addColumnIfNotExists(conn, "his_charge_bill_item", "refunded_qty", "DECIMAL(12,4) DEFAULT 0 COMMENT '已退数量(部分退费追踪)'");

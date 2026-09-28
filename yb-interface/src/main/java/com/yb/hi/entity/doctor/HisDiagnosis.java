@@ -30,6 +30,8 @@ public class HisDiagnosis extends BaseEntity {
     private String diagCode;
     /** 诊断名称 */
     private String diagName;
+    /** 诊断类别: west/tcm/symp/oper/tumor(源自医共体诊断字典dict_type) */
+    private String diagClass;
     /** 主诊断标识: 0-否 1-是 */
     private String maindiagFlag;
     /** 诊断科室 */

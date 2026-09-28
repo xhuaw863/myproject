@@ -9,6 +9,8 @@ import com.yb.hi.entity.doctor.HisOrder;
 import com.yb.hi.entity.doctor.HisOrderItem;
 import com.yb.hi.entity.doctor.HisVisit;
 import com.yb.hi.framework.common.BizException;
+import com.yb.hi.framework.tenant.TenantContext;
+import com.yb.hi.framework.tenant.UserContext;
 import com.yb.hi.mapper.doctor.HisOrderItemMapper;
 import com.yb.hi.mapper.doctor.HisOrderMapper;
 import lombok.extern.slf4j.Slf4j;
@@ -68,6 +70,8 @@ public class HisOrderService extends ServiceImpl<HisOrderMapper, HisOrder> {
         if (order.getStatus() != null && order.getStatus() < 0) {
             throw new BizException("该医嘱单已作废, 请勿重复操作");
         }
+        // 医生站科室判权(B4)
+        visitService.requireVisitScope(order.getVisitId());
         // 医嘱单 status 仅在开立(1)/作废(-1)间变迁, 无中间态可用; 收费进度只能看就诊 charge_status
         HisVisit visit = order.getVisitId() == null ? null : visitService.getById(order.getVisitId());
         if (visit != null && visit.getChargeStatus() != null && visit.getChargeStatus() != 0) {
@@ -167,6 +171,8 @@ public class HisOrderService extends ServiceImpl<HisOrderMapper, HisOrder> {
         if (visit == null) {
             throw new BizException(400, "就诊记录不存在");
         }
+        // 医生站科室判权(B4): 管理员/牵头直通, 其余仅授权科室
+        visitService.requireVisitScope(req.getVisitId());
 
         HisOrder o = new HisOrder();
         o.setVisitId(visit.getId());
@@ -181,17 +187,58 @@ public class HisOrderService extends ServiceImpl<HisOrderMapper, HisOrder> {
         o.setDiagName(buildDiagName(visit.getId()));
         o.setStatus(1);
 
+        long tid = TenantContext.get() == null ? 0L : TenantContext.get();
+        // 定价机构: 就诊科室归属机构优先, 回退当前登录机构(与医生站取数/收费执行价口径一致)
+        Long priceOrgId = visit.getDeptId() == null ? null : jdbcTemplate.queryForObject(
+                "SELECT org_id FROM his_dept WHERE id = ? AND tenant_id = ? AND deleted = 0",
+                Long.class, visit.getDeptId(), tid);
+        if (priceOrgId == null && UserContext.get() != null) {
+            priceOrgId = UserContext.get().getOrgId();
+        }
+        Integer priceLv = null;
+        if (priceOrgId != null) {
+            List<Map<String, Object>> orgRows = jdbcTemplate.queryForList(
+                    "SELECT price_lv FROM sys_org WHERE id = ? AND tenant_id = ? AND deleted = 0",
+                    priceOrgId, tid);
+            if (!orgRows.isEmpty()) {
+                Number lv = (Number) orgRows.get(0).get("price_lv");
+                priceLv = lv == null ? null : lv.intValue();
+            }
+        }
         BigDecimal total = BigDecimal.ZERO;
         for (HisOrderItem item : req.getItems()) {
             item.setId(null);
-            BigDecimal price = item.getPrice() == null ? BigDecimal.ZERO : item.getPrice();
             BigDecimal qty = item.getQuantity() == null ? BigDecimal.ZERO : item.getQuantity();
-            BigDecimal amount = item.getAmount();
-            if (amount == null) {
-                amount = price.multiply(qty).setScale(2, BigDecimal.ROUND_HALF_UP);
+            if (qty.compareTo(BigDecimal.ZERO) <= 0) {
+                throw new BizException(400, "医嘱明细数量必须大于0: " + item.getItemName());
             }
-            item.setAmount(amount);
-            total = total.add(amount);
+            // 金额以院内收费目录为准: 客户端单价/金额不可信, 服务端按 his_charge_item 启用行重算(名称同样以目录为准);
+            // 执行价与医生站取数同口径: 按机构 price_lv 取档(price_l1/l2/l3), 缺档回退默认 price
+            List<Map<String, Object>> catRows = item.getItemId() == null ? null : jdbcTemplate.queryForList(
+                    "SELECT item_name, price, price_l1, price_l2, price_l3 FROM his_charge_item"
+                            + " WHERE id = ? AND tenant_id = ? AND status = 1 AND deleted = 0",
+                    item.getItemId(), tid);
+            if (catRows == null || catRows.isEmpty()) {
+                throw new BizException(400, "医嘱明细收费项目不存在或已停用: " + item.getItemName());
+            }
+            Map<String, Object> row = catRows.get(0);
+            BigDecimal price = toBd(row.get("price"));
+            if (priceLv != null) {
+                String col = priceLv == 1 ? "price_l1" : priceLv == 2 ? "price_l2" : priceLv == 3 ? "price_l3" : null;
+                if (col != null) {
+                    BigDecimal v = toBd(row.get(col));
+                    if (v != null) {
+                        price = v;
+                    }
+                }
+            }
+            if (price == null) {
+                throw new BizException(400, "收费项目价格未配置: " + str(row.get("item_name")));
+            }
+            item.setItemName(str(row.get("item_name")));
+            item.setPrice(price);
+            item.setAmount(price.multiply(qty).setScale(2, BigDecimal.ROUND_HALF_UP));
+            total = total.add(item.getAmount());
         }
         o.setTotalAmount(total.setScale(2, BigDecimal.ROUND_HALF_UP));
         save(o);
@@ -217,5 +264,19 @@ public class HisOrderService extends ServiceImpl<HisOrderMapper, HisOrder> {
     private String genNo(String prefix) {
         int s = SEQ.incrementAndGet() % 1000;
         return prefix + DateUtil.currentTimeCompact() + String.format("%03d", s);
+    }
+
+    private static String str(Object v) {
+        return v == null ? null : v.toString();
+    }
+
+    private static BigDecimal toBd(Object v) {
+        if (v == null) {
+            return null;
+        }
+        if (v instanceof BigDecimal) {
+            return (BigDecimal) v;
+        }
+        return new BigDecimal(v.toString());
     }
 }

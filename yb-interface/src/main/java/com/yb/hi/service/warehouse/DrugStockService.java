@@ -248,7 +248,10 @@ public class DrugStockService {
      */
     @Transactional(rollbackFor = Exception.class)
     public void confirmStockIn(Long id) {
-        HisStockIn main = stockInMapper.selectById(id);
+        // 行锁: 串行化确认/作废(并发双击确认时后到事务阻塞后读到 status=1 幂等返回, 不会双倍加库存)
+        HisStockIn main = stockInMapper.selectOne(new LambdaQueryWrapper<HisStockIn>()
+                .eq(HisStockIn::getId, id)
+                .last("FOR UPDATE"));
         if (main == null) {
             throw new BizException(400, "入库单不存在");
         }
@@ -272,10 +275,12 @@ public class DrugStockService {
         log.info("确认入库: id={}, inNo={}, items={}", id, main.getInNo(), items.size());
     }
 
-    /** 作废入库单: 仅草稿态可作废(已确认单据已影响库存, 不可作废) */
+    /** 作废入库单: 仅草稿态可作废(已确认单据已影响库存, 不可作废); 行锁与确认互斥, 防确认/作废并发交错 */
     @Transactional(rollbackFor = Exception.class)
     public void voidStockIn(Long id) {
-        HisStockIn main = stockInMapper.selectById(id);
+        HisStockIn main = stockInMapper.selectOne(new LambdaQueryWrapper<HisStockIn>()
+                .eq(HisStockIn::getId, id)
+                .last("FOR UPDATE"));
         if (main == null) {
             throw new BizException(400, "入库单不存在");
         }
@@ -364,7 +369,10 @@ public class DrugStockService {
      */
     @Transactional(rollbackFor = Exception.class)
     public void confirmStockOut(Long id) {
-        HisStockOut main = stockOutMapper.selectById(id);
+        // 行锁: 串行化确认/作废(并发双击确认时后到事务阻塞后读到 status=1 幂等返回, 不会双倍扣库存)
+        HisStockOut main = stockOutMapper.selectOne(new LambdaQueryWrapper<HisStockOut>()
+                .eq(HisStockOut::getId, id)
+                .last("FOR UPDATE"));
         if (main == null) {
             throw new BizException(400, "出库单不存在");
         }
@@ -422,10 +430,12 @@ public class DrugStockService {
         log.info("确认出库: id={}, outNo={}, items={}, total={}", id, main.getOutNo(), items.size(), upd.getTotalAmount());
     }
 
-    /** 作废出库单: 仅草稿态可作废 */
+    /** 作废出库单: 仅草稿态可作废; 行锁与确认互斥, 防确认/作废并发交错 */
     @Transactional(rollbackFor = Exception.class)
     public void voidStockOut(Long id) {
-        HisStockOut main = stockOutMapper.selectById(id);
+        HisStockOut main = stockOutMapper.selectOne(new LambdaQueryWrapper<HisStockOut>()
+                .eq(HisStockOut::getId, id)
+                .last("FOR UPDATE"));
         if (main == null) {
             throw new BizException(400, "出库单不存在");
         }
@@ -891,7 +901,8 @@ public class DrugStockService {
     }
 
     /**
-     * FIFO 扣减核心(可限定药库): 查可用批次(status=1且qty>0, exp_date ASC, warehouseId 非空则限定该库)逐批乐观锁扣减;
+     * FIFO 扣减核心(可限定药库): 查可用批次(status=1且qty>0且未过期, exp_date ASC, warehouseId 非空则限定该库)逐批乐观锁扣减;
+     * 已过有效期(exp_date < 今天)的批次禁止出库(近效期仍可出, 过期即止); exp_date 为空的批次视为未登记有效期, 允许出库。
      * affected=0(批次被并发抢先扣减)时重查重试, 上限3轮防死循环。
      */
     private List<StockDeductResult> deductFifo(Long orgId, Long warehouseId, Long drugCatalogId, BigDecimal qty) {
@@ -907,6 +918,8 @@ public class DrugStockService {
                     .eq(HisDrugStock::getDrugCatalogId, drugCatalogId)
                     .eq(HisDrugStock::getStatus, 1)
                     .gt(HisDrugStock::getQty, BigDecimal.ZERO)
+                    .and(w -> w.isNull(HisDrugStock::getExpDate)
+                            .or().ge(HisDrugStock::getExpDate, LocalDate.now()))
                     .orderByAsc(HisDrugStock::getExpDate)
                     .orderByAsc(HisDrugStock::getId));
             if (CollectionUtils.isEmpty(batches)) {
@@ -935,8 +948,12 @@ public class DrugStockService {
         return results;
     }
 
-    /** 确认出库-指定批次明细: 乐观锁直接扣减并回填小计金额 */
+    /** 确认出库-指定批次明细: 乐观锁直接扣减并回填小计金额; 指定批次不参与FIFO选择, 但过期批次同样禁止出库 */
     private void confirmDeductBatch(HisStockOutItem item) {
+        HisDrugStock stock = stockMapper.selectById(item.getDrugStockId());
+        if (stock != null && stock.getExpDate() != null && stock.getExpDate().isBefore(LocalDate.now())) {
+            throw new BizException("该批次已过有效期, 禁止出库: " + item.getDrugName() + " 批号" + item.getBatchNo());
+        }
         int affected = stockMapper.deductQty(item.getDrugStockId(), item.getQty());
         if (affected == 0) {
             throw new BizException("库存不足: " + item.getDrugName() + " 批号" + item.getBatchNo()

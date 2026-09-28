@@ -34,10 +34,15 @@ public class OutpatientService {
      * (国家医保平台门诊挂号交易号即 2201, 2201A 仅为文档对扩展字段集的标注, 非单独交易号)
      */
     public YbResponse register(OutpatientRegisterReq req) {
+        return register(req, null);
+    }
+
+    /** 2201(带患者参保地区划, 规范表3: 输入含psn_no时insuplc_admdvs必填) */
+    public YbResponse register(OutpatientRegisterReq req, String insuplcAdmdvs) {
         log.info("门诊挂号: psnNo={}, iptOtpNo={}", req.getPsnNo(), req.getIptOtpNo());
         Map<String, Object> input = new LinkedHashMap<>();
         input.put("data", req);
-        return ybHttpClient.call("2201", input);
+        return ybHttpClient.call("2201", input, insuplcAdmdvs);
     }
 
     /**
@@ -45,10 +50,15 @@ public class OutpatientService {
      * 输入节点: data(psn_no, mdtrt_id, ipt_otp_no) ; 输出: 无
      */
     public YbResponse cancelRegister(OutpatientRegisterCancelReq req) {
+        return cancelRegister(req, null);
+    }
+
+    /** 2202(带患者参保地区划) */
+    public YbResponse cancelRegister(OutpatientRegisterCancelReq req, String insuplcAdmdvs) {
         log.info("门诊挂号撤销: psnNo={}, mdtrtId={}, iptOtpNo={}", req.getPsnNo(), req.getMdtrtId(), req.getIptOtpNo());
         Map<String, Object> input = new LinkedHashMap<>();
         input.put("data", req);
-        return ybHttpClient.call("2202", input);
+        return ybHttpClient.call("2202", input, insuplcAdmdvs);
     }
 
     /**
@@ -56,11 +66,16 @@ public class OutpatientService {
      * 输入节点: mdtrtinfo(单行) + diseinfo(多行)
      */
     public YbResponse uploadVisitInfo(MdtrtInfoReq mdtrtInfo, List<DiseInfoReq> diseInfo) {
+        return uploadVisitInfo(mdtrtInfo, diseInfo, null);
+    }
+
+    /** 2203(带患者参保地区划) */
+    public YbResponse uploadVisitInfo(MdtrtInfoReq mdtrtInfo, List<DiseInfoReq> diseInfo, String insuplcAdmdvs) {
         log.info("门诊就诊信息上传: mdtrtId={}", mdtrtInfo.getMdtrtId());
         Map<String, Object> input = new LinkedHashMap<>();
         input.put("mdtrtinfo", mdtrtInfo);
         input.put("diseinfo", diseInfo);
-        return ybHttpClient.call("2203", input);
+        return ybHttpClient.call("2203", input, insuplcAdmdvs);
     }
 
     /**
@@ -68,10 +83,27 @@ public class OutpatientService {
      * 输入节点: feedetail(多行) ; 输出节点: result(多行)
      */
     public YbResponse uploadFeeDetail(List<FeeDetailReq> feeDetails) {
+        return uploadFeeDetail(feeDetails, null);
+    }
+
+    /** 2204(带患者参保地区划) */
+    public YbResponse uploadFeeDetail(List<FeeDetailReq> feeDetails, String insuplcAdmdvs) {
         log.info("门诊费用明细上传: 明细{}条", feeDetails == null ? 0 : feeDetails.size());
         Map<String, Object> input = new LinkedHashMap<>();
         input.put("feedetail", feeDetails);
-        return ybHttpClient.call("2204", input);
+        return ybHttpClient.call("2204", input, insuplcAdmdvs);
+    }
+
+    /**
+     * 【2205】门诊费用明细信息撤销
+     * 输入节点: data(单行) ; 输出: 无。
+     * chrg_bchno="0000" 全撤未结算明细(部分退费全撤重结 A8 使用); 已参与结算的明细不能撤销, 须先 2208。
+     */
+    public YbResponse revokeFeeDetail(FeeDetailRevokeReq req, String insuplcAdmdvs) {
+        log.info("门诊费用明细撤销: mdtrtId={}, chrgBchno={}", req.getMdtrtId(), req.getChrgBchno());
+        Map<String, Object> input = new LinkedHashMap<>();
+        input.put("data", req);
+        return ybHttpClient.call("2205", input, insuplcAdmdvs);
     }
 
     /**
@@ -80,10 +112,15 @@ public class OutpatientService {
      * 预结算结果不留存本地记录
      */
     public YbResponse preSettlement(SettlementReq req) {
+        return preSettlement(req, null);
+    }
+
+    /** 2206(带患者参保地区划) */
+    public YbResponse preSettlement(SettlementReq req, String insuplcAdmdvs) {
         log.info("门诊预结算: mdtrtId={}, medfeeSumamt={}", req.getMdtrtId(), req.getMedfeeSumamt());
         Map<String, Object> input = new LinkedHashMap<>();
         input.put("data", req);
-        YbResponse resp = ybHttpClient.call("2206", input);
+        YbResponse resp = ybHttpClient.call("2206", input, insuplcAdmdvs);
         setlResultHandler.parse(resp);
         return resp;
     }
@@ -94,10 +131,15 @@ public class OutpatientService {
      * 结算成功后留存本地结算记录
      */
     public YbResponse settlement(SettlementReq req) {
+        return settlement(req, null);
+    }
+
+    /** 2207(带患者参保地区划) */
+    public YbResponse settlement(SettlementReq req, String insuplcAdmdvs) {
         log.info("门诊结算: mdtrtId={}, medfeeSumamt={}", req.getMdtrtId(), req.getMedfeeSumamt());
         Map<String, Object> input = new LinkedHashMap<>();
         input.put("data", req);
-        YbResponse resp = ybHttpClient.call("2207", input);
+        YbResponse resp = ybHttpClient.call("2207", input, insuplcAdmdvs);
         if (resp.isSuccess()) {
             setlResultHandler.parseAndSave(resp, "outpatient", "2207", "1");
         }
@@ -109,10 +151,15 @@ public class OutpatientService {
      * 输入节点: data(setl_id, mdtrt_id, psn_no) ; 输出节点: setlinfo + setldetail
      */
     public YbResponse cancelSettlement(SetlCancelReq req) {
+        return cancelSettlement(req, null);
+    }
+
+    /** 2208(带患者参保地区划) */
+    public YbResponse cancelSettlement(SetlCancelReq req, String insuplcAdmdvs) {
         log.info("门诊结算撤销: setlId={}, mdtrtId={}", req.getSetlId(), req.getMdtrtId());
         Map<String, Object> input = new LinkedHashMap<>();
         input.put("data", req);
-        YbResponse resp = ybHttpClient.call("2208", input);
+        YbResponse resp = ybHttpClient.call("2208", input, insuplcAdmdvs);
         if (resp.isSuccess()) {
             setlResultHandler.parseAndSave(resp, "outpatient", "2208", "0");
         }

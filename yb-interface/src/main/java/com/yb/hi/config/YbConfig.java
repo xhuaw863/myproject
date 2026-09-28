@@ -10,11 +10,14 @@ import org.springframework.stereotype.Component;
 public class YbConfig {
     private String apiUrl;
     private String fileDownloadUrl;
+    /** 定点医药机构编号(表3: 14位) */
     private String fixmedinsCode;
     private String fixmedinsName;
+    /** 就医地医保区划(表3) */
     private String mdtrtareaAdmvs;
     private String recerSysCode;
     private String infver;
+    /** 经办人类别(表3, 代码域: 1-经办人 2-自助终端 3-移动终端) */
     private String opterType;
     private String opter;
     private String opterName;

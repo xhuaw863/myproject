@@ -138,6 +138,9 @@ public class SysRoleService {
         if (!StringUtils.hasText(req.getRoleCode()) || !StringUtils.hasText(req.getRoleName())) {
             throw new BizException(400, "角色编码与名称不能为空");
         }
+        if (Roles.isReserved(req.getRoleCode())) {
+            throw new BizException(403, "角色编码为平台预置角色, 租户不允许自建同码角色: " + req.getRoleCode().trim());
+        }
         long dup = roleMapper.selectCount(new QueryWrapper<SysRole>()
                 .eq("tenant_id", tid).eq("role_code", req.getRoleCode()));
         if (dup > 0) {
@@ -165,6 +168,9 @@ public class SysRoleService {
             r.setRoleName(req.getRoleName().trim());
         }
         if (StringUtils.hasText(req.getRoleCode())) {
+            if (Roles.isReserved(req.getRoleCode())) {
+                throw new BizException(403, "角色编码为平台预置角色, 租户不允许使用: " + req.getRoleCode().trim());
+            }
             r.setRoleCode(req.getRoleCode().trim());
         }
         r.setRemark(req.getRemark());

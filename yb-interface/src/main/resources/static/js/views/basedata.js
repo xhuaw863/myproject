@@ -32,8 +32,8 @@
         /* 选机构时是否级联显示下级机构科室(默认不勾选=仅选中机构本身; 仅牵头机构生效) */
         withSubOrgs: false,
         exporting: false,
-        /* 右侧明细显示模式: paged=true 分页 / false 全量(默认, localStorage 持久化) */
-        paged: (function () { try { return localStorage.getItem('his.deptPaged') === '1'; } catch (e) { return false; } })(),
+        /* 右侧明细显示模式: paged=true 分页(默认, 科室基数大须分页浏览) / false 全量(localStorage 持久化用户偏好) */
+        paged: (function () { try { return localStorage.getItem('his.deptPaged') !== '0'; } catch (e) { return true; } })(),
         page: 1, size: 20,
         /* 左栏机构列表收缩态(localStorage 持久化, 与主侧栏收展同策略) */
         orgsCollapsed: (function () { try { return localStorage.getItem('his.deptOrgsCollapsed') === '1'; } catch (e) { return false; } })(),
@@ -507,8 +507,8 @@
         allRows: null,
         /* 左栏树过滤关键字(按机构/科室名, 命中节点连同其父级链保留显示) */
         treeKw: '',
-        /* 右侧明细显示模式: paged=true 分页 / false 全量(默认, localStorage 持久化) */
-        paged: (function () { try { return localStorage.getItem('his.staffPaged') === '1'; } catch (e) { return false; } })(),
+        /* 右侧明细显示模式: paged=true 分页(默认, 职工基数大须分页浏览) / false 全量(localStorage 持久化用户偏好) */
+        paged: (function () { try { return localStorage.getItem('his.staffPaged') !== '0'; } catch (e) { return true; } })(),
         page: 1, size: 20,
         /* 左栏机构/科室树收缩态(localStorage 持久化, 与科室管理同策略) */
         orgsCollapsed: (function () { try { return localStorage.getItem('his.staffOrgsCollapsed') === '1'; } catch (e) { return false; } })(),

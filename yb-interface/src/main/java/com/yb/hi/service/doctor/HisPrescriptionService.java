@@ -2,6 +2,7 @@ package com.yb.hi.service.doctor;
 
 import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
 import com.yb.hi.common.DateUtil;
+import com.yb.hi.dto.doctor.PrescriptionBatchReq;
 import com.yb.hi.dto.doctor.PrescriptionReq;
 import com.yb.hi.entity.doctor.HisDiagnosis;
 import com.yb.hi.entity.doctor.HisPrescription;
@@ -23,6 +24,7 @@ import org.springframework.util.CollectionUtils;
 import org.springframework.util.StringUtils;
 
 import java.math.BigDecimal;
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -77,6 +79,8 @@ public class HisPrescriptionService extends ServiceImpl<HisPrescriptionMapper, H
         if (rx.getStatus() != null && rx.getStatus() < 0) {
             throw new BizException("该处方已作废, 请勿重复操作");
         }
+        // 医生站科室判权(B4)
+        visitService.requireVisitScope(rx.getVisitId());
         // 处方自身 status 只在开立/作废间变迁, 不能用来判断收费; 收费看就诊 charge_status, 发药看 dispense_status
         Integer dispenseStatus = rx.getDispenseStatus();
         if (dispenseStatus != null && dispenseStatus != 0) {
@@ -146,6 +150,8 @@ public class HisPrescriptionService extends ServiceImpl<HisPrescriptionMapper, H
         if (visit == null) {
             throw new BizException(400, "就诊记录不存在");
         }
+        // 医生站科室判权(B4)
+        visitService.requireVisitScope(req.getVisitId());
 
         HisPrescription p = new HisPrescription();
         p.setVisitId(visit.getId());
@@ -202,6 +208,32 @@ public class HisPrescriptionService extends ServiceImpl<HisPrescriptionMapper, H
         }
         log.info("开处方成功: rxNo={}, visitId={}, total={}, pharmacyId={}", p.getRxNo(), visit.getId(), p.getTotalAmount(), pharmacyId);
         return p;
+    }
+
+    /**
+     * 批量开处方(C7 拆方原子性): 一次请求一个事务开立全部批次(中药饮片自动拆方),
+     * 任一批失败整体回滚 —— 杜绝前端分批串行提交中途失败重试导致已成功批次重复开立。
+     * 逐批复用 create()(判权/药房回落/服务端重算价/处方号), 外层事务覆盖全部批次。
+     */
+    @Transactional(rollbackFor = Exception.class)
+    public List<HisPrescription> createBatch(PrescriptionBatchReq req) {
+        if (req == null || req.getVisitId() == null) {
+            throw new BizException(400, "就诊ID不能为空");
+        }
+        if (CollectionUtils.isEmpty(req.getBatches())) {
+            throw new BizException("处方批次不能为空");
+        }
+        List<HisPrescription> out = new ArrayList<>();
+        for (PrescriptionReq batch : req.getBatches()) {
+            PrescriptionReq sub = new PrescriptionReq();
+            sub.setVisitId(req.getVisitId());
+            sub.setRxType(batch.getRxType());
+            sub.setPharmacyId(req.getPharmacyId());
+            sub.setItems(batch.getItems());
+            out.add(create(sub));
+        }
+        log.info("批量开方成功: visitId={}, 处方数={}", req.getVisitId(), out.size());
+        return out;
     }
 
     /** 汇总就诊诊断名称 */

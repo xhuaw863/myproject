@@ -5,6 +5,7 @@ import com.yb.hi.dto.community.MedDictImportReq;
 import com.yb.hi.dto.community.PriceAdjustReq;
 import com.yb.hi.entity.basedata.HisChargeItem;
 import com.yb.hi.entity.community.HisConsCatalog;
+import com.yb.hi.entity.community.HisDiagDict;
 import com.yb.hi.entity.community.HisDrugCatalog;
 import com.yb.hi.entity.community.HisDictEditLog;
 import com.yb.hi.entity.community.HisMedDict;
@@ -18,6 +19,7 @@ import com.yb.hi.service.community.CommunityDictImportService;
 import com.yb.hi.service.community.CommunityDictEditLogService;
 import com.yb.hi.service.community.CommunityPriceAdjustService;
 import com.yb.hi.service.community.HisConsCatalogService;
+import com.yb.hi.service.community.HisDiagDictService;
 import com.yb.hi.service.community.HisDrugCatalogService;
 import com.yb.hi.service.community.HisMedDictService;
 import org.springframework.format.annotation.DateTimeFormat;
@@ -45,6 +47,7 @@ public class CommunityDictController {
     private final HisConsCatalogService consService;
     private final HisChargeItemService chargeService;
     private final HisMedDictService medDictService;
+    private final HisDiagDictService diagDictService;
     private final CommunityPriceAdjustService adjustService;
     private final CommunityDictImportService importService;
     private final StdDictMaintainService stdMaintain;
@@ -56,6 +59,7 @@ public class CommunityDictController {
                                    HisConsCatalogService consService,
                                    HisChargeItemService chargeService,
                                    HisMedDictService medDictService,
+                                   HisDiagDictService diagDictService,
                                    CommunityPriceAdjustService adjustService,
                                    CommunityDictImportService importService,
                                    StdDictMaintainService stdMaintain,
@@ -66,6 +70,7 @@ public class CommunityDictController {
         this.consService = consService;
         this.chargeService = chargeService;
         this.medDictService = medDictService;
+        this.diagDictService = diagDictService;
         this.adjustService = adjustService;
         this.importService = importService;
         this.stdMaintain = stdMaintain;
@@ -331,6 +336,58 @@ public class CommunityDictController {
             return R.ok(0);
         }
         return R.ok(medDictService.importBatch(req.getDictType(), req.getItems()));
+    }
+
+    /* ================= 诊断字典(西医/中医/症候/手术/肿瘤, L2 单表 dict_type 区分) ================= */
+
+    @GetMapping("/diag-dict/page")
+    public R<IPage<HisDiagDict>> diagDictPage(@RequestParam(required = false) String dictType,
+                                              @RequestParam(defaultValue = "1") long page,
+                                              @RequestParam(defaultValue = "20") long size,
+                                              @RequestParam(required = false) String keyword,
+                                              @RequestParam(required = false) Integer status) {
+        return R.ok(diagDictService.pageQuery(dictType, keyword, status, page, size));
+    }
+
+    @GetMapping("/diag-dict/{id}")
+    public R<HisDiagDict> diagDictGet(@PathVariable Long id) {
+        return R.ok(diagDictService.getById(id));
+    }
+
+    @PostMapping("/diag-dict")
+    public R<Void> diagDictCreate(@RequestBody HisDiagDict e) {
+        requireLeadOrg();
+        diagDictService.saveOrUpdateByCode(e);
+        return R.ok();
+    }
+
+    @PutMapping("/diag-dict")
+    public R<Void> diagDictUpdate(@RequestBody HisDiagDict e) {
+        requireLeadOrg();
+        diagDictService.updateById(e);
+        return R.ok();
+    }
+
+    @DeleteMapping("/diag-dict/{id}")
+    public R<Void> diagDictDelete(@PathVariable Long id) {
+        requireLeadOrg();
+        diagDictService.removeById(id);
+        return R.ok();
+    }
+
+    /** 从标准字典(ICD-10/ICD-9/形态学/中医病证)整表批量导入(幂等: 同 dict_type+code 更新), 返回 total/inserted/updated */
+    @PostMapping("/diag-dict/import-batch")
+    public R<Map<String, Object>> diagDictImport(@RequestParam String dictType, @RequestParam String dictKey) {
+        requireLeadOrg();
+        return R.ok(diagDictService.importFromStd(dictType, dictKey));
+    }
+
+    /** 诊断字典导入预览: std 行 -> 条目映射(不落库), 附带校验类别与源匹配 */
+    @GetMapping("/std-preview/diag")
+    public R<HisDiagDict> previewDiag(@RequestParam String dictType, @RequestParam String dictKey,
+                                      @RequestParam long stdId) {
+        requireLeadOrg();
+        return R.ok(diagDictService.previewFromStd(dictType, dictKey, stdId));
     }
 
     /* ================= 调价留痕 ================= */

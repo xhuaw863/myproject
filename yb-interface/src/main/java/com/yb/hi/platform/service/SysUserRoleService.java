@@ -16,8 +16,10 @@ import java.sql.Connection;
 import java.sql.Statement;
 import java.util.ArrayList;
 import java.util.Collection;
+import java.util.HashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 
 /**
@@ -103,6 +105,31 @@ public class SysUserRoleService implements ApplicationRunner {
             }
         }
         return ids;
+    }
+
+    /** 批量回显: userId -> 角色ID列表(关联表口径), 列表场景消除逐行 N+1 */
+    public Map<Long, List<Long>> mapRoleIds() {
+        Map<Long, List<Long>> m = new HashMap<>();
+        for (SysUserRole ur : userRoleMapper.selectList(null)) {
+            if (ur.getUserId() != null && ur.getRoleId() != null) {
+                m.computeIfAbsent(ur.getUserId(), k -> new ArrayList<>()).add(ur.getRoleId());
+            }
+        }
+        return m;
+    }
+
+    /** 批量回显(限定 userId 集): 分页场景仅取当前页用户的角色关联, 避免加载整表 */
+    public Map<Long, List<Long>> mapRoleIds(Collection<Long> userIds) {
+        Map<Long, List<Long>> m = new HashMap<>();
+        if (userIds == null || userIds.isEmpty()) {
+            return m;
+        }
+        for (SysUserRole ur : userRoleMapper.selectList(new QueryWrapper<SysUserRole>().in("user_id", userIds))) {
+            if (ur.getUserId() != null && ur.getRoleId() != null) {
+                m.computeIfAbsent(ur.getUserId(), k -> new ArrayList<>()).add(ur.getRoleId());
+            }
+        }
+        return m;
     }
 
     /**

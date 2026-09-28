@@ -124,6 +124,7 @@ public class RbacInitializer implements ApplicationRunner {
             moveReportIntoOutpatient();
             mergeDoctorMenus(menuIds);
             ensureDoctorWorklogMenu(menuIds);
+            ensureMedicalTemplateMenu(menuIds);
             ensureNurseStationMenus(menuIds);
             ensureTreatmentMenus(menuIds);
             ensureMedtechMenus(menuIds);
@@ -202,6 +203,7 @@ public class RbacInitializer implements ApplicationRunner {
         long g6 = dir("doctor", "门诊医生站", 0L, ++sort[0]);
         ids.put("doctor-ws", menuK("doctor-ws", "门诊医生工作站", "DoctorWorkstation", null, g6, ++sort[0]));
         ids.put("doctor-worklog", menuK("doctor-worklog", "医生工作日志", "DoctorWorklog", null, g6, ++sort[0]));
+        ids.put("medical-template", menuK("medical-template", "病历模板管理", "MedicalTemplateManage", null, g6, ++sort[0]));
         // 药房(2026-09 P1d 交付: 待发药/调剂发药/退药前端已上线; P2 药房管理/药房统计上线)
         long g7 = dir("pharmacy", "药房系统", 0L, ++sort[0]);
         ids.put("dispense-todo", menuK("dispense-todo", "待发药", "DispenseTodo", null, g7, ++sort[0]));
@@ -424,7 +426,7 @@ public class RbacInitializer implements ApplicationRunner {
         // ADMIN/SUPER_ADMIN 走 all_menus 免配置; 其余角色给"工作台+本职能相关菜单"最小子集
         Map<String, String[]> grants = new HashMap<>();
         grants.put(Roles.REGISTRAR, new String[]{"dashboard", "patient", "register", "unregister", "reg_stats", "reg_detail"});
-        grants.put(Roles.DOCTOR, new String[]{"dashboard", "doctor-ws", "patient", "doctor-worklog", "nurse-allergy", "medtech-report-query"});
+        grants.put(Roles.DOCTOR, new String[]{"dashboard", "doctor-ws", "patient", "doctor-worklog", "medical-template", "nurse-allergy", "medtech-report-query"});
         grants.put(Roles.PHARMACIST, new String[]{"dashboard", "dispense-todo", "dispense", "drug-return", "pharmacy-def", "pharmacy-rpt", "wh-stock", "wh-in", "wh-out", "warehouse-def", "warehouse-rpt", "wh-check", "req-mgr", "trf-mgr", "price-adjust", "stock-ledger", "trace-code", "price-mgr"});
         grants.put(Roles.CASHIER, new String[]{"dashboard", "charge-ws", "charge-todo", "charge-setl", "charge-refund", "invoice-mgr", "charge-rpt", "rpt-setl", "rpt-daily"});
         grants.put(Roles.NURSE, new String[]{"dashboard", "patient", "nurse-pending", "nurse-skin-test", "nurse-infusion", "nurse-allergy", "nurse-exec-log"});
@@ -455,7 +457,7 @@ public class RbacInitializer implements ApplicationRunner {
         grants.put(Roles.PHARMACIST, new String[]{"wh-stock", "wh-in", "wh-out", "wh-check", "pharmacy-def", "pharmacy-rpt", "warehouse-def", "warehouse-rpt", "req-mgr", "trf-mgr", "price-adjust", "stock-ledger", "trace-code", "price-mgr"});
         grants.put(Roles.CASHIER, new String[]{"rpt-setl", "rpt-daily", "invoice-mgr", "charge-rpt", "charge-ws"});
         grants.put(Roles.REGISTRAR, new String[]{"reg_stats", "reg_detail"});
-        grants.put(Roles.DOCTOR, new String[]{"doctor-ws", "doctor-worklog", "nurse-allergy", "medtech-report-query"});
+        grants.put(Roles.DOCTOR, new String[]{"doctor-ws", "doctor-worklog", "medical-template", "nurse-allergy", "medtech-report-query"});
         grants.put(Roles.NURSE, new String[]{"doctor-ws", "doctor-worklog", "nurse-pending", "nurse-skin-test", "nurse-infusion", "nurse-allergy", "nurse-exec-log"});
         grants.put(Roles.THERAPIST, new String[]{"dashboard", "patient", "treatment-pending", "treatment-plan", "treatment-equip", "treatment-log"});
         grants.put(Roles.TECHNICIAN, new String[]{"dashboard", "patient", "medtech-specimen", "medtech-report", "medtech-critical", "medtech-critical-rule", "medtech-report-query"});
@@ -1075,6 +1077,37 @@ public class RbacInitializer implements ApplicationRunner {
     }
 
     /**
+     * 幂等确保“病历模板管理”菜单存在(医生站模板/处方套/医嘱套/诊断维护统一页, 排在医生工作日志之后):
+     * 既有库 seedMenus 表非空即跳过, 在此按 menu_key 判存补种挂 doctor 目录, 并回填 menuIds
+     * 供 ensureBizRoleGrants 给医生角色补授权(ADMIN 走 all_menus 免配置)。
+     */
+    private void ensureMedicalTemplateMenu(Map<String, Long> menuIds) {
+        SysMenu m = menuMapper.selectOne(new QueryWrapper<SysMenu>().eq("menu_key", "medical-template").last("LIMIT 1"));
+        if (m == null) {
+            SysMenu doctorDir = menuMapper.selectOne(new QueryWrapper<SysMenu>().eq("menu_key", "doctor").last("LIMIT 1"));
+            if (doctorDir == null) {
+                return;
+            }
+            int maxSort = 0;
+            for (SysMenu c : menuMapper.selectList(new QueryWrapper<SysMenu>().eq("parent_id", doctorDir.getId()))) {
+                maxSort = Math.max(maxSort, c.getSortNo() == null ? 0 : c.getSortNo());
+            }
+            m = new SysMenu();
+            m.setParentId(doctorDir.getId());
+            m.setMenuKey("medical-template");
+            m.setMenuName("病历模板管理");
+            m.setMenuType(2);
+            m.setComp("MedicalTemplateManage");
+            m.setSortNo(maxSort + 1);
+            m.setVisible(1);
+            m.setStatus(1);
+            menuMapper.insert(m);
+            log.info("病历模板管理菜单已补充(medical-template/MedicalTemplateManage)");
+        }
+        menuIds.put("medical-template", m.getId());
+    }
+
+    /**
      * 幂等补种药房目录新菜单(2026-09 药房管理/药房统计上线): 药房管理(PharmacyDef, 药房定义维护)与
      * 药房统计(PharmacyReport)。既有库 seedMenus 表非空即跳过, 故在此按 menu_key 判存补种
      * (挂 pharmacy 目录, sort_no 续接), 并将 id 回填 menuIds 供角色补授权(ensureBizRoleGrants 给药师)。
@@ -1457,7 +1490,9 @@ public class RbacInitializer implements ApplicationRunner {
     }
 
     /**
-     * 幂等种子平台运营方租户(PLATFORM) + 超级管理员账号(superadmin/admin123)。
+     * 幂等种子平台运营方租户(PLATFORM) + 超级管理员账号。
+     * 口令经 BootstrapPassword 解析: 环境变量 HIS_BOOTSTRAP_PASSWORD 优先,
+     * 未注入回落内置演示口令(仅限开发/演示, 日志不打印口令)。
      * 超管登录 PLATFORM 租户, 专做跨租户医院开通与管理, 与任何医院数据隔离。
      * 在全局角色种子之后调用, 直接绑定 SUPER_ADMIN 角色ID。
      */
@@ -1475,10 +1510,14 @@ public class RbacInitializer implements ApplicationRunner {
         t.setMockEnabled(1);
         t.setStatus(1);
         tenantService.insert(t);
+        String pwd = BootstrapPassword.resolve();
         Long superRoleId = globalRoleIds.get(Roles.SUPER_ADMIN);
-        userService.createUser(t.getId(), "superadmin", "admin123", "超级管理员",
+        userService.createUser(t.getId(), "superadmin", pwd, "超级管理员",
                 Roles.SUPER_ADMIN, null, null, null, superRoleId, null, null);
-        log.info("平台超级管理员已创建: {} / superadmin / admin123", code);
+        if (BootstrapPassword.isDefault(pwd)) {
+            log.warn("【安全】平台超级管理员使用内置演示口令, 生产部署请设置环境变量 {} 注入独立口令", BootstrapPassword.ENV_NAME);
+        }
+        log.info("平台超级管理员已创建: {} / superadmin", code);
     }
 
     /* ===================== 4. 租户迁移与回填 ===================== */

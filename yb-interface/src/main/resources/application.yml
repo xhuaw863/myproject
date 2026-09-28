@@ -24,7 +24,8 @@ spring:
     driver-class-name: com.mysql.cj.jdbc.Driver
     url: jdbc:mysql://localhost:3306/yb_interface?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai&useSSL=false&allowPublicKeyRetrieval=true&rewriteBatchedStatements=true
     username: root
-    password: bsoft
+    # 数据库口令经环境变量注入(生产严禁使用默认值): DB_PASSWORD
+    password: ${DB_PASSWORD:bsoft}
     hikari:
       minimum-idle: 5
       maximum-pool-size: 20
@@ -34,7 +35,9 @@ mybatis-plus:
   type-aliases-package: com.yb.hi.entity
   configuration:
     map-underscore-to-camel-case: true
-    log-impl: org.apache.ibatis.logging.stdout.StdOutImpl
+    # StdOutImpl 会把每行结果同步写 stdout(实测每列表请求多付 150~400ms, 日志文件小时级膨胀至 40MB+),
+    # 排障需要时临时改回 org.apache.ibatis.logging.stdout.StdOutImpl
+    log-impl: org.apache.ibatis.logging.nologging.NoLoggingImpl
   global-config:
     db-config:
       id-type: auto
@@ -48,8 +51,8 @@ yb:
   api-url: http://127.0.0.1:8000/hsa-mdtrt/api/medical/insurance
   # 字典文件下载地址
   file-download-url: http://127.0.0.1:8000/hsa-mdtrt/api/medical/download
-  # 定点医药机构编号(12位)
-  fixmedins-code: H42010000000
+  # 定点医药机构编号(表3: 14位)
+  fixmedins-code: H4201000000000
   # 定点医药机构名称
   fixmedins-name: 测试医院
   # 就医地区行政区划
@@ -58,8 +61,8 @@ yb:
   recer-sys-code: HIS
   # 接口版本号
   infver: "V1.0"
-  # 经办人类别(1-医保经办 2-定点医药机构)
-  opter-type: "2"
+  # 经办人类别(表3, 代码域: 1-经办人 2-自助终端 3-移动终端)
+  opter-type: "1"
   # 经办人编号
   opter: admin
   # 经办人姓名
@@ -87,8 +90,8 @@ logging:
 # HIS 应用配置
 his:
   jwt:
-    # 令牌签名密钥(生产环境务必修改)
-    secret: yb-his-default-secret-key-2026
+    # 令牌签名密钥: 环境变量 HIS_JWT_SECRET 注入(生产必须 ≥32字符独立强密钥; 使用默认密钥时启动报错级日志)
+    secret: ${HIS_JWT_SECRET:yb-his-default-secret-key-2026}
     # 令牌有效期(分钟)
     expire-minutes: 720
   demo-data:

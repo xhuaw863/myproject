@@ -3,6 +3,7 @@ package com.yb.hi.service.doctor;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
 import com.baomidou.mybatisplus.core.metadata.IPage;
+import com.baomidou.mybatisplus.core.toolkit.Wrappers;
 import com.baomidou.mybatisplus.extension.conditions.query.LambdaQueryChainWrapper;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
@@ -25,6 +26,8 @@ import com.yb.hi.mapper.doctor.HisOrderMapper;
 import com.yb.hi.mapper.doctor.HisPrescriptionMapper;
 import com.yb.hi.mapper.doctor.HisVisitMapper;
 import com.yb.hi.mapper.outpatient.HisPatientInsuMapper;
+import com.yb.hi.mapper.outpatient.HisRegistrationMapper;
+import com.yb.hi.platform.service.DeptScopeResolver;
 import com.yb.hi.service.OutpatientService;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
@@ -55,16 +58,23 @@ public class HisVisitService extends ServiceImpl<HisVisitMapper, HisVisit> {
     private final HisPrescriptionMapper prescriptionMapper;
     private final HisOrderMapper orderMapper;
     private final HisPatientInsuMapper patientInsuMapper;
+    // 挂号状态闭环(完成接诊置挂号已完成): 直取 Mapper 避免与 HisRegistrationService 循环依赖
+    private final HisRegistrationMapper registrationMapper;
+    // 医生站就诊级科室判权(DeptScopeResolver 唯一口径)
+    private final DeptScopeResolver deptScopeResolver;
 
     public HisVisitService(OutpatientService outpatientService, HisDiagnosisService diagnosisService,
                            HisMedicalRecordService medicalRecordService, HisPrescriptionMapper prescriptionMapper,
-                           HisOrderMapper orderMapper, HisPatientInsuMapper patientInsuMapper) {
+                           HisOrderMapper orderMapper, HisPatientInsuMapper patientInsuMapper,
+                           HisRegistrationMapper registrationMapper, DeptScopeResolver deptScopeResolver) {
         this.outpatientService = outpatientService;
         this.diagnosisService = diagnosisService;
         this.medicalRecordService = medicalRecordService;
         this.prescriptionMapper = prescriptionMapper;
         this.orderMapper = orderMapper;
         this.patientInsuMapper = patientInsuMapper;
+        this.registrationMapper = registrationMapper;
+        this.deptScopeResolver = deptScopeResolver;
     }
 
     /** 候诊/就诊队列分页查询 */
@@ -129,10 +139,28 @@ public class HisVisitService extends ServiceImpl<HisVisitMapper, HisVisit> {
     }
 
     /**
+     * 医生站就诊级科室判权(B4, DeptScopeResolver 唯一口径):
+     * 管理员/牵头机构用户直通; 其余用户仅可操作授权科室范围内的就诊(就诊所属科室不在授权集即拒绝)。
+     */
+    public void requireVisitScope(Long visitId) {
+        if (visitId == null || deptScopeResolver.isUnrestricted()) {
+            return;
+        }
+        HisVisit v = getById(visitId);
+        if (v == null) {
+            throw new BizException(400, "就诊记录不存在");
+        }
+        if (v.getDeptId() == null || !deptScopeResolver.currentAuthDeptIds().contains(v.getDeptId())) {
+            throw new BizException(403, "无该就诊所属科室的数据权限");
+        }
+    }
+
+    /**
      * 接诊: 候诊(1) -> 接诊中(2), 记录接诊时间
      */
     @Transactional(rollbackFor = Exception.class)
     public HisVisit startVisit(Long visitId) {
+        requireVisitScope(visitId);
         HisVisit v = getById(visitId);
         if (v == null) {
             throw new BizException(400, "就诊记录不存在");
@@ -154,6 +182,7 @@ public class HisVisitService extends ServiceImpl<HisVisitMapper, HisVisit> {
         if (req == null || req.getVisitId() == null) {
             throw new BizException(400, "就诊ID不能为空");
         }
+        requireVisitScope(req.getVisitId());
         HisVisit v = getById(req.getVisitId());
         if (v == null) {
             throw new BizException(400, "就诊记录不存在");
@@ -176,6 +205,15 @@ public class HisVisitService extends ServiceImpl<HisVisitMapper, HisVisit> {
         v.setVisitStatus(3);
         v.setFinishTime(LocalDateTime.now());
         updateById(v);
+
+        // 挂号状态闭环: 就诊完成 -> 挂号置已完成(3, 条件更新仅已挂号1可置3);
+        // 防止"就诊已完成/已接诊仍可退号"与医保2202撤销挂号冲突(cancel侧有对向守卫)
+        if (v.getRegistrationId() != null) {
+            registrationMapper.update(null, Wrappers.<HisRegistration>lambdaUpdate()
+                    .set(HisRegistration::getStatus, 3)
+                    .eq(HisRegistration::getId, v.getRegistrationId())
+                    .eq(HisRegistration::getStatus, 1));
+        }
 
         // 保存诊断(替换式)
         diagnosisService.saveDiagnoses(v.getId(), v.getDeptName(), v.getAtddrNo(), v.getDrName(),
@@ -250,7 +288,8 @@ public class HisVisitService extends ServiceImpl<HisVisitMapper, HisVisit> {
                 diseList.add(di);
             }
         }
-        YbResponse resp = outpatientService.uploadVisitInfo(mdtrt, diseList);
+        // 带患者参保地区划(规范表3: 2203输入含psn_no时insuplc_admdvs必填)
+        YbResponse resp = outpatientService.uploadVisitInfo(mdtrt, diseList, insuplcAdmdvsOf(v));
         if (resp == null || !resp.isSuccess()) {
             String err = resp == null ? "医保无响应" : resp.getErrMsg();
             throw new BizException("2203上传失败: " + err);
@@ -267,6 +306,7 @@ public class HisVisitService extends ServiceImpl<HisVisitMapper, HisVisit> {
         if (req == null || req.getVisitId() == null) {
             throw new BizException(400, "就诊ID不能为空");
         }
+        requireVisitScope(req.getVisitId());
         HisVisit v = getById(req.getVisitId());
         if (v == null) {
             throw new BizException(400, "就诊记录不存在");
@@ -369,6 +409,19 @@ public class HisVisitService extends ServiceImpl<HisVisitMapper, HisVisit> {
         r.put("cnt", row.get("cnt") == null ? 0 : ((Number) row.get("cnt")).intValue());
         r.put("total", toBd(row.get("total")));
         return r;
+    }
+
+    /** 患者参保地区划(规范表3: 医保交易输入含psn_no时insuplc_admdvs必填), 取与就诊psn_no匹配的参保记录 */
+    private String insuplcAdmdvsOf(HisVisit v) {
+        if (v.getPatientId() == null) {
+            return null;
+        }
+        HisPatientInsu insu = patientInsuMapper.selectOne(new LambdaQueryWrapper<HisPatientInsu>()
+                .eq(HisPatientInsu::getPatientId, v.getPatientId())
+                .eq(HisPatientInsu::getPsnNo, v.getPsnNo())
+                .orderByAsc(HisPatientInsu::getId)
+                .last("LIMIT 1"));
+        return insu == null ? null : insu.getInsuplcAdmdvs();
     }
 
     /**

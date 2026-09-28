@@ -34,8 +34,15 @@ public class YbResponse {
     /** 发送的请求报文JSON(用于界面回显验证) */
     private String requestJson;
 
+    /** 结果未知标志(批次4 M1): true=超时/网络异常, 平台侧是否受理不可知; false=平台已有明确回执(成功或拒绝) */
+    private boolean unknown;
+
     public boolean isSuccess() {
         return "0".equals(infcode);
+    }
+
+    public boolean isUnknown() {
+        return unknown;
     }
 
     /**
@@ -74,6 +81,13 @@ public class YbResponse {
         YbResponse resp = new YbResponse();
         resp.setInfcode("-1");
         resp.setErrMsg(errMsg);
+        return resp;
+    }
+
+    /** 结果未知响应(超时/网络异常): 平台侧状态不可知, 补偿引擎据此走 UNKNOWN 决策树 */
+    public static YbResponse unknown(String errMsg) {
+        YbResponse resp = fail(errMsg);
+        resp.setUnknown(true);
         return resp;
     }
 }

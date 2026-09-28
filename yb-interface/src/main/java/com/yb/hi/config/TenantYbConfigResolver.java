@@ -64,6 +64,7 @@ public class TenantYbConfigResolver {
                 c.setFixmedinsCode(nvl(t.getFixmedinsCode(), c.getFixmedinsCode()));
                 c.setFixmedinsName(nvl(t.getFixmedinsName(), c.getFixmedinsName()));
                 c.setMdtrtareaAdmvs(nvl(t.getMdtrtareaAdmvs(), c.getMdtrtareaAdmvs()));
+                c.setInsuplcAdmdvs(nvl(t.getInsuplcAdmdvs(), c.getInsuplcAdmdvs()));
                 c.setRecerSysCode(nvl(t.getRecerSysCode(), c.getRecerSysCode()));
                 c.setInfver(nvl(t.getInfver(), c.getInfver()));
                 c.setOpterType(nvl(t.getOpterType(), c.getOpterType()));
@@ -88,6 +89,7 @@ public class TenantYbConfigResolver {
                 c.setFixmedinsCode(nvl(o.getFixmedinsCode(), c.getFixmedinsCode()));
                 c.setFixmedinsName(nvl(o.getFixmedinsName(), c.getFixmedinsName()));
                 c.setMdtrtareaAdmvs(nvl(o.getMdtrtareaAdmvs(), c.getMdtrtareaAdmvs()));
+                c.setInsuplcAdmdvs(nvl(o.getInsuplcAdmdvs(), c.getInsuplcAdmdvs()));
                 c.setRecerSysCode(nvl(o.getRecerSysCode(), c.getRecerSysCode()));
                 c.setInfver(nvl(o.getInfver(), c.getInfver()));
                 c.setOpterType(nvl(o.getOpterType(), c.getOpterType()));

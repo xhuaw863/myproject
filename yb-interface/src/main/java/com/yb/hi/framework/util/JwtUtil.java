@@ -4,9 +4,11 @@ import cn.hutool.jwt.JWT;
 import cn.hutool.jwt.JWTUtil;
 import cn.hutool.jwt.JWTValidator;
 import com.yb.hi.framework.tenant.LoginUser;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 
+import javax.annotation.PostConstruct;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Date;
@@ -17,6 +19,7 @@ import java.util.Map;
 /**
  * JWT 令牌工具(基于 Hutool)
  */
+@Slf4j
 @Component
 public class JwtUtil {
 
@@ -25,6 +28,14 @@ public class JwtUtil {
 
     @Value("${his.jwt.expire-minutes:720}")
     private long expireMinutes;
+
+    /** 弱密钥启动告警(B7): 默认/过短(<32字符)密钥可被持有源码者伪造登录令牌 */
+    @PostConstruct
+    public void warnWeakSecret() {
+        if (secret == null || secret.length() < 32) {
+            log.error("【安全】his.jwt.secret 使用内置默认密钥或强度不足(长度{}<32)。生产部署必须通过环境变量 HIS_JWT_SECRET 注入 ≥32字符独立强密钥, 否则任意持有源码者均可伪造登录令牌!", secret == null ? 0 : secret.length());
+        }
+    }
 
     private byte[] keyBytes() {
         return secret.getBytes(StandardCharsets.UTF_8);

@@ -2,13 +2,18 @@ package com.yb.hi.platform.service;
 
 import cn.hutool.crypto.digest.BCrypt;
 import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
+import com.baomidou.mybatisplus.core.metadata.IPage;
+import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.yb.hi.framework.common.BizException;
 import com.yb.hi.framework.tenant.TenantContext;
 import com.yb.hi.platform.entity.SysUser;
 import com.yb.hi.platform.mapper.SysUserMapper;
 import org.springframework.stereotype.Service;
 
+import java.util.Collection;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 
 /**
  * 用户服务(按租户隔离)
@@ -53,6 +58,61 @@ public class SysUserService {
         List<SysUser> users = sysUserMapper.selectList(q);
         users.forEach(u -> u.setPassword(null));
         return users;
+    }
+
+    /**
+     * 服务端分页查询用户(避免一次拉全量): orgIds 非空按机构集合过滤(空=全部);
+     * keyword 命中 账号/姓名/电话 任一; status 精确; roleCode 命中"主角色列 或 关联表该角色用户集"(兼容多角色)。
+     * 返回前 password 置空; 调用方(控制器)负责非牵头机构 orgIds 收敛与 loginOrgIds/roleIds 富化。
+     */
+    public IPage<SysUser> pageQuery(Collection<Long> orgIds, String keyword, String roleCode, Long filterRoleId,
+                                    Integer status, long page, long size) {
+        QueryWrapper<SysUser> q = new QueryWrapper<SysUser>();
+        if (orgIds != null && !orgIds.isEmpty()) {
+            q.in("org_id", orgIds);
+        }
+        String kw = keyword == null ? null : keyword.trim();
+        if (kw != null && !kw.isEmpty()) {
+            final String like = kw;
+            q.and(w -> w.like("username", like).or().like("real_name", like).or().like("phone", like));
+        }
+        if (status != null) {
+            q.eq("status", status);
+        }
+        if (roleCode != null && !roleCode.isEmpty()) {
+            final String rc = roleCode;
+            if (filterRoleId != null) {
+                // filterRoleId 为 DB 主键(Long), 拼接子查询安全; 跨租户 user_id 由外层 sys_user 租户过滤兵底
+                final String sub = "SELECT user_id FROM sys_user_role WHERE role_id = " + filterRoleId;
+                q.and(w -> w.eq("role", rc).or().inSql(true, "id", sub));
+            } else {
+                q.eq("role", rc);
+            }
+        }
+        q.orderByAsc("id");
+        IPage<SysUser> p = sysUserMapper.selectPage(new Page<SysUser>(page, size), q);
+        p.getRecords().forEach(u -> u.setPassword(null));
+        return p;
+    }
+
+    /** 按机构统计启用账号数(左树角标数据源): restrictOrgIds 非空限定机构集合; status=1 分组计数 */
+    public Map<Long, Integer> countEnabledByOrg(Collection<Long> restrictOrgIds) {
+        QueryWrapper<SysUser> q = new QueryWrapper<SysUser>()
+                .select("org_id AS orgId", "COUNT(*) AS cnt")
+                .eq("status", 1);
+        if (restrictOrgIds != null && !restrictOrgIds.isEmpty()) {
+            q.in("org_id", restrictOrgIds);
+        }
+        q.groupBy("org_id");
+        Map<Long, Integer> m = new LinkedHashMap<>();
+        for (Map<String, Object> row : sysUserMapper.selectMaps(q)) {
+            Object oid = row.get("orgId");
+            Object c = row.get("cnt");
+            if (oid != null) {
+                m.put(((Number) oid).longValue(), c == null ? 0 : ((Number) c).intValue());
+            }
+        }
+        return m;
     }
 
     /**

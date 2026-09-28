@@ -67,7 +67,8 @@
     {
       group: '门诊医生站', children: [
         { key: 'doctor-ws', label: '门诊医生工作站', comp: 'DoctorWorkstation' },
-        { key: 'doctor-worklog', label: '医生工作日志', comp: 'DoctorWorklog' }
+        { key: 'doctor-worklog', label: '医生工作日志', comp: 'DoctorWorklog' },
+        { key: 'medical-template', label: '病历模板管理', comp: 'MedicalTemplateManage' }
       ]
     },
     {
@@ -462,6 +463,9 @@
   };
 
   var app = createApp(Root);
+  HIS.app = app;
+  /* prod 构建的 Vue 不暴露 __vueParentComponent/_instance 回填，用全局 mixin 在根实例 created 时留句柄，供端到端验证/排障遍历组件树 */
+  app.mixin({ created: function () { var i = this.$; while (i && i.parent) { i = i.parent; } if (i && !HIS.rootInstance) { HIS.rootInstance = i; } } });
   app.use(ElementPlus, { locale: window.ElementPlusLocaleZhCn });
   app.component('menu-nav', MenuNav);
   app.mount('#app');

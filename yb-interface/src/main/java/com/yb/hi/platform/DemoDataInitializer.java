@@ -95,8 +95,13 @@ public class DemoDataInitializer implements ApplicationRunner {
             return;
         }
         try {
-            seedTenant("H42010000000", "测试医院", "H42010000000", "420100", "admin", "admin123", "张管理");
-            seedTenant("DEMO_B", "演示医院B", "H42020000000", "420200", "admin", "admin123", "李管理");
+            // 演示账号口令: 环境变量 HIS_BOOTSTRAP_PASSWORD 优先, 未注入回落内置演示口令(仅限开发/演示)
+            String pwd = BootstrapPassword.resolve();
+            if (BootstrapPassword.isDefault(pwd)) {
+                log.warn("【安全】演示医院管理员使用内置演示口令, 生产部署请设置环境变量 {} 注入独立口令", BootstrapPassword.ENV_NAME);
+            }
+            seedTenant("H42010000000", "测试医院", "H42010000000", "420100", "admin", pwd, "张管理");
+            seedTenant("DEMO_B", "演示医院B", "H42020000000", "420200", "admin", pwd, "李管理");
             // 系统参数全局种子(分组+定义, tenant_id=0 跨租户共享): 独立 try 防表未建时拖累租户种子,
             // 表由 DictSchemaMigration(@Order(0)) 幂等建, 未建时跳过下次启动补
             try {

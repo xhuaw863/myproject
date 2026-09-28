@@ -2,137 +2,115 @@
 ;(function () {
   const EmrPanel = {
     name: 'DwEmrPanel',
-    inject: ['currentVisit', 'currentPatient', 'expandedPanel', 'visitHistory', 'diagnoses'],
-    emits: ['save-draft', 'request-expand', 'request-collapse'],
+    inject: ['currentVisit', 'currentPatient', 'visitHistory', 'diagnoses'],
+    emits: ['save-draft'],
     template: `
-      <section class="dw-panel" :class="{ 'is-expanded': isExpanded }">
+      <section class="dw-panel dw-emr-panel">
         <header class="dw-panel-header">
           <span>SOAP 门诊病历 <span class="dim">{{ mode === 'first' ? '初诊' : '复诊' }}</span></span>
-          <div>
+          <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;justify-content:flex-end">
             <el-radio-group v-model="mode" size="small" :disabled="readOnly">
               <el-radio-button label="first">初诊</el-radio-button>
               <el-radio-button label="return">复诊</el-radio-button>
             </el-radio-group>
-            <button class="dw-btn-icon dw-expand-btn" :title="isExpanded ? '还原' : '放大'" @click="toggleExpand">{{ isExpanded ? '↙' : '↗' }}</button>
+            <el-select v-model="selectedTemplateId" size="small" filterable clearable placeholder="病历模板" style="width:130px" @change="applySelectedTemplate">
+              <el-option v-for="tpl in templates" :key="tpl.id" :label="tpl.name" :value="tpl.id"></el-option>
+            </el-select>
+            <el-button size="small" :disabled="readOnly" @click="saveAsTemplate">存模板</el-button>
+            <el-popover placement="bottom-end" :width="380" trigger="click" @show="loadExamReports">
+              <template #reference><el-button size="small" :disabled="!patientId">引用报告 {{ examReports.length ? examReports.length + '份' : '' }}</el-button></template>
+              <div class="dw-trace-pop">
+                <div v-if="reportsLoading" class="dw-collapse-empty">报告加载中…</div>
+                <div class="dw-timeline" v-else-if="examReports.length">
+                  <div class="dw-timeline-item" v-for="(rep, idx) in examReports" :key="rep.id || idx">
+                    <div class="dw-timeline-time">{{ (rep.reportTime || rep.auditTime || '').slice(0, 10) || '-' }} · {{ rep.reportType === 'lab' ? '检验' : '检查' }}</div>
+                    <b>{{ rep.itemNames || rep.orderName || '未命名报告' }}</b>
+                    <div class="dim dw-report-conclusion">{{ reportConclusion(rep) || '暂无结论' }}</div>
+                    <el-button link type="primary" size="small" :disabled="readOnly || !reportConclusion(rep)" @click="quoteExamReport(rep)">插入辅助检查</el-button>
+                  </div>
+                </div>
+                <div v-else class="dw-collapse-empty">暂无已发布报告</div>
+              </div>
+            </el-popover>
+            <el-popover placement="bottom-end" :width="340" trigger="click">
+              <template #reference><el-button size="small">轨迹 {{ histories.length ? histories.length + '次' : '' }}</el-button></template>
+              <div class="dw-trace-pop">
+                <div class="dw-timeline" v-if="histories.length">
+                  <div class="dw-timeline-item" v-for="history in histories" :key="history.id">
+                    <div class="dw-timeline-time">{{ history.workDate || history.visitTime || '-' }}</div>
+                    <b>{{ history.deptName || '-' }} · {{ history.mainDiagName || '未记录诊断' }}</b>
+                    <div class="dim">{{ history.chiefComplaint || '无主诉摘要' }}</div>
+                    <el-button link type="primary" size="small" :disabled="readOnly" @click="quoteHistory(history)">引用本次记录</el-button>
+                  </div>
+                </div>
+                <div v-else class="dw-collapse-empty">暂无历史就诊记录</div>
+              </div>
+            </el-popover>
           </div>
         </header>
 
         <div v-if="!currentVisit" class="dw-empty"><el-empty description="请先选择患者"></el-empty></div>
-        <div v-else :style="expandedLayout">
-          <aside v-if="isExpanded" style="min-width:0;border-right:1px solid var(--dw-border);padding-right:14px">
-            <div class="dw-section">诊疗轨迹 <span class="dw-section-extra">{{ histories.length }} 次</span></div>
-            <div class="dw-timeline">
-              <div class="dw-timeline-item" v-for="history in histories" :key="history.id">
-                <div class="dw-timeline-time">{{ history.workDate || history.visitTime || '-' }}</div>
-                <b>{{ history.deptName || '-' }} · {{ history.mainDiagName || '未记录诊断' }}</b>
-                <div class="dim">{{ history.chiefComplaint || '无主诉摘要' }}</div>
-                <el-button link type="primary" size="small" @click="quoteHistory(history)">引用本次记录</el-button>
-              </div>
-            </div>
-            <div v-if="!histories.length" class="dw-collapse-empty">暂无历史就诊记录</div>
-          </aside>
-
-          <main style="min-width:0">
-            <div v-if="!isExpanded" class="dw-tpl-bar">
-              <span class="dw-tpl-label">病历模板</span>
-              <el-select v-model="selectedTemplateId" filterable clearable placeholder="搜索 SOAP 模板" size="small" style="width:230px" @change="applySelectedTemplate">
-                <el-option v-for="tpl in templates" :key="tpl.id" :label="tpl.name" :value="tpl.id"></el-option>
-              </el-select>
-              <el-button size="small" :disabled="readOnly" @click="saveAsTemplate">存为模板</el-button>
+        <div v-else class="dw-emr-body">
+          <el-form class="dw-emr-form" :model="form" label-position="left" label-width="78px" @submit.prevent>
+            <div class="dw-form-grid">
+              <el-form-item label="就诊时间" required>
+                <el-date-picker v-model="form.visitTime" :type="emergency ? 'datetime' : 'date'" :value-format="emergency ? 'YYYY-MM-DD HH:mm' : 'YYYY-MM-DD'" :format="emergency ? 'YYYY-MM-DD HH:mm' : 'YYYY-MM-DD'" :disabled="readOnly" style="width:100%"></el-date-picker>
+              </el-form-item>
+              <el-form-item label="科别"><el-input :model-value="currentVisit.deptName || '-'" disabled></el-input></el-form-item>
             </div>
 
-            <el-form class="dw-emr-form" :model="form" label-position="top" @submit.prevent>
+            <div v-if="emergency" class="dw-form-grid">
+              <el-form-item label="来院方式" required>
+                <el-select v-model="form.arrivalMode" :disabled="readOnly" placeholder="请选择来院方式" style="width:100%">
+                  <el-option v-for="item in arrivalModes" :key="item" :label="item" :value="item"></el-option>
+                </el-select>
+              </el-form-item>
+              <div></div>
+            </div>
+
+            <div class="dw-vitals-line">
+              <span class="lb">T</span><el-input v-model="vitals.t" size="small" :disabled="readOnly" placeholder="36.5"></el-input>
+              <span class="lb">P</span><el-input v-model="vitals.p" size="small" :disabled="readOnly" placeholder="78"></el-input>
+              <span class="lb">R</span><el-input v-model="vitals.r" size="small" :disabled="readOnly" placeholder="18"></el-input>
+              <span class="lb">BP</span><el-input v-model="vitals.bp" size="small" :disabled="readOnly" placeholder="120/80"></el-input>
+              <el-button size="small" :disabled="readOnly" @click="fillNormalVitals">正常值</el-button>
+            </div>
+
+            <el-form-item label="主诉" required>
+              <el-input v-model="form.chiefComplaint" type="textarea" :autosize="taSize(1)" maxlength="500" :disabled="readOnly" placeholder="主要症状、部位及持续时间"></el-input>
+            </el-form-item>
+
+            <template v-if="mode === 'first'">
+              <el-form-item label="现病史" required><el-input v-model="form.presentIllness" type="textarea" :autosize="taSize(2)" maxlength="1000" :disabled="readOnly"></el-input></el-form-item>
               <div class="dw-form-grid">
-                <el-form-item label="就诊时间" required>
-                  <el-date-picker v-model="form.visitTime" :type="emergency ? 'datetime' : 'date'" :value-format="emergency ? 'YYYY-MM-DD HH:mm' : 'YYYY-MM-DD'" :format="emergency ? 'YYYY-MM-DD HH:mm' : 'YYYY-MM-DD'" :disabled="readOnly" style="width:100%"></el-date-picker>
-                </el-form-item>
-                <el-form-item label="科别"><el-input :model-value="currentVisit.deptName || '-'" disabled></el-input></el-form-item>
+                <el-form-item label="既往史" required><el-input v-model="form.pastHistory" type="textarea" :autosize="taSize(1)" maxlength="500" :disabled="readOnly"></el-input></el-form-item>
+                <el-form-item label="阳性体征" required><el-input v-model="form.positiveSigns" type="textarea" :autosize="taSize(1)" maxlength="500" :disabled="readOnly"></el-input></el-form-item>
               </div>
+              <el-form-item label="阴性体征" required><el-input v-model="form.negativeSigns" type="textarea" :autosize="taSize(1)" maxlength="500" :disabled="readOnly"></el-input></el-form-item>
+            </template>
+            <template v-else>
+              <el-form-item label="病情变化" required><el-input v-model="form.conditionChange" type="textarea" :autosize="taSize(2)" maxlength="1000" :disabled="readOnly"></el-input></el-form-item>
+              <el-form-item label="体格检查" required><el-input v-model="form.followupExam" type="textarea" :autosize="taSize(1)" maxlength="500" :disabled="readOnly"></el-input></el-form-item>
+            </template>
 
-              <div v-if="emergency" class="dw-form-grid">
-                <el-form-item label="来院方式" required>
-                  <el-select v-model="form.arrivalMode" :disabled="readOnly" placeholder="请选择来院方式" style="width:100%">
-                    <el-option v-for="item in arrivalModes" :key="item" :label="item" :value="item"></el-option>
-                  </el-select>
-                </el-form-item>
-                <div></div>
-              </div>
-
-              <div class="dw-section">生命体征 <span class="dw-section-extra">Vital Signs</span></div>
-              <div style="display:grid;grid-template-columns:repeat(4,minmax(76px,1fr)) auto;gap:8px;align-items:end;margin-bottom:10px">
-                <el-form-item label="T(℃)"><el-input v-model="vitals.t" :disabled="readOnly" placeholder="36.5"></el-input></el-form-item>
-                <el-form-item label="P(次/分)"><el-input v-model="vitals.p" :disabled="readOnly" placeholder="78"></el-input></el-form-item>
-                <el-form-item label="R(次/分)"><el-input v-model="vitals.r" :disabled="readOnly" placeholder="18"></el-input></el-form-item>
-                <el-form-item label="BP(mmHg)"><el-input v-model="vitals.bp" :disabled="readOnly" placeholder="120/80"></el-input></el-form-item>
-                <el-button style="margin-bottom:8px" :disabled="readOnly" @click="fillNormalVitals">正常值</el-button>
-              </div>
-
-              <el-form-item label="主诉" required>
-                <el-input v-model="form.chiefComplaint" type="textarea" :rows="rowCount(2)" maxlength="500" show-word-limit :disabled="readOnly" placeholder="主要症状、部位及持续时间"></el-input>
-              </el-form-item>
-
-              <template v-if="mode === 'first'">
-                <el-form-item label="现病史" required><el-input v-model="form.presentIllness" type="textarea" :rows="rowCount(3)" maxlength="1000" show-word-limit :disabled="readOnly"></el-input></el-form-item>
-                <el-form-item label="既往史" required><el-input v-model="form.pastHistory" type="textarea" :rows="rowCount(2)" maxlength="500" show-word-limit :disabled="readOnly"></el-input></el-form-item>
-                <div class="dw-form-grid">
-                  <el-form-item label="阳性体征" required><el-input v-model="form.positiveSigns" type="textarea" :rows="rowCount(2)" maxlength="500" show-word-limit :disabled="readOnly"></el-input></el-form-item>
-                  <el-form-item label="必要的阴性体征" required><el-input v-model="form.negativeSigns" type="textarea" :rows="rowCount(2)" maxlength="500" show-word-limit :disabled="readOnly"></el-input></el-form-item>
-                </div>
-              </template>
-              <template v-else>
-                <el-form-item label="病情变化" required><el-input v-model="form.conditionChange" type="textarea" :rows="rowCount(3)" maxlength="1000" show-word-limit :disabled="readOnly"></el-input></el-form-item>
-                <el-form-item label="必要的体格检查" required><el-input v-model="form.followupExam" type="textarea" :rows="rowCount(2)" maxlength="500" show-word-limit :disabled="readOnly"></el-input></el-form-item>
-              </template>
-
-              <el-form-item label="辅助检查结果"><el-input v-model="form.auxExam" type="textarea" :rows="rowCount(2)" maxlength="1000" show-word-limit :disabled="readOnly"></el-input></el-form-item>
+            <div class="dw-form-grid">
+              <el-form-item label="辅助检查"><el-input v-model="form.auxExam" type="textarea" :autosize="taSize(1)" maxlength="1000" :disabled="readOnly"></el-input></el-form-item>
               <el-form-item label="诊断">
-                <div style="width:100%;min-height:38px;padding:7px 10px;background:var(--dw-card-muted);border:1px solid var(--dw-border);border-radius:4px">
-                  <span v-if="!diagnosisList.length" class="dim">请在诊断面板录入诊断</span>
-                  <span v-for="diag in diagnosisList" :key="diag.diagCode" class="dw-tag" :class="diag.maindiagFlag === '1' ? 'dw-tag--info' : ''" style="margin:0 6px 4px 0">{{ diag.maindiagFlag === '1' ? '★ ' : '' }}{{ diag.diagName }}</span>
+                <div class="dw-diag-chips">
+                  <span v-if="!diagnosisList.length" class="dim">下方诊断区录入</span>
+                  <span v-for="diag in diagnosisList" :key="diag.diagCode" class="dw-tag" :class="diag.maindiagFlag === '1' ? 'dw-tag--info' : ''">{{ diag.maindiagFlag === '1' ? '★' : '' }}{{ diag.diagName }}</span>
                 </div>
               </el-form-item>
-              <el-form-item :label="mode === 'first' ? '治疗意见' : '治疗处理意见'" required>
-                <el-input v-model="form.treatmentOpinion" type="textarea" :rows="rowCount(3)" maxlength="1000" show-word-limit :disabled="readOnly"></el-input>
-              </el-form-item>
-            </el-form>
-
-            <el-tabs v-if="!isExpanded" v-model="activeHistoryTab" class="dw-collapse">
-              <el-tab-pane label="历史就诊" name="history">
-                <div class="dw-history-item" v-for="history in histories" :key="history.id">
-                  <div class="hi-head"><b>{{ history.workDate || '-' }}</b><span class="hi-dept">{{ history.deptName || '-' }}</span><span class="dw-tag dw-tag--info">{{ history.mainDiagName || '未记录诊断' }}</span></div>
-                  <div class="hi-line"><span class="k">主诉</span><span>{{ history.chiefComplaint || '-' }}</span></div>
-                  <el-collapse><el-collapse-item title="展开详情"><div class="hi-line"><span class="k">处置</span><span>{{ history.treatmentOpinion || '-' }}</span></div></el-collapse-item></el-collapse>
-                  <el-button link type="primary" :disabled="readOnly" @click="quoteHistory(history)">引用</el-button>
-                </div>
-                <div v-if="!histories.length" class="dw-collapse-empty">暂无历史就诊记录</div>
-              </el-tab-pane>
-              <el-tab-pane label="检验报告" name="reports">
-                <div v-for="group in reportGroups" :key="group.type">
-                  <div class="dw-section">{{ group.type }}</div>
-                  <div class="dw-report-item" v-for="(report, index) in group.items" :key="index">
-                    <div class="ri-head"><b>{{ report.itemName || report.name || '-' }}</b><span class="dim">{{ report.reportTime || report.time || '-' }}</span></div>
-                    <div :style="isAbnormal(report) ? 'color:var(--dw-danger);font-weight:700' : ''">{{ report.result || report.value || '-' }} {{ report.unit || '' }} <span class="dim">{{ report.referenceRange || report.reference || '' }}</span></div>
-                  </div>
-                </div>
-                <div v-if="!reportGroups.length" class="dw-collapse-empty">暂无检验报告</div>
-              </el-tab-pane>
-            </el-tabs>
-
-            <div v-if="isExpanded" class="dw-tpl-bar" style="margin-top:14px;padding-top:12px;border-top:1px dashed var(--dw-border)">
-              <span class="dw-tpl-label">病历模板</span>
-              <el-select v-model="selectedTemplateId" filterable clearable placeholder="搜索 SOAP 模板" style="width:260px" @change="applySelectedTemplate">
-                <el-option v-for="tpl in templates" :key="tpl.id" :label="tpl.name" :value="tpl.id"></el-option>
-              </el-select>
-              <el-button :disabled="readOnly" @click="saveAsTemplate">存为模板</el-button>
             </div>
+            <el-form-item :label="mode === 'first' ? '治疗意见' : '处理意见'" required>
+              <el-input v-model="form.treatmentOpinion" type="textarea" :autosize="taSize(2)" maxlength="1000" :disabled="readOnly"></el-input>
+            </el-form-item>
+          </el-form>
 
-            <div class="dw-action-group">
-              <span class="dim">病历字段按门诊草稿接口保存</span>
-              <span style="margin-left:auto"></span>
-              <el-button :disabled="readOnly" @click="emitSave(false)">暂存病历</el-button>
-              <el-button type="primary" :disabled="readOnly" @click="emitSave(true)">提交病历</el-button>
-            </div>
-          </main>
+          <div class="dw-action-group" style="margin-top:4px;padding-top:8px">
+            <el-button size="small" :disabled="readOnly" @click="emitSave(false)">暂存病历(F3)</el-button>
+            <el-button size="small" type="primary" :disabled="readOnly" @click="emitSave(true)">提交病历</el-button>
+          </div>
         </div>
       </section>
     `,
@@ -143,15 +121,20 @@
         selectedTemplateId: null,
         templates: [],
         activeHistoryTab: 'history',
+        examReports: [],
+        reportsLoading: false,
+        reportsLoaded: false,
         arrivalModes: ['步行', '急救车', '轮椅', '担架', '其他'],
         vitals: { t: '', p: '', r: '', bp: '' },
         form: this.emptyForm()
       };
     },
     computed: {
-      isExpanded: function () { return this.expandedPanel === 'emr'; },
-      expandedLayout: function () {
-        return this.isExpanded ? { display: 'grid', gridTemplateColumns: '300px minmax(0,1fr)', gap: '16px', padding: '0 4px' } : { padding: '12px' };
+      isExpanded: function () { return true; },
+      patientId: function () {
+        var patient = this.currentPatient || {};
+        var visit = this.currentVisit || {};
+        return patient.id || visit.patientId || null;
       },
       histories: function () { return Array.isArray(this.visitHistory) ? this.visitHistory : []; },
       diagnosisList: function () { return Array.isArray(this.diagnoses) ? this.diagnoses : []; },
@@ -207,6 +190,7 @@
         this.form = this.emptyForm();
         this.vitals = { t: '', p: '', r: '', bp: '' };
         this.modeVisitId = null;
+        this.examReports = []; this.reportsLoaded = false;
         if (!visit) { return; }
         var withTime = String(visit.medType || '') === '13';
         this.form.visitTime = visit.visitTime
@@ -239,9 +223,9 @@
           : this.form.followupExam;
         return [vital, body].filter(Boolean).join('\n');
       },
-      rowCount: function (rows) { return this.isExpanded ? rows * 2 : rows; },
+      rowCount: function (rows) { return rows * 2; },
+      taSize: function (min) { return { minRows: min, maxRows: min + 4 }; },
       fillNormalVitals: function () { this.vitals = { t: '36.5', p: '78', r: '18', bp: '120/80' }; },
-      toggleExpand: function () { this.$emit(this.isExpanded ? 'request-collapse' : 'request-expand', 'emr'); },
       loadTemplates: function () {
         var vm = this;
         window.HIS.get('/api/his/template/list?type=soap').then(function (data) { vm.templates = data || []; }).catch(function () { vm.templates = []; });
@@ -298,6 +282,55 @@
         this.form.followupExam = history.physicalExam || this.form.followupExam;
         this.form.auxExam = history.auxExam || this.form.auxExam;
         this.form.treatmentOpinion = history.treatmentOpinion || this.form.treatmentOpinion;
+      },
+      /* ===== 摘要引用追加(处方/医嘱【插入病历】及报告引用经主编排中继至此) ===== */
+      appendTreatment: function (text) {
+        var t = String(text || '').trim();
+        if (!t) { return; }
+        this.form.treatmentOpinion = (this.form.treatmentOpinion ? this.form.treatmentOpinion.replace(/\s+$/, '') + '\n' : '') + t;
+        ElementPlus.ElMessage.success('已插入治疗意见, 请核对后随病历保存(F3)');
+      },
+      appendAuxExam: function (text) {
+        var t = String(text || '').trim();
+        if (!t) { return; }
+        this.form.auxExam = (this.form.auxExam ? this.form.auxExam.replace(/\s+$/, '') + '\n' : '') + t;
+        ElementPlus.ElMessage.success('已插入辅助检查, 请核对后随病历保存(F3)');
+      },
+      /* ===== 医技报告引用(/api/medtech/reports/patient/{id}, popover 首次展开懒加载) ===== */
+      loadExamReports: function (force) {
+        var vm = this;
+        if (vm.reportsLoaded && !force) { return; }
+        if (!vm.patientId) { vm.examReports = []; return; }
+        vm.reportsLoading = true;
+        window.HIS.get('/api/medtech/reports/patient/' + encodeURIComponent(vm.patientId)).then(function (d) {
+          var list = Array.isArray(d) ? d : [];
+          /* 仅已发布(status=2)报告可引用, 口径同医技报告状态字典 */
+          vm.examReports = list.filter(function (r) { return Number(r.status) === 2; }).slice(0, 30);
+        }).catch(function () { vm.examReports = []; }).finally(function () {
+          vm.reportsLoading = false; vm.reportsLoaded = true;
+        });
+      },
+      /* 报告结论提取: 检验类取 resultItems 项目值拼接, 检查类取所见/结论字段 */
+      reportConclusion: function (rep) {
+        if (!rep) { return ''; }
+        var direct = String(rep.conclusion || rep.examConclusion || rep.resultSummary || '').trim();
+        if (direct) { return direct; }
+        var findings = String(rep.examFindings || '').trim();
+        var items = Array.isArray(rep.resultItems) ? rep.resultItems : [];
+        var joined = items.map(function (it) {
+          var v = it.resultValue != null ? it.resultValue : (it.value != null ? it.value : '');
+          return v === '' ? '' : (it.itemName + ' ' + v + (it.resultUnit || ''));
+        }).filter(Boolean).join('；');
+        return [findings, joined].filter(Boolean).join(' | ');
+      },
+      quoteExamReport: function (rep) {
+        if (!rep) { return; }
+        var type = rep.reportType === 'lab' ? '检验' : '检查';
+        var name = rep.itemNames || rep.orderName || rep.reportNo || '未命名项目';
+        var date = String(rep.reportTime || rep.auditTime || rep.createTime || '').slice(0, 10);
+        var conclusion = this.reportConclusion(rep);
+        if (!conclusion) { return; }
+        this.appendAuxExam('【' + type + '】' + name + '：' + conclusion + (date ? '（' + date + '）' : ''));
       },
       isAbnormal: function (report) {
         return report.abnormal === true || report.abnormalFlag === '1' || /^(H|L|↑|↓|异常)$/i.test(String(report.flag || report.resultFlag || ''));

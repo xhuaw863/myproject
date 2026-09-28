@@ -202,8 +202,8 @@ public class HisRegistrationService extends ServiceImpl<HisRegistrationMapper, H
         req.setCaty(dept.getDeptCaty());
         req.setMedType(StringUtils.hasText(medType) ? medType : "11");
 
-        // 调用医保2201
-        YbResponse resp = outpatientService.register(req);
+        // 调用医保2201(带患者参保地区划, 规范表3: 输入含psn_no时insuplc_admdvs必填)
+        YbResponse resp = outpatientService.register(req, patient.getInsuplcAdmdvs());
         if (resp == null || !resp.isSuccess()) {
             String err = resp == null ? "医保无响应" : resp.getErrMsg();
             throw new BizException("医保挂号失败: " + err);
@@ -286,12 +286,28 @@ public class HisRegistrationService extends ServiceImpl<HisRegistrationMapper, H
         if (reg.getStatus() == null || reg.getStatus() != 1) {
             throw new BizException("该挂号已退号或已就诊, 不能退号");
         }
+        // 就诊进度守卫: 已接诊(visit_status>=2)或已收费(charge_status!=0)的挂号不可退号,
+        // 否则医保2202撤销挂号与已上传的2203/已完成的2207冲突, 平台侧拒付/对账异常
+        List<Map<String, Object>> vrows = jdbcTemplate.queryForList(
+                "SELECT visit_status, charge_status FROM his_visit WHERE registration_id = ? AND tenant_id = ? AND deleted = 0",
+                registrationId, tenantId());
+        if (!vrows.isEmpty()) {
+            Map<String, Object> v = vrows.get(0);
+            Number vs = (Number) v.get("visit_status");
+            Number cs = (Number) v.get("charge_status");
+            if ((vs != null && vs.intValue() >= 2) || (cs != null && cs.intValue() != 0)) {
+                throw new BizException("该挂号已产生就诊或已收费, 不能退号(请先退费并恢复就诊状态)");
+            }
+        }
 
         OutpatientRegisterCancelReq req = new OutpatientRegisterCancelReq();
         req.setPsnNo(reg.getPsnNo());
         req.setMdtrtId(reg.getMdtrtId());
         req.setIptOtpNo(reg.getIptOtpNo());
-        YbResponse resp = outpatientService.cancelRegister(req);
+        // 带患者参保地区划(规范表3: 输入含psn_no时insuplc_admdvs必填)
+        HisPatient regPatient = reg.getPatientId() == null ? null : patientService.getById(reg.getPatientId());
+        YbResponse resp = outpatientService.cancelRegister(req,
+                regPatient == null ? null : regPatient.getInsuplcAdmdvs());
         if (resp == null || !resp.isSuccess()) {
             String err = resp == null ? "医保无响应" : resp.getErrMsg();
             throw new BizException("医保退号失败: " + err);

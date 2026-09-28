@@ -25,7 +25,7 @@ import java.util.Map;
  * 标准字典导入服务: 用 EasyExcel 流式读取 xlsx(低内存, 支持数十万行), JDBC 批量写入 std_* 表。
  * 特点:
  *  - 全局标准数据, 走原生 JDBC(不经 MyBatis-Plus), 天然不受多租户插件影响;
- *  - 幂等: 每类字典导入前先 TRUNCATE 目标表, 再全量写入, 并登记 std_dict_version;
+ *  - 幂等: 每类字典导入前先 DELETE 清空目标表(随事务回滚, 不可用 TRUNCATE), 再全量写入, 并登记 std_dict_version;
  *  - 单类/单源失败不影响其他字典, 结果逐条返回。
  */
 @Slf4j
@@ -88,7 +88,9 @@ public class StdDictImportService {
             try (Statement st = conn.createStatement()) {
                 // 批量导入放宽 sql_mode, 避免个别超长字段导致整批失败(超长自动截断)
                 st.execute("SET SESSION sql_mode = ''");
-                st.execute("TRUNCATE TABLE " + dict.getTable());
+                // 注意: 不可用 TRUNCATE —— MySQL 中 TRUNCATE 隐式提交且不可回滚,
+                // 导入中途失败时回滚救不回被清空的表(重导原子性 C6)。DELETE 随本事务回滚
+                st.execute("DELETE FROM " + dict.getTable());
                 st.execute("DELETE FROM std_dict_version WHERE dict_key = '" + key + "'");
             }
 
@@ -125,7 +127,7 @@ public class StdDictImportService {
             r.put("status", "SUCCESS");
             r.put("rows", total);
             r.put("message", String.join("; ", sourceMsgs));
-            // 重导为 TRUNCATE 重写, 立即按名称回填 py_code(drug_catalog 无该列则内部跳过), 免等下次重启
+            // 重导为全量重写(DELETE+重插), 立即按名称回填 py_code(drug_catalog 无该列则内部跳过), 免等下次重启
             pyBackfill.backfillOne(dict.getTable(), "id", dict.getNameCol());
         } catch (Exception e) {
             log.error("标准字典[{}]导入失败", key, e);

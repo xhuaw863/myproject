@@ -1,0 +1,26 @@
+[PASS] N-登录成功(门诊护士站菜单可见) 
+[PASS] N-待执行医嘱列表有数据(收费联动) rows=11
+[PASS] N-UI三查七对后开始执行成功 started=True
+[PASS] N-执行中页签可见该行 rows=1
+[PASS] N-UI完成执行成功(执行中页签闭环) finished=True
+[PASS] N-输液四页签渲染 ['待配液', '输液中', '待拔针', '已完成']
+[PASS] N-皮试管理渲染 
+[PASS] N-过敏档案含青霉素记录 
+[PASS] N-执行记录有留痕 
+[PASS] T-登录成功(治疗管理菜单可见) 
+[PASS] T-疗程列表渲染 
+[PASS] T-满疗程计划可见(已完成) 
+[PASS] T-待执行工作台渲染 
+[PASS] T-设备台账渲染 
+[PASS] T-治疗记录含换药留痕 
+[PASS] M-登录成功(医技管理菜单可见) 
+[PASS] M-标本管理页渲染(页签+表格) 
+[PASS] M-已签收标本有流转留痕(E2E数据) rows=6
+[PASS] M-报告工作站渲染 
+[PASS] M-危急值闭环留痕可见(血钾) 
+[PASS] M-规则列表含血钾 
+[PASS] M-报告查询渲染 
+[PASS] JS无页面异常(pageerror=0) []
+[PASS] 控制台无实质错误 []
+
+==== TRI-UI SUMMARY: 0 FAIL ====

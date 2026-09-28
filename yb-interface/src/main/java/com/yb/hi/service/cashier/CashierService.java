@@ -1,13 +1,17 @@
 package com.yb.hi.service.cashier;
 
+import com.alibaba.fastjson2.JSON;
 import com.alibaba.fastjson2.JSONObject;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.core.metadata.IPage;
 import com.baomidou.mybatisplus.core.toolkit.Wrappers;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
+import com.yb.hi.common.DateUtil;
 import com.yb.hi.common.YbResponse;
 import com.yb.hi.config.TenantYbConfigResolver;
 import com.yb.hi.config.YbRuntimeConfig;
+import com.yb.hi.dto.FeeDetailReq;
+import com.yb.hi.dto.FeeDetailRevokeReq;
 import com.yb.hi.dto.SetlCancelReq;
 import com.yb.hi.dto.SettlementReq;
 import com.yb.hi.dto.cashier.ChargeReq;
@@ -19,6 +23,7 @@ import com.yb.hi.entity.cashier.HisChargeBillItem;
 import com.yb.hi.entity.cashier.HisDailySettle;
 import com.yb.hi.entity.cashier.HisInvoice;
 import com.yb.hi.entity.cashier.HisPaymentDetail;
+import com.yb.hi.entity.yb.HisCompTask;
 import com.yb.hi.framework.common.BizException;
 import com.yb.hi.framework.tenant.LoginUser;
 import com.yb.hi.framework.tenant.TenantContext;
@@ -27,6 +32,7 @@ import com.yb.hi.mapper.cashier.HisChargeBillItemMapper;
 import com.yb.hi.mapper.cashier.HisChargeBillMapper;
 import com.yb.hi.mapper.cashier.HisDailySettleMapper;
 import com.yb.hi.mapper.cashier.HisPaymentDetailMapper;
+import com.yb.hi.mapper.yb.HisCompTaskMapper;
 import com.yb.hi.platform.service.OrgAccessGuard;
 import com.yb.hi.service.OutpatientService;
 import com.yb.hi.service.medtech.SpecimenService;
@@ -36,7 +42,9 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.context.annotation.Lazy;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionTemplate;
 import org.springframework.util.CollectionUtils;
 import org.springframework.util.StringUtils;
 
@@ -51,6 +59,7 @@ import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicInteger;
 
@@ -91,6 +100,10 @@ public class CashierService {
     private final NurseExecService nurseExecService;
     private final TreatmentPlanService treatmentPlanService;
     private final SpecimenService specimenService;
+    /** 补偿任务 Mapper(批次4: UNKNOWN 交易登记) */
+    private final HisCompTaskMapper compTaskMapper;
+    /** 两阶段化事务模板(T1/T3 显式事务边界, T2 医保调用不占事务) */
+    private final TransactionTemplate txTemplate;
 
     public CashierService(HisChargeBillMapper billMapper, HisChargeBillItemMapper billItemMapper,
                           HisDailySettleMapper dailySettleMapper, HisPaymentDetailMapper paymentDetailMapper,
@@ -99,7 +112,9 @@ public class CashierService {
                           OrgAccessGuard orgAccessGuard, InvoiceService invoiceService,
                           @Lazy NurseExecService nurseExecService,
                           @Lazy TreatmentPlanService treatmentPlanService,
-                          @Lazy SpecimenService specimenService) {
+                          @Lazy SpecimenService specimenService,
+                          PlatformTransactionManager transactionManager,
+                          HisCompTaskMapper compTaskMapper) {
         this.billMapper = billMapper;
         this.billItemMapper = billItemMapper;
         this.dailySettleMapper = dailySettleMapper;
@@ -112,6 +127,8 @@ public class CashierService {
         this.nurseExecService = nurseExecService;
         this.treatmentPlanService = treatmentPlanService;
         this.specimenService = specimenService;
+        this.compTaskMapper = compTaskMapper;
+        this.txTemplate = new TransactionTemplate(transactionManager);
     }
 
     // ==================== 待收费 ====================
@@ -180,7 +197,7 @@ public class CashierService {
                 "SELECT v.id, v.reg_no, v.ipt_otp_no, v.patient_no, v.mdtrt_id, v.insutype,"
                         + " v.dept_name, v.dr_name, v.patient_name, v.gender, v.age, p.id_card"
                         + " FROM his_visit v LEFT JOIN his_patient p ON p.id = v.patient_id AND p.deleted = 0"
-                        + " WHERE v.id = ? AND v.deleted = 0", visitId);
+                        + " WHERE v.id = ? AND v.tenant_id = ? AND v.deleted = 0", visitId, tenantId());
         if (visitRows.isEmpty()) {
             throw new BizException(400, "就诊记录不存在");
         }
@@ -212,8 +229,8 @@ public class CashierService {
                         + " FROM his_prescription_item pi"
                         + " JOIN his_prescription pr ON pr.id = pi.prescription_id AND pr.status > 0"
                         + " LEFT JOIN his_drug_catalog dc ON dc.id = pi.drug_id"
-                        + " WHERE pr.visit_id = ? AND pi.deleted = 0 AND pr.deleted = 0"
-                        + " ORDER BY pi.id", visitId);
+                        + " WHERE pr.visit_id = ? AND pr.tenant_id = ? AND pi.deleted = 0 AND pr.deleted = 0"
+                        + " ORDER BY pi.id", visitId, tenantId());
         for (Map<String, Object> r : drugRows) {
             items.add(buildItem(1, "prescription_item", r));
         }
@@ -229,8 +246,8 @@ public class CashierService {
                         + " FROM his_order_item oi"
                         + " JOIN his_order o ON o.id = oi.order_id AND o.status > 0"
                         + " LEFT JOIN his_charge_item ci ON ci.id = oi.item_id"
-                        + " WHERE o.visit_id = ? AND oi.deleted = 0 AND o.deleted = 0"
-                        + " ORDER BY oi.id", visitId);
+                        + " WHERE o.visit_id = ? AND o.tenant_id = ? AND oi.deleted = 0 AND o.deleted = 0"
+                        + " ORDER BY oi.id", visitId, tenantId());
         for (Map<String, Object> r : orderRows) {
             items.add(buildItem(orderItemType(str(r.get("order_type"))), "order_item", r));
         }
@@ -380,30 +397,67 @@ public class CashierService {
 
     // ==================== 收费 ====================
 
-    /** 医保收费(2206预结算+2207结算, Mock模式自动模拟返回) */
-    @Transactional(rollbackFor = Exception.class)
+    /**
+     * 医保收费(2204+2206+2207)。
+     * 批次4两阶段化: T1 本地事务(行锁校验+建单中间态 status=0/yb_status=1) ->
+     * T2 医保调用(无事务, 结果三分 SUCCESS/FAIL/UNKNOWN) ->
+     * T3 终态落账(成功条件更新已收费; 明确失败置作废; UNKNOWN 建补偿任务挂起, 由 CompTaskSweeper 收敛)。
+     */
     public Map<String, Object> charge(ChargeReq req) {
         boolean ybFlow = req == null || !"self".equalsIgnoreCase(req.getPayType());
         return doCharge(req, ybFlow);
     }
 
-    /** 自费收费(不走医保, 全额自付现金) */
+    /** 自费收费(不走医保, 全额自付现金, 单本地事务完成) */
     @Transactional(rollbackFor = Exception.class)
     public Map<String, Object> selfPayCharge(ChargeReq req) {
         return doCharge(req, false);
     }
 
-    /** 收费主流程: 校验就诊 -> 建单/落明细 -> 金额拆分(医保结算或全额自付) -> 回写状态 */
+    /** 收费主流程: T1 建单(自费单事务内直接终态) -> [医保] T2 医保链 -> T3 终态落账 */
     private Map<String, Object> doCharge(ChargeReq req, boolean ybFlow) {
         if (req == null || req.getVisitId() == null) {
             throw new BizException(400, "就诊ID不能为空");
         }
+        ChargeCtx ctx = txTemplate.execute(status -> buildStage1(req, ybFlow));
+        if (!ybFlow) {
+            // 自费单: 无医保环节, T1 事务内已完成终态落账
+            return ctx.result;
+        }
+        // T2: 医保调用(无事务, 每笔交易独立回执; UNKNOWN 不落终态, 走补偿)
+        ChargeOutcome outcome = callYbSettleChain(ctx);
+        // T3: 终态落账(独立事务, 条件更新防并发/补偿收敛后重复落账)
+        if (outcome.success) {
+            try {
+                finalizeSuccess(ctx, outcome);
+            } catch (Exception e) {
+                // 本地终态落账失败(单据中间态已提交, 无法回滚): 转补偿任务收敛, 避免单据永久挂起阻塞重收
+                log.error("医保结算本地终态落账失败, 转补偿任务: billNo={}, 原因: {}", ctx.bill.getBillNo(), e.getMessage());
+                createCompTaskAndThrow(ctx, outcome, "医保结算已完成但本地落账异常, 系统已登记补偿任务自动核对, 请稍后刷新查看");
+            }
+        } else if (outcome.unknown) {
+            createCompTaskAndThrow(ctx, outcome,
+                    "医保结算结果未知(网络超时/异常), 系统已登记补偿任务自动核对, 请稍后刷新查看; 详情: " + outcome.errMsg);
+        } else {
+            markBillFailed(ctx, outcome);
+        }
+        return ctx.result;
+    }
+
+    /**
+     * T1: 本地事务内校验+建单。
+     * 医保单落中间态(status=0, yb_status=1 结算中), 医保调用挪到事务外(T2);
+     * 自费单无医保环节, 本事务内直接终态落账。
+     */
+    private ChargeCtx buildStage1(ChargeReq req, boolean ybFlow) {
         long tenantId = tenantId();
         // 1. 校验就诊: 已完成接诊且未收费
+        //    FOR UPDATE 锁定就诊行: 并发收费窗口第二次进入时阻塞至前一单提交,
+        //    读到 charge_status=1 后拒绝, 杜绝双窗口双收费
         List<Map<String, Object>> visitRows = jdbcTemplate.queryForList(
                 "SELECT id, registration_id, patient_id, patient_name, mdtrt_id, psn_no, insutype, med_type,"
-                        + " visit_status, charge_status"
-                        + " FROM his_visit WHERE id = ? AND tenant_id = ? AND deleted = 0",
+                        + " dept_code, dept_name, atddr_no, dr_name, visit_status, charge_status"
+                        + " FROM his_visit WHERE id = ? AND tenant_id = ? AND deleted = 0 FOR UPDATE",
                 req.getVisitId(), tenantId);
         if (visitRows.isEmpty()) {
             throw new BizException(400, "就诊记录不存在");
@@ -420,6 +474,40 @@ public class CashierService {
         if (chargeStatus != null && chargeStatus == 2) {
             throw new BizException("该就诊已退费, 不能再次收费");
         }
+        // 1a. 结算中守卫(批次4): 就诊已有挂起的医保单(上次 UNKNOWN 待补偿收敛)时拒绝重复发起;
+        //     自费单无医保环节不适用
+        if (ybFlow) {
+            Integer inProgress = jdbcTemplate.queryForObject(
+                    "SELECT COUNT(*) FROM his_charge_bill"
+                            + " WHERE visit_id = ? AND tenant_id = ? AND bill_type = 1 AND deleted = 0"
+                            + " AND status = 0 AND yb_status = 1",
+                    Integer.class, req.getVisitId(), tenantId);
+            if (inProgress != null && inProgress > 0) {
+                throw new BizException("该就诊存在医保结算中的收费单(上次结算结果待确认), 请稍后刷新查看");
+            }
+        }
+        // 1b. 医保单先决校验: 无医保就诊信息时建单前拒绝(可直接改用自费收费, 不留中间单)
+        if (ybFlow && (!StringUtils.hasText(str(visit.get("mdtrt_id"))) || !StringUtils.hasText(str(visit.get("psn_no"))))) {
+            throw new BizException("该就诊无医保就诊信息, 请使用自费收费");
+        }
+
+        // 1c. 2207必填回填: 就诊凭证(挂号记录) + 参保地区划(参保记录, 规范表3: 输入含psn_no时insuplc_admdvs必填)
+        String mdtrtCertType = "02";
+        String mdtrtCertNo = null;
+        String insuplcAdmdvs = null;
+        List<Map<String, Object>> extRows = jdbcTemplate.queryForList(
+                "SELECT r.mdtrt_cert_type, r.mdtrt_cert_no, pi.insuplc_admdvs"
+                        + " FROM his_visit v"
+                        + " LEFT JOIN his_registration r ON r.id = v.registration_id AND r.deleted = 0"
+                        + " LEFT JOIN his_patient_insu pi ON pi.patient_id = v.patient_id AND pi.psn_no = v.psn_no AND pi.deleted = 0"
+                        + " WHERE v.id = ? AND v.tenant_id = ? AND v.deleted = 0",
+                req.getVisitId(), tenantId);
+        if (!extRows.isEmpty()) {
+            Map<String, Object> ext = extRows.get(0);
+            mdtrtCertType = StringUtils.hasText(str(ext.get("mdtrt_cert_type"))) ? str(ext.get("mdtrt_cert_type")) : "02";
+            mdtrtCertNo = str(ext.get("mdtrt_cert_no"));
+            insuplcAdmdvs = str(ext.get("insuplc_admdvs"));
+        }
 
         // 2. 汇总费用明细
         Map<String, Object> detail = billDetail(req.getVisitId());
@@ -435,7 +523,7 @@ public class CashierService {
             total = BigDecimal.ZERO;
         }
 
-        // 3. 创建收费单(先待收费, 结算成功后转已收费)
+        // 3. 创建收费单(医保单先落中间态: status=0/yb_status=1 结算中, 结算成功后 T3 转已收费)
         Long orgId = req.getOrgId() != null ? req.getOrgId() : currentOrgId();
         if (orgId == null) {
             throw new BizException(400, "收费机构不能为空");
@@ -454,6 +542,9 @@ public class CashierService {
         bill.setCashPay(BigDecimal.ZERO);
         bill.setAcctPay(BigDecimal.ZERO);
         bill.setStatus(0);
+        if (ybFlow) {
+            bill.setYbStatus(1);
+        }
         billMapper.insert(bill);
 
         // 4. 明细落库
@@ -475,70 +566,150 @@ public class CashierService {
             billItemMapper.insert(bi);
         }
 
-        // 5. 金额拆分(四分: 自付/基金/现金/个账)
-        BigDecimal fundPay = BigDecimal.ZERO;
-        BigDecimal acctPay = BigDecimal.ZERO;
-        BigDecimal selfPay = total;
-        String setlId = null;
-        if (ybFlow) {
-            String mdtrtId = str(visit.get("mdtrt_id"));
-            String psnNo = str(visit.get("psn_no"));
-            if (!StringUtils.hasText(mdtrtId) || !StringUtils.hasText(psnNo)) {
-                throw new BizException("该就诊无医保就诊信息, 请使用自费收费");
-            }
-            SettlementReq setlReq = new SettlementReq();
-            setlReq.setPsnNo(psnNo);
-            setlReq.setMdtrtId(mdtrtId);
-            setlReq.setInsutype(str(visit.get("insutype")));
-            // 医疗类别随挂号/就诊同步(如急诊14), 未同步的老数据兕底普通门诊11
-            String medType = str(visit.get("med_type"));
-            setlReq.setMedType(StringUtils.hasText(medType) ? medType : "11");
-            setlReq.setMedfeeSumamt(total);
-            setlReq.setPsnSetlway("01");
-            setlReq.setMdtrtCertType("02");
-            // 5.1 预结算(2206)
-            YbResponse preResp = outpatientService.preSettlement(setlReq);
-            if (preResp == null || !preResp.isSuccess()) {
-                throw new BizException("医保预结算失败: " + (preResp == null ? "医保无响应" : preResp.getErrMsg()));
-            }
-            // 5.2 正式结算(2207), 取结算ID
-            YbResponse setlResp = outpatientService.settlement(setlReq);
-            if (setlResp == null || !setlResp.isSuccess()) {
-                throw new BizException("医保结算失败: " + (setlResp == null ? "医保无响应" : setlResp.getErrMsg()));
-            }
-            JSONObject setlinfo = setlResp.getOutputNode("setlinfo");
-            if (setlinfo != null) {
-                setlId = setlinfo.getString("setl_id");
-            }
-            YbRuntimeConfig cfg = ybConfigResolver.resolve();
-            if (cfg.isMockEnabled()) {
-                // 模拟模式: 基金70% / 个账10% / 自付20%, 余数归自付保证三分守恒
-                fundPay = total.multiply(new BigDecimal("0.70")).setScale(2, RoundingMode.HALF_UP);
-                acctPay = total.multiply(new BigDecimal("0.10")).setScale(2, RoundingMode.HALF_UP);
-                selfPay = total.subtract(fundPay).subtract(acctPay);
-            } else {
-                // 真实模式: 从结算报文 setlinfo 取四分金额
-                fundPay = firstNonNull(bd(setlinfo, "fund_pay_sumamt"), bd(setlinfo, "hifp_pay"));
-                acctPay = firstNonNull(bd(setlinfo, "acct_pay"), bd(setlinfo, "acct_mulaid_pay"));
-                selfPay = firstNonNull(bd(setlinfo, "psn_part_amt"), bd(setlinfo, "psn_cash_pay"));
-                if (fundPay == null) {
-                    fundPay = BigDecimal.ZERO;
-                }
-                if (acctPay == null) {
-                    acctPay = BigDecimal.ZERO;
-                }
-                if (selfPay == null) {
-                    selfPay = total.subtract(fundPay).subtract(acctPay);
-                }
-            }
-            bill.setSetlId(setlId);
+        ChargeCtx ctx = new ChargeCtx(req, visit, bill, items, total, mdtrtCertType, mdtrtCertNo, insuplcAdmdvs);
+        if (!ybFlow) {
+            // 自费单: 全额自付, 无医保环节, 本事务内直接终态
+            ChargeOutcome selfOut = ChargeOutcome.success();
+            selfOut.selfPay = total;
+            finishBillLocal(ctx, selfOut, false);
         }
+        return ctx;
+    }
 
-        // 6. 多支付方式处理: payments 非空时校验金额守恒并拆分(医保单=自付部分, 自费单=全额);
-        //    payments 为空(老接口)保持 cashPay=selfPay 全现金兼容行为
-        BigDecimal insPay = fundPay.add(acctPay);
-        List<PaymentItem> payments = normalizePayments(req.getPayments(), ybFlow ? selfPay : total);
-        BigDecimal cashPay = selfPay;
+    /**
+     * T2: 医保交易链 2204 -> 2206 -> 2207(无事务)。
+     * 每笔交易独立判定三分结果: 平台明确拒绝=FAIL(单据置作废可重试),
+     * 超时/网络异常=UNKNOWN(建补偿任务挂起), 全部成功才返回 SUCCESS 金额四分。
+     */
+    private ChargeOutcome callYbSettleChain(ChargeCtx ctx) {
+        String mdtrtId = str(ctx.visit.get("mdtrt_id"));
+        String psnNo = str(ctx.visit.get("psn_no"));
+        SettlementReq setlReq = new SettlementReq();
+        setlReq.setPsnNo(psnNo);
+        setlReq.setMdtrtId(mdtrtId);
+        setlReq.setInsutype(str(ctx.visit.get("insutype")));
+        // 医疗类别随挂号/就诊同步(如急诊14), 未同步的老数据兕底普通门诊11
+        String medType = str(ctx.visit.get("med_type"));
+        setlReq.setMedType(StringUtils.hasText(medType) ? medType : "11");
+        setlReq.setMedfeeSumamt(ctx.total);
+        setlReq.setPsnSetlway("01");
+        setlReq.setMdtrtCertType(ctx.mdtrtCertType);
+        setlReq.setMdtrtCertNo(ctx.mdtrtCertNo);
+        setlReq.setChrgBchno(ctx.bill.getBillNo());
+
+        // 2204 费用明细上传: 规范要求 2204 -> 2206 -> 2207 顺序;
+        // 无医保目录编码的自费明细不上传(金额计入全自费)
+        List<FeeDetailReq> feeDetails = buildFeeDetails(ctx.items, mdtrtId, psnNo, ctx.bill.getBillNo(), ctx.visit);
+        if (!CollectionUtils.isEmpty(feeDetails)) {
+            YbResponse feeResp = outpatientService.uploadFeeDetail(feeDetails, ctx.insuplcAdmdvs);
+            if (feeResp == null) {
+                return ChargeOutcome.unknown(null, "医保费用明细上传(2204)无响应");
+            }
+            if (feeResp.isUnknown()) {
+                return ChargeOutcome.unknown(findTxnLogId(feeResp), "医保费用明细上传(2204)网络异常, 结果未知");
+            }
+            if (!feeResp.isSuccess()) {
+                return ChargeOutcome.fail("医保费用明细上传(2204)失败: " + feeResp.getErrMsg());
+            }
+        }
+        // 2206 预结算
+        YbResponse preResp = outpatientService.preSettlement(setlReq, ctx.insuplcAdmdvs);
+        if (preResp == null) {
+            return ChargeOutcome.unknown(null, "医保预结算(2206)无响应");
+        }
+        if (preResp.isUnknown()) {
+            return ChargeOutcome.unknown(findTxnLogId(preResp), "医保预结算(2206)网络异常, 结果未知");
+        }
+        if (!preResp.isSuccess()) {
+            return ChargeOutcome.fail("医保预结算(2206)失败: " + preResp.getErrMsg());
+        }
+        // 预结算金额四分回传2207(fulamt_ownpay_amt/overlmt_selfpay/preselfpay_amt/inscp_scp_amt 以平台预结算结果为准);
+        // 数值型按规范为空传"0"; acct_used_flag 按预结算是否动用个账
+        JSONObject preSetlinfo = preResp.getOutputNode("setlinfo");
+        setlReq.setFulamtOwnpayAmt(firstNonNull(bd(preSetlinfo, "fulamt_ownpay_amt"), BigDecimal.ZERO));
+        setlReq.setOverlmtSelfpay(firstNonNull(bd(preSetlinfo, "overlmt_selfpay"), BigDecimal.ZERO));
+        setlReq.setPreselfpayAmt(firstNonNull(bd(preSetlinfo, "preselfpay_amt"), BigDecimal.ZERO));
+        setlReq.setInscpScpAmt(firstNonNull(bd(preSetlinfo, "inscp_scp_amt"), BigDecimal.ZERO));
+        BigDecimal preAcct = bd(preSetlinfo, "acct_pay");
+        setlReq.setAcctUsedFlag(preAcct != null && preAcct.compareTo(BigDecimal.ZERO) > 0 ? "1" : "0");
+        // 2207 正式结算, 取结算ID
+        YbResponse setlResp = outpatientService.settlement(setlReq, ctx.insuplcAdmdvs);
+        if (setlResp == null) {
+            return ChargeOutcome.unknown(null, "医保结算(2207)无响应");
+        }
+        if (setlResp.isUnknown()) {
+            return ChargeOutcome.unknown(findTxnLogId(setlResp), "医保结算(2207)网络异常, 结果未知");
+        }
+        if (!setlResp.isSuccess()) {
+            return ChargeOutcome.fail("医保结算(2207)失败: " + setlResp.getErrMsg());
+        }
+        JSONObject setlinfo = setlResp.getOutputNode("setlinfo");
+        String setlId = setlinfo == null ? null : setlinfo.getString("setl_id");
+        // 2207成功但缺少setl_id: 规范出参必含结算ID, 缺失即平台侧异常, 本地不得置已收费(否则无法撤销)
+        if (!StringUtils.hasText(setlId)) {
+            log.error("医保结算(2207)返回缺少setl_id: billNo={}, visitId={}", ctx.bill.getBillNo(), ctx.req.getVisitId());
+            return ChargeOutcome.fail("医保结算(2207)返回缺少结算ID(setl_id), 请核对医保平台结算状态后处理");
+        }
+        // 金额四分(自付/基金/现金/个账)
+        BigDecimal[] split = splitAmounts(setlinfo, ctx.total);
+        ChargeOutcome o = ChargeOutcome.success();
+        o.setlId = setlId;
+        o.fundPay = split[0];
+        o.acctPay = split[1];
+        o.selfPay = split[2];
+        o.txnLogId = findTxnLogId(setlResp);
+        return o;
+    }
+
+    /** T3: 结算成功本地终态落账(独立事务, 内部条件更新防并发重复落账) */
+    private void finalizeSuccess(ChargeCtx ctx, ChargeOutcome o) {
+        txTemplate.executeWithoutResult(status -> finishBillLocal(ctx, o, true));
+    }
+
+    /** 平台明确拒绝(FAIL): 单据置作废(status=-1), 就诊保持未收费, 可重新发起收费(新单新 chrg_bchno) */
+    private void markBillFailed(ChargeCtx ctx, ChargeOutcome o) {
+        txTemplate.executeWithoutResult(status -> {
+            int updated = billMapper.update(null, Wrappers.<HisChargeBill>lambdaUpdate()
+                    .set(HisChargeBill::getStatus, -1)
+                    .set(HisChargeBill::getYbStatus, 0)
+                    .set(HisChargeBill::getRemark,
+                            o.errMsg != null && o.errMsg.length() > 490 ? o.errMsg.substring(0, 490) : o.errMsg)
+                    .eq(HisChargeBill::getId, ctx.bill.getId())
+                    .eq(HisChargeBill::getStatus, 0)
+                    .eq(HisChargeBill::getYbStatus, 1));
+            log.warn("医保结算明确失败, 单据置作废: billNo={}, affected={}, 原因: {}",
+                    ctx.bill.getBillNo(), updated, o.errMsg);
+        });
+        throw new BizException("医保结算失败: " + o.errMsg);
+    }
+
+    /** UNKNOWN(超时/网络异常): 补偿任务独立事务落库, 单据留中间态挂起, 由 CompTaskSweeper 收敛 */
+    private void createCompTaskAndThrow(ChargeCtx ctx, ChargeOutcome o, String userMsg) {
+        txTemplate.executeWithoutResult(status -> {
+            HisCompTask task = new HisCompTask();
+            task.setBizType(HisCompTask.BIZ_CHARGE);
+            task.setRefId(ctx.bill.getId());
+            task.setAction(HisCompTask.ACT_RESOLVE_UNKNOWN);
+            task.setTxnLogId(o.txnLogId);
+            task.setStatus(HisCompTask.ST_PENDING);
+            task.setAttempts(0);
+            task.setNextRun(LocalDateTime.now());
+            task.setMemo(o.errMsg);
+            compTaskMapper.insert(task);
+        });
+        throw new BizException(userMsg);
+    }
+
+    /**
+     * 本地终态落账(自费单在 T1 事务内 / 医保单在 T3 事务内):
+     * 金额落单(条件更新防并发重复落账) -> 支付明细 -> 就诊收费状态 -> 医嘱下游联动 -> 发票 -> 回执。
+     */
+    private void finishBillLocal(ChargeCtx ctx, ChargeOutcome o, boolean ybFlow) {
+        // 多支付方式处理: payments 非空时校验金额守恒并拆分(医保单=自付部分, 自费单=全额);
+        // payments 为空(老接口)保持 cashPay=selfPay 全现金兼容行为
+        BigDecimal insPay = o.fundPay.add(o.acctPay);
+        List<PaymentItem> payments = normalizePayments(ctx.req.getPayments(), ybFlow ? o.selfPay : ctx.total);
+        BigDecimal cashPay = o.selfPay;
         if (payments != null) {
             cashPay = BigDecimal.ZERO;
             for (PaymentItem p : payments) {
@@ -548,50 +719,356 @@ public class CashierService {
             }
         }
 
-        // 7. 更新收费单为已收费(payMethod=金额最大的支付方式, 医保统筹+个账作为整体参与比较)
-        bill.setFundPay(fundPay);
-        bill.setAcctPay(acctPay);
-        bill.setSelfPay(selfPay);
-        bill.setCashPay(cashPay);
-        bill.setPayMethod(resolveMainPayMethod(payments, ybFlow, insPay, total));
-        bill.setStatus(1);
-        bill.setChargeBy(UserContext.username());
-        bill.setChargeTime(LocalDateTime.now());
-        billMapper.updateById(bill);
+        ctx.bill.setFundPay(o.fundPay);
+        ctx.bill.setAcctPay(o.acctPay);
+        ctx.bill.setSelfPay(o.selfPay);
+        ctx.bill.setCashPay(cashPay);
+        ctx.bill.setPayMethod(resolveMainPayMethod(payments, ybFlow, insPay, ctx.total));
+        ctx.bill.setStatus(1);
+        ctx.bill.setChargeBy(UserContext.username());
+        ctx.bill.setChargeTime(LocalDateTime.now());
+        if (ybFlow) {
+            ctx.bill.setYbStatus(2);
+            ctx.bill.setSetlId(o.setlId);
+        }
+        // 条件更新(仅中间态可置已收费: 并发双击/重复提交/补偿任务已收敛时 affected=0)
+        int updated = billMapper.update(null, Wrappers.<HisChargeBill>lambdaUpdate()
+                .set(HisChargeBill::getFundPay, ctx.bill.getFundPay())
+                .set(HisChargeBill::getAcctPay, ctx.bill.getAcctPay())
+                .set(HisChargeBill::getSelfPay, ctx.bill.getSelfPay())
+                .set(HisChargeBill::getCashPay, ctx.bill.getCashPay())
+                .set(HisChargeBill::getPayMethod, ctx.bill.getPayMethod())
+                .set(HisChargeBill::getStatus, 1)
+                .set(HisChargeBill::getChargeBy, ctx.bill.getChargeBy())
+                .set(HisChargeBill::getChargeTime, ctx.bill.getChargeTime())
+                .set(ybFlow, HisChargeBill::getYbStatus, 2)
+                .set(ybFlow, HisChargeBill::getSetlId, o.setlId)
+                .eq(HisChargeBill::getId, ctx.bill.getId())
+                .eq(HisChargeBill::getStatus, 0)
+                .eq(ybFlow, HisChargeBill::getYbStatus, 1));
+        if (updated != 1) {
+            log.error("收费单终态条件更新失败: billId={}, affected={}", ctx.bill.getId(), updated);
+            throw new BizException("收费单状态已变化, 请刷新后重试");
+        }
 
-        // 8. 支付明细落库: 医保部分(INSURANCE, 流水号=结算ID) + 自费各方式逐笔
+        // 支付明细落库: 医保部分(INSURANCE, 流水号=结算ID) + 自费各方式逐笔
         if (ybFlow && insPay.compareTo(BigDecimal.ZERO) > 0) {
-            savePaymentDetail(bill.getId(), "INSURANCE", insPay, setlId);
+            savePaymentDetail(ctx.bill.getId(), "INSURANCE", insPay, o.setlId);
         }
         if (payments != null) {
             for (PaymentItem p : payments) {
-                savePaymentDetail(bill.getId(), p.getPayMethod(), p.getAmount(), p.getPayRef());
+                savePaymentDetail(ctx.bill.getId(), p.getPayMethod(), p.getAmount(), p.getPayRef());
             }
         }
 
-        // 9. 回写就诊收费状态
-        jdbcTemplate.update("UPDATE his_visit SET charge_status = 1 WHERE id = ? AND tenant_id = ? AND deleted = 0",
-                req.getVisitId(), tenantId());
-        
-        // 9b. 医嘱下游联动: 回写 paid_flag 并驱动治疗计划/标本/护士执行单生成(失败不阻塞收费)
-        syncOrderAfterCharge(req.getVisitId());
+        // 回写就诊收费状态(条件更新: 仅未收费可置已收费, 并发双击/重复提交时第二次受影响行数为0)
+        int chargeUpdated = jdbcTemplate.update(
+                "UPDATE his_visit SET charge_status = 1 WHERE id = ? AND tenant_id = ? AND charge_status = 0 AND deleted = 0",
+                ctx.req.getVisitId(), tenantId());
+        if (chargeUpdated != 1) {
+            log.error("收费状态条件更新失败: visitId={}, affected={}", ctx.req.getVisitId(), chargeUpdated);
+            throw new BizException("就诊收费状态已变化, 请刷新后重试");
+        }
 
-        // 10. 发票联动: 自动取号开票并回写 bill.invoice_no; 号段未配置/用完仅记日志不阻塞收费
+        // 医嘱下游联动: 回写 paid_flag 并驱动治疗计划/标本/护士执行单生成(失败不阻塞收费)
+        syncOrderAfterCharge(ctx.req.getVisitId());
+
+        // 发票联动: 自动取号开票并回写 bill.invoice_no; 号段未配置/用完仅记日志不阻塞收费
         try {
-            HisInvoice invoice = invoiceService.createInvoice(bill.getId());
-            bill.setInvoiceNo(invoice.getInvoiceNo());
+            HisInvoice invoice = invoiceService.createInvoice(ctx.bill.getId());
+            ctx.bill.setInvoiceNo(invoice.getInvoiceNo());
         } catch (Exception e) {
-            log.warn("发票自动分配失败(不阻塞收费): billNo={}, 原因: {}", bill.getBillNo(), e.getMessage());
+            log.warn("发票自动分配失败(不阻塞收费): billNo={}, 原因: {}", ctx.bill.getBillNo(), e.getMessage());
         }
 
         log.info("收费完成: billNo={}, visitId={}, total={}, fund={}, acct={}, self={}, payMethod={}, invoiceNo={}, setlId={}",
-                bill.getBillNo(), req.getVisitId(), total, fundPay, acctPay, selfPay, bill.getPayMethod(),
-                bill.getInvoiceNo(), setlId);
+                ctx.bill.getBillNo(), ctx.req.getVisitId(), ctx.total, o.fundPay, o.acctPay, o.selfPay,
+                ctx.bill.getPayMethod(), ctx.bill.getInvoiceNo(), o.setlId);
 
         Map<String, Object> result = new LinkedHashMap<>();
-        result.put("bill", bill);
-        result.put("receipt", billReceipt(bill.getId()));
-        return result;
+        result.put("bill", ctx.bill);
+        result.put("receipt", billReceipt(ctx.bill.getId()));
+        ctx.result = result;
+    }
+
+    /** 按 UNKNOWN 交易请求报文 msgid 回查交易日志ID(补偿任务挂接原交易) */
+    private Long findTxnLogId(YbResponse resp) {
+        try {
+            String reqJson = resp.getRequestJson();
+            if (reqJson == null) {
+                return null;
+            }
+            String msgid = JSON.parseObject(reqJson).getString("msgid");
+            if (msgid == null) {
+                return null;
+            }
+            List<Long> ids = jdbcTemplate.queryForList(
+                    "SELECT id FROM his_yb_txn_log WHERE msgid = ? AND tenant_id = ? AND deleted = 0 ORDER BY id DESC LIMIT 1",
+                    Long.class, msgid, tenantId());
+            return ids.isEmpty() ? null : ids.get(0);
+        } catch (Exception e) {
+            log.warn("回查医保交易日志ID失败: {}", e.getMessage());
+            return null;
+        }
+    }
+
+    /**
+     * 补偿收敛入口(CompTaskSweeper 驱动): UNKNOWN 医保收费单终态回填或复位。
+     * platformAccepted=true(核对平台侧已受理): 条件回填已收费+金额四分(mock 70/10/20)+就诊状态+支付明细+下游联动;
+     * false(平台未受理): 中间态复位 yb_status 1->0, 允许重新收费。
+     * 调用方传入 tenantId(调度线程无请求上下文), 内部为 Mapper 操作临时设置 TenantContext。
+     * @return 收敛结果说明(由补偿任务记入 memo)
+     */
+    public String resolveUnknownCharge(Long tenantId, Long billId, boolean platformAccepted, String setlId) {
+        List<Map<String, Object>> rows = jdbcTemplate.queryForList(
+                "SELECT id, visit_id, total_amount, create_by, bill_no FROM his_charge_bill"
+                        + " WHERE id = ? AND tenant_id = ? AND deleted = 0 AND status = 0 AND yb_status = 1",
+                billId, tenantId);
+        if (rows.isEmpty()) {
+            return "单据中间态已不存在(可能已人工处理)";
+        }
+        if (!platformAccepted) {
+            int reset = jdbcTemplate.update(
+                    "UPDATE his_charge_bill SET yb_status = 0"
+                            + " WHERE id = ? AND tenant_id = ? AND deleted = 0 AND status = 0 AND yb_status = 1",
+                    billId, tenantId);
+            return reset == 1 ? "平台未受理, 中间态已复位, 可重新收费" : "复位失败(单据状态已变化)";
+        }
+        Map<String, Object> r = rows.get(0);
+        Long visitId = toLong(r.get("visit_id"));
+        BigDecimal total = toBd(r.get("total_amount"));
+        if (total == null) {
+            total = BigDecimal.ZERO;
+        }
+        BigDecimal fundPay = total.multiply(new BigDecimal("0.70")).setScale(2, RoundingMode.HALF_UP);
+        BigDecimal acctPay = total.multiply(new BigDecimal("0.10")).setScale(2, RoundingMode.HALF_UP);
+        BigDecimal selfPay = total.subtract(fundPay).subtract(acctPay);
+        TenantContext.set(tenantId);
+        try {
+            return txTemplate.execute(status -> {
+                int updated = billMapper.update(null, Wrappers.<HisChargeBill>lambdaUpdate()
+                        .set(HisChargeBill::getStatus, 1)
+                        .set(HisChargeBill::getYbStatus, 2)
+                        .set(HisChargeBill::getSetlId, setlId)
+                        .set(HisChargeBill::getFundPay, fundPay)
+                        .set(HisChargeBill::getAcctPay, acctPay)
+                        .set(HisChargeBill::getSelfPay, selfPay)
+                        .set(HisChargeBill::getCashPay, selfPay)
+                        .set(HisChargeBill::getPayMethod, "INSURANCE")
+                        .set(HisChargeBill::getChargeBy, str(r.get("create_by")))
+                        .set(HisChargeBill::getChargeTime, LocalDateTime.now())
+                        .eq(HisChargeBill::getId, billId)
+                        .eq(HisChargeBill::getStatus, 0)
+                        .eq(HisChargeBill::getYbStatus, 1));
+                if (updated != 1) {
+                    return "回填失败(单据状态已变化)";
+                }
+                BigDecimal ins = fundPay.add(acctPay);
+                if (ins.compareTo(BigDecimal.ZERO) > 0) {
+                    savePaymentDetail(billId, "INSURANCE", ins, setlId);
+                }
+                if (selfPay.compareTo(BigDecimal.ZERO) > 0) {
+                    savePaymentDetail(billId, "CASH", selfPay, null);
+                }
+                if (visitId != null) {
+                    int v = jdbcTemplate.update(
+                            "UPDATE his_visit SET charge_status = 1"
+                                    + " WHERE id = ? AND tenant_id = ? AND charge_status = 0 AND deleted = 0",
+                            visitId, tenantId);
+                    if (v != 1) {
+                        log.warn("补偿回填: 就诊收费状态未更新(可能已变化): visitId={}, affected={}", visitId, v);
+                    }
+                    syncOrderAfterCharge(visitId);
+                }
+                return "平台已受理, 已补录终态(setl_id=" + setlId + ")";
+            });
+        } finally {
+            TenantContext.clear();
+        }
+    }
+
+    /** T1->T2->T3 收费上下文 */
+    private static final class ChargeCtx {
+        final ChargeReq req;
+        final Map<String, Object> visit;
+        final HisChargeBill bill;
+        final List<Map<String, Object>> items;
+        final BigDecimal total;
+        final String mdtrtCertType;
+        final String mdtrtCertNo;
+        final String insuplcAdmdvs;
+        Map<String, Object> result;
+
+        ChargeCtx(ChargeReq req, Map<String, Object> visit, HisChargeBill bill, List<Map<String, Object>> items,
+                  BigDecimal total, String mdtrtCertType, String mdtrtCertNo, String insuplcAdmdvs) {
+            this.req = req;
+            this.visit = visit;
+            this.bill = bill;
+            this.items = items;
+            this.total = total;
+            this.mdtrtCertType = mdtrtCertType;
+            this.mdtrtCertNo = mdtrtCertNo;
+            this.insuplcAdmdvs = insuplcAdmdvs;
+        }
+    }
+
+    /** 医保结算链结果(三分): success=平台明确成功 / fail=平台明确拒绝 / unknown=超时网络异常 */
+    private static final class ChargeOutcome {
+        boolean success;
+        boolean fail;
+        boolean unknown;
+        String errMsg;
+        Long txnLogId;
+        String setlId;
+        BigDecimal fundPay = BigDecimal.ZERO;
+        BigDecimal acctPay = BigDecimal.ZERO;
+        BigDecimal selfPay = BigDecimal.ZERO;
+
+        static ChargeOutcome success() {
+            ChargeOutcome o = new ChargeOutcome();
+            o.success = true;
+            return o;
+        }
+
+        static ChargeOutcome fail(String errMsg) {
+            ChargeOutcome o = new ChargeOutcome();
+            o.fail = true;
+            o.errMsg = errMsg;
+            return o;
+        }
+
+        static ChargeOutcome unknown(Long txnLogId, String errMsg) {
+            ChargeOutcome o = new ChargeOutcome();
+            o.unknown = true;
+            o.txnLogId = txnLogId;
+            o.errMsg = errMsg;
+            return o;
+        }
+    }
+
+    /** 退费两阶段上下文(T1 构建) */
+    private static final class RefundCtx {
+        final HisChargeBill origin;
+        final HisChargeBill refundBill;
+        final boolean hasSetl;
+        final SetlCancelReq cancelReq;
+        final String insuplcAdmdvs;
+
+        RefundCtx(HisChargeBill origin, HisChargeBill refundBill, boolean hasSetl,
+                  SetlCancelReq cancelReq, String insuplcAdmdvs) {
+            this.origin = origin;
+            this.refundBill = refundBill;
+            this.hasSetl = hasSetl;
+            this.cancelReq = cancelReq;
+            this.insuplcAdmdvs = insuplcAdmdvs;
+        }
+    }
+
+    /** 退费(2208)结果(三分): success=平台明确成功 / fail=平台明确拒绝 / unknown=超时网络异常 */
+    private static final class RefundOutcome {
+        boolean success;
+        boolean fail;
+        boolean unknown;
+        String errMsg;
+        Long txnLogId;
+
+        static RefundOutcome success() {
+            RefundOutcome o = new RefundOutcome();
+            o.success = true;
+            return o;
+        }
+
+        static RefundOutcome fail(String errMsg) {
+            RefundOutcome o = new RefundOutcome();
+            o.fail = true;
+            o.errMsg = errMsg;
+            return o;
+        }
+
+        static RefundOutcome unknown(Long txnLogId, String errMsg) {
+            RefundOutcome o = new RefundOutcome();
+            o.unknown = true;
+            o.txnLogId = txnLogId;
+            o.errMsg = errMsg;
+            return o;
+        }
+    }
+
+    /** 部分退费全撤重结上下文(T1 构建; 补偿重放时由 loadPartialCtx 重建) */
+    private static final class PartialCtx {
+        final HisChargeBill origin;
+        final HisChargeBill refundBill;
+        final boolean hasSetl;
+        final String mdtrtId;
+        final String psnNo;
+        final String insuplcAdmdvs;
+        final String mdtrtCertType;
+        final String mdtrtCertNo;
+        final Map<String, Object> visit;
+        final List<Map<String, Object>> remainingItems;
+        final BigDecimal remainingTotal;
+        final String rebuildBchno;
+        final boolean allRefunded;
+        final Map<Long, BigDecimal> lineQtyDelta;
+
+        PartialCtx(HisChargeBill origin, HisChargeBill refundBill, boolean hasSetl, String mdtrtId, String psnNo,
+                   String insuplcAdmdvs, String mdtrtCertType, String mdtrtCertNo, Map<String, Object> visit,
+                   List<Map<String, Object>> remainingItems, BigDecimal remainingTotal, String rebuildBchno,
+                   boolean allRefunded, Map<Long, BigDecimal> lineQtyDelta) {
+            this.origin = origin;
+            this.refundBill = refundBill;
+            this.hasSetl = hasSetl;
+            this.mdtrtId = mdtrtId;
+            this.psnNo = psnNo;
+            this.insuplcAdmdvs = insuplcAdmdvs;
+            this.mdtrtCertType = mdtrtCertType;
+            this.mdtrtCertNo = mdtrtCertNo;
+            this.visit = visit;
+            this.remainingItems = remainingItems;
+            this.remainingTotal = remainingTotal;
+            this.rebuildBchno = rebuildBchno;
+            this.allRefunded = allRefunded;
+            this.lineQtyDelta = lineQtyDelta;
+        }
+    }
+
+    /** 全撤重结链结果(三分+发生步骤) */
+    private static final class PartialOutcome {
+        boolean success;
+        boolean fail;
+        boolean unknown;
+        /** 失败/未知发生在第几步: 1=2208 2=2205 3=2204 4=2206 5=2207 */
+        int stage;
+        String errMsg;
+        Long txnLogId;
+        String setlId;
+        BigDecimal fundPay = BigDecimal.ZERO;
+        BigDecimal acctPay = BigDecimal.ZERO;
+        BigDecimal selfPay = BigDecimal.ZERO;
+        boolean allRefunded;
+
+        static PartialOutcome success() {
+            PartialOutcome o = new PartialOutcome();
+            o.success = true;
+            return o;
+        }
+
+        static PartialOutcome fail(int stage, String errMsg) {
+            PartialOutcome o = new PartialOutcome();
+            o.fail = true;
+            o.stage = stage;
+            o.errMsg = errMsg;
+            return o;
+        }
+
+        static PartialOutcome unknown(Long txnLogId, int stage, String errMsg) {
+            PartialOutcome o = new PartialOutcome();
+            o.unknown = true;
+            o.txnLogId = txnLogId;
+            o.stage = stage;
+            o.errMsg = errMsg;
+            return o;
+        }
     }
 
     /**
@@ -638,15 +1115,50 @@ public class CashierService {
     }
 
     /**
-     * 退费: 校验原单与日结 -> 医保退费(2208结算撤销) -> 生成退费单(bill_type=2, 明细复制)
-     * -> 原单标记已退费 -> 回写就诊 charge_status=2。
+     * 退费(批次4两阶段化):
+     * T1 本地事务(行锁原单 + 校验 + 建退费单中间态 + 原单 yb_status=3 撤销中) ->
+     * T2 无事务 2208 结算撤销(超时即 UNKNOWN, 绝不重发——重复 2208 会撤错或拒) ->
+     * T3 终态落账(成功: 原单 1->2/yb 3->4、退费单 0->1、就诊 1->2、发票红冲;
+     *    明确失败: 原单回已结算、退费单作废; UNKNOWN: 补偿任务挂起, CompTaskSweeper 按平台侧撤销状态收敛)。
+     * 自费单(无医保结算)无平台环节, T1 事务内直接完成全部退费。
      */
-    @Transactional(rollbackFor = Exception.class)
     public HisChargeBill refund(RefundReq req) {
+        RefundCtx ctx = txTemplate.execute(status -> buildRefundStage1(req));
+        if (!ctx.hasSetl) {
+            return ctx.refundBill;
+        }
+        // T2: 2208 撤销(不重发原则: 超时/网络异常一律 UNKNOWN, 交补偿任务核对)
+        YbResponse resp = outpatientService.cancelSettlement(ctx.cancelReq, ctx.insuplcAdmdvs);
+        RefundOutcome outcome;
+        if (resp == null) {
+            outcome = RefundOutcome.unknown(null, "医保结算撤销(2208)无响应");
+        } else if (resp.isUnknown()) {
+            outcome = RefundOutcome.unknown(findTxnLogId(resp), "医保结算撤销(2208)网络异常, 结果未知");
+        } else if (!resp.isSuccess()) {
+            outcome = RefundOutcome.fail("医保结算撤销(2208)失败: " + resp.getErrMsg());
+        } else {
+            outcome = RefundOutcome.success();
+        }
+        // T3: 终态落账
+        if (outcome.success) {
+            finalizeRefund(ctx);
+        } else if (outcome.unknown) {
+            createRefundCompTaskAndThrow(ctx, outcome);
+        } else {
+            refundFailed(ctx, outcome);
+        }
+        return ctx.refundBill;
+    }
+
+    /** T1: 校验原单(行锁/撤销中/机构/日结/部分退互斥/已发药/已执行) + 建退费单中间态 + 原单置撤销中 */
+    private RefundCtx buildRefundStage1(RefundReq req) {
         if (req == null || req.getBillId() == null) {
             throw new BizException(400, "收费单ID不能为空");
         }
-        HisChargeBill origin = billMapper.selectById(req.getBillId());
+        // 行锁: 锁定原单行串行化退费请求(并发双击/全额与部分并发时, 后到事务在此阻塞, 提交后读到 status=2 被拒)
+        HisChargeBill origin = billMapper.selectOne(Wrappers.<HisChargeBill>lambdaQuery()
+                .eq(HisChargeBill::getId, req.getBillId())
+                .last("FOR UPDATE"));
         if (origin == null) {
             throw new BizException(400, "收费单不存在");
         }
@@ -655,6 +1167,10 @@ public class CashierService {
         }
         if (origin.getStatus() == null || origin.getStatus() != 1) {
             throw new BizException("该收费单当前状态不允许退费");
+        }
+        // 批次4 撤销中守卫: 医保撤销中(yb_status=3)或冲正中(9)的收费单不可并发退费
+        if (origin.getYbStatus() != null && (origin.getYbStatus() == 3 || origin.getYbStatus() == 9)) {
+            throw new BizException("该收费单医保结算处理中, 请稍后刷新重试");
         }
         // 机构隔离: 非牵头机构用户仅可退本机构收费单(牵头机构可退全医共体)
         LoginUser lu = UserContext.get();
@@ -681,28 +1197,35 @@ public class CashierService {
         if (partialRefunded != null && partialRefunded > 0) {
             throw new BizException("该收费单已发生部分退费, 不能再全额退费, 请按部分退费退剩余项");
         }
+        // 退药/执行守卫(批次4): 已发药药品先退药, 已执行项目不可退
+        assertRefundableItems(origin.getId(), null);
 
-        // 医保退费: 有结算ID则撤销结算(2208)
-        if (StringUtils.hasText(origin.getSetlId()) && origin.getVisitId() != null) {
-            String mdtrtId = null;
-            String psnNo = null;
-            List<Map<String, Object>> visitRows = jdbcTemplate.queryForList(
-                    "SELECT mdtrt_id, psn_no FROM his_visit WHERE id = ? AND deleted = 0", origin.getVisitId());
-            if (!visitRows.isEmpty()) {
-                mdtrtId = str(visitRows.get(0).get("mdtrt_id"));
-                psnNo = str(visitRows.get(0).get("psn_no"));
+        boolean hasSetl = StringUtils.hasText(origin.getSetlId()) && origin.getVisitId() != null;
+        SetlCancelReq cancelReq = null;
+        String insuplcAdmdvs = null;
+        if (hasSetl) {
+            Map<String, Object> yb = loadVisitYbInfo(origin.getVisitId());
+            String mdtrtId = str(yb.get("mdtrt_id"));
+            String psnNo = str(yb.get("psn_no"));
+            if (!StringUtils.hasText(mdtrtId) || !StringUtils.hasText(psnNo)) {
+                throw new BizException("该收费单就诊医保信息缺失, 无法线上退费, 请联系管理员处理");
             }
-            SetlCancelReq cancelReq = new SetlCancelReq();
+            cancelReq = new SetlCancelReq();
             cancelReq.setSetlId(origin.getSetlId());
             cancelReq.setMdtrtId(mdtrtId);
             cancelReq.setPsnNo(psnNo);
-            YbResponse resp = outpatientService.cancelSettlement(cancelReq);
-            if (resp == null || !resp.isSuccess()) {
-                throw new BizException("医保退费失败: " + (resp == null ? "医保无响应" : resp.getErrMsg()));
+            insuplcAdmdvs = str(yb.get("insuplc_admdvs"));
+            // 原单置撤销中(yb_status=3): 并发退费互斥由入口守卫完成
+            int setRevoking = billMapper.update(null, Wrappers.<HisChargeBill>lambdaUpdate()
+                    .set(HisChargeBill::getYbStatus, 3)
+                    .eq(HisChargeBill::getId, origin.getId())
+                    .eq(HisChargeBill::getStatus, 1));
+            if (setRevoking != 1) {
+                throw new BizException("收费单状态已变化, 请刷新后重试");
             }
         }
 
-        // 生成退费单(关联原单: originBillId + 备注记录原单号与原因)
+        // 生成退费单(关联原单: originBillId + 备注记录原单号与原因); 医保退费先落中间态 status=0
         HisChargeBill refundBill = new HisChargeBill();
         refundBill.setOrgId(origin.getOrgId());
         refundBill.setBillNo(generateBillNo("TF"));
@@ -719,7 +1242,7 @@ public class CashierService {
         refundBill.setSetlId(origin.getSetlId());
         refundBill.setPayMethod(origin.getPayMethod());
         refundBill.setOriginBillId(origin.getId());
-        refundBill.setStatus(1);
+        refundBill.setStatus(hasSetl ? 0 : 1);
         refundBill.setChargeBy(UserContext.username());
         refundBill.setChargeTime(LocalDateTime.now());
         refundBill.setRemark("原单:" + origin.getBillNo()
@@ -752,9 +1275,48 @@ public class CashierService {
         // 退费支付明细(金额为负): 全额退费按原单逐笔取负
         saveRefundPaymentDetails(origin, refundBill, refundBill.getTotalAmount());
 
-        // 原单标记已退费
-        origin.setStatus(2);
-        billMapper.updateById(origin);
+        RefundCtx ctx = new RefundCtx(origin, refundBill, hasSetl, cancelReq, insuplcAdmdvs);
+        if (!hasSetl) {
+            // 自费单: 无医保环节, T1 事务内直接完成全部退费
+            finalizeRefundLocal(ctx);
+        }
+        return ctx;
+    }
+
+    /** T3: 2208 成功后退费本地终态落账(独立事务) */
+    private void finalizeRefund(RefundCtx ctx) {
+        txTemplate.executeWithoutResult(status -> finalizeRefundLocal(ctx));
+    }
+
+    /** 退费本地终态落账(自费单在 T1 / 医保单在 T3 事务内): 原单条件更新 1->2 + yb 3->4, 退费单 0->1, 就诊 1->2, 发票红冲, 医嘱复位 */
+    private void finalizeRefundLocal(RefundCtx ctx) {
+        HisChargeBill origin = ctx.origin;
+        // 原单标记已退费(条件更新: 仅已收费可置已退费, 并发/重复提交时第二次受影响行数为0);
+        // 医保退费同时 yb_status 3->4(已撤销)
+        int originUpdated = billMapper.update(null, Wrappers.<HisChargeBill>lambdaUpdate()
+                .set(HisChargeBill::getStatus, 2)
+                .set(ctx.hasSetl, HisChargeBill::getYbStatus, 4)
+                .eq(HisChargeBill::getId, origin.getId())
+                .eq(HisChargeBill::getStatus, 1)
+                .eq(ctx.hasSetl, HisChargeBill::getYbStatus, 3));
+        if (originUpdated != 1) {
+            log.error("原单退费状态条件更新失败: billId={}, affected={}", origin.getId(), originUpdated);
+            throw new BizException("收费单状态已变化, 请刷新后重试");
+        }
+        // 退费单转已退费(医保退费中间态 0->1; 自费单插入即 status=1)
+        if (ctx.hasSetl) {
+            int refundUpdated = billMapper.update(null, Wrappers.<HisChargeBill>lambdaUpdate()
+                    .set(HisChargeBill::getStatus, 1)
+                    .eq(HisChargeBill::getId, ctx.refundBill.getId())
+                    .eq(HisChargeBill::getStatus, 0));
+            if (refundUpdated != 1) {
+                throw new BizException("退费单状态已变化, 请刷新后重试");
+            }
+        }
+        // 全额退费: 原单明细退回数量置满(与部分退费 refunded_qty 口径一致, 供收据/对账展示)
+        billItemMapper.update(null, Wrappers.<HisChargeBillItem>lambdaUpdate()
+                .setSql("refunded_qty = IFNULL(qty, 0)")
+                .eq(HisChargeBillItem::getBillId, origin.getId()));
 
         // 发票联动: 全额退费原单已开票时自动红冲(负数冲销记录保留票据轨迹), 并清空原单发票号展示;
         // 历史发票状态异常不阻塞退费主流程(退费/医保撤销已完成), 仅记日志
@@ -766,7 +1328,7 @@ public class CashierService {
 
         // 回写就诊收费状态
         if (origin.getVisitId() != null) {
-            jdbcTemplate.update("UPDATE his_visit SET charge_status = 2 WHERE id = ? AND tenant_id = ? AND deleted = 0",
+            jdbcTemplate.update("UPDATE his_visit SET charge_status = 2 WHERE id = ? AND tenant_id = ? AND charge_status = 1 AND deleted = 0",
                     origin.getVisitId(), tenantId());
             // 医嘱下游回滚: 未产生执行痕迹的医嘱复位 paid_flag(已执行单留痕不回滚, 避免费用已发生仍可被工作台执行)
             int reset = jdbcTemplate.update("UPDATE his_order SET paid_flag = 0, update_by = ?, update_time = NOW()"
@@ -778,25 +1340,93 @@ public class CashierService {
             }
         }
 
-        log.info("退费完成: 原单={}, 退费单={}, visitId={}", origin.getBillNo(), refundBill.getBillNo(), origin.getVisitId());
-        return refundBill;
+        log.info("退费完成: 原单={}, 退费单={}, visitId={}", origin.getBillNo(), ctx.refundBill.getBillNo(), origin.getVisitId());
+    }
+
+    /** 2208 明确拒绝: 原单回已结算(yb_status 3->2), 退费单作废, 抛错让用户重试 */
+    private void refundFailed(RefundCtx ctx, RefundOutcome o) {
+        txTemplate.executeWithoutResult(status -> {
+            billMapper.update(null, Wrappers.<HisChargeBill>lambdaUpdate()
+                    .set(HisChargeBill::getYbStatus, 2)
+                    .eq(HisChargeBill::getId, ctx.origin.getId())
+                    .eq(HisChargeBill::getStatus, 1)
+                    .eq(HisChargeBill::getYbStatus, 3));
+            billMapper.update(null, Wrappers.<HisChargeBill>lambdaUpdate()
+                    .set(HisChargeBill::getStatus, -1)
+                    .eq(HisChargeBill::getId, ctx.refundBill.getId())
+                    .eq(HisChargeBill::getStatus, 0));
+        });
+        throw new BizException("医保退费失败: " + o.errMsg);
+    }
+
+    /** 2208 UNKNOWN: 补偿任务独立事务落库, 原单留撤销中间态挂起, 由 CompTaskSweeper 收敛 */
+    private void createRefundCompTaskAndThrow(RefundCtx ctx, RefundOutcome o) {
+        txTemplate.executeWithoutResult(status -> {
+            HisCompTask task = new HisCompTask();
+            task.setBizType(HisCompTask.BIZ_REFUND);
+            task.setRefId(ctx.origin.getId());
+            task.setAction(HisCompTask.ACT_RESOLVE_UNKNOWN);
+            task.setTxnLogId(o.txnLogId);
+            task.setStatus(HisCompTask.ST_PENDING);
+            task.setAttempts(0);
+            task.setNextRun(LocalDateTime.now());
+            task.setMemo(o.errMsg);
+            compTaskMapper.insert(task);
+        });
+        throw new BizException("医保结算撤销结果未知(网络超时/异常), 系统已登记补偿任务自动核对, 请稍后刷新查看; 详情: " + o.errMsg);
     }
 
     /**
-     * 部分退费: 按明细行退指定数量(支持多次部分退), 生成部分退费单(billType=2, originBillId 指向原单),
-     * 原明细累计 refundedQty; 原单所有明细退完时原单转已退费并回写就诊 charge_status=2。
-     * 医保部分退费不线上撤销结算(医保侧按比例退算复杂), remark 标记需线下处理, 仅院内退费。
+     * 部分退费(批次4 A8 全撤重结两阶段化): 按明细行退指定数量(支持多次部分退), 生成部分退费单(billType=2, originBillId 指向原单),
+     * 原明细累计 refundedQty。自费单: T1 事务内完成全部退费(与批次1行为一致)。
+     * 医保单: T1 行锁校验 + 建部分退费单中间态(status=0) + 原单 yb_status=3 撤销中 ->
+     *   T2 全撤重结链(①2208 撤原结算 -> ②2205"0000"全撤未结算明细 -> ③2204 重传剩余明细(新 chrg_bchno)
+     *       -> ④2206 预结算 -> ⑤2207 重结算取新 setl_id; 剩余=0 时②后直接终态不再重结算) ->
+     *   T3 终态: 原单 1->2/yb 3->4、部分退费单 0->1、剩余>0 生成重结收费单(新 setl_id, 可作后续部分退费新原单)、
+     *       全部退完则就诊 charge_status 1->2; UNKNOWN/②-⑤失败落补偿任务由 CompTaskSweeper 收敛。
      */
-    @Transactional(rollbackFor = Exception.class)
     public HisChargeBill partialRefund(PartialRefundReq req) {
+        PartialCtx ctx = txTemplate.execute(status -> buildPartialStage1(req));
+        if (!ctx.hasSetl) {
+            return ctx.refundBill;
+        }
+        // T2: 全撤重结(2208 -> 2205"0000" -> 2204 剩余明细 -> 2206 -> 2207)
+        PartialOutcome outcome = rebuildPartialChain(ctx, false);
+        // T3: 终态
+        if (outcome.success) {
+            try {
+                finalizePartialRebuild(ctx, outcome);
+            } catch (Exception e) {
+                log.error("部分退费本地终态落账失败, 转补偿任务: 原单={}, 原因: {}", ctx.origin.getBillNo(), e.getMessage());
+                createPartialCompTaskAndThrow(ctx, outcome,
+                        "医保部分退费已完成但本地落账异常, 系统已登记补偿任务自动核对, 请稍后刷新查看");
+            }
+        } else if (outcome.unknown) {
+            createPartialCompTaskAndThrow(ctx, outcome,
+                    "医保部分退费结果未知(网络超时/异常), 系统已登记补偿任务自动核对, 请稍后刷新查看; 详情: " + outcome.errMsg);
+        } else if (outcome.stage <= 1) {
+            // ①2208 明确拒绝(平台侧未发生任何变更): 本地直接复位, 用户可重新发起
+            partialFailed(ctx, outcome);
+        } else {
+            // ②-⑤ 失败(平台侧已撤销结算/已撤明细): 留中间态交补偿任务重试, 不盲目复位避免平台-院内不一致
+            createPartialCompTaskAndThrow(ctx, outcome,
+                    "医保部分退费第" + outcome.stage + "步失败, 系统已登记补偿任务自动重试, 请稍后刷新查看; 详情: " + outcome.errMsg);
+        }
+        return ctx.refundBill;
+    }
+
+    /** T1: 校验原单(行锁/撤销中/机构/日结/退药执行守卫) + 校验退费行与金额 + 建部分退费单中间态 + 原单置撤销中 */
+    private PartialCtx buildPartialStage1(PartialRefundReq req) {
         if (req == null || req.getBillId() == null) {
             throw new BizException(400, "收费单ID不能为空");
         }
         if (CollectionUtils.isEmpty(req.getItems())) {
             throw new BizException(400, "退费明细不能为空");
         }
-        // 1. 校验原单: 存在 + 已收费 + 收费单
-        HisChargeBill origin = billMapper.selectById(req.getBillId());
+        // 1. 校验原单: 行锁串行化(与全额退费共用同一锁点, 并发部分退在此排队后按最新 refunded_qty 校验)
+        HisChargeBill origin = billMapper.selectOne(Wrappers.<HisChargeBill>lambdaQuery()
+                .eq(HisChargeBill::getId, req.getBillId())
+                .last("FOR UPDATE"));
         if (origin == null) {
             throw new BizException(400, "收费单不存在");
         }
@@ -805,6 +1435,10 @@ public class CashierService {
         }
         if (origin.getStatus() == null || origin.getStatus() != 1) {
             throw new BizException("该收费单当前状态不允许退费");
+        }
+        // 批次4 撤销中守卫: 医保撤销中(yb_status=3)或冲正中(9)的收费单不可并发退费
+        if (origin.getYbStatus() != null && (origin.getYbStatus() == 3 || origin.getYbStatus() == 9)) {
+            throw new BizException("该收费单医保结算处理中, 请稍后刷新重试");
         }
         // 2. 机构隔离: 非牵头机构用户仅可退本机构收费单(牵头机构可退全医共体)
         LoginUser lu = UserContext.get();
@@ -907,6 +1541,31 @@ public class CashierService {
         if (alreadyRefunded.compareTo(nvl(origin.getTotalAmount())) >= 0) {
             throw new BizException("原单已全部退费, 不可再次退费");
         }
+        // 退药/执行守卫(批次4): 本次退费涉及的明细中, 已发药/调配中药品须先退药, 已执行项目不可退
+        assertRefundableItems(origin.getId(), lineQtyDelta.keySet());
+
+        // 医保单: 撤销中中间态 + 2208 撤销信息预取
+        boolean hasSetl = StringUtils.hasText(origin.getSetlId()) && origin.getVisitId() != null;
+        Map<String, Object> visitYb = null;
+        String mdtrtId = null;
+        String psnNo = null;
+        String insuplcAdmdvs = null;
+        if (hasSetl) {
+            visitYb = loadVisitYbInfo(origin.getVisitId());
+            mdtrtId = str(visitYb.get("mdtrt_id"));
+            psnNo = str(visitYb.get("psn_no"));
+            if (!StringUtils.hasText(mdtrtId) || !StringUtils.hasText(psnNo)) {
+                throw new BizException("该收费单就诊医保信息缺失, 无法线上部分退费, 请联系管理员处理");
+            }
+            // 原单置撤销中(全撤重结期间冻结该单; 并发互斥由入口 yb_status 守卫完成)
+            int setRevoking = billMapper.update(null, Wrappers.<HisChargeBill>lambdaUpdate()
+                    .set(HisChargeBill::getYbStatus, 3)
+                    .eq(HisChargeBill::getId, origin.getId())
+                    .eq(HisChargeBill::getStatus, 1));
+            if (setRevoking != 1) {
+                throw new BizException("收费单状态已变化, 请刷新后重试");
+            }
+        }
 
         // 5. 四分金额按原单比例拆分(余数归自付保证三分守恒; cashPay 为现金退回近似比例)
         BigDecimal originTotal = origin.getTotalAmount() == null ? BigDecimal.ZERO : origin.getTotalAmount();
@@ -924,7 +1583,7 @@ public class CashierService {
             refundCash = refundTotal.multiply(oc).divide(originTotal, 2, RoundingMode.HALF_UP);
         }
 
-        // 6. 创建部分退费单
+        // 6. 创建部分退费单(医保退费先落中间态 status=0, T3 转已退费)
         HisChargeBill refundBill = new HisChargeBill();
         refundBill.setOrgId(origin.getOrgId());
         refundBill.setBillNo(generateBillNo("TF"));
@@ -940,13 +1599,13 @@ public class CashierService {
         refundBill.setCashPay(refundCash);
         refundBill.setPayMethod(origin.getPayMethod());
         refundBill.setOriginBillId(origin.getId());
-        refundBill.setStatus(1);
+        refundBill.setStatus(hasSetl ? 0 : 1);
         refundBill.setChargeBy(UserContext.username());
         refundBill.setChargeTime(LocalDateTime.now());
         String remark = "部分退费; 原单:" + origin.getBillNo()
                 + (StringUtils.hasText(req.getReason()) ? "; 退费原因:" + req.getReason() : "");
-        if (StringUtils.hasText(origin.getSetlId())) {
-            remark += "; 医保结算" + origin.getSetlId() + "未线上撤销, 需线下处理";
+        if (hasSetl) {
+            remark += "; 医保全撤重结(2208→2205→2204→2206→2207)";
         }
         refundBill.setRemark(remark);
         billMapper.insert(refundBill);
@@ -972,8 +1631,7 @@ public class CashierService {
             }
         }
 
-        // 10. 原单全部明细全额退完 -> 原单转已退费并回写就诊状态(否则保持已收费)
-        // 以回读库内实际已退数量判定, 不依赖本次入参快照(多窗口/多次部分退场景)
+        // 10. 原单全部明细全额退完 -> 全撤重结链②后无需重结算, T3 直接终态; 以回读库内实际已退数量判定
         List<HisChargeBillItem> latestItems = billItemMapper.selectList(
                 Wrappers.<HisChargeBillItem>lambdaQuery()
                         .eq(HisChargeBillItem::getBillId, origin.getId())
@@ -988,9 +1646,55 @@ public class CashierService {
                 break;
             }
         }
-        if (allRefunded) {
-            origin.setStatus(2);
-            billMapper.updateById(origin);
+
+        // 剩余明细快照(全撤重结 ③ 重传用): 剩余数量与按比例折算金额
+        List<Map<String, Object>> remainingItems = new ArrayList<>();
+        BigDecimal remainingTotal = BigDecimal.ZERO;
+        if (hasSetl) {
+            for (HisChargeBillItem it : latestItems) {
+                BigDecimal qty = nvl(it.getQty());
+                BigDecimal remain = qty.subtract(nvl(it.getRefundedQty()));
+                if (remain.compareTo(BigDecimal.ZERO) <= 0) {
+                    continue;
+                }
+                BigDecimal amt = qty.compareTo(BigDecimal.ZERO) > 0
+                        ? nvl(it.getAmount()).multiply(remain).divide(qty, 2, RoundingMode.HALF_UP)
+                        : BigDecimal.ZERO;
+                Map<String, Object> m = new LinkedHashMap<>();
+                m.put("refType", it.getRefType());
+                m.put("refId", it.getRefId());
+                m.put("itemCode", it.getItemCode());
+                m.put("itemName", it.getItemName());
+                m.put("medListCodg", it.getMedListCodg());
+                m.put("qty", remain);
+                m.put("price", it.getPrice());
+                m.put("amount", amt);
+                remainingItems.add(m);
+                remainingTotal = remainingTotal.add(amt);
+            }
+        }
+
+        String rebuildCertType = null;
+        String rebuildCertNo = null;
+        if (hasSetl) {
+            rebuildCertType = StringUtils.hasText(str(visitYb.get("mdtrt_cert_type")))
+                    ? str(visitYb.get("mdtrt_cert_type")) : "02";
+            rebuildCertNo = str(visitYb.get("mdtrt_cert_no"));
+        }
+        PartialCtx ctx = new PartialCtx(origin, refundBill, hasSetl, mdtrtId, psnNo, insuplcAdmdvs,
+                rebuildCertType, rebuildCertNo, visitYb, remainingItems, remainingTotal,
+                hasSetl ? generateBillNo("SF") : null, allRefunded, lineQtyDelta);
+        if (!hasSetl && allRefunded) {
+            // 自费单全部退完: T1 事务内直接终态(与批次1行为一致)
+            // 条件更新: 仅已收费可置已退费(行锁内本应必成, 守卫并发异常)
+            int originUpdated = billMapper.update(null, Wrappers.<HisChargeBill>lambdaUpdate()
+                    .set(HisChargeBill::getStatus, 2)
+                    .eq(HisChargeBill::getId, origin.getId())
+                    .eq(HisChargeBill::getStatus, 1));
+            if (originUpdated != 1) {
+                log.error("原单退费状态条件更新失败: billId={}, affected={}", origin.getId(), originUpdated);
+                throw new BizException("收费单状态已变化, 请刷新后重试");
+            }
             // 发票联动: 明细全部退完后原单发票红冲(与全额退费同口径), 不阻塞退费主流程
             try {
                 invoiceService.redFlushForBill(origin.getId(), "累计退完发票冲销: 原单" + origin.getBillNo());
@@ -1003,9 +1707,582 @@ public class CashierService {
             }
         }
 
-        log.info("部分退费完成: 原单={}, 退费单={}, 退费金额={}, 原单{}",
+        log.info("部分退费T1完成: 原单={}, 退费单={}, 退费金额={}, 原单{}",
                 origin.getBillNo(), refundBill.getBillNo(), refundTotal, allRefunded ? "已全部退完" : "仍有剩余可退项");
-        return refundBill;
+        return ctx;
+    }
+
+    /** T2: 全撤重结链; 结果含 stage(失败/未知发生在第几步: 1=2208 2=2205 3=2204 4=2206 5=2207) */
+    private PartialOutcome rebuildPartialChain(PartialCtx ctx, boolean skipCancel) {
+        String mdtrtId = ctx.mdtrtId;
+        String psnNo = ctx.psnNo;
+        // ① 2208 撤销原结算(补偿重放 skipCancel=true 时已受理, 跳过)
+        if (!skipCancel) {
+            SetlCancelReq cancelReq = new SetlCancelReq();
+            cancelReq.setSetlId(ctx.origin.getSetlId());
+            cancelReq.setMdtrtId(mdtrtId);
+            cancelReq.setPsnNo(psnNo);
+            YbResponse cancelResp = outpatientService.cancelSettlement(cancelReq, ctx.insuplcAdmdvs);
+            if (cancelResp == null) {
+                return PartialOutcome.unknown(null, 1, "撤销原结算(2208)无响应");
+            }
+            if (cancelResp.isUnknown()) {
+                return PartialOutcome.unknown(findTxnLogId(cancelResp), 1, "撤销原结算(2208)网络异常, 结果未知");
+            }
+            if (!cancelResp.isSuccess()) {
+                return PartialOutcome.fail(1, "撤销原结算(2208)失败: " + cancelResp.getErrMsg());
+            }
+        }
+        // ② 2205 全撤未结算明细(chrg_bchno="0000"; 规范语义幂等, 重试安全)
+        FeeDetailRevokeReq revokeReq = new FeeDetailRevokeReq();
+        revokeReq.setMdtrtId(mdtrtId);
+        revokeReq.setChrgBchno("0000");
+        revokeReq.setPsnNo(psnNo);
+        revokeReq.setExpContent("");
+        YbResponse revokeResp = outpatientService.revokeFeeDetail(revokeReq, ctx.insuplcAdmdvs);
+        if (revokeResp == null) {
+            return PartialOutcome.unknown(null, 2, "撤销费用明细(2205)无响应");
+        }
+        if (revokeResp.isUnknown()) {
+            return PartialOutcome.unknown(findTxnLogId(revokeResp), 2, "撤销费用明细(2205)网络异常, 结果未知");
+        }
+        if (!revokeResp.isSuccess()) {
+            return PartialOutcome.fail(2, "撤销费用明细(2205)失败: " + revokeResp.getErrMsg());
+        }
+        // 剩余=0: 已全部退完, 无需重结算, 直接终态
+        if (ctx.allRefunded) {
+            PartialOutcome done = PartialOutcome.success();
+            done.allRefunded = true;
+            return done;
+        }
+        // ③ 2204 重传剩余明细(新 chrg_bchno=重结单号; 已退明细不再传)
+        List<FeeDetailReq> feeDetails = buildFeeDetails(ctx.remainingItems, mdtrtId, psnNo, ctx.rebuildBchno, ctx.visit);
+        if (CollectionUtils.isEmpty(feeDetails)) {
+            return PartialOutcome.fail(3, "剩余明细均无医保目录编码, 无法重结算, 请改为自费退费处理");
+        }
+        YbResponse feeResp = outpatientService.uploadFeeDetail(feeDetails, ctx.insuplcAdmdvs);
+        if (feeResp == null) {
+            return PartialOutcome.unknown(null, 3, "重传费用明细(2204)无响应");
+        }
+        if (feeResp.isUnknown()) {
+            return PartialOutcome.unknown(findTxnLogId(feeResp), 3, "重传费用明细(2204)网络异常, 结果未知");
+        }
+        if (!feeResp.isSuccess()) {
+            return PartialOutcome.fail(3, "重传费用明细(2204)失败: " + feeResp.getErrMsg());
+        }
+        // ④ 2206 预结算
+        SettlementReq setlReq = new SettlementReq();
+        setlReq.setPsnNo(psnNo);
+        setlReq.setMdtrtId(mdtrtId);
+        setlReq.setInsutype(str(ctx.visit.get("insutype")));
+        String medType = str(ctx.visit.get("med_type"));
+        setlReq.setMedType(StringUtils.hasText(medType) ? medType : "11");
+        setlReq.setMedfeeSumamt(ctx.remainingTotal);
+        setlReq.setPsnSetlway("01");
+        setlReq.setMdtrtCertType(ctx.mdtrtCertType);
+        setlReq.setMdtrtCertNo(ctx.mdtrtCertNo);
+        setlReq.setChrgBchno(ctx.rebuildBchno);
+        YbResponse preResp = outpatientService.preSettlement(setlReq, ctx.insuplcAdmdvs);
+        if (preResp == null) {
+            return PartialOutcome.unknown(null, 4, "重结算预结算(2206)无响应");
+        }
+        if (preResp.isUnknown()) {
+            return PartialOutcome.unknown(findTxnLogId(preResp), 4, "重结算预结算(2206)网络异常, 结果未知");
+        }
+        if (!preResp.isSuccess()) {
+            return PartialOutcome.fail(4, "重结算预结算(2206)失败: " + preResp.getErrMsg());
+        }
+        JSONObject preSetlinfo = preResp.getOutputNode("setlinfo");
+        setlReq.setFulamtOwnpayAmt(firstNonNull(bd(preSetlinfo, "fulamt_ownpay_amt"), BigDecimal.ZERO));
+        setlReq.setOverlmtSelfpay(firstNonNull(bd(preSetlinfo, "overlmt_selfpay"), BigDecimal.ZERO));
+        setlReq.setPreselfpayAmt(firstNonNull(bd(preSetlinfo, "preselfpay_amt"), BigDecimal.ZERO));
+        setlReq.setInscpScpAmt(firstNonNull(bd(preSetlinfo, "inscp_scp_amt"), BigDecimal.ZERO));
+        BigDecimal preAcct = bd(preSetlinfo, "acct_pay");
+        setlReq.setAcctUsedFlag(preAcct != null && preAcct.compareTo(BigDecimal.ZERO) > 0 ? "1" : "0");
+        // ⑤ 2207 重结算
+        YbResponse setlResp = outpatientService.settlement(setlReq, ctx.insuplcAdmdvs);
+        if (setlResp == null) {
+            return PartialOutcome.unknown(null, 5, "重结算(2207)无响应");
+        }
+        if (setlResp.isUnknown()) {
+            return PartialOutcome.unknown(findTxnLogId(setlResp), 5, "重结算(2207)网络异常, 结果未知");
+        }
+        if (!setlResp.isSuccess()) {
+            return PartialOutcome.fail(5, "重结算(2207)失败: " + setlResp.getErrMsg());
+        }
+        JSONObject setlinfo = setlResp.getOutputNode("setlinfo");
+        String newSetlId = setlinfo == null ? null : setlinfo.getString("setl_id");
+        if (!StringUtils.hasText(newSetlId)) {
+            return PartialOutcome.fail(5, "重结算(2207)返回缺少结算ID(setl_id), 请核对医保平台结算状态后处理");
+        }
+        BigDecimal[] split = splitAmounts(setlinfo, ctx.remainingTotal);
+        PartialOutcome o = PartialOutcome.success();
+        o.setlId = newSetlId;
+        o.fundPay = split[0];
+        o.acctPay = split[1];
+        o.selfPay = split[2];
+        o.txnLogId = findTxnLogId(setlResp);
+        return o;
+    }
+
+    /** T3: 部分退费全撤重结终态(原单 1->2/yb 3->4, 退费单 0->1, 剩余>0 建重结收费单, 全部退完回写就诊) */
+    private void finalizePartialRebuild(PartialCtx ctx, PartialOutcome o) {
+        txTemplate.executeWithoutResult(status -> {
+            long tid = tenantId();
+            // 原单: 已退费 + 已撤销
+            int originUpdated = billMapper.update(null, Wrappers.<HisChargeBill>lambdaUpdate()
+                    .set(HisChargeBill::getStatus, 2)
+                    .set(HisChargeBill::getYbStatus, 4)
+                    .eq(HisChargeBill::getId, ctx.origin.getId())
+                    .eq(HisChargeBill::getStatus, 1)
+                    .eq(HisChargeBill::getYbStatus, 3));
+            if (originUpdated != 1) {
+                log.error("部分退费原单终态条件更新失败: billId={}, affected={}", ctx.origin.getId(), originUpdated);
+                throw new BizException("原收费单状态已变化, 请刷新后重试");
+            }
+            // 部分退费单 0->1
+            int refundUpdated = billMapper.update(null, Wrappers.<HisChargeBill>lambdaUpdate()
+                    .set(HisChargeBill::getStatus, 1)
+                    .eq(HisChargeBill::getId, ctx.refundBill.getId())
+                    .eq(HisChargeBill::getStatus, 0));
+            if (refundUpdated != 1) {
+                throw new BizException("退费单状态已变化, 请刷新后重试");
+            }
+            // 原单发票红冲(全撤重结后原票金额已不成立)
+            try {
+                invoiceService.redFlushForBill(ctx.origin.getId(), "部分退费全撤重结冲销: 原单" + ctx.origin.getBillNo());
+            } catch (Exception e) {
+                log.warn("部分退费原单发票红冲失败(不阻塞退费): billNo={}, 原因: {}", ctx.origin.getBillNo(), e.getMessage());
+            }
+            if (!o.allRefunded) {
+                // 重结收费单(剩余金额, 新结算ID; 可作后续部分退费的新原单)
+                HisChargeBill rebill = new HisChargeBill();
+                rebill.setOrgId(ctx.origin.getOrgId());
+                rebill.setBillNo(ctx.rebuildBchno);
+                rebill.setVisitId(ctx.origin.getVisitId());
+                rebill.setRegistrationId(ctx.origin.getRegistrationId());
+                rebill.setPatientId(ctx.origin.getPatientId());
+                rebill.setPatientName(ctx.origin.getPatientName());
+                rebill.setBillType(1);
+                rebill.setTotalAmount(ctx.remainingTotal);
+                rebill.setFundPay(o.fundPay);
+                rebill.setAcctPay(o.acctPay);
+                rebill.setSelfPay(o.selfPay);
+                rebill.setCashPay(o.selfPay);
+                rebill.setPayMethod("INSURANCE");
+                rebill.setSetlId(o.setlId);
+                rebill.setStatus(1);
+                rebill.setYbStatus(2);
+                rebill.setChargeBy(UserContext.username());
+                rebill.setChargeTime(LocalDateTime.now());
+                rebill.setRemark("部分退费重结; 原单:" + ctx.origin.getBillNo());
+                billMapper.insert(rebill);
+                for (Map<String, Object> it : ctx.remainingItems) {
+                    HisChargeBillItem bi = new HisChargeBillItem();
+                    bi.setBillId(rebill.getId());
+                    bi.setRefType(str(it.get("refType")));
+                    bi.setRefId(toLong(it.get("refId")));
+                    bi.setItemCode(str(it.get("itemCode")));
+                    bi.setItemName(str(it.get("itemName")));
+                    bi.setQty(toBd(it.get("qty")));
+                    bi.setPrice(toBd(it.get("price")));
+                    bi.setAmount(toBd(it.get("amount")));
+                    bi.setMedListCodg(str(it.get("medListCodg")));
+                    billItemMapper.insert(bi);
+                }
+                BigDecimal ins = o.fundPay.add(o.acctPay);
+                if (ins.compareTo(BigDecimal.ZERO) > 0) {
+                    savePaymentDetail(rebill.getId(), "INSURANCE", ins, o.setlId);
+                }
+                if (o.selfPay.compareTo(BigDecimal.ZERO) > 0) {
+                    savePaymentDetail(rebill.getId(), "CASH", o.selfPay, null);
+                }
+                try {
+                    HisInvoice inv = invoiceService.createInvoice(rebill.getId());
+                    rebill.setInvoiceNo(inv.getInvoiceNo());
+                    billMapper.updateById(rebill);
+                } catch (Exception e) {
+                    log.warn("重结单发票分配失败(不阻塞): billNo={}, 原因: {}", ctx.rebuildBchno, e.getMessage());
+                }
+                // 就诊保持已收费(剩余金额仍有效)
+            } else if (ctx.origin.getVisitId() != null) {
+                // 全部退完: 就诊置已退费 + 未执行医嘱复位收费标志(与全额退费同口径)
+                jdbcTemplate.update("UPDATE his_visit SET charge_status = 2"
+                        + " WHERE id = ? AND tenant_id = ? AND charge_status = 1 AND deleted = 0",
+                        ctx.origin.getVisitId(), tid);
+                jdbcTemplate.update("UPDATE his_order SET paid_flag = 0, update_time = NOW()"
+                        + " WHERE visit_id = ? AND tenant_id = ? AND deleted = 0 AND status > 0"
+                        + " AND IFNULL(exec_status, 0) = 0 AND IFNULL(paid_flag, 0) = 1",
+                        ctx.origin.getVisitId(), tid);
+            }
+            log.info("部分退费全撤重结完成: 原单={}, 退费单={}, 重结单={}, 新setlId={}",
+                    ctx.origin.getBillNo(), ctx.refundBill.getBillNo(), ctx.rebuildBchno, o.setlId);
+        });
+    }
+
+    /** ①2208 明确拒绝: 平台侧未发生任何变更, 原单回已结算(yb 3->2)/退费单作废/退量回滚, 抛错重试 */
+    private void partialFailed(PartialCtx ctx, PartialOutcome o) {
+        txTemplate.executeWithoutResult(status -> {
+            billMapper.update(null, Wrappers.<HisChargeBill>lambdaUpdate()
+                    .set(HisChargeBill::getYbStatus, 2)
+                    .eq(HisChargeBill::getId, ctx.origin.getId())
+                    .eq(HisChargeBill::getStatus, 1)
+                    .eq(HisChargeBill::getYbStatus, 3));
+            billMapper.update(null, Wrappers.<HisChargeBill>lambdaUpdate()
+                    .set(HisChargeBill::getStatus, -1)
+                    .eq(HisChargeBill::getId, ctx.refundBill.getId())
+                    .eq(HisChargeBill::getStatus, 0));
+            rollbackRefundQty(ctx);
+        });
+        throw new BizException("医保部分退费失败: " + o.errMsg);
+    }
+
+    /** 部分退费补偿任务独立事务落库, 原单留撤销中间态挂起, 由 CompTaskSweeper 收敛 */
+    private void createPartialCompTaskAndThrow(PartialCtx ctx, PartialOutcome o, String userMsg) {
+        txTemplate.executeWithoutResult(status -> {
+            HisCompTask task = new HisCompTask();
+            task.setBizType(HisCompTask.BIZ_PARTIAL_REFUND);
+            task.setRefId(ctx.origin.getId());
+            task.setAction(HisCompTask.ACT_RESOLVE_UNKNOWN);
+            task.setTxnLogId(o.txnLogId);
+            task.setStatus(HisCompTask.ST_PENDING);
+            task.setAttempts(0);
+            task.setNextRun(LocalDateTime.now());
+            task.setMemo("stage=" + o.stage + "; " + o.errMsg);
+            compTaskMapper.insert(task);
+        });
+        throw new BizException(userMsg);
+    }
+
+    /** 回滚中间态退费单对应的退款数量增量(复位路径用, 保证原单明细可退数量复原) */
+    private void rollbackRefundQty(PartialCtx ctx) {
+        for (Map.Entry<Long, BigDecimal> e : ctx.lineQtyDelta.entrySet()) {
+            billItemMapper.update(null, Wrappers.<HisChargeBillItem>lambdaUpdate()
+                    .setSql("refunded_qty = IFNULL(refunded_qty, 0) - " + e.getValue().toPlainString())
+                    .eq(HisChargeBillItem::getId, e.getKey())
+                    .apply("IFNULL(refunded_qty, 0) >= {0}", e.getValue()));
+        }
+    }
+
+    /** 按(来源类型+来源ID+项目编码)顺序匹配, 重建 原单明细ID -> 退费数量 映射(补偿重放时退费单行与原始行对齐) */
+    private Map<Long, BigDecimal> matchRefundDeltas(List<HisChargeBillItem> originItems, List<HisChargeBillItem> refundItems) {
+        Map<Long, BigDecimal> map = new LinkedHashMap<>();
+        int ri = 0;
+        for (HisChargeBillItem oi : originItems) {
+            if (ri >= refundItems.size()) {
+                break;
+            }
+            HisChargeBillItem r = refundItems.get(ri);
+            if (sameLine(r, oi)) {
+                map.put(oi.getId(), nvl(r.getQty()));
+                ri++;
+            }
+        }
+        return map;
+    }
+
+    private boolean sameLine(HisChargeBillItem a, HisChargeBillItem b) {
+        return Objects.equals(a.getRefType(), b.getRefType())
+                && Objects.equals(a.getRefId(), b.getRefId())
+                && Objects.equals(a.getItemCode(), b.getItemCode());
+    }
+
+    /** 补偿重放: 从库中重建全撤重结上下文(原单 + 中间态退费单 + 剩余明细), 供 CompTaskSweeper 驱动收敛 */
+    private PartialCtx loadPartialCtx(Long billId) {
+        HisChargeBill origin = billMapper.selectById(billId);
+        if (origin == null || origin.getVisitId() == null
+                || origin.getStatus() == null || origin.getStatus() != 1) {
+            return null;
+        }
+        // 中间态部分退费单(取最近一张 status=0)
+        HisChargeBill refundBill = billMapper.selectOne(Wrappers.<HisChargeBill>lambdaQuery()
+                .eq(HisChargeBill::getOriginBillId, billId)
+                .eq(HisChargeBill::getBillType, 2)
+                .eq(HisChargeBill::getStatus, 0)
+                .orderByDesc(HisChargeBill::getId)
+                .last("LIMIT 1"));
+        if (refundBill == null) {
+            return null;
+        }
+        Map<String, Object> yb = loadVisitYbInfo(origin.getVisitId());
+        String mdtrtId = str(yb.get("mdtrt_id"));
+        String psnNo = str(yb.get("psn_no"));
+        if (!StringUtils.hasText(mdtrtId) || !StringUtils.hasText(psnNo)) {
+            return null;
+        }
+        List<HisChargeBillItem> originItems = billItemMapper.selectList(
+                Wrappers.<HisChargeBillItem>lambdaQuery()
+                        .eq(HisChargeBillItem::getBillId, origin.getId())
+                        .orderByAsc(HisChargeBillItem::getId));
+        List<HisChargeBillItem> refundItems = billItemMapper.selectList(
+                Wrappers.<HisChargeBillItem>lambdaQuery()
+                        .eq(HisChargeBillItem::getBillId, refundBill.getId())
+                        .orderByAsc(HisChargeBillItem::getId));
+        // 剩余明细(回读库内实际已退数量)
+        List<Map<String, Object>> remaining = new ArrayList<>();
+        BigDecimal remainingTotal = BigDecimal.ZERO;
+        for (HisChargeBillItem it : originItems) {
+            BigDecimal qty = nvl(it.getQty());
+            BigDecimal remain = qty.subtract(nvl(it.getRefundedQty()));
+            if (remain.compareTo(BigDecimal.ZERO) <= 0) {
+                continue;
+            }
+            BigDecimal amt = qty.compareTo(BigDecimal.ZERO) > 0
+                    ? nvl(it.getAmount()).multiply(remain).divide(qty, 2, RoundingMode.HALF_UP)
+                    : BigDecimal.ZERO;
+            Map<String, Object> m = new LinkedHashMap<>();
+            m.put("refType", it.getRefType());
+            m.put("refId", it.getRefId());
+            m.put("itemCode", it.getItemCode());
+            m.put("itemName", it.getItemName());
+            m.put("medListCodg", it.getMedListCodg());
+            m.put("qty", remain);
+            m.put("price", it.getPrice());
+            m.put("amount", amt);
+            remaining.add(m);
+            remainingTotal = remainingTotal.add(amt);
+        }
+        boolean allRefunded = remaining.isEmpty() && !originItems.isEmpty();
+        String certType = StringUtils.hasText(str(yb.get("mdtrt_cert_type")))
+                ? str(yb.get("mdtrt_cert_type")) : "02";
+        return new PartialCtx(origin, refundBill, true, mdtrtId, psnNo, str(yb.get("insuplc_admdvs")),
+                certType, str(yb.get("mdtrt_cert_no")), yb, remaining, remainingTotal,
+                generateBillNo("SF"), allRefunded, matchRefundDeltas(originItems, refundItems));
+    }
+
+    /**
+     * 补偿收敛入口(CompTaskSweeper 驱动): UNKNOWN/②-⑤失败的部分退费(全撤重结)终态回填或复位。
+     * cancelLanded=false(平台未受理2208): 复位(原单 yb 3->2, 退费单作废, 退量回滚), 可重新退费;
+     * cancelLanded=true 且 landedSetlId 非空(2207已落): 直接补 T3 终态;
+     * cancelLanded=true 且 landedSetlId 为空: 从 ② 全撤重放(2205 幂等)后补终态。
+     */
+    public String resolveUnknownPartial(Long tenantId, Long billId, boolean cancelLanded, String landedSetlId) {
+        if (!ybConfigResolver.resolve().isMockEnabled()) {
+            throw new BizException("真实模式全撤重结结果未知, 需按 3202 人工核对后处理, 不自动收敛");
+        }
+        TenantContext.set(tenantId);
+        try {
+            PartialCtx ctx = loadPartialCtx(billId);
+            if (ctx == null) {
+                return "全撤重结中间态已不存在(可能已人工处理)";
+            }
+            if (!cancelLanded) {
+                return txTemplate.execute(status -> {
+                    billMapper.update(null, Wrappers.<HisChargeBill>lambdaUpdate()
+                            .set(HisChargeBill::getYbStatus, 2)
+                            .eq(HisChargeBill::getId, billId)
+                            .eq(HisChargeBill::getStatus, 1)
+                            .eq(HisChargeBill::getYbStatus, 3));
+                    billMapper.update(null, Wrappers.<HisChargeBill>lambdaUpdate()
+                            .set(HisChargeBill::getStatus, -1)
+                            .eq(HisChargeBill::getId, ctx.refundBill.getId())
+                            .eq(HisChargeBill::getStatus, 0));
+                    rollbackRefundQty(ctx);
+                    return "平台未受理撤销, 已复位原单(回已结算)/退费单作废/退量回滚, 可重新退费";
+                });
+            }
+            if (StringUtils.hasText(landedSetlId)) {
+                BigDecimal[] split = splitAmounts(null, ctx.remainingTotal);
+                PartialOutcome o = PartialOutcome.success();
+                o.setlId = landedSetlId;
+                o.fundPay = split[0];
+                o.acctPay = split[1];
+                o.selfPay = split[2];
+                o.allRefunded = ctx.allRefunded;
+                finalizePartialRebuild(ctx, o);
+                return "平台重结算已受理, 已补录终态(setl_id=" + landedSetlId + ")";
+            }
+            PartialOutcome outcome = rebuildPartialChain(ctx, true);
+            if (outcome.success) {
+                finalizePartialRebuild(ctx, outcome);
+                return "重放全撤重结成功, 已补录终态";
+            }
+            throw new BizException("重放全撤重结失败(" + outcome.errMsg + "), 任务将退避重试");
+        } finally {
+            TenantContext.clear();
+        }
+    }
+
+    /**
+     * 补偿收敛入口(CompTaskSweeper 驱动): UNKNOWN 全额退费(2208)终态回填或复位。
+     * cancelled=true(平台侧已撤销): 补 T3 终态(原单 1->2/yb 3->4, 退费单 0->1, 就诊 1->2, 红冲);
+     * cancelled=false(平台未撤销): 复位(原单 yb 3->2 回已结算, 退费单作废), 可重新发起退费。
+     */
+    public String resolveUnknownRefund(Long tenantId, Long billId, boolean cancelled) {
+        List<Map<String, Object>> rows = jdbcTemplate.queryForList(
+                "SELECT id, visit_id, bill_no, setl_id FROM his_charge_bill"
+                        + " WHERE id = ? AND tenant_id = ? AND deleted = 0 AND yb_status = 3 AND status = 1",
+                billId, tenantId);
+        if (rows.isEmpty()) {
+            return "原单撤销中间态已不存在(可能已人工处理)";
+        }
+        Long visitId = toLong(rows.get(0).get("visit_id"));
+        List<Long> refundBills = jdbcTemplate.queryForList(
+                "SELECT id FROM his_charge_bill WHERE origin_bill_id = ? AND tenant_id = ? AND deleted = 0"
+                        + " AND bill_type = 2 AND status = 0",
+                Long.class, billId, tenantId);
+        TenantContext.set(tenantId);
+        try {
+            return txTemplate.execute(status -> {
+                if (!cancelled) {
+                    billMapper.update(null, Wrappers.<HisChargeBill>lambdaUpdate()
+                            .set(HisChargeBill::getYbStatus, 2)
+                            .eq(HisChargeBill::getId, billId)
+                            .eq(HisChargeBill::getStatus, 1)
+                            .eq(HisChargeBill::getYbStatus, 3));
+                    for (Long rb : refundBills) {
+                        billMapper.update(null, Wrappers.<HisChargeBill>lambdaUpdate()
+                                .set(HisChargeBill::getStatus, -1)
+                                .eq(HisChargeBill::getId, rb)
+                                .eq(HisChargeBill::getStatus, 0));
+                    }
+                    return "平台未撤销, 已复位原单(回已结算)/退费单作废, 可重新退费";
+                }
+                int updated = billMapper.update(null, Wrappers.<HisChargeBill>lambdaUpdate()
+                        .set(HisChargeBill::getStatus, 2)
+                        .set(HisChargeBill::getYbStatus, 4)
+                        .eq(HisChargeBill::getId, billId)
+                        .eq(HisChargeBill::getStatus, 1)
+                        .eq(HisChargeBill::getYbStatus, 3));
+                if (updated != 1) {
+                    return "原单状态已变化, 未回填";
+                }
+                for (Long rb : refundBills) {
+                    billMapper.update(null, Wrappers.<HisChargeBill>lambdaUpdate()
+                            .set(HisChargeBill::getStatus, 1)
+                            .eq(HisChargeBill::getId, rb)
+                            .eq(HisChargeBill::getStatus, 0));
+                }
+                billItemMapper.update(null, Wrappers.<HisChargeBillItem>lambdaUpdate()
+                        .setSql("refunded_qty = IFNULL(qty, 0)")
+                        .eq(HisChargeBillItem::getBillId, billId));
+                try {
+                    invoiceService.redFlushForBill(billId, "补偿回填全额退费冲销: 原单" + str(rows.get(0).get("bill_no")));
+                } catch (Exception e) {
+                    log.warn("补偿退费发票红冲失败(不阻塞): billId={}, 原因: {}", billId, e.getMessage());
+                }
+                if (visitId != null) {
+                    jdbcTemplate.update("UPDATE his_visit SET charge_status = 2"
+                            + " WHERE id = ? AND tenant_id = ? AND charge_status = 1 AND deleted = 0", visitId, tenantId);
+                    jdbcTemplate.update("UPDATE his_order SET paid_flag = 0, update_time = NOW()"
+                            + " WHERE visit_id = ? AND tenant_id = ? AND deleted = 0 AND status > 0"
+                            + " AND IFNULL(exec_status, 0) = 0 AND IFNULL(paid_flag, 0) = 1", visitId, tenantId);
+                }
+                return "平台已撤销, 已补录退费终态";
+            });
+        } finally {
+            TenantContext.clear();
+        }
+    }
+
+    /**
+     * 退费守卫(批次4): 本次退费涉及的明细中, 已发药/调配中的药品须先退药, 已执行项目不可退。
+     * selectedBillItemIds 为空=全额退费(检查全部明细)。
+     */
+    private void assertRefundableItems(Long billId, Set<Long> selectedBillItemIds) {
+        List<HisChargeBillItem> items = billItemMapper.selectList(Wrappers.<HisChargeBillItem>lambdaQuery()
+                .eq(HisChargeBillItem::getBillId, billId)
+                .in(!CollectionUtils.isEmpty(selectedBillItemIds), HisChargeBillItem::getId, selectedBillItemIds));
+        if (CollectionUtils.isEmpty(items)) {
+            return;
+        }
+        long tid = tenantId();
+        List<Long> rxRefs = new ArrayList<>();
+        List<Long> orderRefs = new ArrayList<>();
+        for (HisChargeBillItem bi : items) {
+            if (bi.getRefId() == null) {
+                continue;
+            }
+            if ("prescription_item".equals(bi.getRefType())) {
+                rxRefs.add(bi.getRefId());
+            } else if ("order_item".equals(bi.getRefType())) {
+                orderRefs.add(bi.getRefId());
+            }
+        }
+        // 药品: 存在未退药的已调配(1)/已发药(2)记录则拦截(退药后发药记录置3, 守卫放行)
+        if (!rxRefs.isEmpty()) {
+            List<Map<String, Object>> dispensed = jdbcTemplate.queryForList(
+                    "SELECT bi.item_name FROM his_charge_bill_item bi"
+                            + " JOIN his_prescription p ON p.id = bi.ref_id AND p.tenant_id = ? AND p.deleted = 0"
+                            + " JOIN his_dispense d ON d.prescription_id = p.id AND d.tenant_id = ? AND d.deleted = 0 AND d.status IN (1, 2)"
+                            + " WHERE bi.bill_id = ? AND bi.tenant_id = ? AND bi.deleted = 0"
+                            + " AND bi.ref_id IN (" + joinIds(rxRefs) + ")",
+                    tid, tid, billId, tid);
+            if (!dispensed.isEmpty()) {
+                throw new BizException("明细[" + str(dispensed.get(0).get("item_name")) + "]药品已发药/调配中, 请先办理退药后再退费");
+            }
+        }
+        // 执行项目: 医嘱已执行(his_order.exec_status=1)或存在执行记录(his_treatment_exec.exec_status IN (1,2))则拦截
+        if (!orderRefs.isEmpty()) {
+            List<Map<String, Object>> executed = jdbcTemplate.queryForList(
+                    "SELECT bi.item_name FROM his_charge_bill_item bi"
+                            + " JOIN his_order_item oi ON oi.id = bi.ref_id AND oi.tenant_id = ? AND oi.deleted = 0"
+                            + " JOIN his_order o ON o.id = oi.order_id AND o.tenant_id = ? AND o.deleted = 0"
+                            + " WHERE bi.bill_id = ? AND bi.tenant_id = ? AND bi.deleted = 0"
+                            + " AND bi.ref_id IN (" + joinIds(orderRefs) + ")"
+                            + " AND (o.exec_status = 1 OR EXISTS (SELECT 1 FROM his_treatment_exec te"
+                            + "  WHERE te.order_item_id = oi.id AND te.tenant_id = ? AND te.deleted = 0 AND te.exec_status IN (1, 2)))",
+                    tid, tid, billId, tid, tid);
+            if (!executed.isEmpty()) {
+                throw new BizException("明细[" + str(executed.get(0).get("item_name")) + "]已执行, 不可退费");
+            }
+        }
+    }
+
+    /** 就诊医保信息装载(退费/全撤重结共用): 就诊核心 + 挂号凭证 + 参保地(与收费同口径) */
+    private Map<String, Object> loadVisitYbInfo(Long visitId) {
+        Map<String, Object> yb = new LinkedHashMap<>();
+        List<Map<String, Object>> rows = jdbcTemplate.queryForList(
+                "SELECT v.mdtrt_id, v.psn_no, v.insutype, v.med_type, v.dept_code, v.dept_name, v.atddr_no, v.dr_name,"
+                        + " r.mdtrt_cert_type, r.mdtrt_cert_no, pi.insuplc_admdvs"
+                        + " FROM his_visit v"
+                        + " LEFT JOIN his_registration r ON r.id = v.registration_id AND r.deleted = 0"
+                        + " LEFT JOIN his_patient_insu pi ON pi.patient_id = v.patient_id AND pi.psn_no = v.psn_no AND pi.deleted = 0"
+                        + " WHERE v.id = ? AND v.tenant_id = ? AND v.deleted = 0",
+                visitId, tenantId());
+        if (!rows.isEmpty()) {
+            yb.putAll(rows.get(0));
+        }
+        return yb;
+    }
+
+    /** 结算 setlinfo 金额四分(自付/基金/现金/个账): mock 70/10/20, 真实按规范口径(自付=psn_part_amt-acct_pay) */
+    private BigDecimal[] splitAmounts(JSONObject setlinfo, BigDecimal total) {
+        BigDecimal fundPay;
+        BigDecimal acctPay;
+        BigDecimal selfPay;
+        if (setlinfo == null || ybConfigResolver.resolve().isMockEnabled()) {
+            // 模拟模式(或补偿回填无报文场景): 基金70% / 个账10% / 自付20%, 余数归自付保证三分守恒
+            fundPay = total.multiply(new BigDecimal("0.70")).setScale(2, RoundingMode.HALF_UP);
+            acctPay = total.multiply(new BigDecimal("0.10")).setScale(2, RoundingMode.HALF_UP);
+            selfPay = total.subtract(fundPay).subtract(acctPay);
+        } else {
+            // 真实模式: 规范口径, 个人负担总金额 psn_part_amt = 个账 acct_pay + 现金 psn_cash_pay;
+            // 自付(现金) = psn_part_amt - acct_pay, 不得用 psn_part_amt 直接当自付(会把个账双重计算)
+            fundPay = firstNonNull(bd(setlinfo, "fund_pay_sumamt"), bd(setlinfo, "hifp_pay"));
+            acctPay = firstNonNull(bd(setlinfo, "acct_pay"), bd(setlinfo, "acct_mulaid_pay"));
+            BigDecimal psnPart = bd(setlinfo, "psn_part_amt");
+            if (psnPart != null) {
+                selfPay = acctPay != null ? psnPart.subtract(acctPay) : psnPart;
+            } else {
+                selfPay = bd(setlinfo, "psn_cash_pay");
+            }
+            if (fundPay == null) {
+                fundPay = BigDecimal.ZERO;
+            }
+            if (acctPay == null) {
+                acctPay = BigDecimal.ZERO;
+            }
+            if (selfPay == null) {
+                selfPay = total.subtract(fundPay).subtract(acctPay);
+            }
+        }
+        return new BigDecimal[]{fundPay, acctPay, selfPay};
+    }
+
+    /** 拼接 IN 子句(值均为数据库回读 Long, 无注入风险) */
+    private static String joinIds(List<Long> ids) {
+        return ids.stream().map(String::valueOf).collect(java.util.stream.Collectors.joining(", "));
     }
 
     // ==================== 收费记录 ====================
@@ -1040,9 +2317,9 @@ public class CashierService {
         if (bill.getVisitId() != null) {
             List<Map<String, Object>> rows = jdbcTemplate.queryForList(
                     "SELECT v.patient_no, v.reg_no, v.mdtrt_id, v.insutype, v.dept_name, v.dr_name,"
-                            + " v.patient_name, v.gender, v.age, p.id_card"
+                            + " v.patient_name, v.gender, v.age, p.id_card, v.psn_no"
                             + " FROM his_visit v LEFT JOIN his_patient p ON p.id = v.patient_id AND p.deleted = 0"
-                            + " WHERE v.id = ? AND v.deleted = 0", bill.getVisitId());
+                            + " WHERE v.id = ? AND v.tenant_id = ? AND v.deleted = 0", bill.getVisitId(), tenantId());
             if (!rows.isEmpty()) {
                 Map<String, Object> r = rows.get(0);
                 patient.put("name", r.get("patient_name"));
@@ -1090,21 +2367,27 @@ public class CashierService {
         Map<Long, Map<String, Object>> piMap = new LinkedHashMap<>();
         Map<Long, Map<String, Object>> oiMap = new LinkedHashMap<>();
         if (!piIds.isEmpty()) {
+            List<Object> piArgs = new ArrayList<>(piIds);
+            piArgs.add(tenantId());
             for (Map<String, Object> r : jdbcTemplate.queryForList(
                     "SELECT pi.id AS rid, pr.rx_type, LEFT(dc.chrgitm_lv, 1) AS lv"
                             + " FROM his_prescription_item pi"
                             + " LEFT JOIN his_prescription pr ON pr.id = pi.prescription_id AND pr.deleted = 0"
                             + " LEFT JOIN his_drug_catalog dc ON dc.id = pi.drug_id"
-                            + " WHERE pi.id IN (" + placeholders(piIds.size()) + ")", piIds.toArray())) {
+                            + " WHERE pi.id IN (" + placeholders(piIds.size()) + ") AND pi.tenant_id = ?",
+                    piArgs.toArray())) {
                 piMap.put(toLong(r.get("rid")), r);
             }
         }
         if (!oiIds.isEmpty()) {
+            List<Object> oiArgs = new ArrayList<>(oiIds);
+            oiArgs.add(tenantId());
             for (Map<String, Object> r : jdbcTemplate.queryForList(
                     "SELECT oi.id AS rid, ci.invoice_class, LEFT(ci.chrgitm_lv, 1) AS lv"
                             + " FROM his_order_item oi"
                             + " LEFT JOIN his_charge_item ci ON ci.id = oi.item_id"
-                            + " WHERE oi.id IN (" + placeholders(oiIds.size()) + ")", oiIds.toArray())) {
+                            + " WHERE oi.id IN (" + placeholders(oiIds.size()) + ") AND oi.tenant_id = ?",
+                    oiArgs.toArray())) {
                 oiMap.put(toLong(r.get("rid")), r);
             }
         }
@@ -1240,7 +2523,7 @@ public class CashierService {
                     "SELECT v.patient_no, v.reg_no, v.ipt_otp_no, v.mdtrt_id, v.insutype, v.psn_no,"
                             + " v.dept_name, v.patient_name, v.gender, v.age, p.id_card"
                             + " FROM his_visit v LEFT JOIN his_patient p ON p.id = v.patient_id AND p.deleted = 0"
-                            + " WHERE v.id = ? AND v.deleted = 0", bill.getVisitId());
+                            + " WHERE v.id = ? AND v.tenant_id = ? AND v.deleted = 0", bill.getVisitId(), tenantId());
             if (!rows.isEmpty()) {
                 Map<String, Object> vr = rows.get(0);
                 patient.put("name", vr.get("patient_name"));
@@ -1796,6 +3079,51 @@ public class CashierService {
             }
         }
         return null;
+    }
+
+    /**
+     * 组装2204门诊费用明细上传报文(规范流程: 2204 -> 2206 -> 2207):
+     * 仅上传带医保目录编码的明细(无目录编码的自费项目金额计入全自费, 不上传);
+     * feedetl_sn 就诊内唯一: 处方明细 P+refId / 医嘱明细 O+refId;
+     * medins_list_codg 取机构内项目编码; 开单科室/医生取就诊信息
+     */
+    private List<FeeDetailReq> buildFeeDetails(List<Map<String, Object>> items, String mdtrtId,
+                                               String psnNo, String chrgBchno, Map<String, Object> visit) {
+        List<FeeDetailReq> list = new ArrayList<>();
+        if (CollectionUtils.isEmpty(items)) {
+            return list;
+        }
+        String deptCode = str(visit.get("dept_code"));
+        String deptName = str(visit.get("dept_name"));
+        String drCode = str(visit.get("atddr_no"));
+        String drName = str(visit.get("dr_name"));
+        String feeTime = DateUtil.currentDateTime();
+        int seq = 0;
+        for (Map<String, Object> it : items) {
+            String medListCodg = str(it.get("medListCodg"));
+            if (!StringUtils.hasText(medListCodg)) {
+                continue;
+            }
+            FeeDetailReq d = new FeeDetailReq();
+            Long refId = toLong(it.get("refId"));
+            boolean isOrder = "order_item".equals(str(it.get("refType")));
+            d.setFeedetlSn((isOrder ? "O" : "P") + (refId != null ? refId : (++seq)));
+            d.setMdtrtId(mdtrtId);
+            d.setPsnNo(psnNo);
+            d.setChrgBchno(chrgBchno);
+            d.setFeeOcurTime(feeTime);
+            d.setMedListCodg(medListCodg);
+            d.setMedinsListCodg(str(it.get("itemCode")));
+            d.setDetItemFeeSumamt(toBd(it.get("amount")));
+            d.setCnt(toBd(it.get("qty")));
+            d.setPric(toBd(it.get("price")));
+            d.setBilgDeptCodg(deptCode);
+            d.setBilgDeptName(deptName);
+            d.setBilgDrCodg(drCode);
+            d.setBilgDrName(drName);
+            list.add(d);
+        }
+        return list;
     }
 
     private static String plain(BigDecimal v) {

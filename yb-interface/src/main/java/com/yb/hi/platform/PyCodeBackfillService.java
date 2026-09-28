@@ -23,7 +23,7 @@ import java.util.Set;
 /**
  * 字典简码回填(@Order(7), 在演示数据/DictDataBackfill 之后执行, 幂等)。
  * 为配置清单内每张表的 py_code 空值行按名称列生成拼音首字母(只补空不覆盖), 分批游标处理,
- * 单表扫完即止; 表不存在或缺 py_code/名称列时跳过该表。std_* 重导(TRUNCATE 重写)后下次启动自动再补。
+ * 单表扫完即止; 表不存在或缺 py_code/名称列时跳过该表。std_* 重导(DELETE 全量重写)后下次启动自动再补。
  */
 @Slf4j
 @Order(7)
@@ -79,6 +79,7 @@ public class PyCodeBackfillService implements ApplicationRunner {
         jobs.add(new String[]{"his_charge_item", "id", "item_name"});
         jobs.add(new String[]{"his_cons_catalog", "id", "name"});
         jobs.add(new String[]{"his_med_dict", "id", "name"});
+        jobs.add(new String[]{"his_diag_dict", "id", "name"});
         jobs.add(new String[]{"sys_org", "id", "org_name"});
         jobs.add(new String[]{"his_patient", "id", "name"});
         jobs.add(new String[]{"area_code_2021", "code", "name"});

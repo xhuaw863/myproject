@@ -16,6 +16,7 @@ import java.nio.file.Paths;
 public class WebMvcConfig implements WebMvcConfigurer {
 
     private final AuthInterceptor authInterceptor;
+    private final BizRoleInterceptor bizRoleInterceptor;
 
     @Value("${his.upload.path:./data/upload/}")
     private String uploadPath;
@@ -23,13 +24,20 @@ public class WebMvcConfig implements WebMvcConfigurer {
     @Value("${his.upload.url-prefix:/uploads/}")
     private String urlPrefix;
 
-    public WebMvcConfig(AuthInterceptor authInterceptor) {
+    public WebMvcConfig(AuthInterceptor authInterceptor, BizRoleInterceptor bizRoleInterceptor) {
         this.authInterceptor = authInterceptor;
+        this.bizRoleInterceptor = bizRoleInterceptor;
     }
 
     @Override
     public void addInterceptors(InterceptorRegistry registry) {
         registry.addInterceptor(authInterceptor)
+                .addPathPatterns("/api/**")
+                .excludePathPatterns(
+                        "/api/auth/login"
+                );
+        // 业务模块写操作角色网关(读不拦截, 数据隔离在数据层; 见 BizRoleInterceptor)
+        registry.addInterceptor(bizRoleInterceptor)
                 .addPathPatterns("/api/**")
                 .excludePathPatterns(
                         "/api/auth/login"

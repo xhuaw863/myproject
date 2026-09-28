@@ -21,8 +21,9 @@ import java.util.Set;
 @Service
 public class HisMedicalTemplateService extends ServiceImpl<HisMedicalTemplateMapper, HisMedicalTemplate> {
 
+    /** 模板类型: soap/rx_set/order_set/fragment + 诊断维护两类(一条记录=一条诊断, content存{code,name,category}JSON) */
     private static final Set<String> TEMPLATE_TYPES = new HashSet<>(
-            Arrays.asList("soap", "rx_set", "order_set", "fragment"));
+            Arrays.asList("soap", "rx_set", "order_set", "fragment", "diag_personal", "diag_dept"));
 
     /** 查询当前登录人可见的个人、科室和全院模板。 */
     public List<HisMedicalTemplate> listVisible(String type, String keyword) {
@@ -92,7 +93,7 @@ public class HisMedicalTemplateService extends ServiceImpl<HisMedicalTemplateMap
             throw new BizException(400, "模板不能为空");
         }
         if (!TEMPLATE_TYPES.contains(template.getTemplateType())) {
-            throw new BizException(400, "模板类型仅支持 soap/rx_set/order_set/fragment");
+            throw new BizException(400, "模板类型仅支持 soap/rx_set/order_set/fragment/diag_personal/diag_dept");
         }
         if (!StringUtils.hasText(template.getName())) {
             throw new BizException(400, "模板名称不能为空");

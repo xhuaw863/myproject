@@ -11,6 +11,7 @@ import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.nio.charset.StandardCharsets;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.zip.ZipEntry;
@@ -20,6 +21,7 @@ import java.util.zip.ZipOutputStream;
  * 模拟医保平台(开发/界面验证用)
  * 当 yb.mock-enabled=true 时, YbHttpClient 不调用真实平台, 由本类按接口规范生成模拟响应,
  * 以便在无真实医保平台环境下验证报文组装、解析、入库的完整链路。
+ * 批次4 M1: 维护模拟结算流水(setl_id -> setlinfo), 支撑 2208 撤单/2601 冲正/补偿任务核对。
  */
 @Slf4j
 @Component
@@ -29,6 +31,12 @@ public class MockYbServer {
 
     /** 字典文件缓存: file_qury_no -> zip字节 */
     private final Map<String, byte[]> dictFiles = new ConcurrentHashMap<>();
+
+    /** 模拟结算流水: setl_id -> setlinfo(2207 落库, 2208 按 setl_id 取原单, 2601 冲正移除) */
+    private final Map<String, JSONObject> mockSetls = new ConcurrentHashMap<>();
+
+    /** 已撤销结算ID集合(2208 受理后登记, 补偿任务据此判断撤销是否实际生效) */
+    private final Set<String> mockCancelledSetls = ConcurrentHashMap.newKeySet();
 
     /**
      * 字典元数据: infno -> [列数, 版本号列索引, 唯一记录号列索引, 名称列索引, 有效标志列索引, 编码前缀]
@@ -74,11 +82,28 @@ public class MockYbServer {
             case "2204": case "2301":
                 output = mockFeeDetail(input);
                 break;
-            case "2206": case "2207": case "2303": case "2304":
-                output = mockSettlement(input, msgid);
+            case "2206": case "2303": case "2304":
+                // 预结算/上传结算: 不落模拟流水
+                output = mockSettlement(input, msgid, false);
+                break;
+            case "2207":
+                // 结算: 落模拟流水(medins_setl_id=msgid), 供 2208/2601/补偿核对
+                output = mockSettlement(input, msgid, true);
                 break;
             case "2208": case "2305":
-                output = mockSettlement(input, msgid);
+                // 撤销: 按 setl_id 返回原结算 setlinfo
+                output = mockCancelSettlement(input);
+                break;
+            case "2601":
+                // 冲正: 规范输出无节点, infcode=0 即成功; 模拟端同步移除原结算流水
+                mockReverse(input);
+                break;
+            case "3201": case "3202":
+                // 对账(M3 落地): 骨架先按成功空集返回, 字段布局待 M3 按规范表196-199 实现
+                output = mockReconcile(infno);
+                break;
+            case "9101":
+                output = mockFileUpload();
                 break;
             case "2401":
                 output = mockAdmission(input);
@@ -187,8 +212,8 @@ public class MockYbServer {
         return output;
     }
 
-    /** 结算/预结算: 按70%统筹比例模拟基金支付 */
-    private JSONObject mockSettlement(JSONObject input, String msgid) {
+    /** 结算/预结算: 按70%统筹比例模拟基金支付; store=true(2207)时落模拟流水 */
+    private JSONObject mockSettlement(JSONObject input, String msgid, boolean store) {
         JSONObject data = input.getJSONObject("data");
         BigDecimal medfee = data.getBigDecimal("medfee_sumamt");
         if (medfee == null) {
@@ -252,7 +277,92 @@ public class MockYbServer {
         JSONObject output = new JSONObject();
         output.put("setlinfo", setlinfo);
         output.put("setldetail", setldetail);
+        if (store) {
+            mockSetls.put(setlinfo.getString("setl_id"), setlinfo);
+        }
         return output;
+    }
+
+    /** 结算撤销(2208): 按 setl_id 返回原结算 setlinfo(规范: 输出为被撤销结算单信息) */
+    private JSONObject mockCancelSettlement(JSONObject input) {
+        JSONObject data = input.getJSONObject("data");
+        String setlId = data == null ? null : data.getString("setl_id");
+        JSONObject setlinfo = setlId == null ? null : mockSetls.get(setlId);
+        if (setlinfo == null) {
+            // 未找到原结算流水(如手工构造报文): 按输入回显最小 setlinfo
+            setlinfo = new JSONObject();
+            setlinfo.put("setl_id", setlId);
+            setlinfo.put("mdtrt_id", data == null ? null : data.getString("mdtrt_id"));
+            setlinfo.put("psn_no", data == null ? null : data.getString("psn_no"));
+            setlinfo.put("medfee_sumamt", "0.00");
+            setlinfo.put("fund_pay_sumamt", "0.00");
+            setlinfo.put("psn_part_amt", "0.00");
+            setlinfo.put("psn_cash_pay", "0.00");
+        }
+        JSONObject output = new JSONObject();
+        output.put("setlinfo", setlinfo);
+        output.put("setldetail", new JSONArray());
+        // 撤销受理登记(2208 UNKNOWN 时补偿任务据此判断撤销是否实际生效)
+        if (setlId != null) {
+            mockCancelledSetls.add(setlId);
+        }
+        return output;
+    }
+
+    /** 冲正(2601): 按 omsgid(原交易 msgid) 移除模拟结算流水, 使全撤重结(A8)可在 mock 下闭环 */
+    private void mockReverse(JSONObject input) {
+        JSONObject data = input.getJSONObject("data");
+        String omsgid = data == null ? null : data.getString("omsgid");
+        if (omsgid == null) {
+            return;
+        }
+        Set<String> removed = new java.util.HashSet<>();
+        mockSetls.entrySet().removeIf(e -> {
+            if (omsgid.equals(e.getValue().getString("medins_setl_id"))) {
+                removed.add(e.getKey());
+                return true;
+            }
+            return false;
+        });
+        mockCancelledSetls.removeAll(removed);
+        log.info("【模拟医保平台】2601 冲正已移除原结算流水, omsgid={}", omsgid);
+    }
+
+    /** 结算是否已撤销(2208 受理登记; 补偿任务 RESOLVE_UNKNOWN 用) */
+    public boolean isSetlCancelled(String setlId) {
+        return setlId != null && mockCancelledSetls.contains(setlId);
+    }
+
+    /** 对总账/对明细账(3201/3202): M3 落地, 骨架按成功空集返回 */
+    private JSONObject mockReconcile(String infno) {
+        JSONObject output = new JSONObject();
+        output.put(infno.equals("3201") ? "data" : "setldetail", new JSONArray());
+        return output;
+    }
+
+    /** 文件上传(9101): 返回文件查询号 */
+    private JSONObject mockFileUpload() {
+        JSONObject output = new JSONObject();
+        output.put("file_qury_no", "FQ" + SEQ.incrementAndGet());
+        output.put("filename", "upload_" + DateUtil.currentTimeCompact() + ".txt");
+        output.put("dld_endtime", DateUtil.currentDate());
+        return output;
+    }
+
+    /**
+     * 按原交易 msgid(结算单 medins_setl_id) 查找模拟结算流水。
+     * 补偿任务 RESOLVE_UNKNOWN 用: 找到=平台侧已受理结算, 未找到=平台侧未受理。
+     */
+    public JSONObject findSetlByMsgid(String omsgid) {
+        if (omsgid == null) {
+            return null;
+        }
+        for (JSONObject setlinfo : mockSetls.values()) {
+            if (omsgid.equals(setlinfo.getString("medins_setl_id"))) {
+                return setlinfo;
+            }
+        }
+        return null;
     }
 
     // ==================== 字典ZIP生成 ====================

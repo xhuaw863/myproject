@@ -1,0 +1,43 @@
+銆愰瑙? 鏈啓鐩樸€?鏇挎崲 837 澶? 淇濈暀瀛楅潰閲?45 澶? 娑夊強 27 涓枃浠?  css/his.css                    259 澶?(鐣欏瓧闈㈤噺 8)
+  js/app.js                        3 澶?(鐣欏瓧闈㈤噺 0)
+  js/views/area.js                 2 澶?(鐣欏瓧闈㈤噺 0)
+  js/views/basedata.js            24 澶?(鐣欏瓧闈㈤噺 0)
+  js/views/cashier.js             55 澶?(鐣欏瓧闈㈤噺 1)
+  js/views/catalog-map.js         18 澶?(鐣欏瓧闈㈤噺 0)
+  js/views/charge-workstation.js  31 澶?(鐣欏瓧闈㈤噺 0)
+  js/views/community-dict.js      10 澶?(鐣欏瓧闈㈤噺 0)
+  js/views/dashboard.js           24 澶?(鐣欏瓧闈㈤噺 13)
+  js/views/dict.js                 4 澶?(鐣欏瓧闈㈤噺 0)
+  js/views/doctor-worklog.js       5 澶?(鐣欏瓧闈㈤噺 0)
+  js/views/medtech.js             70 澶?(鐣欏瓧闈㈤噺 6)
+  js/views/nurse.js               23 澶?(鐣欏瓧闈㈤噺 0)
+  js/views/org-catalog.js          2 澶?(鐣欏瓧闈㈤噺 0)
+  js/views/org.js                  2 澶?(鐣欏瓧闈㈤噺 0)
+  js/views/outpatient.js          72 澶?(鐣欏瓧闈㈤噺 11)
+  js/views/pharmacy.js            54 澶?(鐣欏瓧闈㈤噺 0)
+  js/views/platform.js             8 澶?(鐣欏瓧闈㈤噺 0)
+  js/views/rbac.js                 4 澶?(鐣欏瓧闈㈤噺 0)
+  js/views/report-biz.js          47 澶?(鐣欏瓧闈㈤噺 6)
+  js/views/report.js              10 澶?(鐣欏瓧闈㈤噺 0)
+  js/views/std-dict.js             3 澶?(鐣欏瓧闈㈤噺 0)
+  js/views/system-param.js        10 澶?(鐣欏瓧闈㈤噺 0)
+  js/views/treatment.js           36 澶?(鐣欏瓧闈㈤噺 0)
+  js/views/warehouse.js           51 澶?(鐣欏瓧闈㈤噺 0)
+  js/views/doctor/order-panel.js   7 澶?(鐣欏瓧闈㈤噺 0)
+  js/views/doctor/print-helper.js   3 澶?(鐣欏瓧闈㈤噺 0)
+
+=== 琚帓闄?淇濈暀瀛楅潰閲?鏍蜂緥 ===
+  css/his.css:62  .aside-pin .pin-ghost { fill: none; stroke: #c0c4cc; stroke-width: 1.4; stroke-linecap: round; stroke-dasharray: 2.5 2
+  css/his.css:252  .receipt-preview .rp-head .rp-sub { color: #909399; font-size: 12px; margin-top: 4px; }
+  css/his.css:256  .receipt-preview .rp-meta .k { color: #909399; }
+  css/his.css:261  .receipt-preview .rp-total { font-weight: 700; color: #b88230; font-variant-numeric: tabular-nums; }
+  css/his.css:751  .cw-receipt { border: 1px solid #33404f; padding: 18px 24px; background: #fffef9; color: #1f2430; font-family: SimSun,
+  css/his.css:759  .cw-receipt .rspec { color: #7a8494; font-size: 12px; }
+  css/his.css:761  .cw-receipt .rtotal b { color: #c45656; }
+  css/his.css:762  .cw-receipt .rfoot { border-top: 1px dashed #8a94a6; margin-top: 10px; padding-top: 8px; display: flex; justify-conten
+  js/views/cashier.js:157  '    <div style="text-align:center;font-size:11px;color:#8a94a6;letter-spacing:1px;">姝ゆ敹鎹负闂ㄦ€ヨ瘖鏀惰垂鍑瘉, 璇峰Ε鍠勪繚瀛? 閫€璐归』鍑湰鏀舵嵁鍔炵悊</di
+  js/views/dashboard.js:19  var PALETTE = ['#409EFF', '#67C23A', '#E6A23C', '#F56C6C', '#909399', '#00A3E0', '#8E6FFF', '#FF7B9C', '#00C9A7', '#FF
+  js/views/dashboard.js:178  yAxis: { type: 'value', name: '閲戦(鍏?', nameTextStyle: { color: '#909399' }, axisLabel: { color: '#909399', formatter: 
+  js/views/dashboard.js:251  yAxis: { type: 'value', name: '浜烘', nameTextStyle: { color: '#909399' }, minInterval: 1, axisLabel: { color: '#909399'
+  js/views/dashboard.js:279  xAxis: { type: 'value', axisLabel: { color: '#909399', formatter: function (v) { return v >= 10000 ? (v / 10000) + '涓?
+  js/views/medtech.js:44  var TUBE_COLORS = { '绾?: '#f56c6c', '绱?: '#b37feb', '钃?: '#409eff', '榛?: '#303133', '缁?: '#67c23a', '鐏?: '#909399', '榛?

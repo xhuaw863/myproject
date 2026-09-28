@@ -1,54 +1,41 @@
-/* 门诊医生站患者身份与安全信息横幅 */
+/* 门诊医生站患者上下文信息条: 单行弹性布局, 常驻 sticky 区, 滚动/切 Tab 时关键临床信息不丢 */
 ;(function () {
   const PatientBanner = {
     name: 'DwPatientBanner',
-    inject: ['currentVisit', 'currentPatient'],
+    inject: ['currentVisit', 'currentPatient', 'feeSummary', 'visitDuration'],
     template: `
       <section v-if="currentVisit" class="dw-banner" :class="bannerClass" aria-label="当前患者信息">
-        <div class="dw-banner-row">
-          <strong class="dw-banner-main">{{ patientName }}</strong>
-          <span class="dw-banner-meta">{{ genderLabel(patient.gender || currentVisit.gender) }}</span>
-          <strong :style="ageStyle">{{ ageLabel }}</strong>
-          <span class="dw-banner-meta">门诊号 {{ currentVisit.iptOtpNo || currentVisit.patientNo || '-' }}</span>
-          <span class="dw-banner-meta">挂号号 {{ currentVisit.regNo || '-' }}</span>
-          <span class="dw-tag" :class="insured ? 'dw-tag--success' : ''">{{ insuranceLabel }}</span>
-          <span v-if="emergency" class="dw-tag dw-tag--danger">急诊</span>
-        </div>
-
-        <div class="dw-banner-row dw-banner-meta">
-          <span>科室 <b>{{ currentVisit.deptName || '-' }}</b></span>
-          <span>接诊医师 <b>{{ currentVisit.drName || '-' }}</b></span>
-          <span class="dw-tag" :class="statusClass">{{ statusLabel }}</span>
-          <span>医疗类别 <b>{{ medTypeLabel }}</b></span>
-        </div>
-
-        <div class="dw-banner-row dw-banner-allergy" :class="{ 'dw-allergy-alert': hasAllergy }">
+        <strong class="dw-banner-main">{{ patientName }}</strong>
+        <span class="dw-banner-meta">{{ genderLabel(patient.gender || currentVisit.gender) }} · <b :style="ageStyle">{{ ageLabel }}</b></span>
+        <span class="dw-banner-meta" :title="'门诊号 ' + (currentVisit.iptOtpNo || currentVisit.patientNo || '-') + ' · 挂号号 ' + (currentVisit.regNo || '-')">门诊号 {{ currentVisit.iptOtpNo || currentVisit.patientNo || '-' }}</span>
+        <span class="dw-tag" :class="insured ? 'dw-tag--success' : ''">{{ insuranceLabel }}</span>
+        <span v-if="emergency" class="dw-tag dw-tag--danger">急诊</span>
+        <span class="dw-tag" :class="statusClass">{{ statusLabel }}</span>
+        <span class="dw-banner-meta">{{ currentVisit.deptName || '-' }} · {{ currentVisit.drName || '-' }} · {{ medTypeLabel }}</span>
+        <span class="dw-banner-allergy" :class="{ 'dw-allergy-alert': hasAllergy }" :title="allergyText">
           <span class="warning-icon" aria-hidden="true">⚠</span>
-          <span>过敏史：</span>
+          <span>过敏：</span>
           <strong>{{ allergyText }}</strong>
           <span v-if="!allergyHistory" class="dw-tag dw-tag--danger">必填</span>
-        </div>
-
-        <div class="dw-banner-row dw-banner-meta">
-          <span style="font-weight:600">上次就诊</span>
-          <template v-if="lastVisit">
-            <span>{{ lastVisit.workDate || '-' }}</span>
-            <span>{{ lastVisit.deptName || '-' }}</span>
-            <span>主诊断：{{ lastVisit.mainDiagName || '未记录' }}</span>
-          </template>
-          <span v-else class="dim">暂无历史就诊记录</span>
-        </div>
+        </span>
+        <span v-if="lastVisit" class="dw-banner-meta" :title="lastVisit.mainDiagName || '未记录'" style="max-width:260px;overflow:hidden;text-overflow:ellipsis">上次: {{ lastVisit.workDate || '-' }} {{ lastVisit.deptName || '' }}</span>
+        <span class="dw-banner-right">
+          <span class="dim">接诊计时 {{ visitDuration }}</span>
+          <span class="dw-fee-badge">本次费用 ￥{{ feeTotal }}</span>
+        </span>
       </section>
       <section v-else class="dw-banner dw-banner--selfpay" aria-label="未选择患者">
-        <div class="dw-banner-row" style="min-height:82px;justify-content:center;color:var(--dw-text-hint)">
-          请从左侧选择患者
-        </div>
+        <span style="padding:4px 0;color:var(--dw-text-hint)">请从左侧候诊队列选择患者</span>
       </section>
     `,
     data: function () {
       return { history: [], historyLoadingFor: null };
     },
     computed: {
+      feeTotal: function () {
+        var fee = this.feeSummary && this.feeSummary.value ? this.feeSummary.value : (this.feeSummary || {});
+        return (Number(fee.totalFee != null ? fee.totalFee : fee.total) || 0).toFixed(2);
+      },
       patient: function () { return this.currentPatient || {}; },
       patientName: function () {
         return this.patient.name || (this.currentVisit && this.currentVisit.patientName) || '-';

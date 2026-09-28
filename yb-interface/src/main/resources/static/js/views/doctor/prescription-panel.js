@@ -64,177 +64,72 @@
 
   const PrescriptionPanel = {
     name: 'DwPrescriptionPanel',
-    inject: ['currentVisit', 'currentPatient', 'expandedPanel', 'diagnoses'],
-    emits: ['rx-saved', 'request-expand', 'request-collapse', 'print-rx'],
+    inject: ['currentVisit', 'currentPatient', 'diagnoses'],
+    emits: ['rx-saved', 'count-update', 'print-rx', 'insert-to-record'],
     template: `
-      <section class="dw-panel dw-prescription-panel" :class="[rxTypeConfig.cssClass, {'is-expanded': isExpanded}]">
+      <section class="dw-panel dw-prescription-panel" :class="[rxTypeConfig.cssClass, { 'is-folded': folded }]">
         <header class="dw-panel-header" style="gap:8px;flex-wrap:wrap">
           <div style="display:flex;align-items:center;gap:7px">
             <strong>处方</strong>
-            <span class="dw-tag" :class="typeTagClass(rxType)">{{ rxTypeConfig.label }}</span>
-            <span v-if="rxItems.length" style="font-size:11px;color:var(--dw-text-hint)">{{ rxItems.length }}种 / {{ groupedItems.length }}组</span>
+            <el-select v-model="rxType" size="small" style="width:132px" @change="onManualTypeChange">
+              <el-option v-for="option in rxTypeOptions" :key="option.value" :label="option.label" :value="option.value"></el-option>
+            </el-select>
+            <span v-if="rxItems.length" class="dim">{{ rxItems.length }}种 / {{ groupedItems.length }}组</span>
           </div>
           <div style="display:flex;align-items:center;gap:6px;margin-left:auto">
-            <el-select v-model="selectedPharmacyId" size="small" clearable filterable placeholder="发药药房" style="width:122px" @change="onPharmacyChange">
+            <el-select v-model="selectedPharmacyId" size="small" clearable filterable placeholder="发药药房" style="width:118px" @change="onPharmacyChange">
               <el-option v-for="ph in pharmacies" :key="ph.id" :label="ph.name" :value="ph.id"></el-option>
             </el-select>
-            <el-select v-model="selectedTemplateId" size="small" clearable filterable placeholder="常用处方" style="width:128px" @change="applyTemplate">
+            <el-select v-model="selectedTemplateId" size="small" clearable filterable placeholder="常用处方" style="width:124px" @change="applyTemplate">
               <el-option v-for="tpl in templates" :key="tpl.id" :label="tpl.name" :value="tpl.id"></el-option>
             </el-select>
             <el-button link size="small" :disabled="!rxItems.length" @click="saveAsTemplate">存为常用</el-button>
-            <button class="dw-btn-icon dw-expand-btn" :title="isExpanded ? '收起处方面板' : '放大处方面板'" @click="toggleExpanded">{{ isExpanded ? '⊠' : '⤢' }}</button>
+            <button class="dw-collapse-btn" :title="folded ? '展开处方面板' : '折叠处方面板'" @click="folded=!folded">{{ folded ? '▸' : '▾' }}</button>
           </div>
         </header>
 
-        <div v-if="!visitId" class="dw-collapse-empty" style="padding:36px 12px;text-align:center;color:var(--dw-text-hint)">请先选择患者</div>
+        <div v-if="!visitId" class="dw-slim-empty">未选择患者, 处方面板暂不可用</div>
 
-        <template v-else-if="!isExpanded">
-          <div style="padding:8px">
-            <div class="dw-search-row" style="display:flex;gap:6px">
-              <el-select v-model="rxType" size="small" style="width:118px" @change="onManualTypeChange">
-                <el-option v-for="option in rxTypeOptions" :key="option.value" :label="option.label" :value="option.value"></el-option>
-              </el-select>
-              <el-input v-model="keyword" ref="rxSearch" size="small" clearable placeholder="药品名称/编码/拼音简码" @keyup.enter="searchDrugs">
-                <template #append><el-button :loading="searching" @click="searchDrugs">检索</el-button></template>
-              </el-input>
-            </div>
-
-            <el-table v-if="searchResults.length" :data="searchResults" v-loading="searching" border size="small" max-height="150" @row-dblclick="addDrug">
-              <el-table-column prop="genericName" label="通用名" min-width="125" show-overflow-tooltip></el-table-column>
-              <el-table-column prop="spec" label="规格" width="88" show-overflow-tooltip></el-table-column>
-              <el-table-column label="单价" width="66" align="right"><template #default="s">¥{{ unitPriceOf(s.row) }}</template></el-table-column>
-              <el-table-column label="库存" width="58" align="right"><template #default="s">{{ stockText(s.row) }}</template></el-table-column>
-              <el-table-column label="" width="48"><template #default="s"><el-button link type="primary" size="small" :disabled="!canEdit" @click.stop="addDrug(s.row)">加</el-button></template></el-table-column>
-            </el-table>
-
-            <div style="display:flex;align-items:center;justify-content:space-between;margin:6px 0">
-              <span style="font-size:11px;color:var(--dw-text-hint)">当前活跃组 Rp.{{ currentGroupNo }}</span>
-              <el-button link type="primary" size="small" :disabled="!canEdit" @click="newGroup">＋ 新建分组</el-button>
-            </div>
-
-            <div v-for="group in groupedItems" :key="group.groupNo" class="dw-rx-group" :class="groupClass(group)" @click="currentGroupNo=group.groupNo">
-              <span class="dw-rx-group-label">Rp.{{ group.groupNo }}</span>
-              <div class="dw-rx-group-header">
-                <span>{{ groupUsage(group) }}</span><span>{{ groupFrequency(group) }}</span><span>{{ groupDays(group) }}</span>
-                <el-button link size="small" style="margin-left:auto" @click.stop="mergeGroup(group.groupNo)">合并</el-button>
-              </div>
-              <div v-for="item in group.items" :key="item._key" class="dw-rx-item" :style="safetyRowStyle(item)">
-                <div class="row1">
-                  <span class="nm" :title="item.itemName">{{ item.itemName }}</span>
-                  <span class="spec">{{ item.spec }}</span>
-                  <span v-if="!item.medListCodg" class="dw-tag">自费</span>
-                  <span v-if="item._warningLevel" class="dw-tag dw-tag--warning" :title="warningTitle(item)">审查</span>
-                  <span class="amt">¥{{ lineAmount(item) }}</span>
-                  <el-button link type="danger" size="small" :disabled="!canEdit" @click.stop="removeItem(item)">删</el-button>
-                </div>
-                <div class="row2">
-                  <el-input v-model="item.dosage" size="small" style="width:60px" placeholder="剂量" @change="calcQty(item)"></el-input>
-                  <span class="lb">{{ item.dosageUnit || '剂量单位' }}</span>
-                  <el-select v-model="item.usageMethod" size="small" placeholder="用法" style="width:94px" @change="onGroupFieldChange(item,'usageMethod')">
-                    <el-option v-for="option in usageMethods" :key="option.value" :label="option.label" :value="option.value"></el-option>
-                  </el-select>
-                  <el-select v-model="item.frequency" size="small" placeholder="频次" style="width:92px" @change="frequencyChanged(item)">
-                    <el-option v-for="option in frequencies" :key="option.value" :label="option.label" :value="option.value"></el-option>
-                  </el-select>
-                </div>
-                <div class="row3">
-                  <span class="lb">天数</span><el-input-number v-model="item.days" :min="1" :max="typeConfigForItem(item).maxDays" size="small" controls-position="right" style="width:76px" @change="calcQty(item)"></el-input-number>
-                  <span class="lb">发药量</span><el-input-number v-model="item.quantity" :min="1" size="small" controls-position="right" style="width:82px"></el-input-number>
-                  <span class="dim" style="flex:1">{{ item.unit }}</span>
-                  <el-button link size="small" @click.stop="splitItem(item)">拆组</el-button>
-                </div>
-              </div>
-            </div>
-
-            <div v-if="rxItems.length" class="dw-foot-bar">
-              <span>合计 <b>¥{{ rxTotal }}</b></span>
-              <el-button type="primary" size="small" :loading="saving" :disabled="!canEdit" @click="savePrescription">开立处方</el-button>
-            </div>
-            <div v-else class="dw-collapse-empty" style="padding:18px 0;text-align:center;color:var(--dw-text-hint)">检索药品并添加到处方</div>
-            <prescription-list :rows="prescriptions" @cancel="cancelPrescription" @print="printPrescription"></prescription-list>
+        <div v-else-if="!folded" class="dw-rx-editor dw-panel-body">
+          <div class="dw-rx-pickrow">
+            <el-select class="dw-rx-pick" ref="rxPick" v-model="pickDrugId" size="small" filterable remote reserve-keyword clearable :remote-method="remoteSearchDrug" :loading="searching" :disabled="!canEdit" placeholder="检索药品：通用名 / 编码 / 拼音简码，选中即加入当前处方组" @change="onPickDrug">
+              <el-option v-for="d in searchResults" :key="d.id" :label="d.genericName || d.itemName" :value="d.id">
+                <div class="dw-rx-opt"><span class="nm">{{ d.genericName || d.itemName }}</span><span class="spec">{{ d.spec }}</span><span class="price">¥{{ unitPriceOf(d) }}</span><span class="stock">库存 {{ stockText(d) }}</span><span v-if="!d.medListCodg && !d.ybDrugCode" class="dw-tag self">自费</span></div>
+              </el-option>
+            </el-select>
+            <span class="dw-rx-curgrp" title="当前活跃分组，新选药品将并入此组">Rp.{{ currentGroupNo }}</span>
+            <el-button size="small" plain :disabled="!canEdit" @click="newGroup">＋新组</el-button>
           </div>
-        </template>
 
-        <template v-else>
-          <div style="display:grid;grid-template-columns:minmax(330px,35%) minmax(560px,65%);height:calc(100vh - 145px);min-height:540px">
-            <aside style="display:flex;flex-direction:column;padding:12px;border-right:1px solid var(--dw-border);overflow:hidden">
-              <div style="display:flex;gap:8px;margin-bottom:10px">
-                <el-input v-model="keyword" ref="rxSearchExpanded" clearable placeholder="通用名 / 编码 / 拼音简码" @keyup.enter="searchDrugs">
-                  <template #append><el-button :loading="searching" @click="searchDrugs">搜索</el-button></template>
-                </el-input>
-              </div>
-              <el-table :data="searchResults" v-loading="searching" border stripe size="small" height="100%" @row-dblclick="addDrug">
-                <el-table-column type="index" label="#" width="42"></el-table-column>
-                <el-table-column prop="genericName" label="通用名" min-width="125" show-overflow-tooltip></el-table-column>
-                <el-table-column prop="spec" label="规格" width="92" show-overflow-tooltip></el-table-column>
-                <el-table-column prop="manufacturer" label="厂家" min-width="105" show-overflow-tooltip></el-table-column>
-                <el-table-column label="包装" width="80"><template #default="s">{{ s.row.packRatio || 1 }}{{ s.row.minUnit }}/{{ s.row.packUnit || '盒' }}</template></el-table-column>
-                <el-table-column label="单价" width="66" align="right"><template #default="s">{{ unitPriceOf(s.row) }}</template></el-table-column>
-                <el-table-column label="医保" width="58"><template #default="s">{{ s.row.chrgitmLvName || (s.row.ybDrugCode ? '目录内' : '自费') }}</template></el-table-column>
-                <el-table-column label="库存" width="62" align="right"><template #default="s">{{ stockText(s.row) }}</template></el-table-column>
-                <el-table-column fixed="right" label="" width="48"><template #default="s"><el-button link type="primary" :disabled="!canEdit" @click.stop="addDrug(s.row)">加</el-button></template></el-table-column>
-              </el-table>
-              <div class="dw-allergy-alert" style="margin-top:10px;padding:10px;border:1px solid var(--dw-danger);border-radius:4px">
-                <b>过敏史</b>　{{ allergyHistory || '未记录（开方前请主动核实）' }}
-              </div>
-            </aside>
+          <el-table v-if="rxItems.length" class="dw-rx-table" :data="rxItems" border size="small" row-key="_key" :max-height="340">
+            <el-table-column label="组" width="40" align="center"><template #default="s"><span class="dw-rx-grp" :class="grpClassOf(s.row)">{{ s.row.groupNo }}</span></template></el-table-column>
+            <el-table-column label="药品" min-width="140">
+              <template #default="s"><div class="dw-rx-nm" :title="s.row.itemName + ' ' + s.row.spec">{{ s.row.itemName }}<span class="spec">{{ s.row.spec }}</span><span v-if="!s.row.medListCodg" class="dw-tag self">自费</span><span v-if="s.row._warningLevel" class="dw-tag dw-tag--warning" :title="warningTitle(s.row)">审查</span></div></template>
+            </el-table-column>
+            <el-table-column label="剂量" width="88"><template #default="s"><el-input v-model="s.row.dosage" size="small" :disabled="!canEdit" @change="calcQty(s.row)"></el-input></template></el-table-column>
+            <el-table-column label="用法" width="104"><template #default="s"><el-select v-model="s.row.usageMethod" size="small" placeholder="用法" :disabled="!canEdit" @change="onGroupFieldChange(s.row,'usageMethod')"><el-option v-for="option in usageMethods" :key="option.value" :label="option.label" :value="option.value"></el-option></el-select></template></el-table-column>
+            <el-table-column label="频次" width="104"><template #default="s"><el-select v-model="s.row.frequency" size="small" placeholder="频次" :disabled="!canEdit" @change="frequencyChanged(s.row)"><el-option v-for="option in frequencies" :key="option.value" :label="option.label" :value="option.value"></el-option></el-select></template></el-table-column>
+            <el-table-column label="天数" width="70"><template #default="s"><el-input-number v-model="s.row.days" :min="1" :max="typeConfigForItem(s.row).maxDays" size="small" controls-position="right" :disabled="!canEdit" @change="calcQty(s.row)" style="width:62px"></el-input-number></template></el-table-column>
+            <el-table-column label="发药量" width="80"><template #default="s"><el-input-number v-model="s.row.quantity" :min="1" size="small" controls-position="right" :disabled="!canEdit" style="width:72px"></el-input-number></template></el-table-column>
+            <el-table-column label="金额" width="66" align="right"><template #default="s"><span class="amt">¥{{ lineAmount(s.row) }}</span></template></el-table-column>
+            <el-table-column label="" width="40" align="center"><template #default="s"><el-button link type="danger" size="small" :disabled="!canEdit" @click="removeItem(s.row)">删</el-button></template></el-table-column>
+          </el-table>
+          <div v-if="!rxItems.length" class="dw-collapse-empty">检索并选中药品即加入处方；同一给药可用“＋新组”分开</div>
 
-            <main style="display:flex;flex-direction:column;min-width:0;padding:12px;overflow:hidden">
-              <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px">
-                <el-select v-model="rxType" style="width:160px" @change="onManualTypeChange">
-                  <el-option v-for="option in rxTypeOptions" :key="option.value" :label="option.label" :value="option.value"></el-option>
-                </el-select>
-                <el-select v-model="selectedPharmacyId" clearable filterable placeholder="发药药房" style="width:150px" @change="onPharmacyChange">
-                  <el-option v-for="ph in pharmacies" :key="ph.id" :label="ph.name" :value="ph.id"></el-option>
-                </el-select>
-                <el-alert v-if="hasMixedHerb" title="中药饮片将在开立时自动拆分为独立处方" type="warning" :closable="false" show-icon style="flex:1"></el-alert>
-                <el-button type="primary" plain :disabled="!canEdit" @click="newGroup">＋ 新建分组</el-button>
-              </div>
-
-              <div style="flex:1;overflow:auto;padding-right:4px">
-                <div v-for="group in groupedItems" :key="group.groupNo" class="dw-rx-group" :class="groupClass(group)" @click="currentGroupNo=group.groupNo">
-                  <span class="dw-rx-group-label">Rp.{{ group.groupNo }}</span>
-                  <div class="dw-rx-group-header">
-                    <b>{{ groupTypeLabel(group) }}</b><span>{{ groupUsage(group) }}</span><span>{{ groupFrequency(group) }}</span><span>{{ groupDays(group) }}</span>
-                    <span style="margin-left:auto">{{ group.items.length }}种</span>
-                    <el-button link size="small" @click.stop="mergeGroup(group.groupNo)">合并组</el-button>
-                  </div>
-                  <div v-for="item in group.items" :key="item._key" class="dw-rx-item" :style="safetyRowStyle(item)">
-                    <div class="row1">
-                      <span class="nm">{{ item.itemName }}</span><span class="spec">{{ item.spec }}</span>
-                      <span v-if="!item.medListCodg" class="dw-tag">自费</span>
-                      <span v-if="item._warningLevel" class="dw-tag dw-tag--warning" :title="warningTitle(item)">用药审查提示</span>
-                      <span>{{ item.manufacturer || '' }}</span><span class="amt">¥{{ lineAmount(item) }}</span>
-                    </div>
-                    <div class="row2">
-                      <span class="lb">单次剂量</span><el-input v-model="item.dosage" size="small" style="width:72px" @change="calcQty(item)"></el-input><b>{{ item.dosageUnit || '-' }}</b>
-                      <span class="lb">用法</span><el-select v-model="item.usageMethod" size="small" style="width:138px" @change="onGroupFieldChange(item,'usageMethod')"><el-option v-for="option in usageMethods" :key="option.value" :label="option.label" :value="option.value"></el-option></el-select>
-                      <span class="lb">频次</span><el-select v-model="item.frequency" size="small" style="width:138px" @change="frequencyChanged(item)"><el-option v-for="option in frequencies" :key="option.value" :label="option.label" :value="option.value"></el-option></el-select>
-                      <span class="lb">天数</span><el-input-number v-model="item.days" :min="1" :max="typeConfigForItem(item).maxDays" size="small" controls-position="right" style="width:82px" @change="calcQty(item)"></el-input-number>
-                    </div>
-                    <div class="row3">
-                      <span class="lb">发药量</span><el-input-number v-model="item.quantity" :min="1" size="small" controls-position="right" style="width:92px"></el-input-number><span>{{ item.unit }}</span>
-                      <span class="lb">单价</span><span>¥{{ money(item.price) }}</span>
-                      <span v-if="item._safetyReason" class="dim" :title="item._safetyReason">审查理由：{{ item._safetyReason }}</span>
-                      <span style="margin-left:auto"><el-button link size="small" @click.stop="splitItem(item)">拆分为新组</el-button><el-button link type="danger" size="small" :disabled="!canEdit" @click.stop="removeItem(item)">删除</el-button></span>
-                    </div>
-                  </div>
-                </div>
-                <div v-if="!rxItems.length" class="dw-collapse-empty" style="height:260px;display:flex;align-items:center;justify-content:center;color:var(--dw-text-hint)">双击左侧药品加入处方</div>
-                <div v-else style="position:relative;height:30px;margin:8px 24px;border-top:2px solid var(--dw-text-hint);transform:rotate(-1deg)"><span style="position:absolute;right:8px;top:-20px;color:var(--dw-text-hint);font-family:serif;font-style:italic">处方完毕</span></div>
-              </div>
-
-              <div class="dw-foot-bar" style="flex:none">
-                <span>{{ rxItems.length }}种 · {{ groupedItems.length }}组 · 合计 <b style="font-size:18px">¥{{ rxTotal }}</b></span>
-                <el-button type="primary" :loading="saving" :disabled="!canEdit || !rxItems.length" @click="savePrescription">审核并开立处方</el-button>
-              </div>
-            </main>
+          <div class="dw-foot-bar">
+            <span>{{ rxItems.length }}种 · {{ groupedItems.length }}组 · 合计 <b>¥{{ rxTotal }}</b><span v-if="hasMixedHerb" class="dw-tag dw-tag--warning" style="margin-left:8px">含中药饮片将自动拆方</span></span>
+            <div style="display:flex;gap:6px">
+              <el-button size="small" :disabled="!canEdit || !rxItems.length" title="将处方组摘要追加到病历治疗意见" @click="insertToRecord">插入病历</el-button>
+              <el-button type="primary" size="small" :loading="saving" :disabled="!canEdit || !rxItems.length" @click="savePrescription">审核并开立处方</el-button>
+            </div>
           </div>
-          <div style="padding:8px 12px;border-top:1px solid var(--dw-border)">
-            <div style="font-size:12px;font-weight:600;margin-bottom:6px">已开立处方</div>
+
+          <div class="dw-rx-done">
+            <div class="dw-section">已开立处方</div>
             <prescription-list :rows="prescriptions" :expanded="true" @cancel="cancelPrescription" @print="printPrescription"></prescription-list>
+            <div class="dw-rx-allergy" :class="allergyHistory ? 'has' : ''"><b>过敏史</b>　{{ allergyHistory || '未记录（开方前请主动核实）' }}</div>
           </div>
-        </template>
+        </div>
       </section>
     `,
     data: function () {
@@ -246,6 +141,7 @@
         usageMethods: USAGE_METHODS,
         frequencies: FREQUENCIES,
         keyword: '',
+        pickDrugId: null,
         searchResults: [],
         searching: false,
         saving: false,
@@ -254,6 +150,7 @@
         prescriptions: [],
         itemSequence: 0,
         loadedVisitId: null,
+        folded: false,
         pharmacies: [],
         selectedPharmacyId: null,
         pharmacyAutoResolved: false
@@ -264,10 +161,7 @@
       patient: function () { return unwrap(this.currentPatient) || this.visit || {}; },
       visitId: function () { return this.visit && (this.visit.id || this.visit.visitId); },
       canEdit: function () { return !!this.visitId && (!this.visit || Number(this.visit.visitStatus || 2) < 3); },
-      isExpanded: function () {
-        var value = unwrap(this.expandedPanel);
-        return value === 'prescription' || value === 'rx' || value === 'DwPrescriptionPanel';
-      },
+      isExpanded: function () { return true; },
       rxTypeOptions: function () {
         return Object.keys(RX_TYPES).map(function (key) { return { value: key, label: RX_TYPES[key].label }; });
       },
@@ -317,7 +211,6 @@
     created: function () { this.loadTemplates(); },
     methods: {
       money: money,
-      toggleExpanded: function () { this.$emit(this.isExpanded ? 'request-collapse' : 'request-expand', 'prescription'); },
       suggestedRxType: function () {
         var visit = this.visit || {};
         var patient = this.patient || {};
@@ -441,6 +334,31 @@
         window.HIS.get(url).then(function (data) {
           vm.searchResults = (data && data.records) || [];
         }).catch(window.HIS.notifyError).finally(function () { vm.searching = false; });
+      },
+      /* 行式处方编辑器: 顶部 type-ahead 检索, 选中即并入当前活跃组 */
+      remoteSearchDrug: function (query) {
+        var vm = this;
+        var kw = text(query).trim();
+        if (!kw) { vm.searchResults = []; return; }
+        vm.searching = true;
+        var url = '/api/org-catalog/available/drug?page=1&size=30&keyword=' + encodeURIComponent(kw);
+        if (vm.selectedPharmacyId) { url += '&pharmacyId=' + encodeURIComponent(vm.selectedPharmacyId); }
+        window.HIS.get(url).then(function (data) {
+          vm.searchResults = (data && data.records) || [];
+        }).catch(window.HIS.notifyError).finally(function () { vm.searching = false; });
+      },
+      onPickDrug: function (id) {
+        var vm = this;
+        if (!id) { return; }
+        var drug = vm.searchResults.find(function (d) { return String(d.id) === String(id); });
+        vm.pickDrugId = null;
+        if (drug) { vm.addDrug(drug); }
+      },
+      grpClassOf: function (item) {
+        if (this.isHerbItem(item)) { return 'dw-rx-grp--tcm'; }
+        if (item._rxType === 'NARCOTIC' || item._rxType === 'PSYCHO1') { return 'dw-rx-grp--nar'; }
+        if (item.usageMethod === '外用') { return 'dw-rx-grp--ext'; }
+        return '';
       },
       checkDrugSafety: function (drug) {
         var warnings = [];
@@ -688,20 +606,18 @@
         var vm = this;
         var batches = vm.prescriptionBatches();
         vm.saving = true;
-        var created = [];
-        batches.reduce(function (chain, batch) {
-          return chain.then(function () {
-            return window.HIS.post('/api/his/prescription/create', { visitId: vm.visitId, rxType: batch.rxType, pharmacyId: vm.selectedPharmacyId || null, items: batch.items })
-              .then(function (result) { created.push(result); });
-          });
-        }, Promise.resolve()).then(function () {
-          ElementPlus.ElMessage.success('已开立' + created.length + '张处方，合计 ¥' + money(created.reduce(function (sum, rx) { return sum + Number(rx.totalAmount || 0); }, 0)));
+        /* C7: 拆方批量开立一次请求原子提交(服务端单事务), 任一批失败整体回滚, 重试不产生重复处方 */
+        window.HIS.post('/api/his/prescription/create-batch', {
+          visitId: vm.visitId, pharmacyId: vm.selectedPharmacyId || null, batches: batches
+        }).then(function (created) {
+          var list = created || [];
+          ElementPlus.ElMessage.success('已开立' + list.length + '张处方，合计 ¥' + money(list.reduce(function (sum, rx) { return sum + Number(rx.totalAmount || 0); }, 0)));
           vm.rxItems = [];
           vm.currentGroupNo = 1;
           vm.keyword = '';
           vm.searchResults = [];
           vm.loadPrescriptions();
-          vm.$emit('rx-saved', created);
+          vm.$emit('rx-saved', list);
         }).catch(window.HIS.notifyError).finally(function () { vm.saving = false; });
       },
       loadPrescriptions: function () {
@@ -709,7 +625,8 @@
         if (!vm.visitId) { vm.prescriptions = []; return; }
         window.HIS.get('/api/his/prescription/list?visitId=' + encodeURIComponent(vm.visitId)).then(function (rows) {
           vm.prescriptions = rows || [];
-        }).catch(function () { vm.prescriptions = []; });
+          vm.$emit('count-update', vm.prescriptions.length);
+        }).catch(function () { vm.prescriptions = []; vm.$emit('count-update', 0); });
       },
       cancelPrescription: function (row) {
         var vm = this;
@@ -758,6 +675,23 @@
         if (vm.rxItems.length) {
           ElementPlus.ElMessageBox.confirm('套用模板将替换当前处方草稿，是否继续？', '套用常用处方', { type: 'warning' }).then(apply).catch(function () {});
         } else { apply(); }
+      },
+      /* 插入病历: 按 Rp 组生成处方摘要追加到病历治疗意见(不自动双写, 经主编排中继) */
+      insertToRecord: function () {
+        var vm = this;
+        if (!vm.rxItems.length) { ElementPlus.ElMessage.warning('当前没有可插入的处方草稿'); return; }
+        var lines = vm.groupedItems.map(function (grp) {
+          var parts = grp.items.map(function (it) {
+            var seg = [text(it.itemName), text(it.spec)];
+            if (text(it.dosage)) { seg.push('每次' + it.dosage); }
+            if (text(it.usageMethod) || text(it.frequency)) { seg.push((it.usageMethod || '') + (it.frequency ? ' ' + it.frequency : '')); }
+            if (text(it.days)) { seg.push(it.days + '天'); }
+            seg.push((it.quantity || '') + (it.unit || '支/盒'));
+            return seg.filter(function (x) { return String(x).trim(); }).join(' ');
+          });
+          return 'Rp.' + grp.groupNo + ' ' + parts.join('；');
+        });
+        vm.$emit('insert-to-record', { target: 'treatment', text: '处方摘要：' + lines.join('；') });
       },
       saveAsTemplate: function () {
         var vm = this;

@@ -104,6 +104,7 @@ public class PharmacyService {
         long p = safePage(page);
         long s = safeSize(size);
         // p.status>0: 医生作废的处方(-1)不得进入发药环节
+        // v.charge_status=1 在 JOIN 条件上: 未收费(0)/已退费(2)的处方不得进入发药环节(先收费后发药)
         StringBuilder where = new StringBuilder(" WHERE p.dispense_status = 0 AND p.status > 0 AND p.deleted = 0 AND p.tenant_id = ?");
         List<Object> args = new ArrayList<>();
         args.add(tenantId());
@@ -120,7 +121,7 @@ public class PharmacyService {
             args.add(kw);
             args.add(kw);
         }
-        String joins = " FROM his_prescription p JOIN his_visit v ON p.visit_id = v.id AND v.deleted = 0";
+        String joins = " FROM his_prescription p JOIN his_visit v ON p.visit_id = v.id AND v.deleted = 0 AND v.charge_status = 1";
         Long total = jdbcTemplate.queryForObject("SELECT COUNT(*)" + joins + where, Long.class, args.toArray());
 
         String dataSql = "SELECT p.id AS prescription_id, p.rx_no AS prescription_no, p.visit_id,"
@@ -154,7 +155,7 @@ public class PharmacyService {
                 + " p.dept_name, p.total_amount, p.dispense_status, p.pharmacy_id,"
                 + " DATE_FORMAT(p.create_time, '%Y-%m-%d %H:%i:%s') AS create_time, v.ipt_otp_no AS visit_no"
                 + " FROM his_prescription p LEFT JOIN his_visit v ON p.visit_id = v.id AND v.deleted = 0"
-                + " WHERE p.id = ? AND p.deleted = 0", prescriptionId);
+                + " WHERE p.id = ? AND p.tenant_id = ? AND p.deleted = 0", prescriptionId, tenantId());
         if (presRows.isEmpty()) {
             throw new BizException(400, "处方不存在");
         }
@@ -173,8 +174,9 @@ public class PharmacyService {
                 "SELECT pi.id, pi.drug_id, pi.item_code AS drug_code, pi.item_name AS drug_name, pi.spec, pi.unit,"
                 + " pi.quantity AS qty, pi.price, pi.amount, pi.usage_method, pi.frequency,"
                 + " pi.dosage, pi.dosage_unit, pi.administration"
-                + " FROM his_prescription_item pi WHERE pi.prescription_id = ? AND pi.deleted = 0 ORDER BY pi.id",
-                prescriptionId);
+                + " FROM his_prescription_item pi"
+                + " WHERE pi.prescription_id = ? AND pi.tenant_id = ? AND pi.deleted = 0 ORDER BY pi.id",
+                prescriptionId, tenantId());
         for (Map<String, Object> r : itemRows) {
             Map<String, Object> it = new LinkedHashMap<>();
             it.put("id", r.get("id"));
@@ -248,6 +250,15 @@ public class PharmacyService {
             throw new BizException("该处方已作废, 不可发药");
         }
 
+        // 1b. 收费守卫: 就诊必须已收费(charge_status=1), 未收费/已退费不得发药(先收费后发药闭环)
+        List<Map<String, Object>> vs = jdbcTemplate.queryForList(
+                "SELECT charge_status FROM his_visit WHERE id = ? AND tenant_id = ? AND deleted = 0",
+                toLong(pres.get("visit_id")), tenantId);
+        if (vs.isEmpty() || vs.get(0).get("charge_status") == null
+                || ((Number) vs.get(0).get("charge_status")).intValue() != 1) {
+            throw new BizException("该处方所属就诊未收费, 不可发药");
+        }
+
         // 2. 乐观锁防重复发药: 0未发药 -> 1已发药, affected=0 说明已被并发发药/状态异常
         int affected = jdbcTemplate.update(
                 "UPDATE his_prescription SET dispense_status = 1"
@@ -261,8 +272,8 @@ public class PharmacyService {
         List<Map<String, Object>> items = jdbcTemplate.queryForList(
                 "SELECT drug_id, item_code, item_name, spec, quantity"
                         + " FROM his_prescription_item"
-                        + " WHERE prescription_id = ? AND drug_id IS NOT NULL AND deleted = 0 ORDER BY id",
-                prescriptionId);
+                        + " WHERE prescription_id = ? AND tenant_id = ? AND drug_id IS NOT NULL AND deleted = 0 ORDER BY id",
+                prescriptionId, tenantId);
         if (items.isEmpty()) {
             throw new BizException("该处方无药品明细, 无需发药");
         }
@@ -555,8 +566,9 @@ public class PharmacyService {
         Map<String, Object> pres = presRow(req.getPrescriptionId());
         assertTransferrable(pres);
         Map<String, Object> visit = jdbcTemplate.queryForMap(
-                "SELECT v.charge_status, v.patient_name FROM his_visit v" + " WHERE v.id = ? AND v.deleted = 0",
-                pres.get("visit_id"));
+                "SELECT v.charge_status, v.patient_name FROM his_visit v"
+                        + " WHERE v.id = ? AND v.tenant_id = ? AND v.deleted = 0",
+                pres.get("visit_id"), tenantId());
         Number cs = (Number) visit.get("charge_status");
         if (cs == null || cs.intValue() != 1) {
             throw new BizException("仅已收费未发药的处方(就诊已收费)可改派药房");
@@ -647,18 +659,27 @@ public class PharmacyService {
 
     /* ================= 退药 ================= */
 
-    /** 退药申请: 已发药(status=2)的发药记录可申请, 生成退药单(TY)待审核 */
+    /** 退药申请: 已发药(status=2)的发药记录可申请, 生成退药单(TY)待审核;
+     * 行锁发药记录: 并发双击申请时后到事务阻塞后看到已有待审核/已退药申请, 拒绝重复申请 */
     @Transactional(rollbackFor = Exception.class)
     public HisDrugReturn returnApply(DrugReturnReq req) {
         if (req == null || req.getDispenseId() == null) {
             throw new BizException(400, "发药记录ID不能为空");
         }
-        HisDispense dispense = dispenseMapper.selectById(req.getDispenseId());
+        HisDispense dispense = dispenseMapper.selectOne(Wrappers.<HisDispense>lambdaQuery()
+                .eq(HisDispense::getId, req.getDispenseId())
+                .last("FOR UPDATE"));
         if (dispense == null) {
             throw new BizException(400, "发药记录不存在");
         }
         if (dispense.getStatus() == null || dispense.getStatus() != 2) {
             throw new BizException("仅已发药的记录可申请退药");
+        }
+        Long pending = returnMapper.selectCount(Wrappers.<HisDrugReturn>lambdaQuery()
+                .eq(HisDrugReturn::getDispenseId, dispense.getId())
+                .in(HisDrugReturn::getStatus, 0, 1));
+        if (pending != null && pending > 0) {
+            throw new BizException("该发药记录已有退药申请(待审核/已退药), 请勿重复申请");
         }
         HisDrugReturn dr = new HisDrugReturn();
         dr.setOrgId(dispense.getOrgId());
@@ -679,13 +700,16 @@ public class PharmacyService {
     /**
      * 退药审批: 通过 -> 按发药出库明细逐批次创建退药回库入库单(in_type=2)并确认(确认时按批次 upsert 库存加量)
      * -> 发药记录置已退药(status=3) -> 处方置已退药(dispense_status=2); 驳回 -> 退药记录置已驳回(status=2)。
+     * 行锁退药记录: 并发双击审批时后到事务阻塞后读到已处理状态被拒, 不会双倍回补库存。
      */
     @Transactional(rollbackFor = Exception.class)
     public HisDrugReturn returnApprove(Long id, boolean approved) {
         if (id == null) {
             throw new BizException(400, "退药记录ID不能为空");
         }
-        HisDrugReturn dr = returnMapper.selectById(id);
+        HisDrugReturn dr = returnMapper.selectOne(Wrappers.<HisDrugReturn>lambdaQuery()
+                .eq(HisDrugReturn::getId, id)
+                .last("FOR UPDATE"));
         if (dr == null) {
             throw new BizException(400, "退药记录不存在");
         }
@@ -754,15 +778,18 @@ public class PharmacyService {
         HisStockIn stockIn = drugStockService.createStockIn(inReq);
         drugStockService.confirmStockIn(stockIn.getId());
 
-        // 3. 发药记录置已退药(status=3)
-        HisDispense updDispense = new HisDispense();
-        updDispense.setId(dispense.getId());
-        updDispense.setStatus(3);
-        dispenseMapper.updateById(updDispense);
+        // 3. 发药记录置已退药(status=3, 条件更新: 仅已发药可置已退药, 并发申请/审批交错时后到者受影响行数为0)
+        int dispenseUpdated = dispenseMapper.update(null, Wrappers.<HisDispense>lambdaUpdate()
+                .set(HisDispense::getStatus, 3)
+                .eq(HisDispense::getId, dispense.getId())
+                .eq(HisDispense::getStatus, 2));
+        if (dispenseUpdated != 1) {
+            throw new BizException("发药记录状态已变化, 请刷新后重试");
+        }
 
-        // 4. 处方置已退药(dispense_status=2)
+        // 4. 处方置已退药(dispense_status=2, 条件更新: 仅已发药(1)可置已退药)
         jdbcTemplate.update("UPDATE his_prescription SET dispense_status = 2"
-                        + " WHERE id = ? AND tenant_id = ? AND deleted = 0",
+                        + " WHERE id = ? AND tenant_id = ? AND dispense_status = 1 AND deleted = 0",
                 dispense.getPrescriptionId(), tenantId());
 
         // 5. 退药记录置已退药(status=1)

@@ -19,7 +19,15 @@
       { v: 'wst364:CV06.00.228', l: '医疗标准编码·使用频次CV06.00.228(WS364)' }
     ]
   };
-  /* 标准字典导入源: 类型 -> 可选字典 */
+  /* 诊断字典五类(his_diag_dict.dict_type): 统一字典维护页与导入源下拉共用 */
+  var DIAG_TYPES = [
+    { v: 'west', l: '西医诊断' },
+    { v: 'tcm', l: '中医诊断' },
+    { v: 'symp', l: '中医症候' },
+    { v: 'oper', l: '手术代码' },
+    { v: 'tumor', l: '肿瘤代码' }
+  ];
+  /* 标准字典导入源: 类型 -> 可选字典(诊断类携 diagType=目标字典类别) */
   var IMPORT_DICTS = {
     drug: [{ key: 'drug', label: '湖北医保药品(西药/中成药)' }],
     cons: [{ key: 'consumable', label: '湖北医用耗材(20位)' }],
@@ -27,6 +35,17 @@
       { key: 'msi_hb', label: '湖北医疗服务价格项目(2023)' },
       { key: 'msi_nat', label: '全国医疗服务项目技术规范(2023)' },
       { key: 'med_service', label: '湖北医疗服务项目编码库' }
+    ],
+    diag: [
+      { key: 'icd10', label: '医保ICD10疾病诊断(西医诊断)', diagType: 'west' },
+      { key: 'icd10_nat', label: '国家临床版疾病分类与代码(西医诊断)', diagType: 'west' },
+      { key: 'tcm_disease_new', label: '中医疾病分类与代码(新版)', diagType: 'tcm' },
+      { key: 'tcm_disease', label: '中医疾病分类与代码(医保版)', diagType: 'tcm' },
+      { key: 'tcm_syndrome_new', label: '中医证候分类与代码(新版)', diagType: 'symp' },
+      { key: 'tcm_syndrome', label: '中医证候分类与代码(医保版)', diagType: 'symp' },
+      { key: 'icd9', label: '医保ICD9手术操作(手术代码)', diagType: 'oper' },
+      { key: 'icd9_nat', label: '国家临床版手术操作分类与代码(手术代码)', diagType: 'oper' },
+      { key: 'morphology', label: '肿瘤形态学编码(肿瘤代码)', diagType: 'tumor' }
     ]
   };
 
@@ -53,6 +72,10 @@
         /* 耗材 */
         cons: { loading: false, list: [], total: 0, page: 1, size: 20, keyword: '' },
         consDlg: false, consEditing: false, consImport: false, consForm: this.emptyCons(), consYb: {},
+        /* 诊断字典(西医/中医/症候/手术/肿瘤) */
+        diagTypes: DIAG_TYPES,
+        diag: { loading: false, list: [], total: 0, page: 1, size: 20, keyword: '', dictType: 'west' },
+        diagDlg: false, diagEditing: false, diagImport: false, diagForm: this.emptyDiag(),
         /* 调价记录 */
         adj: { loading: false, list: [], total: 0, page: 1, size: 20, catalogType: '' },
         /* 字段级修改记录(价格/医保码之外的全部字段变更) */
@@ -116,6 +139,7 @@
         if (name === 'charge') { this.loadCharge(); }
         else if (name === 'drug') { this.loadDrug(); }
         else if (name === 'cons') { this.loadCons(); }
+        else if (name === 'diag') { this.loadDiag(); }
         else if (name === 'adjust') { this.loadAdjust(); }
         else if (name === 'elog') { this.loadElog(); }
         else if (name === 'import') { this.loadStd(); }
@@ -399,10 +423,27 @@
       stdSearch: function () { this.std.page = 1; this.loadStd(); },
       stdPage: function (p) { this.std.page = p; this.loadStd(); },
       stdSize: function (s) { this.std.size = s; this.std.page = 1; this.loadStd(); },
-      /* 标准字典全表批量导入收费项目(已存在院内编码自动跳过) */
+      /* 标准字典全表批量导入(收费项目/诊断字典; 幂等: 已存在编码更新) */
       stdBatchImport: function () {
         var vm = this;
         var d = (vm.impDicts || []).filter(function (x) { return x.key === vm.impDictKey; })[0];
+        if (vm.impType === 'diag') {
+          var dtype = (d && d.diagType) || '';
+          var tl = DIAG_TYPES.filter(function (t) { return t.v === dtype; })[0];
+          ElementPlus.ElMessageBox.confirm(
+            '将「' + ((d && d.label) || vm.impDictKey) + '」全部行批量导入医共体诊断字典(' + ((tl && tl.l) || dtype) + '): 编码已存在则更新名称/类目/来源, 否则新增; 源字典可达数万行, 需等待数十秒。继续?',
+            '批量导入', { type: 'warning' }
+          ).then(function () {
+            vm.stdBatchLoading = true;
+            HIS.post('/api/community-dict/diag-dict/import-batch?dictType=' + encodeURIComponent(dtype)
+              + '&dictKey=' + encodeURIComponent(vm.impDictKey), {})
+              .then(function (r) {
+                HIS.notifySuccess('批量导入完成: 新增 ' + ((r && r.inserted) || 0) + ' 条, 更新 ' + ((r && r.updated) || 0) + ' 条 (源字典共 ' + ((r && r.total) || 0) + ' 行)');
+                vm.diag.page = 1; vm.diag.dictType = dtype; vm.loadDiag();
+              }).catch(HIS.notifyError).finally(function () { vm.stdBatchLoading = false; });
+          }).catch(function () {});
+          return;
+        }
         ElementPlus.ElMessageBox.confirm(
           '将「' + ((d && d.label) || vm.impDictKey) + '」全部项目批量导入医共体收费项目目录, 已存在编码自动跳过; 价格等管理字段导入后补录。继续?',
           '批量导入', { type: 'warning' }
@@ -483,6 +524,61 @@
           .catch(HIS.notifyError);
       },
 
+      /* ============ 诊断字典(西医/中医/症候/手术/肿瘤) ============ */
+      emptyDiag: function () {
+        return {
+          id: null, dictType: 'west', code: '', name: '', ybCode: '', category: '',
+          sortNo: 0, status: 1, memo: '', pyCode: '', abbrCode: '', srcType: '', srcDoc: '', srcCode: ''
+        };
+      },
+      diagTypeLabel: function (t) {
+        var o = DIAG_TYPES.filter(function (x) { return x.v === t; })[0];
+        return o ? o.l : (t || '');
+      },
+      loadDiag: function () {
+        var vm = this; vm.diag.loading = true;
+        var q = '/api/community-dict/diag-dict/page?dictType=' + vm.diag.dictType
+          + '&page=' + vm.diag.page + '&size=' + vm.diag.size;
+        if (vm.diag.keyword) { q += '&keyword=' + encodeURIComponent(vm.diag.keyword); }
+        HIS.get(q).then(function (d) { vm.diag.list = (d && d.records) || []; vm.diag.total = (d && d.total) || 0; })
+          .catch(HIS.notifyError).finally(function () { vm.diag.loading = false; });
+      },
+      diagTypeChange: function () { this.diag.page = 1; this.loadDiag(); },
+      diagSearch: function () { this.diag.page = 1; this.loadDiag(); },
+      diagPage: function (p) { this.diag.page = p; this.loadDiag(); },
+      diagSize: function (s) { this.diag.size = s; this.diag.page = 1; this.loadDiag(); },
+      diagAdd: function () {
+        this.diagEditing = false; this.diagImport = false;
+        this.diagForm = this.emptyDiag(); this.diagForm.dictType = this.diag.dictType; this.diagDlg = true;
+      },
+      diagEdit: function (row) {
+        this.diagEditing = true; this.diagImport = false;
+        this.diagForm = clean(Object.assign(this.emptyDiag(), row)); this.diagDlg = true;
+      },
+      diagSubmit: function () {
+        var vm = this; var f = vm.diagForm;
+        if (!f.code) { ElementPlus.ElMessage.warning('编码必填'); return; }
+        if (!f.name) { ElementPlus.ElMessage.warning('名称必填'); return; }
+        // 新增/逐行导入同走 POST(后端按 dict_type+code 幂等); 编辑走 PUT
+        var p = vm.diagEditing ? HIS.put('/api/community-dict/diag-dict', f) : HIS.post('/api/community-dict/diag-dict', f);
+        p.then(function () {
+          HIS.notifySuccess('保存成功'); vm.diagDlg = false;
+          vm.diag.page = 1; vm.diag.dictType = f.dictType; vm.loadDiag();
+        }).catch(HIS.notifyError);
+      },
+      diagDel: function (row) { var vm = this; HIS.del('/api/community-dict/diag-dict/' + row.id).then(function () { HIS.notifySuccess('已删除'); vm.loadDiag(); }).catch(HIS.notifyError); },
+      /* 诊断字典页快捷跳转导入Tab(预选诊断类与当前浏览类别对应的源) */
+      gotoDiagImport: function () {
+        this.impType = 'diag';
+        this.impDicts = IMPORT_DICTS.diag;
+        var cur = this.diag.dictType;
+        var first = IMPORT_DICTS.diag.filter(function (x) { return x.diagType === cur; })[0];
+        this.impDictKey = (first || IMPORT_DICTS.diag[0]).key;
+        this.std.page = 1; this.std.keyword = '';
+        this.activeTab = 'import';
+        this.loadStd();
+      },
+
       /* 选择标准字典行 -> 拉取映射预览 -> 打开对应目录补录弹窗 */
       pickStd: function (row) {
         var vm = this;
@@ -495,6 +591,14 @@
           HIS.get('/api/community-dict/std-preview/cons?stdId=' + row.id).then(function (d) {
             vm.consEditing = false; vm.consImport = true; vm.consForm = Object.assign(vm.emptyCons(), d || {});
             vm.activeTab = 'cons'; vm.consDlg = true;
+          }).catch(HIS.notifyError);
+        } else if (vm.impType === 'diag') {
+          var dd = (vm.impDicts || []).filter(function (x) { return x.key === vm.impDictKey; })[0];
+          HIS.get('/api/community-dict/std-preview/diag?dictType=' + encodeURIComponent((dd && dd.diagType) || 'west')
+            + '&dictKey=' + encodeURIComponent(vm.impDictKey) + '&stdId=' + row.id).then(function (d) {
+            vm.diagEditing = false; vm.diagImport = true;
+            vm.diagForm = Object.assign(vm.emptyDiag(), d || {});
+            vm.activeTab = 'diag'; vm.diagDlg = true;
           }).catch(HIS.notifyError);
         } else {
           HIS.get('/api/community-dict/std-preview/charge?dictKey=' + encodeURIComponent(vm.impDictKey) + '&stdId=' + row.id).then(function (d) {
@@ -602,6 +706,35 @@
       '      <el-pagination style="margin-top:12px;justify-content:flex-end;" background layout="total, sizes, prev, pager, next" :total="cons.total" :page-size="cons.size" :page-sizes="[10,20,50,100]" :current-page="cons.page" @current-change="consPage" @size-change="consSize"></el-pagination>',
       '    </el-tab-pane>',
 
+      /* ---- 诊断字典(西医/中医/症候/手术/肿瘤) ---- */
+      '    <el-tab-pane label="诊断字典" name="diag">',
+      '      <div class="toolbar">',
+      '        <el-select v-model="diag.dictType" style="width:120px" @change="diagTypeChange"><el-option v-for="t in diagTypes" :key="t.v" :label="t.l" :value="t.v"></el-option></el-select>',
+      '        <el-input v-model="diag.keyword" placeholder="名称/编码/拼音简码/医保码/类目" clearable style="width:240px" @keyup.enter="diagSearch"></el-input>',
+      '        <el-button @click="diagSearch">查询</el-button>',
+      '        <el-button type="primary" @click="diagAdd">新增条目</el-button>',
+      '        <el-button type="success" @click="gotoDiagImport">从标准字典批量导入</el-button>',
+      '        <span style="color:var(--yb-ink-2);font-size:13px;">共 {{ diag.total }} 条</span>',
+      '      </div>',
+      '      <el-alert type="info" :closable="false" show-icon style="margin-bottom:10px;" title="西医诊断/中医诊断/症候/手术/肿瘤五类统一字典: 导入源字典(ICD-10/ICD-9/形态学/中医病证)可达数万行, 建议用关键字检索验证而非翻页; 医生站诊断录入统一检索本字典启用项。"></el-alert>',
+      '      <el-table :data="diag.list" v-loading="diag.loading" border stripe size="small">',
+      '        <el-table-column type="index" label="序号" width="55" :index="seq(diag)"></el-table-column>',
+      '        <el-table-column prop="code" label="编码" width="130" show-overflow-tooltip></el-table-column>',
+      '        <el-table-column prop="name" label="名称" min-width="200" show-overflow-tooltip></el-table-column>',
+      '        <el-table-column prop="pyCode" label="拼音码" width="90"><template #default="s">{{ s.row.pyCode || \'-\' }}</template></el-table-column>',
+      '        <el-table-column prop="abbrCode" label="自定义码" width="90"><template #default="s">{{ s.row.abbrCode || \'-\' }}</template></el-table-column>',
+      '        <el-table-column prop="ybCode" label="医保码" width="120" show-overflow-tooltip><template #default="s">{{ s.row.ybCode || "—" }}</template></el-table-column>',
+      '        <el-table-column prop="category" label="类目" min-width="140" show-overflow-tooltip><template #default="s">{{ s.row.category || "—" }}</template></el-table-column>',
+      '        <el-table-column prop="srcDoc" label="来源" min-width="160" show-overflow-tooltip><template #default="s">{{ s.row.srcDoc || "院内自定义" }}</template></el-table-column>',
+      '        <el-table-column label="状态" width="70"><template #default="s"><el-tag size="small" :type="s.row.status===1?\'success\':\'info\'">{{ s.row.status===1?"启用":"停用" }}</el-tag></template></el-table-column>',
+      '        <el-table-column label="操作" width="130" fixed="right"><template #default="s">',
+      '          <el-button link type="primary" @click="diagEdit(s.row)">编辑</el-button>',
+      '          <el-popconfirm title="确认删除？" @confirm="diagDel(s.row)"><template #reference><el-button link type="danger">删除</el-button></template></el-popconfirm>',
+      '        </template></el-table-column>',
+      '      </el-table>',
+      '      <el-pagination style="margin-top:12px;justify-content:flex-end;" background layout="total, sizes, prev, pager, next" :total="diag.total" :page-size="diag.size" :page-sizes="[10,20,50,100]" :current-page="diag.page" @current-change="diagPage" @size-change="diagSize"></el-pagination>',
+      '    </el-tab-pane>',
+
       /* ---- 调价记录 ---- */
       '    <el-tab-pane label="调价记录" name="adjust">',
       '      <div class="toolbar">',
@@ -655,12 +788,12 @@
       '      <el-alert type="info" :closable="false" show-icon style="margin-bottom:10px;" title="从标准字典(L1)勾选行导入医共体目录(L2): 自动带出编码/名称/规格等, 弹窗补录分级价格/三级单位换算/管理分类后按医保编码幂等写入。"></el-alert>',
       '      <div class="toolbar">',
       '        <el-select v-model="impType" style="width:120px" @change="impTypeChange">',
-      '          <el-option label="药品" value="drug"></el-option><el-option label="耗材" value="cons"></el-option><el-option label="收费项目" value="charge"></el-option>',
+      '          <el-option label="药品" value="drug"></el-option><el-option label="耗材" value="cons"></el-option><el-option label="收费项目" value="charge"></el-option><el-option label="诊断字典" value="diag"></el-option>',
       '        </el-select>',
       '        <el-select v-model="impDictKey" style="width:280px" @change="stdSearch"><el-option v-for="d in impDicts" :key="d.key" :label="d.label" :value="d.key"></el-option></el-select>',
       '        <el-input v-model="std.keyword" placeholder="编码/名称检索" clearable style="width:200px" @keyup.enter="stdSearch"></el-input>',
       '        <el-button @click="stdSearch">查询</el-button>',
-      '        <el-button v-if="impType===\'charge\'" type="warning" :loading="stdBatchLoading" @click="stdBatchImport">批量导入全库</el-button>',
+      '        <el-button v-if="impType===\'charge\'||impType===\'diag\'" type="warning" :loading="stdBatchLoading" @click="stdBatchImport">批量导入全库</el-button>',
       '        <span style="color:var(--yb-ink-2);font-size:13px;">共 {{ std.total }} 条</span>',
       '      </div>',
       '      <el-table :data="std.list" v-loading="std.loading" border stripe size="small">',
@@ -906,6 +1039,26 @@
       '      <el-form-item label="备注"><el-input v-model="medForm.memo"></el-input></el-form-item>',
       '    </el-form>',
       '    <template #footer><el-button @click="medDlg=false">取消</el-button><el-button type="primary" @click="medSubmit">确定</el-button></template>',
+      '  </el-dialog>',
+
+      /* ==== 诊断字典编辑弹窗 ==== */
+      '  <el-dialog v-model="diagDlg" :title="diagImport?\'导入诊断字典(确认补录)\':(diagEditing?\'编辑诊断条目\':\'新增诊断条目\')" width="560px" top="8vh">',
+      '    <el-form :model="diagForm" label-width="100px">',
+      '      <el-form-item label="字典类别"><el-radio-group v-model="diagForm.dictType" :disabled="diagEditing">',
+      '        <el-radio v-for="t in diagTypes" :key="t.v" :label="t.v">{{ t.l }}</el-radio>',
+      '      </el-radio-group></el-form-item>',
+      '      <el-form-item label="编码"><el-input v-model="diagForm.code" placeholder="租户内同类别唯一, 导入时取标准字典编码"></el-input></el-form-item>',
+      '      <el-form-item label="名称"><el-input v-model="diagForm.name" placeholder="诊断/术式/症候名"></el-input></el-form-item>',
+      '      <el-form-item label="拼音码"><el-input v-model="diagForm.pyCode" disabled placeholder="保存时按名称自动生成"></el-input></el-form-item>',
+      '      <el-form-item label="自定义码"><el-input v-model="diagForm.abbrCode" maxlength="64" placeholder="选填, 人工简码"></el-input></el-form-item>',
+      '      <el-form-item label="医保码"><el-input v-model="diagForm.ybCode" placeholder="医保版源导入自动=编码; 国标版可人工补录"></el-input></el-form-item>',
+      '      <el-form-item label="类目"><el-input v-model="diagForm.category" placeholder="章节/系统类目等(导入自动带入)"></el-input></el-form-item>',
+      '      <el-form-item label="排序号"><el-input v-model.number="diagForm.sortNo" type="number"></el-input></el-form-item>',
+      '      <el-form-item label="状态"><el-switch v-model="diagForm.status" :active-value="1" :inactive-value="0" active-text="启用" inactive-text="停用"></el-switch></el-form-item>',
+      '      <el-form-item label="备注"><el-input v-model="diagForm.memo"></el-input></el-form-item>',
+      '      <el-alert v-if="diagForm.srcType" type="info" :closable="false" show-icon :title="\'来源: \' + diagForm.srcType + (diagForm.srcDoc ? \' · \' + diagForm.srcDoc : \'\')"></el-alert>',
+      '    </el-form>',
+      '    <template #footer><el-button @click="diagDlg=false">取消</el-button><el-button type="primary" @click="diagSubmit">确定</el-button></template>',
       '  </el-dialog>',
 
       /* ==== 用药字典值域导入弹窗 ==== */

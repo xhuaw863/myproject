@@ -1,5 +1,10 @@
 package com.yb.hi.framework.common;
 
+import java.util.Arrays;
+import java.util.Collections;
+import java.util.HashSet;
+import java.util.Set;
+
 /**
  * 角色常量
  */
@@ -28,4 +33,13 @@ public final class Roles {
     public static final String TECHNICIAN = "TECHNICIAN";
     /** 平台超级管理员(跨租户) */
     public static final String SUPER_ADMIN = "SUPER_ADMIN";
+
+    /** 平台预置角色编码集: 判权按编码字符串(hasRole/requireLeadWrite/DeptScopeResolver), 租户自建同码角色即等价提权, 一律禁止租户自定义使用 */
+    public static final Set<String> RESERVED = Collections.unmodifiableSet(new HashSet<>(Arrays.asList(
+            SUPER_ADMIN, ADMIN, ORG_ADMIN, REGISTRAR, DOCTOR, PHARMACIST, CASHIER, NURSE, THERAPIST, TECHNICIAN)));
+
+    /** 是否平台预置角色编码(大小写不敏感) */
+    public static boolean isReserved(String roleCode) {
+        return roleCode != null && RESERVED.contains(roleCode.trim().toUpperCase());
+    }
 }

@@ -56,6 +56,8 @@ public class HisChargeBill extends BaseEntity {
     private String invoiceNo;
     /** 状态: 0待收费 1已收费 2已退费 */
     private Integer status;
+    /** 医保结算状态(批次4两阶段化): 0未结算 1结算中 2已结算 3撤销中 4已撤销 9冲正中 */
+    private Integer ybStatus;
     /** 收费员 */
     private String chargeBy;
     /** 收费时间 */

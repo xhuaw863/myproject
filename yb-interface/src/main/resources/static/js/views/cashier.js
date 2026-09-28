@@ -29,6 +29,11 @@
   /* 自付比例(0-1) -> 百分比 */
   function pct(v) { var n = Number(v) || 0; if (n <= 0) { return '0%'; } return (+(n * 100).toFixed(2)) + '%'; }
   function orDash(v) { return (v === null || v === undefined || v === '') ? '-' : v; }
+  /* HTML 转义(C8): 确认框 dangerouslyUseHTMLString 拼接患者姓名等用户输入前必须转义, 防存储型 XSS */
+  function escHtml(v) {
+    return String(v).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+  }
   function itemTypeLabel(t) { return ITEM_TYPES[t] || '其他'; }
   function itemTypeTag(t) { return ITEM_TYPE_TAGS[t] || 'info'; }
   function insuLabel(v) { return INSU_TYPES[v] || v || '-'; }
@@ -282,7 +287,7 @@
           });
           payDesc = vm.payRows.map(function (p) { return payMethodLabel(p.payMethod) + ' ¥' + money(p.amount); }).join(' + ');
         }
-        var msg = '患者: <b>' + orDash(vm.chargePatient.name) + '</b><br/>'
+        var msg = '患者: <b>' + escHtml(orDash(vm.chargePatient.name)) + '</b><br/>'
           + '待收金额: <b style="color:var(--yb-danger);font-size:15px;">' + fYen(vm.chargeSummary.totalAmount) + '</b><br/>'
           + (vm.payType === 'yb'
             ? '结算方式: <b>医保结算</b> (基金/个账自动结算, 自付部分默认现金收取)<br/>'
@@ -464,7 +469,7 @@
         var b = vm.refundBill || {};
         var msg = '确认退费？退费后将撤销医保结算<br/>'
           + '单号: <b>' + orDash(b.billNo) + '</b><br/>'
-          + '患者: <b>' + orDash(b.patientName) + '</b><br/>'
+          + '患者: <b>' + escHtml(orDash(b.patientName)) + '</b><br/>'
           + '退费金额: <b style="color:var(--yb-danger);font-size:15px;">¥' + money(b.totalAmount) + '</b>';
         ElementPlus.ElMessageBox.confirm(msg, '退费确认', {
           type: 'warning', dangerouslyUseHTMLString: true, confirmButtonText: '确认退费', cancelButtonText: '取消'
@@ -547,9 +552,11 @@
         var b = vm.partialBill || {};
         var msg = '确认部分退费？<br/>'
           + '原单: <b>' + orDash(b.billNo) + '</b><br/>'
-          + '患者: <b>' + orDash(b.patientName) + '</b><br/>'
+          + '患者: <b>' + escHtml(orDash(b.patientName)) + '</b><br/>'
           + '退费金额: <b style="color:var(--yb-danger);font-size:15px;">¥' + money(vm.partialTotal()) + '</b><br/>'
-          + '<span style="color:var(--yb-ink-2);font-size:12px;">医保单部分退费不线上撤销结算, 需线下处理</span>';
+          + (b.setlId
+            ? '<span style="color:var(--yb-ink-2);font-size:12px;">医保单将线上全撤重结: 撤销原结算(2208) → 全撤明细(2205) → 剩余明细重传(2204) → 重新结算(2206/2207); 退掉的部分不再收费, 剩余部分生成新结算单。已发药药品请先退药, 已执行项目不可退</span>'
+            : '');
         ElementPlus.ElMessageBox.confirm(msg, '部分退费确认', {
           type: 'warning', dangerouslyUseHTMLString: true, confirmButtonText: '确认退费', cancelButtonText: '取消'
         }).then(function () {
@@ -862,7 +869,7 @@
       activatePool: function (row) {
         var vm = this;
         ElementPlus.ElMessageBox.confirm(
-          '确认启用号段 <b>' + orDash(row.poolCode) + '</b>?<br/>启用后同机构同发票类型的旧使用中号段将自动停用/结转。',
+          '确认启用号段 <b>' + escHtml(orDash(row.poolCode)) + '</b>?<br/>启用后同机构同发票类型的旧使用中号段将自动停用/结转。',
           '启用号段', { type: 'warning', dangerouslyUseHTMLString: true, confirmButtonText: '启用', cancelButtonText: '取消' }
         ).then(function () {
           return HIS.post('/api/his/cashier/invoice-pool/' + row.id + '/activate')

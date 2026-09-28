@@ -128,6 +128,7 @@
       return {
         loading: false,
         list: [],
+        total: 0,
         page: 1,
         size: 20,
         roles: [],
@@ -149,6 +150,8 @@
         orgFolded: {},
         orgsCollapsed: (function () { try { return localStorage.getItem('his.userOrgsCollapsed') === '1'; } catch (e) { return false; } })(),
         listLoaded: false,
+        /* 左树角标数据源: 服务端 /org-counts 返回的 机构id→启用数 (全作用域, 与右栏筛选无关) */
+        counts: null,
         /* 选机构时是否级联含下级机构账号(客户端子树过滤; 仅牵头机构生效) */
         withSubOrgs: false,
         /* 显示模式: 默认分页(保持原观感), localStorage 持久化 */
@@ -171,39 +174,15 @@
       var vm = this;
       /* 非牵头: 锁定本机构(后端亦强制), 只读 */
       if (!vm.lead) { vm.filterOrg = (HIS.getUser() || {}).orgId || null; }
-      vm.loadMeta(); vm.load(); vm.loadStatic();
+      vm.loadMeta(); vm.load(); vm.loadCounts(); vm.loadStatic();
       /* 首屏默认收缩到二级(与科室管理同口径); 机构树仅在进页/手动刷新时重拉(#6) */
       vm.loadOrgs().then(function () {
         if (!Object.keys(vm.orgFolded).length) { vm.collapseOrgToLevel(2); }
       });
     },
     computed: {
-      /* 查询过滤(前端即时): 左栏选中机构(可级联子树) + 关键字命中账号/姓名/电话 + 角色/状态精确匹配 */
-      filteredList: function () {
-        var vm = this;
-        var kw = (vm.keyword || '').trim().toLowerCase();
-        var st = (vm.filterStatus === '' || vm.filterStatus == null) ? null : vm.filterStatus;
-        var orgSet = null;
-        if (vm.filterOrg) {
-          orgSet = (vm.lead && vm.withSubOrgs) ? vm.orgSubtreeSet(vm.filterOrg) : (function () { var s = {}; s[vm.filterOrg] = 1; return s; })();
-        }
-        if (!kw && !vm.filterRole && st === null && !orgSet) { return vm.list || []; }
-        return (vm.list || []).filter(function (r) {
-          if (orgSet && !orgSet[r.orgId]) { return false; }
-          if (kw && String(r.username || '').toLowerCase().indexOf(kw) < 0
-            && String(r.realName || '').toLowerCase().indexOf(kw) < 0
-            && String(r.phone || '').indexOf(kw) < 0) { return false; }
-          if (vm.filterRole && !vm.roleMatch(r, vm.filterRole)) { return false; }
-          if (st !== null && r.status !== st) { return false; }
-          return true;
-        });
-      },
-      /* 当前页数据(分页模式切片; 全量模式直返完整列表) */
-      pagedList: function () {
-        if (!this.paged) { return this.filteredList; }
-        var s = (this.page - 1) * this.size;
-        return this.filteredList.slice(s, s + this.size);
-      },
+      /* 服务端分页: list 即当前页(或全量模式一次性拉取的结果), 直接渲染 */
+      pagedList: function () { return this.list; },
       /* 左栏机构树是否处于过滤态(强制展平 + caret 置灰) */
       searching: function () { return !!String(this.orgKw || '').trim(); },
       /* 机构父链索引(共享缓存): 前序展平中向前最近更小 orgLevel 即父机构 */
@@ -214,14 +193,18 @@
         }
         return par;
       },
-      /* 机构启用账号数角标(含下级机构累计); 列表未就绪时返回 null 不显示 */
+      /* 机构/科室/职工 id→显示名 索引(随源数组变化才重算): 单元格查表 O(1), 替代逐行线性扫描 */
+      orgNameMap: function () { var m = {}; this.orgs.forEach(function (o) { m[o.id] = String(o.label).trim(); }); return m; },
+      deptNameMap: function () { var m = {}; this.depts.forEach(function (d) { m[d.id] = d.deptName; }); return m; },
+      staffNameMap: function () { var m = {}; this.staffs.forEach(function (s) { m[s.id] = s.staffName + '(' + s.staffNo + ')'; }); return m; },
+      /* 机构启用账号数角标(含下级机构累计): 数据源改为服务端 /org-counts(全作用域, 与右栏筛选无关) */
       orgCountMap: function () {
         var vm = this;
-        if (!vm.listLoaded) { return null; }
-        var direct = {}; var total = 0;
-        (vm.list || []).forEach(function (u) { if (u.status === 1) { direct[u.orgId] = (direct[u.orgId] || 0) + 1; total++; } });
+        if (!vm.counts) { return null; }
+        var direct = vm.counts; var total = 0;
+        Object.keys(direct).forEach(function (k) { total += Number(direct[k]) || 0; });
         var orgs = vm.orgs; var sub = {}; var par = vm.orgParentIdx;
-        orgs.forEach(function (o) { sub[o.id] = direct[o.id] || 0; });
+        orgs.forEach(function (o) { sub[o.id] = Number(direct[o.id] != null ? direct[o.id] : direct[String(o.id)]) || 0; });
         for (var k = orgs.length - 1; k >= 0; k--) { var pid = par[orgs[k].id]; if (pid != null && sub[pid] != null) { sub[pid] += sub[orgs[k].id]; } }
         var m = { all: total };
         orgs.forEach(function (o) { m['org-' + o.id] = sub[o.id] || 0; });
@@ -255,7 +238,7 @@
       },
       /* 右栏计数文案: 列表含停用, 与左栏"启用"角标口径不同, 明示避免误解 */
       countHint: function () {
-        var s = '共 ' + this.filteredList.length + ' 个账号';
+        var s = '共 ' + this.total + ' 个账号';
         return (this.filterStatus === '' || this.filterStatus == null) ? s + '（含停用 · 左栏角标为启用数）' : s;
       },
       /* 科室下拉选项: 带机构前缀消歧(医共体多机构) */
@@ -295,7 +278,17 @@
           .then(function (d) { vm.roles = d || []; })
           .catch(function () { vm.roles = HIS.ROLES.map(function (r) { return { value: r.value, label: r.label }; }); });
         HIS.get('/api/his/dept/enabled' + os).then(function (d) { vm.depts = d || []; }).catch(function () { vm.depts = []; });
-        HIS.get('/api/his/staff/list' + os).then(function (d) { vm.staffs = d || []; }).catch(function () { vm.staffs = []; });
+        /* 职工候选(数千行)仅弹窗"关联职工"列/下拉需要, 移出首屏: 由 loadStaffs 在打开对话框时懒加载 */
+      },
+      /* 懒加载职工候选: 仅牵头可维护账号, 打开新增/编辑对话框(或启用关联职工列)时才拉, 不阻塞列表首屏 */
+      loadStaffs: function () {
+        var vm = this;
+        if (vm._staffsLoading) { return; }
+        vm._staffsLoading = true;
+        var os = vm.lead ? '' : ('?orgId=' + vm.filterOrg);
+        HIS.get('/api/his/staff/list' + os).then(function (d) { vm.staffs = d || []; })
+          .catch(function () { vm.staffs = []; })
+          .finally(function () { vm._staffsLoading = false; });
       },
       /* 静态元数据(菜单字典): 仅进页与手动刷新时拉取, 不随左树点选重复请求(#6) */
       loadStatic: function () {
@@ -320,13 +313,12 @@
         for (var j = idx + 1; j < orgs.length; j++) { if ((orgs[j].depth || 0) <= rd) { break; } set[orgs[j].id] = 1; }
         return set;
       },
-      /* 左栏点选机构: 纯客户端过滤(list 始终全量, 候选数据已改全量), 零请求(#6) */
+      /* 左栏点选机构: 回第1页并按新作用域重查(纯客户端过滤已退役) */
       selectOrg: function (id) {
-        if (this.filterOrg === id) { return; }
-        this.filterOrg = id; this.page = 1;
+        this.filterOrg = id; this.page = 1; this.load();
       },
       /* 刷新按钮: 重拉列表与全部元数据/静态树 */
-      refresh: function () { this.loadMeta(); this.load(); this.loadStatic(); this.loadOrgs(); },
+      refresh: function () { this.loadMeta(); this.load(); this.loadCounts(); this.loadStatic(); this.loadOrgs(); },
       /* 左栏收缩/展开切换并持久化 */
       toggleOrgs: function () {
         this.orgsCollapsed = !this.orgsCollapsed;
@@ -369,14 +361,21 @@
       },
       /* 列设置: 勾选=显示(colOff 置0), 取消=隐藏(置1); 持久化 */
       colShow: function (key) { return !this.colOff[key]; },
-      onColToggle: function (key, shown) { this.colOff[key] = shown ? 0 : 1; this.onColChange(); },
+      onColToggle: function (key, shown) { this.colOff[key] = shown ? 0 : 1; this.onColChange(); if (key === 'staff' && shown && !this.staffs.length) { this.loadStaffs(); } },
       onColChange: function () { try { localStorage.setItem('his.userCols', JSON.stringify(this.colOff)); } catch (e) { } },
       /* 分页/全量模式切换(持久化) */
       onPagedToggle: function () {
         this.page = 1;
         try { localStorage.setItem('his.userPaged', this.paged ? '1' : '0'); } catch (e) { }
+        this.load();
       },
-      onQueryChange: function () { this.page = 1; },
+      /* 关键字输入: 防抖 250ms 后回第1页重查, 避免逐字符请求 */
+      onQueryChange: function () {
+        var vm = this; vm.page = 1;
+        clearTimeout(vm._qt); vm._qt = setTimeout(function () { vm.load(); }, 250);
+      },
+      /* 离散筛选(角色/状态/级联开关): 立即回第1页重查 */
+      onFilterChange: function () { this.page = 1; this.load(); },
       /* 角色匹配: 兼容 roleId(自定义角色)/roleIds(多角色关联)与 role(内置枚举) */
       roleMatch: function (row, v) {
         if (!v) { return true; }
@@ -393,8 +392,8 @@
         return row.role === v;
       },
       seqNo: function (i) { return this.paged ? (this.page - 1) * this.size + i + 1 : i + 1; },
-      onSizeChange: function (sz) { this.size = sz; this.page = 1; },
-      onPageChange: function (p) { this.page = p; },
+      onSizeChange: function (sz) { this.size = sz; this.page = 1; this.load(); },
+      onPageChange: function (p) { this.page = p; this.load(); },
       roleDisplay: function (row) {
         for (var i = 0; i < this.roles.length; i++) {
           if (this.roles[i].id === row.roleId || this.roles[i].value === row.role) { return this.roles[i].label; }
@@ -415,10 +414,7 @@
         if (!out.length) { out.push(vm.roleDisplay(row)); }
         return out;
       },
-      orgName: function (id) {
-        for (var i = 0; i < this.orgs.length; i++) { if (this.orgs[i].id === id) { return String(this.orgs[i].label).trim(); } }
-        return '-';
-      },
+      orgName: function (id) { var n = this.orgNameMap[id]; return n != null ? n : '-'; },
       /* 归属机构变更: 确保其始终在可登录机构集内(默认可登录机构不可取消);
        * 并重置不属于新机构的跨机构残留(关联职工/主属科室)(#1) */
       onHomeOrgChange: function (val) {
@@ -439,21 +435,43 @@
         if (!ids.length) { return '-'; }
         return ids.map(function (id) { return vm.orgName(id); }).join('、');
       },
+      /* 服务端分页拉当前页: 机构(可级联子树)/关键字/角色/状态 全交后端, 不再一次性拉全量 */
       load: function () {
         var vm = this;
         vm.loading = true;
-        /* 始终拉全量(后端按登录机构作用域隔离): 机构过滤改由客户端完成, 角标/级联与列表同源 */
-        HIS.get('/api/sys/user/list')
-          .then(function (d) { vm.list = d || []; vm.page = 1; })
+        var q = '/api/sys/user/page?1=1';
+        var orgIds = vm.currentOrgIds();
+        if (orgIds) { q += '&orgIds=' + orgIds; }
+        if (vm.keyword) { q += '&keyword=' + encodeURIComponent(vm.keyword); }
+        if (vm.filterRole) { q += '&role=' + encodeURIComponent(vm.filterRole); }
+        if (vm.filterStatus !== '' && vm.filterStatus != null) { q += '&status=' + vm.filterStatus; }
+        q += '&page=' + vm.page + '&size=' + (vm.paged ? vm.size : 100000);
+        HIS.get(q)
+          .then(function (d) { vm.list = (d && d.records) || []; vm.total = (d && d.total) || 0; })
           .catch(HIS.notifyError)
           .finally(function () { vm.listLoaded = true; vm.loading = false; });
       },
+      /* 当前作用域要下发的机构ID串: 全部机构→null(不过滤); 选中且牵头含下级→子树集; 否则精确单机构 */
+      currentOrgIds: function () {
+        var vm = this;
+        if (!vm.filterOrg) { return null; }
+        if (vm.lead && vm.withSubOrgs) { return Object.keys(vm.orgSubtreeSet(vm.filterOrg)).join(','); }
+        return vm.filterOrg;
+      },
+      /* 左树角标: 全作用域(不含右栏筛选)按机构启用数, 仅随增删改/状态变更刷新 */
+      loadCounts: function () {
+        var vm = this;
+        HIS.get('/api/sys/user/org-counts').then(function (d) { vm.counts = d || {}; }).catch(function () { vm.counts = null; });
+      },
+      /* 数据变更后统一刷新: 列表 + 角标 */
+      reload: function () { this.load(); this.loadCounts(); },
       openCreate: function () {
         this.editing = false;
         this.form = this.emptyForm();
         this.deptScopeArr = [];
         this.activeTab = 'account';
         this.roleMenuNames = []; this.roleIsAll = false;
+        this.loadStaffs();
         this.dialogVisible = true;
       },
       openEdit: function (row) {
@@ -462,6 +480,7 @@
         this.deptScopeArr = row.deptScope ? String(row.deptScope).split(',').filter(function (x) { return x !== ''; }).map(function (x) { return Number(x); }) : [];
         this.activeTab = 'account';
         this.loadRoleMenus(this.form.roleIds);
+        this.loadStaffs();
         this.dialogVisible = true;
       },
       /* 保存前基础校验: 新增账号/密码必填(密码至少6位), 姓名必填, 电话若填做格式约束 */
@@ -490,7 +509,7 @@
         var p = vm.editing ? HIS.put('/api/sys/user', vm.form) : HIS.post('/api/sys/user', vm.form);
         p.then(function () {
           HIS.notifySuccess(vm.editing ? '修改成功' : '新增成功');
-          vm.dialogVisible = false; vm.load();
+          vm.dialogVisible = false; vm.reload();
         }).catch(HIS.notifyError);
       },
       resetPwd: function (row) {
@@ -508,14 +527,15 @@
         return !!row.id && row.id === (u.userId || u.id);
       },
       toggleStatus: function (row) {
+        var vm = this;
         var target = row.status === 1 ? 0 : 1;
         HIS.post('/api/sys/user/' + row.id + '/status?status=' + target)
-          .then(function () { HIS.notifySuccess(target === 1 ? '已启用' : '已停用'); row.status = target; })
+          .then(function () { HIS.notifySuccess(target === 1 ? '已启用' : '已停用'); row.status = target; vm.loadCounts(); })
           .catch(HIS.notifyError);
       },
       remove: function (row) {
         HIS.del('/api/sys/user/' + row.id)
-          .then(function () { HIS.notifySuccess('已删除'); this.load(); }.bind(this))
+          .then(function () { HIS.notifySuccess('已删除'); this.reload(); }.bind(this))
           .catch(HIS.notifyError);
       },
       roleLabel: function (c) { return HIS.roleLabel(c); },
@@ -557,14 +577,8 @@
         this.form.roleId = ids && ids.length ? ids[0] : null;
         this.loadRoleMenus(ids);
       },
-      deptName: function (id) {
-        for (var i = 0; i < this.depts.length; i++) { if (this.depts[i].id === id) { return this.depts[i].deptName; } }
-        return id ? ('#' + id) : '-';
-      },
-      staffName: function (id) {
-        for (var i = 0; i < this.staffs.length; i++) { if (this.staffs[i].id === id) { return this.staffs[i].staffName + '(' + this.staffs[i].staffNo + ')'; } }
-        return id ? ('#' + id) : '-';
-      },
+      deptName: function (id) { var n = this.deptNameMap[id]; return n != null ? n : (id ? ('#' + id) : '-'); },
+      staffName: function (id) { var n = this.staffNameMap[id]; return n != null ? n : (id ? ('#' + id) : '-'); },
       scopeText: function (row) {
         var s = row.deptScope ? String(row.deptScope).split(',').filter(function (x) { return x !== ''; }) : [];
         return s.length ? (s.length + ' 个科室') : '仅主属科室';
@@ -610,7 +624,7 @@
       '    <el-input v-model="keyword" placeholder="账号/姓名/电话" clearable style="width:170px" @input="onQueryChange" @clear="onQueryChange"></el-input>',
       '    <el-select v-model="filterRole" placeholder="全部角色" clearable style="width:130px" @change="onQueryChange"><el-option v-for="r in roles" :key="r.value" :label="r.label" :value="r.value"></el-option></el-select>',
       '    <el-select v-model="filterStatus" placeholder="全部状态" clearable style="width:110px" @change="onQueryChange"><el-option label="启用" :value="1"></el-option><el-option label="停用" :value="0"></el-option></el-select>',
-      '    <el-checkbox v-if="lead" v-model="withSubOrgs" :disabled="!filterOrg" :title="filterOrg ? \'勾选后选中机构时级联显示下级机构的账号; 默认仅显示选中机构本身的账号\' : \'先在左侧选中机构后可用\'" style="margin-left:4px;">含下级机构</el-checkbox>',
+      '    <el-checkbox v-if="lead" v-model="withSubOrgs" @change="onFilterChange" :disabled="!filterOrg" :title="filterOrg ? \'勾选后选中机构时级联显示下级机构的账号; 默认仅显示选中机构本身的账号\' : \'先在左侧选中机构后可用\'" style="margin-left:4px;">含下级机构</el-checkbox>',
       '    <el-button v-if="lead" type="primary" @click="openCreate">新增用户</el-button>',
       '    <el-button @click="refresh">刷新</el-button>',
       '    <el-popover placement="bottom" :width="180" trigger="click">',
@@ -644,7 +658,7 @@
       '      <el-tag :type="s.row.status === 1 ? \'success\' : \'info\'" size="small">{{ s.row.status === 1 ? "启用" : "停用" }}</el-tag>',
       '    </template></el-table-column>',
       '    <el-table-column label="操作" width="230" fixed="right">',
-      '      <template #default="s">',
+      '      <template #default="s"><div style="white-space:nowrap">',
       '        <el-button v-if="lead" link type="primary" @click="openEdit(s.row)">编辑</el-button>',
       '        <el-button v-if="lead" link type="warning" @click="resetPwd(s.row)">重置密码</el-button>',
       '        <el-button v-if="lead" link :type="s.row.status === 1 ? \'info\' : \'success\'" @click="toggleStatus(s.row)">{{ s.row.status === 1 ? "停用" : "启用" }}</el-button>',
@@ -653,12 +667,12 @@
       '        </el-popconfirm>',
       '        <el-button v-if="lead && isSelf(s.row)" link type="danger" disabled title="不能删除自己的账号(防误操作锁死)">删除</el-button>',
       '        <span v-if="!lead" style="color:var(--yb-ink-2);font-size:12px;">只读</span>',
-      '      </template>',
+      '      </div></template>',
       '    </el-table-column>',
       '  </el-table>',
       '  </div>',
       '  <div v-if="paged" class="pager">',
-      '    <el-pagination background :current-page="page" :page-size="size" :page-sizes="[10,20,50,100]" :total="filteredList.length" layout="total, sizes, prev, pager, next, jumper" @size-change="onSizeChange" @current-change="onPageChange"></el-pagination>',
+      '    <el-pagination background :current-page="page" :page-size="size" :page-sizes="[10,20,50,100]" :total="total" layout="total, sizes, prev, pager, next, jumper" @size-change="onSizeChange" @current-change="onPageChange"></el-pagination>',
       '  </div>',
       '    </div>',
       '  </div>',

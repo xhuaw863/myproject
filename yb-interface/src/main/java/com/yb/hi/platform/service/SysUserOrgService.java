@@ -16,8 +16,10 @@ import java.sql.Statement;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Comparator;
+import java.util.HashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 
 /**
@@ -73,6 +75,31 @@ public class SysUserOrgService {
             }
         }
         return ids;
+    }
+
+    /** 批量回显: userId -> 显式授权机构ID(不含归属机构, 调用方按 allowedOrgIds 同口径并入), 列表场景消除逐行 N+1 */
+    public Map<Long, List<Long>> mapGrantedOrgIds() {
+        Map<Long, List<Long>> m = new HashMap<>();
+        for (SysUserOrg uo : userOrgMapper.selectList(null)) {
+            if (uo.getUserId() != null && uo.getOrgId() != null) {
+                m.computeIfAbsent(uo.getUserId(), k -> new ArrayList<>()).add(uo.getOrgId());
+            }
+        }
+        return m;
+    }
+
+    /** 批量回显(限定 userId 集): 分页场景仅取当前页用户的授权机构, 避免加载整表 */
+    public Map<Long, List<Long>> mapGrantedOrgIds(Collection<Long> userIds) {
+        Map<Long, List<Long>> m = new HashMap<>();
+        if (userIds == null || userIds.isEmpty()) {
+            return m;
+        }
+        for (SysUserOrg uo : userOrgMapper.selectList(new QueryWrapper<SysUserOrg>().in("user_id", userIds))) {
+            if (uo.getUserId() != null && uo.getOrgId() != null) {
+                m.computeIfAbsent(uo.getUserId(), k -> new ArrayList<>()).add(uo.getOrgId());
+            }
+        }
+        return m;
     }
 
     /**
