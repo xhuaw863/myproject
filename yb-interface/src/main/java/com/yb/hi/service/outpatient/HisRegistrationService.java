@@ -39,6 +39,7 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicInteger;
 
 /**
@@ -52,6 +53,11 @@ import java.util.concurrent.atomic.AtomicInteger;
 public class HisRegistrationService extends ServiceImpl<HisRegistrationMapper, HisRegistration> {
 
     private static final AtomicInteger SEQ = new AtomicInteger(0);
+
+    /** 候诊序号内存计数器: 键=租户|科室|时段|日期, 首次使用从当日 DB MAX 惰性播种。
+     *  并发下裸 MAX+1 会大面积重号(压测复现: c=50 下 74% 行 queue_no 重复),
+     *  内存计数与 bill_no 的 SEQ 同模式, 多实例部署同样需单点生成或加唯一键兜底。 */
+    private final Map<String, AtomicInteger> QUEUE_SEQS = new ConcurrentHashMap<>();
 
     /** 无减免(与前端约定, 统计时排除) */
     private static final String DISCOUNT_NONE = "none";
@@ -652,8 +658,19 @@ public class HisRegistrationService extends ServiceImpl<HisRegistrationMapper, H
         return new Object[]{effDiscountType, effDiscountAmount};
     }
 
-    /** 生成候诊序号: 科室简码+4位流水号(当日同科室同时段 MAX+1), 如 NK-0015 */
+    /** 生成候诊序号: 科室简码+4位流水号(当日同科室同时段内存计数+1, 如 NK-0015)。
+     *  键内计数原子递增, 无重号; 应用重启/换日后惰性从 DB MAX 续接(退号不回收号码, 属正常跳号)。 */
     private String generateQueueNo(Long deptId, String timeType, LocalDate workDate) {
+        String t = StringUtils.hasText(timeType) ? timeType.trim() : "";
+        String key = tenantId() + "|" + deptId + "|" + t + "|" + workDate;
+        AtomicInteger seq = QUEUE_SEQS.computeIfAbsent(key,
+                k -> new AtomicInteger(queryMaxQueueSeq(deptId, timeType, workDate)));
+        int next = seq.incrementAndGet();
+        return deptAbbr(deptId) + "-" + String.format("%04d", next);
+    }
+
+    /** 当日同科室同时段已有最大流水号(仅首次播种时查询) */
+    private int queryMaxQueueSeq(Long deptId, String timeType, LocalDate workDate) {
         StringBuilder sql = new StringBuilder(
                 "SELECT IFNULL(MAX(CAST(SUBSTRING_INDEX(queue_no, '-', -1) AS UNSIGNED)), 0)"
                         + " FROM his_registration WHERE tenant_id = ? AND deleted = 0 AND dept_id = ");
@@ -674,8 +691,7 @@ public class HisRegistrationService extends ServiceImpl<HisRegistrationMapper, H
             args.add(workDate);
         }
         Integer maxSeq = jdbcTemplate.queryForObject(sql.toString(), Integer.class, args.toArray());
-        int next = (maxSeq == null ? 0 : maxSeq) + 1;
-        return deptAbbr(deptId) + "-" + String.format("%04d", next);
+        return maxSeq == null ? 0 : maxSeq;
     }
 
     /** 科室简码: his_dept.py_code 前2位大写, 无 py_code 退化 dept_id 前2位 */

@@ -3036,7 +3036,10 @@ public class CashierService {
 
     /** 单号生成: 前缀 + yyyyMMdd + 4位序号(SF收费单/TF退费单), 与 tenant+bill_no 唯一键联合防重。
      * 序号基值懒加载: 跨天或服务重启后首次生成时, 从库中恢复当天最大序号继续递增,
-     * 避免内存计数归零后与已存在单号冲突(唯一键报 Duplicate entry)。 */
+     * 避免内存计数归零后与已存在单号冲突(唯一键报 Duplicate entry)。
+     * 注意序号不做回绕: 超过9999后自然进位到5位/6位(格式 %04d 仅是最小宽度),
+     * 回绕会与当天已有单号撞 uk_tenant_bill_no 导致收费全线 Duplicate entry
+     * (压测复现: 单日10000单后 20 并发收费全部失败)。 */
     private synchronized String generateBillNo(String prefix) {
         String day = LocalDate.now().format(BILL_DAY);
         if (!day.equals(SEQ_DAY)) {
@@ -3047,7 +3050,7 @@ public class CashierService {
             SEQ.set(max == null ? 0 : max);
             SEQ_DAY = day;
         }
-        int s = Math.floorMod(SEQ.incrementAndGet(), 10000);
+        int s = SEQ.incrementAndGet();
         return prefix + day + String.format("%04d", s);
     }
 

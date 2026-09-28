@@ -33,10 +33,16 @@ import com.yb.hi.platform.service.DeptScopeResolver;
 import com.yb.hi.service.OutpatientService;
 import com.yb.hi.service.yb.UploadStatusService;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.dao.DeadlockLoserDataAccessException;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.TransactionDefinition;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionTemplate;
 import org.springframework.util.CollectionUtils;
 import org.springframework.util.StringUtils;
+
+import java.util.function.Supplier;
 
 import java.math.BigDecimal;
 import java.time.LocalDate;
@@ -67,12 +73,14 @@ public class HisVisitService extends ServiceImpl<HisVisitMapper, HisVisit> {
     private final DeptScopeResolver deptScopeResolver;
     // 上传管线状态机(M5: 2203 结果落库/收费入口守卫/退号撤销)
     private final UploadStatusService uploadStatusService;
+    // 完成接诊 T1 事务(与 CashierService 同风格; 诊断"先删后插"并发死锁整体重试用)
+    private final TransactionTemplate txTemplate;
 
     public HisVisitService(OutpatientService outpatientService, HisDiagnosisService diagnosisService,
                            HisMedicalRecordService medicalRecordService, HisPrescriptionMapper prescriptionMapper,
                            HisOrderMapper orderMapper, HisPatientInsuMapper patientInsuMapper,
                            HisRegistrationMapper registrationMapper, DeptScopeResolver deptScopeResolver,
-                           UploadStatusService uploadStatusService) {
+                           UploadStatusService uploadStatusService, PlatformTransactionManager transactionManager) {
         this.outpatientService = outpatientService;
         this.diagnosisService = diagnosisService;
         this.medicalRecordService = medicalRecordService;
@@ -82,6 +90,10 @@ public class HisVisitService extends ServiceImpl<HisVisitMapper, HisVisit> {
         this.registrationMapper = registrationMapper;
         this.deptScopeResolver = deptScopeResolver;
         this.uploadStatusService = uploadStatusService;
+        this.txTemplate = new TransactionTemplate(transactionManager);
+        // T1 事务改读已提交: 诊断"先删后插"在默认 RR 下并发完成接诊互相抢 idx_visit 间隙锁,
+        // RC 不取间隙锁, 从根上消除该死锁类别(死锁整体重试仍保留作兜底)
+        this.txTemplate.setIsolationLevel(TransactionDefinition.ISOLATION_READ_COMMITTED);
     }
 
     /** 候诊/就诊队列分页查询 */
@@ -183,14 +195,46 @@ public class HisVisitService extends ServiceImpl<HisVisitMapper, HisVisit> {
     }
 
     /**
-     * 完成接诊: 保存病历字段+SOAP病历+诊断 -> 就诊中(2) -> 已完成(3, 待收费) -> 可选2203上传
+     * 完成接诊: T1 事务(病历字段+SOAP病历+诊断+挂号状态闭环, 状态位条件抢占防双窗口重复完成)
+     * -> T2 事务外可选2203上传(结果落状态机, 失败不阻断, 收费入口守卫强制补传)。
+     * 诊断"先删后插"替换式写入并发下曾死锁(idx_visit 间隙锁, 压测复现): T1 事务已改读已提交(不取间隙锁)
+     * 从根上消除, 并保留 DeadlockLoserDataAccessException 整体重试(每次新事务)作兜底;
+     * 2203 不得在事务内执行(真实平台响应秒级, 会长时间占事务与连接)。
      */
-    @Transactional(rollbackFor = Exception.class)
     public HisVisit finishVisit(VisitFinishReq req) {
         if (req == null || req.getVisitId() == null) {
             throw new BizException(400, "就诊ID不能为空");
         }
         requireVisitScope(req.getVisitId());
+        // T1 事务: 落库(死锁整体重试)
+        HisVisit v = executeWithDeadlockRetry(() -> txTemplate.execute(status -> doFinishTx(req)));
+        // T2 事务外: 医保2203就诊信息上传(M5: 结果落 his_upload_status 状态机,
+        // 失败不阻断接诊完成, 由收费入口守卫强制补传 + 定时扫描指数退避重试)
+        boolean upload = req.getUploadYb() == null || req.getUploadYb();
+        if (upload && StringUtils.hasText(v.getMdtrtId())) {
+            boolean ok = false;
+            String msgid = null;
+            String err = "2203未执行";
+            try {
+                YbResponse resp = tryUploadVisitInfo(v, diagnosisService.listByVisit(v.getId()));
+                ok = resp != null && resp.isSuccess();
+                msgid = resp == null || resp.getInfRefmsgid() == null ? null : resp.getInfRefmsgid();
+                if (!ok) {
+                    err = resp == null ? "医保无响应" : (resp.isUnknown() ? "医保响应未知(超时)" : resp.getErrMsg());
+                }
+            } catch (Exception e) {
+                // 上传失败不阻断接诊完成, 仅记录日志
+                err = e.getMessage();
+                log.warn("2203就诊信息上传失败: visitId={}, err={}", v.getId(), e.getMessage());
+            }
+            uploadStatusService.recordVisit(TenantContext.require(), v.getId(), v.getMdtrtId(), ok, msgid, err);
+        }
+        log.info("完成接诊: visitId={}, patient={}", v.getId(), v.getPatientName());
+        return v;
+    }
+
+    /** T1 事务体: 校验 -> 状态位条件抢占(防双窗口) -> 病历/诊断/挂号闭环落库 */
+    private HisVisit doFinishTx(VisitFinishReq req) {
         HisVisit v = getById(req.getVisitId());
         if (v == null) {
             throw new BizException(400, "就诊记录不存在");
@@ -199,7 +243,19 @@ public class HisVisitService extends ServiceImpl<HisVisitMapper, HisVisit> {
             throw new BizException("该就诊已完成或已取消");
         }
 
-        // 回写就诊主表病历字段与医保扩展字段
+        // 状态位条件抢占: 双窗口/重复提交并发完成接诊时仅一次成功(与收费 T1 守卫同口径);
+        // baseMapper.update 返回受影响行数(ServiceImpl.update 返回 boolean 判不了抢占)
+        int affected = baseMapper.update(null, Wrappers.<HisVisit>lambdaUpdate()
+                .set(HisVisit::getVisitStatus, 3)
+                .set(HisVisit::getFinishTime, LocalDateTime.now())
+                .eq(HisVisit::getId, v.getId())
+                .lt(HisVisit::getVisitStatus, 3)
+                .eq(HisVisit::getDeleted, 0));
+        if (affected == 0) {
+            throw new BizException("该就诊已完成或已取消");
+        }
+
+        // 回写就诊主表病历字段与医保扩展字段(updateById 忽略 null 字段, 保持原值)
         v.setChiefComplaint(req.getChiefComplaint());
         v.setPresentIllness(req.getPresentIllness());
         v.setPastHistory(req.getPastHistory());
@@ -223,7 +279,7 @@ public class HisVisitService extends ServiceImpl<HisVisitMapper, HisVisit> {
                     .eq(HisRegistration::getStatus, 1));
         }
 
-        // 保存诊断(替换式)
+        // 保存诊断(替换式: 先删后插, 并发下可能死锁, 由外层整体重试收敛)
         diagnosisService.saveDiagnoses(v.getId(), v.getDeptName(), v.getAtddrNo(), v.getDrName(),
                 req.getDiagnoses());
 
@@ -243,30 +299,29 @@ public class HisVisitService extends ServiceImpl<HisVisitMapper, HisVisit> {
         record.setDrName(v.getDrName());
         record.setDrSign(v.getDrName());
         medicalRecordService.saveRecord(record);
-
-        // 医保2203就诊信息上传(M5: 结果落 his_upload_status 状态机, 失败不阻断接诊完成,
-        // 由收费入口守卫强制补传 + 定时扫描指数退避重试)
-        boolean upload = req.getUploadYb() == null || req.getUploadYb();
-        if (upload && StringUtils.hasText(v.getMdtrtId())) {
-            boolean ok = false;
-            String msgid = null;
-            String err = "2203未执行";
-            try {
-                YbResponse resp = tryUploadVisitInfo(v, savedDiag);
-                ok = resp != null && resp.isSuccess();
-                msgid = resp == null || resp.getInfRefmsgid() == null ? null : resp.getInfRefmsgid();
-                if (!ok) {
-                    err = resp == null ? "医保无响应" : (resp.isUnknown() ? "医保响应未知(超时)" : resp.getErrMsg());
-                }
-            } catch (Exception e) {
-                // 上传失败不阻断接诊完成, 仅记录日志
-                err = e.getMessage();
-                log.warn("2203就诊信息上传失败: visitId={}, err={}", v.getId(), e.getMessage());
-            }
-            uploadStatusService.recordVisit(TenantContext.require(), v.getId(), v.getMdtrtId(), ok, msgid, err);
-        }
-        log.info("完成接诊: visitId={}, patient={}", v.getId(), v.getPatientName());
         return v;
+    }
+
+    /** 死锁整体重试: 每次重试走新事务, 最多3次(诊断替换式写入 RR 间隙锁死锁收敛) */
+    private <T> T executeWithDeadlockRetry(Supplier<T> action) {
+        int attempt = 0;
+        while (true) {
+            try {
+                return action.get();
+            } catch (DeadlockLoserDataAccessException e) {
+                if (++attempt >= 3) {
+                    log.error("完成接诊事务死锁重试3次仍失败", e);
+                    throw e;
+                }
+                log.warn("完成接诊诊断写入死锁, 第{}次重试", attempt);
+                try {
+                    Thread.sleep(20L * attempt);
+                } catch (InterruptedException ie) {
+                    Thread.currentThread().interrupt();
+                    throw e;
+                }
+            }
+        }
     }
 
     /**
