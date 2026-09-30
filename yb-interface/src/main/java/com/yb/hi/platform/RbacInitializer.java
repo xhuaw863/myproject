@@ -117,6 +117,7 @@ public class RbacInitializer implements ApplicationRunner {
             ensureStockChainMenus(menuIds);
             migrateDictMapToCatalogMap();
             ensureBasedataMenuUnderPlatform();
+            ensureDiagMapMenu(menuIds);
             activateReportMenus();
             mergeDictDirsIntoPlatform();
             renameBizDirs();
@@ -1065,6 +1066,38 @@ public class RbacInitializer implements ApplicationRunner {
             menuMapper.updateById(community);
         }
         log.info("「医保目录对照」「医共体字典」已归入「医共体管理 → 基础数据」");
+    }
+
+    /**
+     * 幂等补种"医保疾病对照"菜单(diag-map/DiagMap, 2026-09 新增): 挂"医共体管理 → 基础数据"目录下,
+     * 紧随"医保目录对照"(catalog-map, sort_no=1)之后(sort_no=2), 医共体字典顺延为 3。
+     * ADMIN/ORG_ADMIN/SUPER_ADMIN 走 all_menus 免配置自动可见; 菜单 id 不变, 与 catalog-map 同级同授权策略。
+     */
+    private void ensureDiagMapMenu(Map<String, Long> menuIds) {
+        SysMenu basedata = menuMapper.selectOne(new QueryWrapper<SysMenu>().eq("menu_key", "basedata").last("LIMIT 1"));
+        if (basedata == null) {
+            return;
+        }
+        ensureChildMenu(menuIds, "basedata", "diag-map", "医保疾病对照", "DiagMap");
+        Long id = menuIds.get("diag-map");
+        if (id == null) {
+            return;
+        }
+        SysMenu m = menuMapper.selectById(id);
+        if (m != null && (m.getSortNo() == null || m.getSortNo() != 2)) {
+            SysMenu upd = new SysMenu();
+            upd.setId(id);
+            upd.setSortNo(2);
+            menuMapper.updateById(upd);
+        }
+        SysMenu community = menuMapper.selectOne(new QueryWrapper<SysMenu>().eq("menu_key", "community-dict").last("LIMIT 1"));
+        if (community != null && basedata.getId().equals(community.getParentId())
+                && (community.getSortNo() == null || community.getSortNo() < 3)) {
+            SysMenu cu = new SysMenu();
+            cu.setId(community.getId());
+            cu.setSortNo(3);
+            menuMapper.updateById(cu);
+        }
     }
 
     /**

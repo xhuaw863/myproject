@@ -90,6 +90,15 @@ public final class CatalogMapMatcher {
      */
     public static Result score(String hospName, String hospSpec, String hospMfr,
                                String stdName, String stdSpec, String stdMfr) {
+        return score(hospName, hospSpec, hospMfr, stdName, stdSpec, stdMfr, false);
+    }
+
+    /**
+     * 打分。nameOnly=true 时仅按名称比对(不参与规格/厂家), 用于规格不可比的目录(如医疗服务项目:
+     * 院内取单位、标准取计价单位, 二者不同源), 此时名称全同即视为满配 0.95 可进入自动对照。
+     */
+    public static Result score(String hospName, String hospSpec, String hospMfr,
+                               String stdName, String stdSpec, String stdMfr, boolean nameOnly) {
         String nH = normalize(hospName);
         String nS = normalize(stdName);
         String sH = normalize(hospSpec);
@@ -103,9 +112,28 @@ public final class CatalogMapMatcher {
             return new Result(0d, reasons);
         }
         boolean nameExact = nH.equals(nS);
+        boolean nameContain = nH.contains(nS) || nS.contains(nH);
+
+        if (nameOnly) {
+            if (nameExact) {
+                score = 0.95;
+                reasons.add("名称全同");
+            } else if (nameContain) {
+                score = 0.75;
+                reasons.add("名称互含");
+            } else {
+                double j = jaccard(nH, nS);
+                if (j >= 0.6) {
+                    score = 0.5 * j;
+                    reasons.add(String.format("名称相似(%.2f)", j));
+                }
+            }
+            score = Math.min(score, 0.99);
+            return new Result(score, reasons);
+        }
+
         boolean specExact = !sH.isEmpty() && sH.equals(sS);
         boolean mfrExact = !mH.isEmpty() && mH.equals(mS);
-        boolean nameContain = nH.contains(nS) || nS.contains(nH);
 
         if (nameExact) {
             score = specExact ? 0.95 : 0.85;

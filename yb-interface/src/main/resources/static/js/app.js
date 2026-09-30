@@ -23,6 +23,7 @@
         {
           group: '基础数据', children: [
             { key: 'catalog-map', label: '医保目录对照', comp: 'CatalogMap' },
+            { key: 'diag-map', label: '医保疾病对照', comp: 'DiagMap' },
             { key: 'community-dict', label: '医共体字典', comp: 'CommunityDict' }
           ]
         },
