@@ -154,9 +154,8 @@
         counts: null,
         /* 选机构时是否级联含下级机构账号(客户端子树过滤; 仅牵头机构生效) */
         withSubOrgs: false,
-        /* 显示模式: 默认分页(保持原观感), localStorage 持久化 */
-        /* 显示模式: 默认分页; 键升级为 userPaged2 一次性作废旧"全量"偏好(实测 4797 行全量渲染冻结页面约 7s) */
-        paged: (function () { try { return localStorage.getItem('his.userPaged2') !== '0'; } catch (e) { return true; } })(),
+        /* 显示模式: 默认由租户参数 system.list_default_paged 控制, 用户手动切换后以本地偏好为准 */
+        paged: (function () { try { var v = localStorage.getItem('his.userPaged2'); if (v !== null) return v !== '0'; return (HIS.params && HIS.params.listDefaultPaged) !== 'false'; } catch (e) { return true; } })(),
         /* 列设置: 低频列(可登录机构/关联职工/授权科室)默认隐藏 */
         colDefs: [
           { key: 'role', label: '角色' }, { key: 'homeOrg', label: '归属机构' }, { key: 'loginOrg', label: '可登录机构' },
@@ -364,12 +363,22 @@
       colShow: function (key) { return !this.colOff[key]; },
       onColToggle: function (key, shown) { this.colOff[key] = shown ? 0 : 1; this.onColChange(); if (key === 'staff' && shown && !this.staffs.length) { this.loadStaffs(); } },
       onColChange: function () { try { localStorage.setItem('his.userCols', JSON.stringify(this.colOff)); } catch (e) { } },
-      /* 分页/全量模式切换(持久化): 超阈值禁切全量, 防大数据集渲染冻结 */
+      /* 分页/全量模式切换(持久化): 超阈值弹确认软提示, 用户确认后仍可全量; 阈值读租户参数 */
       onPagedToggle: function () {
-        if (!this.paged && this.total > 2000) {
-          this.paged = true;
-          ElementPlus.ElMessage.warning('当前范围共 ' + this.total + ' 条, 数据量过大全量显示会长时间卡顿, 已自动保持分页');
-          try { localStorage.setItem('his.userPaged2', '1'); } catch (e) { }
+        var vm = this;
+        var threshold = (HIS.params && HIS.params.listFullThreshold) || 2000;
+        if (!this.paged && this.total > threshold) {
+          ElementPlus.ElMessageBox.confirm(
+            '当前范围共 ' + this.total + ' 条，全量显示可能卡顿数秒，是否继续？',
+            '提示', { confirmButtonText: '继续全量', cancelButtonText: '保持分页', type: 'warning' }
+          ).then(function () {
+            vm.page = 1;
+            try { localStorage.setItem('his.userPaged2', '0'); } catch (e) { }
+            vm.load();
+          }).catch(function () {
+            vm.paged = true;
+            try { localStorage.setItem('his.userPaged2', '1'); } catch (e) { }
+          });
           return;
         }
         this.page = 1;
@@ -456,12 +465,9 @@
         HIS.get(q)
           .then(function (d) {
             vm.list = (d && d.records) || []; vm.total = (d && d.total) || 0;
-            /* 兜底: 全量模式下作用域切换后行数超阈(切档守卫只拦手动切换), 自动回到分页 */
-            if (!vm.paged && vm.total > 2000) {
-              vm.paged = true;
-              ElementPlus.ElMessage.warning('数据量过大(' + vm.total + ' 条), 已自动切回分页显示');
-              try { localStorage.setItem('his.userPaged2', '1'); } catch (e) { }
-              vm.load();
+            /* 兆底提示: 全量模式下作用域切换后行数超阈, 仅警告不拦截(用户已显式确认全量) */
+            if (!vm.paged && vm.total > ((HIS.params && HIS.params.listFullThreshold) || 2000)) {
+              ElementPlus.ElMessage.info('当前范围共 ' + vm.total + ' 条，全量渲染可能需要数秒');
             }
           })
           .catch(HIS.notifyError)

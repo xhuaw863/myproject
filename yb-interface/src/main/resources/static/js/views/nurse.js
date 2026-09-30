@@ -16,6 +16,9 @@
       '.ns-blink { animation: nsBlink 1s infinite; font-weight:800; color:var(--yb-danger); }',
       '.ns-emergency { font-weight:800; color:var(--yb-danger); }',
       '.ns-overdue { color:var(--yb-danger); font-weight:700; }',
+      /* T45 输液巡视超30分钟: 整行淡红警示 + 巡视列"巡视超时"红字闪烁 */
+      '.el-table__body tr.ns-patrol-row > td.el-table__cell { background-color:var(--yb-danger-bg) !important; }',
+      '.ns-patrol-due { color:var(--yb-danger); font-weight:800; animation: nsBlink 1s infinite; }',
       '.ns-soft { color:var(--yb-ink-2); font-size:12px; }',
       '.ns-strong { color:var(--yb-ink-1); font-weight:600; }',
       '.ns-check-item { display:block; margin:4px 0; }',
@@ -676,19 +679,23 @@
         HIS.get(q).then(function (d) {
           vm.list = (d && d.records) || [];
           vm.total = (d && d.total) || 0;
+          /* 列表加载后立即校准巡视超时分钟数(此后每秒 tick 刷新) */
+          (vm.list || []).forEach(function (r) { r._patrolMin = vm.patrolMinutes(r); });
         }).catch(HIS.notifyError).finally(function () { vm.loading = false; });
       },
       onTab: function () { this.page = 1; this.load(); },
       onPage: function (p) { this.page = p; this.load(); },
       onSize: function (s) { this.size = s; this.onPage(1); },
       seqNo: function (i) { return (this.page - 1) * this.size + i + 1; },
-      /* 已输时长实时: 每秒本地自增(输液中/待拔针页签), 每30秒刷新列表校准 */
+      /* 已输时长实时: 每秒本地自增(输液中/待拔针页签), 每30秒刷新列表校准;
+       * 同时刷新巡视超时分钟数(_patrolMin), 驱动超时行标红与"巡视超时"闪烁 */
       startTimers: function () {
         var vm = this;
         vm.tickTimer = setInterval(function () {
           if (vm.tab === 'infusing' || vm.tab === 'ready_remove') {
             (vm.list || []).forEach(function (r) {
               if (r.elapsedSeconds != null) { r.elapsedSeconds = Number(r.elapsedSeconds) + 1; }
+              r._patrolMin = vm.patrolMinutes(r);
             });
           }
         }, 1000);
@@ -710,6 +717,24 @@
       elapsedText: function (row) { return fmtDur(row.elapsedSeconds); },
       patrolList: function (row) {
         try { return JSON.parse((row && row.patrolRecords) || '[]') || []; } catch (e) { return []; }
+      },
+      /* 距最近一次巡视的分钟数(从未巡视按穿刺时间起算), 无法解析返回 null */
+      patrolMinutes: function (row) {
+        var arr = this.patrolList(row);
+        var base = arr.length ? arr[arr.length - 1].time : (row && row.punctureTime);
+        if (!base) { return null; }
+        var t = new Date(String(base).replace(' ', 'T')).getTime();
+        if (isNaN(t)) { return null; }
+        return Math.floor((Date.now() - t) / 60000);
+      },
+      /* 巡视超时判定: 超30分钟未巡视(口径与后端 InfusionService.PATROL_OVERTIME_MINUTES 一致) */
+      isPatrolDue: function (row) {
+        var m = row && row._patrolMin != null ? Number(row._patrolMin) : null;
+        return m != null && !isNaN(m) && m >= 30;
+      },
+      /* 超时行整行淡红 */
+      rowClass: function (p) {
+        return this.isPatrolDue(p && p.row) ? 'ns-patrol-row' : '';
       },
       /* ===== 配液(创建输液记录) ===== */
       openPrep: function (row) {
@@ -835,8 +860,8 @@
       '    </el-table-column>',
       '  </el-table>',
 
-      /* 输液中 / 待拔针(同结构, 待拔针突出红色) */
-      '  <el-table v-if="tab === \'infusing\' || tab === \'ready_remove\'" :data="list" v-loading="loading" border stripe size="small">',
+      /* 输液中 / 待拔针(同结构, 待拔针突出红色; 巡视超30分钟整行淡红+巡视列红字闪烁) */
+      '  <el-table v-if="tab === \'infusing\' || tab === \'ready_remove\'" :data="list" v-loading="loading" border stripe size="small" :row-class-name="rowClass">',
       '    <el-table-column type="index" label="序号" width="55" align="center" :index="seqNo"></el-table-column>',
       '    <el-table-column label="患者" width="150">',
       '      <template #default="s"><span class="ns-strong">{{ s.row.patientName || \'-\' }}</span><span class="ns-soft"> {{ s.row.genderName || \'-\' }}</span></template>',
@@ -856,8 +881,11 @@
       '    <el-table-column label="预计结束" width="140" align="center">',
       '      <template #default="s">{{ estEndOf(s.row) }}</template>',
       '    </el-table-column>',
-      '    <el-table-column label="巡视" width="60" align="center">',
-      '      <template #default="s">{{ s.row.patrolCount != null ? s.row.patrolCount : 0 }}次</template>',
+      '    <el-table-column label="巡视" width="100" align="center">',
+      '      <template #default="s">',
+      '        <span :class="{ \'ns-patrol-due\': isPatrolDue(s.row) }">{{ s.row.patrolCount != null ? s.row.patrolCount : 0 }}次</span>',
+      '        <div v-if="isPatrolDue(s.row)" class="ns-patrol-due" style="font-size:11px;line-height:1.4;">巡视超时</div>',
+      '      </template>',
       '    </el-table-column>',
       '    <el-table-column label="操作" width="170" align="center" fixed="right">',
       '      <template #default="s">',

@@ -132,6 +132,7 @@ public class RbacInitializer implements ApplicationRunner {
             ensureSystemParamMenu(menuIds);
             ensureVerifyConsoleMenu(menuIds);
             ensureUploadCenterMenu(menuIds);
+            mergeInpatientMenus(menuIds);
             Map<String, Long> roleIds = seedGlobalRoles();
             ensureOrgAdminRole();
             ensureTherapistTechnicianRoles(roleIds);
@@ -427,10 +428,28 @@ public class RbacInitializer implements ApplicationRunner {
         // ADMIN/SUPER_ADMIN 走 all_menus 免配置; 其余角色给"工作台+本职能相关菜单"最小子集
         Map<String, String[]> grants = new HashMap<>();
         grants.put(Roles.REGISTRAR, new String[]{"dashboard", "patient", "register", "unregister", "reg_stats", "reg_detail"});
-        grants.put(Roles.DOCTOR, new String[]{"dashboard", "doctor-ws", "patient", "doctor-worklog", "medical-template", "nurse-allergy", "medtech-report-query"});
+        grants.put(Roles.DOCTOR, new String[]{"dashboard", "doctor-ws", "patient", "doctor-worklog", "medical-template", "nurse-allergy", "medtech-report-query",
+                // 住院医生站(2026-09 住院模块): 医嘱/诊断/病历/患者概览入口共用工作站组件
+                "inp-doctor-ws", "inp-order-manage", "inp-order-template", "inp-diagnosis", "inp-med-record", "inp-patient-overview",
+                // 临床路径/手术麻醉(2026-09 集成): 路径模板管理 + 手术管理 + 麻醉记录
+                "pathway-template", "surgery-manage", "anesthesia-record",
+                // 住院报表(2026-09 报表/打印模块): 报表中心(只读)
+                "inp-report"});
         grants.put(Roles.PHARMACIST, new String[]{"dashboard", "dispense-todo", "dispense", "drug-return", "pharmacy-def", "pharmacy-rpt", "wh-stock", "wh-in", "wh-out", "warehouse-def", "warehouse-rpt", "wh-check", "req-mgr", "trf-mgr", "price-adjust", "stock-ledger", "trace-code", "price-mgr"});
-        grants.put(Roles.CASHIER, new String[]{"dashboard", "charge-ws", "charge-todo", "charge-setl", "charge-refund", "invoice-mgr", "charge-rpt", "rpt-setl", "rpt-daily"});
-        grants.put(Roles.NURSE, new String[]{"dashboard", "patient", "nurse-pending", "nurse-skin-test", "nurse-infusion", "nurse-allergy", "nurse-exec-log"});
+        grants.put(Roles.CASHIER, new String[]{"dashboard", "charge-ws", "charge-todo", "charge-setl", "charge-refund", "invoice-mgr", "charge-rpt", "rpt-setl", "rpt-daily",
+                // 住院登记结算(2026-09 住院模块): 入院登记/在院患者/床位/预交金/费用清单/出院结算/住院日报
+                "inp-admission", "inp-patient-list", "inp-bed-manage", "inp-deposit", "inp-charge-list", "inp-settle", "inp-daily-summary",
+                // 手麻记费(2026-09 集成)
+                "surgery-fee",
+                // 住院报表(2026-09 报表/打印模块): 打印管理(日清单/结算单打印)
+                "inp-print"});
+        grants.put(Roles.NURSE, new String[]{"dashboard", "patient", "nurse-pending", "nurse-skin-test", "nurse-infusion", "nurse-allergy", "nurse-exec-log",
+                // 住院护士站(2026-09 住院模块): 医嘱审核/执行/护理记录/交接班/床位一览入口共用工作站组件
+                "inp-nurse-ws", "inp-order-audit", "inp-order-exec", "inp-nursing-record", "inp-shift-handover", "inp-bed-overview",
+                // 麻醉记录(2026-09 集成, 只读)
+                "anesthesia-record",
+                // 住院报表(2026-09 报表/打印模块): 报表中心(只读)
+                "inp-report"});
         grants.put(Roles.THERAPIST, new String[]{"dashboard", "patient", "treatment-pending", "treatment-plan", "treatment-equip", "treatment-log"});
         grants.put(Roles.TECHNICIAN, new String[]{"dashboard", "patient", "medtech-specimen", "medtech-report", "medtech-critical", "medtech-critical-rule", "medtech-report-query"});
         for (Map.Entry<String, String[]> e : grants.entrySet()) {
@@ -455,11 +474,35 @@ public class RbacInitializer implements ApplicationRunner {
      */
     private void ensureBizRoleGrants(Map<String, Long> menuIds, Map<String, Long> roleIds) {
         Map<String, String[]> grants = new HashMap<>();
-        grants.put(Roles.PHARMACIST, new String[]{"wh-stock", "wh-in", "wh-out", "wh-check", "pharmacy-def", "pharmacy-rpt", "warehouse-def", "warehouse-rpt", "req-mgr", "trf-mgr", "price-adjust", "stock-ledger", "trace-code", "price-mgr"});
-        grants.put(Roles.CASHIER, new String[]{"rpt-setl", "rpt-daily", "invoice-mgr", "charge-rpt", "charge-ws"});
+        grants.put(Roles.PHARMACIST, new String[]{"wh-stock", "wh-in", "wh-out", "wh-check", "pharmacy-def", "pharmacy-rpt", "warehouse-def", "warehouse-rpt", "req-mgr", "trf-mgr", "price-adjust", "stock-ledger", "trace-code", "price-mgr",
+                // 住院药师站(T41): 药师审核(药品医嘱审方)
+                "pharm-station"});
+        grants.put(Roles.CASHIER, new String[]{"rpt-setl", "rpt-daily", "invoice-mgr", "charge-rpt", "charge-ws",
+                // 住院登记结算(2026-09 住院模块)
+                "inp-admission", "inp-patient-list", "inp-bed-manage", "inp-deposit", "inp-charge-list", "inp-settle", "inp-daily-summary",
+                // 手麻记费(2026-09 集成)
+                "surgery-fee",
+                // 住院报表(2026-09 报表/打印模块): 打印管理(日清单/结算单打印)
+                "inp-print"});
         grants.put(Roles.REGISTRAR, new String[]{"reg_stats", "reg_detail"});
-        grants.put(Roles.DOCTOR, new String[]{"doctor-ws", "doctor-worklog", "medical-template", "nurse-allergy", "medtech-report-query"});
-        grants.put(Roles.NURSE, new String[]{"doctor-ws", "doctor-worklog", "nurse-pending", "nurse-skin-test", "nurse-infusion", "nurse-allergy", "nurse-exec-log"});
+        grants.put(Roles.DOCTOR, new String[]{"doctor-ws", "doctor-worklog", "medical-template", "nurse-allergy", "medtech-report-query",
+                // 住院医生站(2026-09 住院模块)
+                "inp-doctor-ws", "inp-order-manage", "inp-order-template", "inp-diagnosis", "inp-med-record", "inp-patient-overview",
+                // 临床路径/手术麻醉(2026-09 集成): 路径模板管理 + 手术管理 + 麻醉记录
+                "pathway-template", "surgery-manage", "anesthesia-record",
+                // 住院报表(2026-09 报表/打印模块): 报表中心(只读)
+                "inp-report",
+                // 住院危急值闭环(T41): 危急值管理(确认/处置/关闭)
+                "critical-value"});
+        grants.put(Roles.NURSE, new String[]{"doctor-ws", "doctor-worklog", "nurse-pending", "nurse-skin-test", "nurse-infusion", "nurse-allergy", "nurse-exec-log",
+                // 住院护士站(2026-09 住院模块)
+                "inp-nurse-ws", "inp-order-audit", "inp-order-exec", "inp-nursing-record", "inp-shift-handover", "inp-bed-overview",
+                // 麻醉记录(2026-09 集成, 只读)
+                "anesthesia-record",
+                // 住院报表(2026-09 报表/打印模块): 报表中心(只读)
+                "inp-report",
+                // 住院危急值闭环 + PDA扫码(T41)
+                "critical-value", "pda-simulation"});
         grants.put(Roles.THERAPIST, new String[]{"dashboard", "patient", "treatment-pending", "treatment-plan", "treatment-equip", "treatment-log"});
         grants.put(Roles.TECHNICIAN, new String[]{"dashboard", "patient", "medtech-specimen", "medtech-report", "medtech-critical", "medtech-critical-rule", "medtech-report-query"});
         int added = 0;
@@ -482,7 +525,7 @@ public class RbacInitializer implements ApplicationRunner {
             }
         }
         if (added > 0) {
-            log.info("业务角色新菜单授权已补充: 药师(药库+管理统计+盘点+请领调拨调价台账追溯码+药房定价)/收费员(报表+发票管理收费统计)/挂号员(挂号统计与明细)/医生护士(门诊医生站+医生工作日志)/医生(过敏登记+报告查询)/护士(护士站五项)/治疗师医技人员(治疗/医技全量) 共 {} 条", added);
+            log.info("业务角色新菜单授权已补充: 药师(药库+管理统计+盘点+请领调拨调价台账追溯码+药房定价+药师审核)/收费员(报表+发票管理收费统计+住院登记结算+手麻记费+打印管理)/挂号员(挂号统计与明细)/医生护士(门诊医生站+医生工作日志)/医生(过敏登记+报告查询+住院医生站+临床路径/手术管理/麻醉记录+报表中心+危急值管理)/护士(护士站五项+住院护士站+麻醉记录+报表中心+危急值管理+PDA扫码)/治疗师医技人员(治疗/医技全量) 共 {} 条", added);
         }
     }
 
@@ -1428,6 +1471,69 @@ public class RbacInitializer implements ApplicationRunner {
         renameMenuIfOldName("treatment-equip", "治疗设备", "设备管理");
         renameMenuIfOldName("treatment-log", "治疗记录", "治疗记录查询");
         renameMenuIfOldName("medtech-report", "报告书写", "报告工作站");
+    }
+
+    /* ===================== 3d. 住院模块基座菜单(2026-09) ===================== */
+
+    /**
+     * 幂等补种住院三目录及18叶子(2026-09 住院模块): 住院登记结算(7)/住院医生站(5)/住院护士站(6)。
+     * 与三模块基座同款判存补种(ensureDirMenu/ensureChildMenu 幂等且自动复活墓碑行),
+     * id 回填 menuIds 供角色补授权(ensureBizRoleGrants: 医生→住院医生站全部, 护士→住院护士站全部,
+     * 收费员→住院登记结算全部; ADMIN/ORG_ADMIN/SUPER_ADMIN 走 all_menus 免配置自动可见)。
+     * 医生站/护士站多叶子共用同一工作站组件(InpDoctorWorkstation/InpNurseStation), 入口 key 区分定位页签;
+     * 菜单 key 与前端 app.js 静态兑底 MENU 同 key 同名(动态菜单优先, 失败回退静态)。
+     * 2026-09 集成追加: 临床路径(路径模板管理/独立页组件)与手术麻醉(手术管理/麻醉记录/手麻记费,
+     * 三独立视图组件)两组, 同款判存补种。
+     * 2026-09 报表/打印模块追加: 住院报表(报表中心InpReportCenter/打印管理InpPrintCenter)一组,
+     * 同款判存补种; 医生/护士补授报表中心(只读), 收费员补授打印管理(日清单/结算单打印),
+     * ADMIN/ORG_ADMIN/SUPER_ADMIN 走 all_menus 免配置自动可见。
+     * T41 追加: 住院药师站(药师审核pharm-station)/危急值闭环(危急值管理critical-value)/
+     * 移动护理(PDA扫码pda-simulation/移动护理mobile-nurse)三组, comp 与 HIS.views 注册键同值。
+     */
+    private void mergeInpatientMenus(Map<String, Long> menuIds) {
+        ensureDirMenu(menuIds, "inpatient-group", "住院登记结算");
+        ensureChildMenu(menuIds, "inpatient-group", "inp-admission", "入院登记", "InpAdmission");
+        ensureChildMenu(menuIds, "inpatient-group", "inp-patient-list", "在院患者管理", "InpPatientList");
+        ensureChildMenu(menuIds, "inpatient-group", "inp-bed-manage", "床位管理", "InpBedManage");
+        ensureChildMenu(menuIds, "inpatient-group", "inp-deposit", "预交金管理", "InpDeposit");
+        ensureChildMenu(menuIds, "inpatient-group", "inp-charge-list", "住院费用清单", "InpChargeList");
+        ensureChildMenu(menuIds, "inpatient-group", "inp-settle", "出院结算", "InpSettle");
+        ensureChildMenu(menuIds, "inpatient-group", "inp-daily-summary", "住院日报", "InpDailySummary");
+        ensureDirMenu(menuIds, "inp-doctor-group", "住院医生站");
+        ensureChildMenu(menuIds, "inp-doctor-group", "inp-doctor-ws", "住院医生工作站", "InpDoctorWorkstation");
+        ensureChildMenu(menuIds, "inp-doctor-group", "inp-order-manage", "医嘱管理", "InpDoctorWorkstation");
+        ensureChildMenu(menuIds, "inp-doctor-group", "inp-order-template", "医嘱模板/套餐", "InpOrderTemplateManage");
+        ensureChildMenu(menuIds, "inp-doctor-group", "inp-diagnosis", "住院诊断", "InpDoctorWorkstation");
+        ensureChildMenu(menuIds, "inp-doctor-group", "inp-med-record", "住院病历", "InpDoctorWorkstation");
+        ensureChildMenu(menuIds, "inp-doctor-group", "inp-patient-overview", "患者概览", "InpDoctorWorkstation");
+        ensureDirMenu(menuIds, "inp-nurse-group", "住院护士站");
+        ensureChildMenu(menuIds, "inp-nurse-group", "inp-nurse-ws", "住院护士工作站", "InpNurseStation");
+        ensureChildMenu(menuIds, "inp-nurse-group", "inp-order-audit", "医嘱审核", "InpNurseStation");
+        ensureChildMenu(menuIds, "inp-nurse-group", "inp-order-exec", "医嘱执行", "InpNurseStation");
+        ensureChildMenu(menuIds, "inp-nurse-group", "inp-nursing-record", "护理记录", "InpNurseStation");
+        ensureChildMenu(menuIds, "inp-nurse-group", "inp-shift-handover", "交接班", "InpNurseStation");
+        ensureChildMenu(menuIds, "inp-nurse-group", "inp-bed-overview", "床位一览", "InpNurseStation");
+        // 临床路径(2026-09 临床路径模块): 路径模板管理
+        ensureDirMenu(menuIds, "clinical-pathway-group", "临床路径");
+        ensureChildMenu(menuIds, "clinical-pathway-group", "pathway-template", "路径模板管理", "ClinicalPathwayManage");
+        // 手术麻醉(2026-09 手麻记费模块): 手术管理/麻醉记录/手麻记费
+        ensureDirMenu(menuIds, "surgery-group", "手术麻醉");
+        ensureChildMenu(menuIds, "surgery-group", "surgery-manage", "手术管理", "SurgeryManage");
+        ensureChildMenu(menuIds, "surgery-group", "anesthesia-record", "麻醉记录", "AnesthesiaRecord");
+        ensureChildMenu(menuIds, "surgery-group", "surgery-fee", "手麻记费", "SurgeryFee");
+        // 住院报表(2026-09 报表/打印模块): 报表中心/打印管理
+        ensureDirMenu(menuIds, "inp-report-group", "住院报表");
+        ensureChildMenu(menuIds, "inp-report-group", "inp-report", "报表中心", "InpReportCenter");
+        ensureChildMenu(menuIds, "inp-report-group", "inp-print", "打印管理", "InpPrintCenter");
+        // T41(与 app.js 静态兑底菜单同 key 同名): 药师审核/危急值管理/PDA扫码/移动护理;
+        // comp 用 HIS.views 注册键(critical-value.js/pharm-station.js 注册键为小写短横线, 与此处一致)
+        ensureDirMenu(menuIds, "inp-pharm-group", "住院药师站");
+        ensureChildMenu(menuIds, "inp-pharm-group", "pharm-station", "药师审核", "pharm-station");
+        ensureDirMenu(menuIds, "critical-value-group", "危急值闭环");
+        ensureChildMenu(menuIds, "critical-value-group", "critical-value", "危急值管理", "critical-value");
+        ensureDirMenu(menuIds, "mobile-nurse-group", "移动护理");
+        ensureChildMenu(menuIds, "mobile-nurse-group", "pda-simulation", "PDA扫码", "pda-simulation");
+        ensureChildMenu(menuIds, "mobile-nurse-group", "mobile-nurse", "移动护理", "mobile-nurse");
     }
 
     /**

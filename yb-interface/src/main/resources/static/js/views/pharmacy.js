@@ -70,6 +70,8 @@
     data: function () {
       return {
         loading: false, list: [], total: 0, page: 1, size: 20, keyword: '',
+        /* 自动刷新间隔(秒), 由系统参数 pharmacy.auto_refresh_seconds 控制, 0=不刷新 */
+        refreshSecs: 30,
         /* 发药详情对话框 */
         dispenseVisible: false, detailLoading: false,
         dispenseRx: null, dispenseItems: [], detailOrgId: null,
@@ -88,7 +90,13 @@
         return false;
       }
     },
-    created: function () { var vm = this; this.loadPharmacyOpts().then(function () { vm.load(); vm.startAutoRefresh(); }); },
+    created: function () {
+      var vm = this;
+      HIS.get('/api/sys/param/resolve/pharmacy.auto_refresh_seconds')
+        .then(function (v) { vm.refreshSecs = parseInt(v, 10); if (isNaN(vm.refreshSecs)) vm.refreshSecs = 30; })
+        .catch(function () { });
+      this.loadPharmacyOpts().then(function () { vm.load(); vm.startAutoRefresh(); });
+    },
     /* Vue3 销毁钩子(beforeDestroy为Vue2名称, 在Vue3中被忽略): 清理自动刷新定时器防泄漏 */
     beforeUnmount: function () { this.stopAutoRefresh(); },
     methods: {
@@ -235,7 +243,10 @@
       },
       startAutoRefresh: function () {
         var vm = this;
-        vm.refreshTimer = setInterval(function () { vm.load(true); }, 30 * 1000);
+        vm.stopAutoRefresh();
+        if (vm.refreshSecs > 0) {
+          vm.refreshTimer = setInterval(function () { vm.load(true); }, vm.refreshSecs * 1000);
+        }
       },
       stopAutoRefresh: function () {
         if (this.refreshTimer) { clearInterval(this.refreshTimer); this.refreshTimer = null; }
@@ -244,7 +255,7 @@
     },
     template: [
       '<div class="page-card">',
-      '  <div class="page-title">待发药 <span style="font-size:12px;color:var(--yb-ink-2);font-weight:normal;">(已开立未发药处方 · 先开先发 · 列表每30秒自动刷新)</span></div>',
+      '  <div class="page-title">待发药 <span style="font-size:12px;color:var(--yb-ink-2);font-weight:normal;">(已开立未发药处方 · 先开先发 · <span v-if="refreshSecs>0">列表每{{ refreshSecs }}秒自动刷新</span><span v-else>已关闭自动刷新</span>)</span></div>',
       '  <div class="toolbar">',
       '    <span style="font-weight:600;color:var(--yb-ink-1);">当前药房</span>',
       '    <el-select v-model="pharmacyId" style="width:150px" :disabled="phSingle" @change="search">',
@@ -256,7 +267,7 @@
       '    <el-button type="primary" @click="search">查询</el-button>',
       '    <el-button @click="load()">刷新</el-button>',
       '    <span style="flex:1;"></span>',
-      '    <span style="color:var(--yb-ink-2);font-size:13px;">共 {{ total }} 张 · 每30秒自动刷新</span>',
+      '    <span style="color:var(--yb-ink-2);font-size:13px;">共 {{ total }} 张<span v-if="refreshSecs>0"> · 每{{ refreshSecs }}秒自动刷新</span></span>',
       '  </div>',
       '  <el-table :data="list" v-loading="loading" border stripe size="small">',
       '    <el-table-column type="index" label="序号" width="60" :index="seqNo"></el-table-column>',

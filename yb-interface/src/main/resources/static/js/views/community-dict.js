@@ -27,6 +27,36 @@
     { v: 'oper', l: '手术代码' },
     { v: 'tumor', l: '肿瘤代码' }
   ];
+  /* 值域字典分组(his_val_dict.dict_type = 标准源键:分组码): 预置医疗业务全部直连点(2026-09 字典分层收口),
+     维护页可按组从基本字典整组导入; 业务下拉(HIS.stdValues)统一从本字典取数 */
+  var VAL_TYPES = [
+    { v: 'cv_code:gend', l: '性别代码' },
+    { v: 'cv_code:insutype', l: '险种类型' },
+    { v: 'cv_code:med_type', l: '医保医疗类别' },
+    { v: 'cv_code:mdtrt_cert_type', l: '就诊凭证类型' },
+    { v: 'cv_code:psn_cert_type', l: '人员证件类型' },
+    { v: 'cv_code:naty', l: '民族代码' },
+    { v: 'cv_code:caty', l: '科目类别(执业范围)' },
+    { v: 'cv_code:oprn_lv_code', l: '手术级别代码' },
+    { v: 'cv_code:reg_level', l: '号别代码' },
+    { v: 'cv_code:dosform', l: '剂型代码' },
+    { v: 'cv_code:chrgitm_lv', l: '医保收费项目等级(甲乙丙)' },
+    { v: 'cv_code:drug_class', l: '药品管理类别' },
+    { v: 'cv_code:storage_cond', l: '储存条件' },
+    { v: 'cv_code:dose_unit', l: '剂量单位' },
+    { v: 'cv_code:pack_unit', l: '包装单位' },
+    { v: 'cv_code:fixmedins_type', l: '定点医疗机构类型' },
+    { v: 'cv_code:hosp_lv', l: '医院等级' },
+    { v: 'cv_code:MEDINS_TYPE', l: '机构类型(医保)' },
+    { v: 'wst364:CV08.30.005', l: '专业技术职务等级(WS364)' },
+    { v: 'hbvalue:HBCV08.50.029', l: '抗菌药物分级(湖北采集规范)' },
+    { v: 'hbvalue:CV02.01.202', l: '湖北职业代码' },
+    { v: 'hbvalue:GB/T 2261.2-2003', l: '婚姻状况(GB/T 2261.2)' },
+    { v: 'hbvalue:GB/T 2659.1-2022', l: '国家与地区代码(GB/T 2659.1)' },
+    { v: 'hbvalue:GB/T 4658-2006', l: '学历代码(GB/T 4658)' },
+    { v: 'hbvalue:GB/T 4761-2008', l: '家庭关系代码(GB/T 4761)' },
+    { v: 'whvalue:CT98.00.024', l: '执业类别(武汉平台)' }
+  ];
   /* 标准字典导入源: 类型 -> 可选字典(诊断类携 diagType=目标字典类别) */
   var IMPORT_DICTS = {
     drug: [{ key: 'drug', label: '湖北医保药品(西药/中成药)' }],
@@ -76,6 +106,10 @@
         diagTypes: DIAG_TYPES,
         diag: { loading: false, list: [], total: 0, page: 1, size: 20, keyword: '', dictType: 'west' },
         diagDlg: false, diagEditing: false, diagImport: false, diagForm: this.emptyDiag(),
+        /* 值域字典(业务自由值域统一取数源) */
+        valTypes: VAL_TYPES,
+        val: { loading: false, list: [], total: 0, page: 1, size: 50, keyword: '', dictType: 'cv_code:gend' },
+        valDlg: false, valEditing: false, valForm: this.emptyVal('cv_code:gend'),
         /* 调价记录 */
         adj: { loading: false, list: [], total: 0, page: 1, size: 20, catalogType: '' },
         /* 字段级修改记录(价格/医保码之外的全部字段变更) */
@@ -140,6 +174,7 @@
         else if (name === 'drug') { this.loadDrug(); }
         else if (name === 'cons') { this.loadCons(); }
         else if (name === 'diag') { this.loadDiag(); }
+        else if (name === 'val') { this.loadVal(); }
         else if (name === 'adjust') { this.loadAdjust(); }
         else if (name === 'elog') { this.loadElog(); }
         else if (name === 'import') { this.loadStd(); }
@@ -567,6 +602,59 @@
         }).catch(HIS.notifyError);
       },
       diagDel: function (row) { var vm = this; HIS.del('/api/community-dict/diag-dict/' + row.id).then(function () { HIS.notifySuccess('已删除'); vm.loadDiag(); }).catch(HIS.notifyError); },
+
+      /* ============ 值域字典(业务自由值域, dict_type=标准源键:分组码) ============ */
+      emptyVal: function (t) {
+        return {
+          id: null, dictType: t || 'cv_code:gend', typeName: '', code: '', name: '', ybCode: '',
+          sortNo: 0, status: 1, memo: '', pyCode: '', abbrCode: '', srcType: '', srcDoc: '', srcCode: ''
+        };
+      },
+      valLabel: function (t) {
+        var o = VAL_TYPES.filter(function (x) { return x.v === t; })[0];
+        return o ? o.l : (t || '');
+      },
+      loadVal: function () {
+        var vm = this; vm.val.loading = true;
+        var q = '/api/community-dict/val-dict/page?dictType=' + encodeURIComponent(vm.val.dictType)
+          + '&page=' + vm.val.page + '&size=' + vm.val.size;
+        if (vm.val.keyword) { q += '&keyword=' + encodeURIComponent(vm.val.keyword); }
+        HIS.get(q).then(function (d) { vm.val.list = (d && d.records) || []; vm.val.total = (d && d.total) || 0; })
+          .catch(HIS.notifyError).finally(function () { vm.val.loading = false; });
+      },
+      valTypeChange: function () { this.val.page = 1; this.loadVal(); },
+      valSearch: function () { this.val.page = 1; this.loadVal(); },
+      valPage: function (p) { this.val.page = p; this.loadVal(); },
+      valSize: function (s) { this.val.size = s; this.val.page = 1; this.loadVal(); },
+      valAdd: function () { this.valEditing = false; this.valForm = this.emptyVal(this.val.dictType); this.valDlg = true; },
+      valEdit: function (row) { this.valEditing = true; this.valForm = clean(Object.assign(this.emptyVal(row.dictType), row)); this.valDlg = true; },
+      valSubmit: function () {
+        var vm = this; var f = vm.valForm;
+        if (!f.code) { ElementPlus.ElMessage.warning('值编码必填'); return; }
+        if (!f.name) { ElementPlus.ElMessage.warning('值名称必填'); return; }
+        var p = vm.valEditing ? HIS.put('/api/community-dict/val-dict', f) : HIS.post('/api/community-dict/val-dict', f);
+        p.then(function () {
+          HIS.notifySuccess('保存成功'); vm.valDlg = false;
+          vm.val.page = 1; vm.val.dictType = f.dictType; vm.loadVal();
+        }).catch(HIS.notifyError);
+      },
+      valDel: function (row) { var vm = this; HIS.del('/api/community-dict/val-dict/' + row.id).then(function () { HIS.notifySuccess('已删除'); vm.loadVal(); }).catch(HIS.notifyError); },
+      /* 整组导入: 从对应基本字典(std_*值域表)拉全组幂等 upsert, 组行数十~数百级 */
+      valImportStd: function () {
+        var vm = this; var t = vm.val.dictType;
+        ElementPlus.ElMessageBox.confirm('从标准值域「' + (vm.valLabel(t)) + '」整组导入到医共体统一字典(已存在项自动更新)?', '整组导入', { type: 'info' })
+          .then(function () {
+            vm.val.loading = true;
+            HIS.post('/api/community-dict/val-dict/import-batch?dictType=' + encodeURIComponent(t), {})
+              .then(function (r) {
+                r = r || {};
+                HIS.notifySuccess('导入完成: 源 ' + (r.total || 0) + ' 行, 新增 ' + (r.inserted || 0) + ', 更新 ' + (r.updated || 0));
+                vm.val.page = 1; vm.loadVal();
+              })
+              .catch(HIS.notifyError)
+              .finally(function () { vm.val.loading = false; });
+          }).catch(function () {});
+      },
       /* 诊断字典页快捷跳转导入Tab(预选诊断类与当前浏览类别对应的源) */
       gotoDiagImport: function () {
         this.impType = 'diag';
@@ -733,6 +821,36 @@
       '        </template></el-table-column>',
       '      </el-table>',
       '      <el-pagination style="margin-top:12px;justify-content:flex-end;" background layout="total, sizes, prev, pager, next" :total="diag.total" :page-size="diag.size" :page-sizes="[10,20,50,100]" :current-page="diag.page" @current-change="diagPage" @size-change="diagSize"></el-pagination>',
+      '    </el-tab-pane>',
+
+      /* ---- 值域字典(业务自由值域统一取数源) ---- */
+      '    <el-tab-pane label="值域字典" name="val">',
+      '      <div class="toolbar">',
+      '        <el-select v-model="val.dictType" style="width:250px" @change="valTypeChange"><el-option v-for="t in valTypes" :key="t.v" :label="t.l + \' · \' + t.v" :value="t.v"></el-option></el-select>',
+      '        <el-input v-model="val.keyword" placeholder="名称/编码/拼音简码" clearable style="width:200px" @keyup.enter="valSearch"></el-input>',
+      '        <el-button @click="valSearch">查询</el-button>',
+      '        <el-button type="primary" @click="valAdd">新增条目</el-button>',
+      '        <el-button type="success" @click="valImportStd">从标准值域整组导入</el-button>',
+      '        <span style="color:var(--yb-ink-2);font-size:13px;">共 {{ val.total }} 条</span>',
+      '      </div>',
+      '      <el-alert type="info" :closable="false" show-icon style="margin-bottom:10px;" title="字典分层口径: 医疗业务下拉(性别/险种/剂型/号别/抗菌分级等值域)统一从本字典取数; 基本字典(std_*值域)仅作导入源。新增值域分组可在「标准源键:分组码」约定下扩展, 整组导入自动溯源。医生站/门诊/住院/基础数据页下拉已接入本字典。"></el-alert>',
+      '      <el-table :data="val.list" v-loading="val.loading" border stripe size="small">',
+      '        <el-table-column type="index" label="序号" width="55" :index="seq(val)"></el-table-column>',
+      '        <el-table-column prop="code" label="值编码" width="120" show-overflow-tooltip></el-table-column>',
+      '        <el-table-column prop="name" label="值名称" min-width="180" show-overflow-tooltip></el-table-column>',
+      '        <el-table-column prop="pyCode" label="拼音码" width="90"><template #default="s">{{ s.row.pyCode || \'-\' }}</template></el-table-column>',
+      '        <el-table-column prop="abbrCode" label="自定义码" width="90"><template #default="s">{{ s.row.abbrCode || \'-\' }}</template></el-table-column>',
+      '        <el-table-column prop="ybCode" label="医保码" width="110"><template #default="s">{{ s.row.ybCode || "—" }}</template></el-table-column>',
+      '        <el-table-column prop="typeName" label="值域组名" min-width="130" show-overflow-tooltip><template #default="s">{{ s.row.typeName || "—" }}</template></el-table-column>',
+      '        <el-table-column prop="srcDoc" label="来源" min-width="180" show-overflow-tooltip><template #default="s">{{ s.row.srcDoc || "院内自定义" }}</template></el-table-column>',
+      '        <el-table-column prop="sortNo" label="排序" width="70"></el-table-column>',
+      '        <el-table-column label="状态" width="70"><template #default="s"><el-tag size="small" :type="s.row.status===1?\'success\':\'info\'">{{ s.row.status===1?"启用":"停用" }}</el-tag></template></el-table-column>',
+      '        <el-table-column label="操作" width="130" fixed="right"><template #default="s">',
+      '          <el-button link type="primary" @click="valEdit(s.row)">编辑</el-button>',
+      '          <el-popconfirm title="确认删除？" @confirm="valDel(s.row)"><template #reference><el-button link type="danger">删除</el-button></template></el-popconfirm>',
+      '        </template></el-table-column>',
+      '      </el-table>',
+      '      <el-pagination style="margin-top:12px;justify-content:flex-end;" background layout="total, sizes, prev, pager, next" :total="val.total" :page-size="val.size" :page-sizes="[20,50,100,200]" :current-page="val.page" @current-change="valPage" @size-change="valSize"></el-pagination>',
       '    </el-tab-pane>',
 
       /* ---- 调价记录 ---- */
@@ -1059,6 +1177,24 @@
       '      <el-alert v-if="diagForm.srcType" type="info" :closable="false" show-icon :title="\'来源: \' + diagForm.srcType + (diagForm.srcDoc ? \' · \' + diagForm.srcDoc : \'\')"></el-alert>',
       '    </el-form>',
       '    <template #footer><el-button @click="diagDlg=false">取消</el-button><el-button type="primary" @click="diagSubmit">确定</el-button></template>',
+      '  </el-dialog>',
+
+      /* ==== 值域字典条目编辑弹窗 ==== */
+      '  <el-dialog v-model="valDlg" :title="valEditing?\'编辑值域条目\':\'新增值域条目\'" width="520px" top="8vh">',
+      '    <el-form :model="valForm" label-width="100px">',
+      '      <el-form-item label="值域分组"><el-input :model-value="valForm.dictType" :disabled="valEditing" placeholder="标准源键:分组码, 如 cv_code:gend"></el-input></el-form-item>',
+      '      <el-form-item label="值域名称"><el-input v-model="valForm.typeName" placeholder="如 性别代码(导入自动带入)"></el-input></el-form-item>',
+      '      <el-form-item label="值编码"><el-input v-model="valForm.code" placeholder="租户内同组唯一, 导入取标准值域码"></el-input></el-form-item>',
+      '      <el-form-item label="值名称"><el-input v-model="valForm.name"></el-input></el-form-item>',
+      '      <el-form-item label="拼音码"><el-input v-model="valForm.pyCode" disabled placeholder="保存时按名称自动生成"></el-input></el-form-item>',
+      '      <el-form-item label="自定义码"><el-input v-model="valForm.abbrCode" maxlength="64" placeholder="选填, 人工简码"></el-input></el-form-item>',
+      '      <el-form-item label="医保码"><el-input v-model="valForm.ybCode" placeholder="cv_code 源导入自动=编码; 其余源可人工补录"></el-input></el-form-item>',
+      '      <el-form-item label="排序号"><el-input v-model.number="valForm.sortNo" type="number"></el-input></el-form-item>',
+      '      <el-form-item label="状态"><el-switch v-model="valForm.status" :active-value="1" :inactive-value="0" active-text="启用" inactive-text="停用"></el-switch></el-form-item>',
+      '      <el-form-item label="备注"><el-input v-model="valForm.memo"></el-input></el-form-item>',
+      '      <el-alert v-if="valForm.srcType" type="info" :closable="false" show-icon :title="\'来源: \' + valForm.srcType + (valForm.srcDoc ? \' · \' + valForm.srcDoc : \'\')"></el-alert>',
+      '    </el-form>',
+      '    <template #footer><el-button @click="valDlg=false">取消</el-button><el-button type="primary" @click="valSubmit">确定</el-button></template>',
       '  </el-dialog>',
 
       /* ==== 用药字典值域导入弹窗 ==== */

@@ -125,6 +125,85 @@
         { key: 'medtech-critical-rule', label: '危急值规则', comp: 'MedtechCriticalRule' },
         { key: 'medtech-report-query', label: '报告查询', comp: 'MedtechReportQuery' }
       ]
+    },
+    /* 住院模块基座(静态兑底菜单, 与 RbacInitializer 动态菜单同 key 同名):
+     * 登记结算(inpatient.js)/医生站(inp-doctor/*.js)/护士站(inp-nurse.js)。
+     * 医生站/护士站多叶子共用同一工作站组件, 入口 key 区分定位页签。 */
+    {
+      group: '住院登记结算', children: [
+        { key: 'inp-admission', label: '入院登记', comp: 'InpAdmission' },
+        { key: 'inp-patient-list', label: '在院患者管理', comp: 'InpPatientList' },
+        { key: 'inp-bed-manage', label: '床位管理', comp: 'InpBedManage' },
+        { key: 'inp-deposit', label: '预交金管理', comp: 'InpDeposit' },
+        { key: 'inp-charge-list', label: '住院费用清单', comp: 'InpChargeList' },
+        { key: 'inp-settle', label: '出院结算', comp: 'InpSettle' },
+        { key: 'inp-daily-summary', label: '住院日报', comp: 'InpDailySummary' }
+      ]
+    },
+    {
+      group: '住院医生站', children: [
+        { key: 'inp-doctor-ws', label: '住院医生工作站', comp: 'InpDoctorWorkstation' },
+        { key: 'inp-order-manage', label: '医嘱管理', comp: 'InpDoctorWorkstation' },
+        { key: 'inp-order-template', label: '医嘱模板/套餐', comp: 'InpOrderTemplateManage' },
+        { key: 'inp-diagnosis', label: '住院诊断', comp: 'InpDoctorWorkstation' },
+        { key: 'inp-med-record', label: '住院病历', comp: 'InpDoctorWorkstation' },
+        { key: 'inp-patient-overview', label: '患者概览', comp: 'InpDoctorWorkstation' }
+      ]
+    },
+    {
+      group: '住院护士站', children: [
+        { key: 'inp-nurse-ws', label: '住院护士工作站', comp: 'InpNurseStation' },
+        { key: 'inp-order-audit', label: '医嘱审核', comp: 'InpNurseStation' },
+        { key: 'inp-order-exec', label: '医嘱执行', comp: 'InpNurseStation' },
+        { key: 'inp-nursing-record', label: '护理记录', comp: 'InpNurseStation' },
+        { key: 'inp-shift-handover', label: '交接班', comp: 'InpNurseStation' },
+        { key: 'inp-bed-overview', label: '床位一览', comp: 'InpNurseStation' }
+      ]
+    },
+    /* 住院危急值闭环(T37): 处理闭环(通知→确认→处置→关闭)+规则管理(critical-value.js)。
+     * 通知铃铛/医生工作台/护士站待办均以 HIS.go('critical-value') 定位本页;
+     * 注意: RbacInitializer 动态菜单暂未种植本菜单行, 动态菜单模式下入口待后端补种 */
+    {
+      group: '危急值闭环', children: [
+        { key: 'critical-value', label: '危急值管理', comp: 'critical-value' }
+      ]
+    },
+    /* 住院药师审核(T35, 与 RbacInitializer 动态菜单同 key 同名):
+     * 药品医嘱审方(pharm-station.js), 护士审核前的强制前置环节 */
+    {
+      group: '住院药师站', children: [
+        { key: 'pharm-station', label: '药师审核', comp: 'pharm-station' }
+      ]
+    },
+    /* 临床路径与手术麻醉(2026-09 集成, 与 RbacInitializer 动态菜单同 key 同名):
+     * 路径模板管理(clinical-pathway.js)/手术管理·麻醉记录·手麻记费(surgery-manage.js) */
+    {
+      group: '临床路径', children: [
+        { key: 'pathway-template', label: '路径模板管理', comp: 'ClinicalPathwayManage' }
+      ]
+    },
+    {
+      group: '手术麻醉', children: [
+        { key: 'surgery-manage', label: '手术管理', comp: 'SurgeryManage' },
+        { key: 'anesthesia-record', label: '麻醉记录', comp: 'AnesthesiaRecord' },
+        { key: 'surgery-fee', label: '手麻记费', comp: 'SurgeryFee' }
+      ]
+    },
+    /* 住院报表(2026-09 报表/打印模块, 与 RbacInitializer 动态菜单同 key 同名):
+     * 报表中心(inp-report.js)/打印管理(inp-print.js) */
+    {
+      group: '住院报表', children: [
+        { key: 'inp-report', label: '报表中心', comp: 'InpReportCenter' },
+        { key: 'inp-print', label: '打印管理', comp: 'InpPrintCenter' }
+      ]
+    },
+    /* 移动护理(T48 P3, 与 RbacInitializer 动态菜单同 key 同名):
+     * PDA扫码工作台(pda-simulation.js); 移动护理终端为独立移动端入口(/mobile/index.html, 原生CSS单页不挂主框架), onSelect 外链新标签打开 */
+    {
+      group: '移动护理', children: [
+        { key: 'pda-simulation', label: 'PDA扫码', comp: 'pda-simulation' },
+        { key: 'mobile-nurse', label: '移动护理', comp: 'mobile-nurse' }
+      ]
     }
   ];
 
@@ -260,6 +339,8 @@
   var AppLayout = {
     props: ['user'],
     emits: ['logout'],
+    /* 顶栏通知铃铛(notification-bell.js 须先于本文件加载; 缺失时降级为不注册, 主布局不受影响) */
+    components: { 'notification-bell': (HIS.components || {}).NotificationBell },
     data: function () {
       return {
         activeKey: 'dashboard', menu: MENU,
@@ -318,6 +399,14 @@
           vm.$nextTick(function () { vm.activeKey = prev; });
           return;
         }
+        /* 移动护理终端(T48 P3): 独立移动端入口(原生CSS单页, 不挂主框架), 新标签打开且不切换当前视图 */
+        if (key === 'mobile-nurse') {
+          window.open('/mobile/index.html', '_blank');
+          var mvm = this, mprev = this.activeKey;
+          mvm.activeKey = '';
+          mvm.$nextTick(function () { mvm.activeKey = mprev; });
+          return;
+        }
         this.activeKey = key;
         /* 自动隐藏模式下选完菜单即收回浮层, 避免面板持续遮挡内容区 */
         if (!this.asideExpanded) { this.hoverOpen = false; }
@@ -367,6 +456,14 @@
           vm.collapsed = want === '1';
         })
         .catch(function () { /* 参数不可用时保持本地态, 不锁死菜单 */ });
+      /* 列表显示策略参数(租户级可配): 挂 HIS.params 供各视图读取 */
+      HIS.params = HIS.params || {};
+      HIS.get('/api/sys/param/resolve/system.list_default_paged')
+        .then(function (v) { HIS.params.listDefaultPaged = v || 'true'; })
+        .catch(function () { });
+      HIS.get('/api/sys/param/resolve/system.list_full_threshold')
+        .then(function (v) { HIS.params.listFullThreshold = parseInt(v, 10) || 2000; })
+        .catch(function () { });
       /* 动态菜单: 按角色从后端加载; 失败回退静态 MENU 防锁死 */
       HIS.get('/api/auth/menus')
         .then(function (nodes) {
@@ -394,6 +491,8 @@
       '    <span class="hosp" v-else-if="user.orgName" style="opacity:.85;">机构: {{ user.orgName }}</span>',
       '    <span class="spacer"></span>',
       '    <span class="hosp hdr-date">{{ dateText }}</span>',
+      /* 通知中心铃铛: 顶栏右侧、用户信息左侧 */
+      '    <notification-bell></notification-bell>',
       '    <el-dropdown @command="onCmd">',
       '      <span class="user" :data-avatar="avatarChar">{{ user.realName || user.username }}（{{ roleName }}）<span style="margin-left:4px;">▾</span></span>',
       '      <template #dropdown>',
@@ -470,4 +569,11 @@
   app.use(ElementPlus, { locale: window.ElementPlusLocaleZhCn });
   app.component('menu-nav', MenuNav);
   app.mount('#app');
+
+  /* 全局快捷键系统(js/lib/his-interaction.js): 安装监听并注册默认快捷键
+   * (init 内部幂等; _defaults 亦有幂等保护, 显式再调一次作双保险) */
+  if (HIS.shortcuts && HIS.shortcuts.init) {
+    HIS.shortcuts.init();
+    if (HIS.shortcuts._defaults) { HIS.shortcuts._defaults(); }
+  }
 })();

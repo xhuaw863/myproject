@@ -49,6 +49,9 @@ public class InfusionService {
     public static final String STAGE_READY_REMOVE = "ready_remove";
     public static final String STAGE_DONE = "done";
 
+    /** 巡视预警阈值: 输液中超过 30 分钟未巡视视为超时 */
+    public static final int PATROL_OVERTIME_MINUTES = 30;
+
     /** 液体换算: 1mL ≈ 15滴(常规输液器口径) */
     private static final int DROPS_PER_ML = 15;
     private static final Pattern VOLUME_PATTERN = Pattern.compile("(\\d+)\\s*m[lL]");
@@ -329,6 +332,56 @@ public class InfusionService {
         return result;
     }
 
+    /* ================= 巡视超时预警 ================= */
+
+    /**
+     * 巡视超时预警: 输液中(在途穿刺未拔且未到预计结束)且最近一次巡视已超 30 分钟的输液记录。
+     * 口径:
+     * 1) 行源与 listInfusions("infusing") 一致(exec_type='infusion' 且 exec_status=1 且穿刺未拔), 上限500;
+     * 2) patrol_records JSON 数组取最后一条 time 与当前时刻比较; 从未巡视的按穿刺时间起算;
+     * 3) 门诊输液按机构组织, wardId 作机构过滤(缺省取当前登录机构);
+     * 4) 返回行附带 lastPatrolTime(最近巡视时间, 未巡视为 null) / minutesSincePatrol(距最近巡视或穿刺的分钟数)。
+     */
+    public List<Map<String, Object>> getOverduePatrols(Long wardId) {
+        Long oid = requireOrg(wardId);
+        List<Object> args = new ArrayList<>();
+        args.add(tenantId());
+        args.add(oid);
+        args.add(500);
+        List<Map<String, Object>> rows = jdbcTemplate.queryForList(baseCols() + baseJoins()
+                + " WHERE e.deleted = 0 AND e.tenant_id = ? AND e.org_id = ? AND e.exec_type = 'infusion'"
+                + " AND ir.puncture_time IS NOT NULL AND ir.remove_time IS NULL AND e.exec_status = 1"
+                + " ORDER BY ir.puncture_time ASC, e.id ASC LIMIT ?",
+                args.toArray());
+        List<Map<String, Object>> out = new ArrayList<>();
+        LocalDateTime now = LocalDateTime.now();
+        for (Map<String, Object> row : rows) {
+            enrichRow(row);
+            if (!STAGE_INFUSING.equals(row.get("stage"))) {
+                continue;
+            }
+            String lastPatrolTime = lastPatrolTime((String) row.get("patrolRecords"));
+            LocalDateTime base = parseTs(lastPatrolTime);
+            if (base == null) {
+                // 从未巡视(或巡视时间解析失败): 按穿刺时间起算
+                base = parseTs((String) row.get("punctureTime"));
+            }
+            if (base == null) {
+                continue;
+            }
+            long minutes = java.time.Duration.between(base, now).getSeconds() / 60;
+            if (minutes < 0) {
+                minutes = 0;
+            }
+            if (minutes >= PATROL_OVERTIME_MINUTES) {
+                row.put("lastPatrolTime", lastPatrolTime);
+                row.put("minutesSincePatrol", minutes);
+                out.add(row);
+            }
+        }
+        return out;
+    }
+
     /* ================= 内部工具 ================= */
 
     private String baseJoins() {
@@ -426,6 +479,35 @@ public class InfusionService {
             return arr == null ? 0 : arr.size();
         } catch (Exception e) {
             return 0;
+        }
+    }
+
+    /** patrol_records JSON 数组最后一条的 time(yyyy-MM-dd HH:mm:ss); 空数组/解析失败返回 null */
+    private static String lastPatrolTime(String patrolRecords) {
+        if (!StringUtils.hasText(patrolRecords)) {
+            return null;
+        }
+        try {
+            JSONArray arr = JSON.parseArray(patrolRecords);
+            if (arr == null || arr.isEmpty()) {
+                return null;
+            }
+            JSONObject last = arr.getJSONObject(arr.size() - 1);
+            return last == null ? null : last.getString("time");
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    /** 时间串解析(yyyy-MM-dd HH:mm:ss), 非法返回 null */
+    private static LocalDateTime parseTs(String ts) {
+        if (!StringUtils.hasText(ts)) {
+            return null;
+        }
+        try {
+            return LocalDateTime.parse(ts, TS_FMT);
+        } catch (Exception e) {
+            return null;
         }
     }
 

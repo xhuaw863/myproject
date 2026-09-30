@@ -5,21 +5,25 @@ import com.yb.hi.dto.doctor.AdmissionCertReq;
 import com.yb.hi.entity.basedata.HisDept;
 import com.yb.hi.entity.doctor.HisAdmissionCert;
 import com.yb.hi.entity.doctor.HisVisit;
+import com.yb.hi.entity.outpatient.HisPatient;
 import com.yb.hi.framework.common.BizException;
 import com.yb.hi.framework.tenant.LoginUser;
 import com.yb.hi.framework.tenant.UserContext;
 import com.yb.hi.mapper.basedata.HisDeptMapper;
 import com.yb.hi.mapper.doctor.HisAdmissionCertMapper;
 import com.yb.hi.mapper.doctor.HisVisitMapper;
+import com.yb.hi.mapper.outpatient.HisPatientMapper;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.LocalDateTime;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 
 /**
- * 住院证服务: 开具(自动补全患者/医师/机构) / 按就诊查询 / 作废
+ * 住院证服务: 开具(自动补全患者/医师/机构) / 按就诊查询 / 按患者查待入院有效证(住院登记选证) / 作废 / 打印数据
  */
 @Slf4j
 @Service
@@ -27,15 +31,30 @@ public class HisAdmissionCertService extends ServiceImpl<HisAdmissionCertMapper,
 
     private final HisVisitMapper visitMapper;
     private final HisDeptMapper deptMapper;
+    private final HisPatientMapper patientMapper;
 
-    public HisAdmissionCertService(HisVisitMapper visitMapper, HisDeptMapper deptMapper) {
+    public HisAdmissionCertService(HisVisitMapper visitMapper, HisDeptMapper deptMapper, HisPatientMapper patientMapper) {
         this.visitMapper = visitMapper;
         this.deptMapper = deptMapper;
+        this.patientMapper = patientMapper;
     }
 
     /** 查询某次就诊的住院证列表 */
     public List<HisAdmissionCert> listByVisit(Long visitId) {
         return lambdaQuery().eq(HisAdmissionCert::getVisitId, visitId).orderByDesc(HisAdmissionCert::getId).list();
+    }
+
+    /** 按患者查待入院有效证(status=1, 开具时间倒序): 住院登记页选证预填用 */
+    public List<HisAdmissionCert> listPendingByPatient(Long patientId) {
+        if (patientId == null) {
+            throw new BizException(400, "患者ID不能为空");
+        }
+        return lambdaQuery()
+                .eq(HisAdmissionCert::getPatientId, patientId)
+                .eq(HisAdmissionCert::getStatus, 1)
+                .orderByDesc(HisAdmissionCert::getApplyTime)
+                .orderByDesc(HisAdmissionCert::getId)
+                .list();
     }
 
     /**
@@ -72,7 +91,7 @@ public class HisAdmissionCertService extends ServiceImpl<HisAdmissionCertMapper,
     }
 
     /**
-     * 作废住院证: 状态置 3(已作废)
+     * 作废住院证: 状态置 3(已作废); 已入院(2)的证不可作废(已被住院登记消费, 溯源已建立)
      */
     @Transactional(rollbackFor = Exception.class)
     public HisAdmissionCert cancel(Long id) {
@@ -86,10 +105,34 @@ public class HisAdmissionCertService extends ServiceImpl<HisAdmissionCertMapper,
         if (c.getStatus() != null && c.getStatus() == 3) {
             throw new BizException("该住院证已作废");
         }
+        if (c.getStatus() != null && c.getStatus() == 2) {
+            throw new BizException("该住院证已办理入院, 不能作废");
+        }
         c.setStatus(3);
         updateById(c);
         log.info("作废住院证: id={}, visitId={}", c.getId(), c.getVisitId());
         return c;
+    }
+
+    /**
+     * 住院证打印数据: 证本体 + 患者基本信息 + 就诊临床摘要(主诉/现病史/查体/辅检/过敏史) + 医院名
+     * (与处方笺 printData 同构, 前端 printAdmissionCert 消费规范版式)
+     */
+    public Map<String, Object> printData(Long id) {
+        HisAdmissionCert cert = getById(id);
+        if (cert == null) {
+            throw new BizException(400, "住院证不存在");
+        }
+        HisPatient patient = cert.getPatientId() == null ? null : patientMapper.selectById(cert.getPatientId());
+        HisVisit visit = cert.getVisitId() == null ? null : visitMapper.selectById(cert.getVisitId());
+        LoginUser user = UserContext.get();
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("hospitalName", user == null ? null : user.getTenantName());
+        result.put("cert", cert);
+        result.put("admission", cert);
+        result.put("patient", patient);
+        result.put("visit", visit);
+        return result;
     }
 
     /**

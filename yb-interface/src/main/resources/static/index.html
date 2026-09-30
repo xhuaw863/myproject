@@ -8,6 +8,8 @@
   <!-- 设计令牌层: 必须在 EP 默认主题之后、业务样式之前, 以便重映射 --el-* 并供 his.css 引用 -->
   <link rel="stylesheet" href="/css/theme.css?v=20260928b">
   <link rel="stylesheet" href="/css/his.css?v=20260928b">
+  <!-- wangEditor v5 富文本编辑器(住院病历富文书模式, 须在各 views/app.js 之前加载) -->
+  <link rel="stylesheet" href="/js/lib/wangeditor/style.css?v=20260929b">
 </head>
 <body>
   <div id="app">
@@ -21,11 +23,17 @@
   <script src="/vendor/echarts.min.js"></script>
 
   <!-- 应用脚本 -->
-  <script src="/js/api.js?v=20260928b"></script>
+  <script src="/js/api.js?v=20260930b"></script>
   <!-- 图表色源(canvas 不识别 CSS 变量, 图表必须从字面量主题取色) -->
   <script src="/js/theme.js?v=20260928b"></script>
+  <!-- 全局交互层: 右键上下文菜单 + 快捷键注册表(纯DOM/原生事件, 须在 app.js 之前加载) -->
+  <script src="/js/lib/his-interaction.js?v=20260928b"></script>
   <!-- 全局当前库房/药房上下文与作用域混入(须在各 views 之前加载) -->
   <script src="/js/scope.js?v=20260928b"></script>
+  <!-- 电子签名板(全局单例 HIS.SignaturePad, 须在各 views/app.js 之前加载) -->
+  <script src="/js/lib/signature-pad.js?v=20260929b"></script>
+  <!-- wangEditor v5 富文本编辑器(UMD 全局 window.wangEditor, 病历面板富文书模式) -->
+  <script src="/js/lib/wangeditor/index.js?v=20260929b"></script>
   <script src="/js/views/platform.js?v=20260928b"></script>
   <script src="/js/views/dashboard.js?v=20260928b"></script>
   <script src="/js/views/basedata.js?v=20260928b"></script>
@@ -35,14 +43,14 @@
   <script src="/js/views/area.js?v=20260928b"></script>
   <script src="/js/views/outpatient.js?v=20260928b"></script>
   <!-- 医生站子组件（必须在 doctor.js 之前加载） -->
-  <script src="/js/views/doctor/print-helper.js?v=20260928b"></script>
+  <script src="/js/views/doctor/print-helper.js?v=20260930b"></script>
   <script src="/js/views/doctor/queue-panel.js?v=20260928b"></script>
   <script src="/js/views/doctor/patient-banner.js?v=20260928b"></script>
   <script src="/js/views/doctor/emr-panel.js?v=20260928b"></script>
   <script src="/js/views/doctor/diagnosis-panel.js?v=20260928b"></script>
   <script src="/js/views/doctor/prescription-panel.js?v=20260928b"></script>
   <script src="/js/views/doctor/order-panel.js?v=20260928b"></script>
-  <script src="/js/views/doctor/documents-panel.js?v=20260928b"></script>
+  <script src="/js/views/doctor/documents-panel.js?v=20260930c"></script>
   <script src="/js/views/doctor/orders-overview.js?v=20260928b"></script>
   <script src="/js/views/doctor.js?v=20260928b"></script>
   <script src="/js/views/doctor-worklog.js?v=20260928b"></script>
@@ -51,7 +59,7 @@
   <script src="/js/views/rbac.js?v=20260928b"></script>
   <!-- 系统参数(四级作用域参数配置, 须在 app.js 之前加载) -->
   <script src="/js/views/system-param.js?v=20260928b"></script>
-  <script src="/js/views/community-dict.js?v=20260928b"></script>
+  <script src="/js/views/community-dict.js?v=20260930b"></script>
   <script src="/js/views/org-catalog.js?v=20260928b"></script>
   <script src="/js/views/report.js?v=20260928b"></script>
   <script src="/js/views/warehouse.js?v=20260928b"></script>
@@ -67,6 +75,37 @@
   <script src="/js/views/report-biz.js?v=20260928b"></script>
   <!-- 医保上报中心(M5 上传管线状态监控台, 须在 app.js 之前加载) -->
   <script src="/js/views/upload-center.js?v=20260928b"></script>
+  <!-- 住院模块(登记结算/医生站/护士站, 须在 app.js 之前加载; 医生站子组件须在 inp-doctor.js 之前) -->
+  <script src="/js/views/inpatient.js?v=20260930b"></script>
+  <script src="/js/views/inp-doctor/inp-patient-overview.js?v=20260928b"></script>
+  <script src="/js/views/inp-doctor/inp-order-panel.js?v=20260930"></script>
+  <script src="/js/views/inp-doctor/inp-diag-panel.js?v=20260928b"></script>
+  <script src="/js/views/inp-doctor/inp-record-panel.js?v=20260928b"></script>
+  <!-- 临床路径面板(住院医生站子组件, 须在 inp-doctor.js 之前加载) -->
+  <script src="/js/views/inp-doctor/inp-pathway-panel.js?v=20260928"></script>
+  <!-- 会诊/知情同意面板(住院医生站子组件, 须在 inp-doctor.js 之前加载) -->
+  <script src="/js/views/inp-doctor/inp-consult-panel.js?v=20260928b"></script>
+  <script src="/js/views/inp-doctor/inp-consent-panel.js?v=20260928b"></script>
+  <!-- 病案首页面板(住院医生站子组件, 须在 inp-doctor.js 之前加载) -->
+  <script src="/js/views/inp-doctor/inp-casepage-panel.js?v=20260929"></script>
+  <script src="/js/views/inp-doctor/inp-doctor.js?v=20260928b"></script>
+  <script src="/js/views/inp-nurse.js?v=20260928b"></script>
+  <!-- 住院医嘱模板/套餐维护页(独立顶层视图 InpOrderTemplateManage, 须在 app.js 之前加载) -->
+  <script src="/js/views/inp-doctor/order-template-manage.js?v=20260930"></script>
+  <!-- 住院药师审核工作站(T35: 药品医嘱审方/电子签名通过/驳回留原因, 须在 app.js 之前加载) -->
+  <script src="/js/views/pharm-station.js?v=20260929"></script>
+  <!-- 临床路径管理 + 手术麻醉(手术管理/麻醉记录/手麻记费), 须在 app.js 之前加载 -->
+  <script src="/js/views/clinical-pathway.js?v=20260928"></script>
+  <script src="/js/views/surgery-manage.js?v=20260928"></script>
+  <!-- 住院报表与打印中心(报表中心InpReportCenter/打印管理InpPrintCenter, 须在 app.js 之前加载) -->
+  <script src="/js/views/inp-report.js?v=20260928"></script>
+  <script src="/js/views/inp-print.js?v=20260928"></script>
+  <!-- 住院危急值管理(T37: 处理闭环/规则管理/模拟上报, 须在 app.js 之前加载) -->
+  <script src="/js/views/critical-value.js?v=20260929"></script>
+  <!-- 全局通知中心(顶栏铃铛 NotificationBell, 须在 app.js 之前加载) -->
+  <script src="/js/views/notification-bell.js?v=20260929b"></script>
+  <!-- PDA扫码工作台(T48 P3: 扫腕带识别患者/Code128条码预览/待执行医嘱床旁执行, 须在 app.js 之前加载) -->
+  <script src="/js/views/pda-simulation.js?v=20260929"></script>
   <script src="/js/app.js?v=20260928b"></script>
 </body>
 </html>

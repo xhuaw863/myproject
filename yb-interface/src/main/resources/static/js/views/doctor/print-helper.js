@@ -152,6 +152,66 @@
     return openPrintWindow('门诊病历', html);
   };
 
+  /* 住院证(规范版式): 前记(患者身份/医保/住址) + 病情摘要(就诊SOAP) + 入院决定 + 后记(签名盖章/入院须知) */
+  HIS.printAdmissionCert = function (data) {
+    data = data || {};
+    var cert = data.cert || data.admission || {};
+    var patient = data.patient || {};
+    var visit = data.visit || {};
+    var certNo = 'ZY' + String(cert.applyTime || dateText(new Date().toISOString())).replace(/[-: T]/g, '').slice(0, 8) + '-' + String(cert.id || '');
+    var urgency = Number(cert.urgency) === 3 ? 'Ⅲ级 危急' : (Number(cert.urgency) === 2 ? 'Ⅱ级 急' : 'Ⅳ级 普通');
+    var row = function (label, v) {
+      return '<tr><td class="ac-label">' + esc(label) + '</td><td colspan="3" class="ac-text">' + (nl2br(v) || '<span class="ac-empty">未记录</span>') + '</td></tr>';
+    };
+    var cell = function (label, v) {
+      return '<td class="ac-label">' + esc(label) + '</td><td>' + (esc(v) || '<span class="ac-empty">—</span>') + '</td>';
+    };
+    var ageV = value(patient, ['age'], visit.age || '');
+    var addr = value(patient, ['presentDetail'], '') || value(patient, ['address'], '') || value(patient, ['householdAddr'], '');
+    if (!addr) {
+      addr = [value(patient, ['presentProvName'], ''), value(patient, ['presentCityName'], ''), value(patient, ['presentCountyName'], ''), value(patient, ['presentTownName'], '')].filter(Boolean).join('');
+    }
+    var allergy = value(visit, ['allergyHistory'], '');
+    var html = '<style>' +
+      '.ac-table{width:100%;border-collapse:collapse;margin:6px 0 10px}.ac-table td{border:1px solid #333;padding:6px 8px;font-size:12px;line-height:1.5;text-align:left;background:transparent}' +
+      '.ac-table .ac-label{background:#f3f4f6;font-weight:bold;white-space:nowrap;width:76px}.ac-table .ac-text{min-height:20px}' +
+      '.ac-empty{color:#999}.ac-title{display:flex;align-items:baseline;justify-content:space-between;border-bottom:2px solid #222;padding-bottom:2px;margin:10px 0 4px}' +
+      '.ac-diag td{font-size:14px;font-weight:bold}' +
+      '.ac-notice{margin-top:10px;padding:8px 10px;border:1px dashed #666;font-size:11px;color:#333;line-height:1.8}' +
+      '.ac-sign{display:flex;justify-content:flex-end;gap:36px;margin-top:14px;font-size:13px}' +
+      '.ac-stamp{display:inline-block;border:1px solid #bbb;color:#999;padding:10px 16px;border-radius:50%;font-size:11px;transform:rotate(-8deg);margin-top:8px}' +
+      '</style>' +
+      '<div class="print-sheet" style="max-width:800px">' +
+      '<div class="print-header">' + esc(data.hospitalName || getHospitalName()) + '</div>' +
+      '<div class="print-subheader" style="letter-spacing:12px">住 院 证</div>' +
+      '<div class="ac-title"><span style="font-size:12px;color:#555">编号：' + esc(certNo) + '</span><span style="font-size:12px">开证日期：' + esc(dateText(cert.applyTime).slice(0, 10) || new Date().toLocaleDateString()) + '</span></div>' +
+      '<table class="ac-table"><tr>' + cell('姓名', value(patient, ['name'], cert.patientName)) + cell('性别', value(patient, ['genderName'], gender(patient.gender))) + cell('年龄', ageV ? ageV + '岁' : '') + cell('费别', value(patient, ['insutypeName', 'insutype'], '自费')) + '</tr>' +
+      '<tr>' + cell('门诊号', value(visit, ['iptOtpNo'], value(patient, ['patientNo'], ''))) + cell('医保个人号', value(patient, ['psnNo'], '')) + cell('身份证号', value(patient, ['idCard'], '')) + cell('联系电话', value(patient, ['phone'], '')) + '</tr>' +
+      '<tr><td class="ac-label">现住址</td><td colspan="3">' + (esc(addr) || '<span class="ac-empty">—</span>') + '</td></tr></table>' +
+      '<div class="ac-title"><b style="font-size:14px">病情摘要</b></div>' +
+      '<table class="ac-table">' +
+      row('主诉', value(visit, ['chiefComplaint'], '')) +
+      row('现病史', value(visit, ['presentIllness'], cert.conditionSummary)) +
+      row('既往史', value(visit, ['pastHistory'], '') + (allergy ? '　过敏史：' + allergy : '')) +
+      row('体格检查', value(visit, ['physicalExam'], '')) +
+      row('辅助检查', value(visit, ['auxExam', 'auxiliaryExam'], '')) +
+      '</table>' +
+      '<div class="ac-title"><b style="font-size:14px">入院决定</b></div>' +
+      '<table class="ac-table">' +
+      '<tr class="ac-diag"><td class="ac-label">入院诊断</td><td colspan="3">' + esc(cert.admitDiagnosis || '') + '</td></tr>' +
+      row('入院目的', value(cert, ['admitPurpose'], '进一步诊断治疗')) +
+      '<tr><td class="ac-label">拟收科室</td><td style="font-weight:bold">' + esc(cert.admitDeptName || '') + '</td><td class="ac-label">紧急程度</td><td>' + esc(urgency) + '</td></tr>' +
+      '</table>' +
+      '<div class="ac-sign"><span>开证医师（签名）：' + esc(cert.applyDrName || '________') + '</span><span>科主任（签名）：________</span></div>' +
+      '<div style="text-align:right"><span class="ac-stamp">（诊断专用章）</span></div>' +
+      '<div class="ac-notice"><b>入院须知：</b><br>1. 请持本证、医保卡/身份证及门诊病历资料，到住院处办理入院登记（持证可自动预填入院信息）；<br>' +
+      '2. 本证自开具之日起 7 日内有效，逾期需重新评估；危急患者请直接联系拟收科室做好接诊准备；<br>' +
+      '3. 入院请携带生活必需品及既往检查报告；医保患者请确认参保状态正常；<br>4. 本证由接诊医师填写并签名，涂改无效，加盖医院章后生效。</div>' +
+      '<div class="print-note" style="margin-top:8px">' + esc(visit.deptName || '') + ' · ' + esc(cert.applyDrName || '') + '　打印时间：' + esc(dateText(new Date().toISOString())) + '</div>' +
+      '</div>';
+    return openPrintWindow('住院证', html);
+  };
+
   /* 住院证、诊断证明等证明类单据。 */
   HIS.printCert = function (data) {
     data = data || {};
@@ -159,9 +219,7 @@
     var patient = data.patient || {};
     var type = data.certTypeName || (cert.admitDiagnosis != null ? '住院证' : ({ 1: '诊断证明书', 2: '病假证明', 3: '转诊证明' }[cert.certType] || data.certType || '诊断证明书'));
     var content = cert.certContent || cert.content || '';
-    if (type === '住院证') {
-      content = '入院诊断：' + (cert.admitDiagnosis || '') + '\n病情摘要：' + (cert.conditionSummary || '') + '\n入院目的：' + (cert.admitPurpose || '') + '\n拟收科室：' + (cert.admitDeptName || '');
-    }
+    if (type === '住院证') { return HIS.printAdmissionCert(data); }
     var html = '<div class="print-sheet"><div class="print-header">' + esc(data.hospitalName || getHospitalName()) + '</div><div class="print-subheader">' + esc(type) + '</div>' +
       '<table class="print-meta"><tr><td>姓名：' + esc(value(patient, ['name', 'patientName'], cert.patientName || '')) + '</td><td>性别：' + esc(gender(patient.gender)) + '</td><td>年龄：' + esc(patient.age || '') + '</td></tr>' +
       '<tr><td colspan="3">诊断：' + esc(cert.diagnosis || cert.admitDiagnosis || '') + '</td></tr></table><div class="print-content">' + nl2br(content) + '</div>' +

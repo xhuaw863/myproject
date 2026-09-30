@@ -155,6 +155,31 @@
     }
   };
 
+  /* ===== 雪花ID统一治理 =====
+   * 后端 Long 型 ID(19位雪花ID)统一以带引号 JSON 字符串下发(见 JacksonConfig),
+   * 因 JS Number 安全整数上限 2^53-1, 直接转 Number 会静默丢精度, 故前端全链路以字符串承载 ID。
+   * 页面契约: 跨页/回填传递 ID 用 HIS.id; 对象 key、DOM 标记用 HIS.idKey;
+   * 拼接 URL 参数用 HIS.idParam; 相等比较一律 HIS.sameId, 禁止 === 直接比对 ID。
+   */
+  /* ID 原样规范化: null/undefined 保持原值(保留"无ID"语义, 回填表单/请求体时不得改写成字符串); 其余 String(value) */
+  HIS.id = function (value) {
+    if (value === null || value === undefined) { return value; }
+    return String(value);
+  };
+  /* ID 键值化: 空值(null/undefined/'')统一归一为 ''(可安全作对象 key/DOM 标识/URL 片段); 其余 String(value) */
+  HIS.idKey = function (value) {
+    if (value === null || value === undefined || value === '') { return ''; }
+    return String(value);
+  };
+  /* ID 相等判断: 经 idKey 归一后比较 —— 双方都空视为相同, 一方空一方非空视为不同, 非空按字符串严格比较 */
+  HIS.sameId = function (a, b) {
+    return HIS.idKey(a) === HIS.idKey(b);
+  };
+  /* ID 转 URL 查询参数: 空值输出空串, 其余 encodeURIComponent 后的字符串 */
+  HIS.idParam = function (value) {
+    return encodeURIComponent(HIS.idKey(value));
+  };
+
   /* ===== HTTP 封装 =====
    * 后端统一响应体 R{code,msg,data}: code=0 成功; code=401 未登录。
    * 成功返回 data; 失败抛出 Error(msg)。
@@ -245,15 +270,23 @@
     if (window.ElementPlus && ElementPlus.ElMessage) { ElementPlus.ElMessage.success(msg || '操作成功'); }
   };
 
-  /* ===== 字典下拉取数(字典化录入: 医保字典优先) =====
+  /* ===== 字典下拉取数(字典化录入: 医共体统一字典优先) =====
    * HIS.stdValues(type, code): type=cv_code|wst364|hbvalue|whvalue, code=分组编码(dict_code/cv_code)
+   * 口径(2026-09 字典分层原则): 医疗业务值域一律从医共体统一字典 his_val_dict 取数(
+   *   /api/community-dict/val-dict/values?dictType=type:code, 启用项);
+   *   统一字典该组未导入(空集)时回落标准值域直查防业务白屏, 并 console 提醒待导入。
    * 返回 [{code,name}]; 带内存缓存, 同一值域只请求一次。
    */
   var _dictCache = {};
   HIS.stdValues = function (type, code) {
     var key = type + ':' + code;
     if (_dictCache[key]) { return Promise.resolve(_dictCache[key]); }
-    return HIS.get('/api/std-dict/query/values?type=' + encodeURIComponent(type) + '&code=' + encodeURIComponent(code))
+    return HIS.get('/api/community-dict/val-dict/values?dictType=' + encodeURIComponent(key))
+      .then(function (list) {
+        if (list && list.length) { _dictCache[key] = list; return list; }
+        if (window.console) { console.warn('[字典分层] 医共体值域字典未导入 ' + key + ', 临时回落标准字典, 请在医共体字典-值域字典页导入'); }
+        return HIS.get('/api/std-dict/query/values?type=' + encodeURIComponent(type) + '&code=' + encodeURIComponent(code));
+      })
       .then(function (list) { _dictCache[key] = list || []; return _dictCache[key]; });
   };
   /* 值域转 {code:name} 映射, 供表格显示 */

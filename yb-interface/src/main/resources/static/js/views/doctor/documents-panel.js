@@ -46,6 +46,19 @@
         return main ? (main.diagName || main.name || '') : '';
       },
       deptOpts: function () { return this.depts.filter(function (d) { return Number(d.deptLevel) === 2 || d.deptLevel == null; }); },
+      /* 拟收科室候选: 与住院登记页同口径(大类含"住院"的科室级), 无匹配时回退全部科室级; 修复药剂科等医技/行政科室可选问题 */
+      inpDeptOpts: function () {
+        var all = this.depts || [];
+        var hit = all.filter(function (d) { return (d.deptCategory || '').indexOf('住院') >= 0 && d.deptLevel !== 1; });
+        if (hit.length) { return hit; }
+        return all.filter(function (d) { return Number(d.deptLevel) === 2; });
+      },
+      /* 入院诊断候选: 本次就诊已录诊断(去重), 支持字典外手工补录 */
+      diagOpts: function () {
+        var seen = {};
+        return this.diagList.map(function (d) { return d.diagName || d.name || ''; })
+          .filter(function (n) { if (!n || seen[n]) { return false; } seen[n] = 1; return true; });
+      },
       followupCount: function () { return this.visit && this.visit.followupDate ? 1 : 0; },
       printableOrders: function () { return this.orders.filter(function (o) { return o.orderType !== '治疗'; }); },
       activeAdmits: function () { return this.admitList.filter(function (x) { return Number(x.status) !== 3; }); },
@@ -71,6 +84,9 @@
     created: function () { this.loadDepts(); },
     methods: {
       money: money,
+      /* 性别容错翻译: 兼容码值(1/2)与文本(男/女) */
+      genderText: function (g) { return Number(g) === 1 || g === '男' ? '男' : (Number(g) === 2 || g === '女' ? '女' : '未知'); },
+      todayStr: function () { var d = new Date(); return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0'); },
       clearLoaded: function () {
         this.fee = blankFee(); this.orders = []; this.prescriptions = [];
         this.admitList = []; this.consultList = []; this.certList = [];
@@ -170,10 +186,38 @@
       submitAdmit: function () {
         var vm = this; var f = vm.admitForm;
         if (!f.admitDeptId || !f.admitDiagnosis) { ElementPlus.ElMessage.warning('拟收科室和入院诊断必填'); return; }
+        var pending = vm.admitList.filter(function (x) { return Number(x.status) === 1; });
+        var pre = pending.length
+          ? ElementPlus.ElMessageBox.confirm('本次就诊已有 ' + pending.length + ' 张未入院的住院证, 继续开具将重复发证(持证入院登记时会自动核销)。确认继续?', '重复开证提醒', { type: 'warning', confirmButtonText: '继续开具', cancelButtonText: '取消' })
+          : Promise.resolve();
         vm.admitSaving = true;
-        HIS.post('/api/his/admission-cert/create', Object.assign({ visitId: vm.visitId }, f)).then(function () {
-          ElementPlus.ElMessage.success('住院证已开具'); vm.admitVisible = false; return vm.loadDocuments();
-        }).catch(HIS.notifyError).finally(function () { vm.admitSaving = false; });
+        pre.then(function () {
+          return HIS.post('/api/his/admission-cert/create', Object.assign({ visitId: vm.visitId }, f));
+        }).then(function (cert) {
+          ElementPlus.ElMessage.success('住院证已开具'); vm.admitVisible = false;
+          return vm.loadDocuments().then(function () {
+            /* 商业习惯: 开证后立即交付纸质凭证, 提示打印(可跳过, 打印中心随时可补打);
+             * 必须等开证 dialog 关闭动画结束后再弹, 同 tick 弹会被 dialog 销毁链连带吞掉(实测) */
+            if (cert && cert.id) {
+              setTimeout(function () {
+                ElementPlus.ElMessageBox.confirm('是否立即打印住院证(患者持证办理入院)?', '开具成功', { type: 'success', confirmButtonText: '打印住院证', cancelButtonText: '暂不打印', distinguishCancelAndClose: true })
+                  .then(function () { vm.emitPrint('admission', cert.id); })
+                  .catch(function (e) { if (e !== 'cancel' && e !== 'close') { HIS.notifyError(e); } });
+              }, 450);
+            }
+          });
+        }).catch(function (e) { if (e !== 'cancel' && e !== 'close') { HIS.notifyError(e); } }).finally(function () { vm.admitSaving = false; });
+      },
+      /* 住院证状态码翻译(1已开具 2已入院 3已作废) */
+      admitStatusText: function (s) { return Number(s) === 2 ? '已入院' : (Number(s) === 3 ? '已作废' : '待入院'); },
+      admitStatusTone: function (s) { return Number(s) === 2 ? 'success' : (Number(s) === 3 ? 'info' : 'warning'); },
+      /* 作废住院证: 仅待入院(1)可作废; 已入院由住院登记消费不可作废 */
+      cancelAdmit: function (row) {
+        var vm = this;
+        ElementPlus.ElMessageBox.confirm('确认作废住院证「' + (row.admitDeptName || '') + ' · ' + (row.admitDiagnosis || '') + '」? 作废后患者不能持证入院。', '作废确认', { type: 'warning' })
+          .then(function () { return HIS.post('/api/his/admission-cert/cancel?id=' + encodeURIComponent(row.id)); })
+          .then(function () { HIS.notifySuccess('住院证已作废'); return vm.loadDocuments(); })
+          .catch(function (e) { if (e !== 'cancel' && e !== 'close') { HIS.notifyError(e); } });
       },
       submitConsult: function () {
         var vm = this; var f = vm.consultForm;
@@ -224,7 +268,7 @@
     template: `
       <div class="dw-documents-panel">
         <style>
-          .dw-documents-panel{margin-top:12px}.dw-documents-panel .dw-doc-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px}.dw-documents-panel .dw-doc-grid .el-badge{width:100%}.dw-documents-panel .dw-doc-card{position:relative;display:flex;align-items:center;gap:10px;width:100%;padding:10px;border:1px solid var(--dw-border);border-radius:4px;background:var(--dw-card);cursor:pointer;text-align:left}.dw-documents-panel .dw-doc-card:hover{border-color:var(--dw-primary);background:var(--dw-primary-light)}.dw-documents-panel .dw-doc-mark{display:flex;align-items:center;justify-content:center;width:34px;height:34px;border-radius:3px;background:var(--dw-primary);color:#fff;font-size:16px;font-weight:700}.dw-documents-panel .tone-orange .dw-doc-mark{background:var(--dw-warning)}.dw-documents-panel .tone-green .dw-doc-mark{background:var(--dw-success)}.dw-documents-panel .tone-gray .dw-doc-mark{background:var(--dw-text-secondary)}.dw-documents-panel .dw-doc-name{font-weight:600;color:var(--dw-text)}.dw-documents-panel .dw-doc-hint{font-size:11px;color:var(--dw-text-hint)}.dw-documents-panel .dw-fee-legend{display:grid;grid-template-columns:1fr 1fr;gap:3px 16px;margin-top:6px}.dw-documents-panel .dw-fee-legend span{display:flex;justify-content:space-between;color:var(--dw-text-secondary);font-size:12px}.dw-documents-panel .dw-insu-estimate{display:flex;justify-content:space-between;margin-top:7px;padding-top:7px;border-top:1px dashed var(--dw-border);color:var(--dw-text-hint);font-size:11px}.dw-documents-panel .dw-print-row{display:flex;align-items:center;gap:8px;padding:8px 4px;border-bottom:1px solid var(--dw-border)}.dw-documents-panel .dw-print-row .name{flex:1}.dw-documents-panel .dw-print-group{margin:10px 0;color:var(--dw-primary-dark);font-weight:700}
+          .dw-documents-panel{margin-top:12px}.dw-documents-panel .dw-doc-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px}.dw-documents-panel .dw-doc-grid .el-badge{width:100%}.dw-documents-panel .dw-doc-card{position:relative;display:flex;align-items:center;gap:10px;width:100%;padding:10px;border:1px solid var(--dw-border);border-radius:4px;background:var(--dw-card);cursor:pointer;text-align:left}.dw-documents-panel .dw-doc-card:hover{border-color:var(--dw-primary);background:var(--dw-primary-light)}.dw-documents-panel .dw-doc-mark{display:flex;align-items:center;justify-content:center;width:34px;height:34px;border-radius:3px;background:var(--dw-primary);color:#fff;font-size:16px;font-weight:700}.dw-documents-panel .tone-orange .dw-doc-mark{background:var(--dw-warning)}.dw-documents-panel .tone-green .dw-doc-mark{background:var(--dw-success)}.dw-documents-panel .tone-gray .dw-doc-mark{background:var(--dw-text-secondary)}.dw-documents-panel .dw-doc-name{font-weight:600;color:var(--dw-text)}.dw-documents-panel .dw-doc-hint{font-size:11px;color:var(--dw-text-hint)}.dw-documents-panel .dw-fee-legend{display:grid;grid-template-columns:1fr 1fr;gap:3px 16px;margin-top:6px}.dw-documents-panel .dw-fee-legend span{display:flex;justify-content:space-between;color:var(--dw-text-secondary);font-size:12px}.dw-documents-panel .dw-insu-estimate{display:flex;justify-content:space-between;margin-top:7px;padding-top:7px;border-top:1px dashed var(--dw-border);color:var(--dw-text-hint);font-size:11px}.dw-documents-panel .dw-print-row{display:flex;align-items:center;gap:8px;padding:8px 4px;border-bottom:1px solid var(--dw-border)}.dw-documents-panel .dw-print-row .name{flex:1}.dw-documents-panel .dw-print-group{margin:10px 0;color:var(--dw-primary-dark);font-weight:700}.dw-documents-panel .dw-cert-patient{display:flex;align-items:center;gap:14px;margin:-6px 0 12px;padding:8px 12px;border:1px solid var(--dw-border);border-left:3px solid var(--dw-primary);border-radius:4px;background:var(--dw-card);font-size:12px;color:var(--dw-text-secondary)}.dw-documents-panel .dw-cert-patient b{font-size:14px;color:var(--dw-text)}.dw-documents-panel .dw-cert-patient .no{margin-left:auto;font-family:monospace}.dw-documents-panel .dw-cert-sign{font-size:13px;color:var(--dw-text)}
         </style>
         <div class="dw-fee-summary" v-loading="feeLoading">
           <div class="fs-row total"><span>本次费用合计</span><b>￥{{ money(fee.total) }}</b></div>
@@ -238,9 +282,17 @@
         </div>
         <div class="dw-action-group"><el-button type="primary" plain style="width:100%" :disabled="!visitId" @click="openPrintCenter">打印中心</el-button></div>
 
-        <el-dialog v-model="admitVisible" title="开具住院证" width="620px">
-          <el-form :model="admitForm" label-width="92px"><el-form-item label="拟收科室" required><el-select v-model="admitForm.admitDeptId" filterable style="width:100%" @change="onAdmitDeptChange"><el-option v-for="d in deptOpts" :key="d.id" :label="d.deptName" :value="d.id"></el-option></el-select></el-form-item><el-form-item label="入院诊断" required><el-input v-model="admitForm.admitDiagnosis" maxlength="200"></el-input></el-form-item><el-form-item label="病情摘要"><el-input v-model="admitForm.conditionSummary" type="textarea" :rows="3" maxlength="500"></el-input></el-form-item><el-form-item label="入院目的"><el-input v-model="admitForm.admitPurpose" maxlength="100"></el-input></el-form-item><el-form-item label="紧急程度"><el-radio-group v-model="admitForm.urgency"><el-radio-button :label="1">普通</el-radio-button><el-radio-button :label="2">急</el-radio-button><el-radio-button :label="3">危急</el-radio-button></el-radio-group></el-form-item></el-form>
-          <el-table v-if="admitList.length" :data="admitList" border size="small" max-height="160"><el-table-column type="index" label="序号" width="50"></el-table-column><el-table-column prop="admitDeptName" label="拟收科室" width="120"></el-table-column><el-table-column prop="admitDiagnosis" label="入院诊断" show-overflow-tooltip></el-table-column><el-table-column label="状态" width="75"><template #default="s">{{ Number(s.row.status)===3?'已作废':'有效' }}</template></el-table-column></el-table>
+        <el-dialog v-model="admitVisible" title="开具住院证" width="660px">
+          <div class="dw-cert-patient"><b>{{ (visit&&visit.patientName) || patient.name || '-' }}</b><span>{{ genderText(visit&&visit.gender) }} · {{ (visit&&visit.age) != null ? visit.age + '岁' : '年龄-' }}</span><span>门诊: {{ (visit&&visit.deptName) || '-' }} · {{ (visit&&visit.drName) || '-' }}</span><span class="no">门诊号 {{ (visit&&visit.iptOtpNo) || '-' }}</span></div>
+          <el-form :model="admitForm" label-width="92px">
+            <el-form-item label="拟收科室" required><el-select v-model="admitForm.admitDeptId" filterable placeholder="仅可选住院科室(与入院登记页同口径)" style="width:100%" @change="onAdmitDeptChange"><el-option v-for="d in inpDeptOpts" :key="d.id" :label="d.deptName + (d.deptCategory ? ' · ' + d.deptCategory : '')" :value="d.id"></el-option></el-select></el-form-item>
+            <el-form-item label="入院诊断" required><el-select v-model="admitForm.admitDiagnosis" filterable allow-create default-first-option placeholder="下拉选本次就诊诊断, 也可直接输入后回车" style="width:100%"><el-option v-for="(n, i) in diagOpts" :key="i" :label="n" :value="n"></el-option></el-select><div v-if="!diagOpts.length" class="dim" style="font-size:11px;line-height:16px">本次就诊尚未录入诊断, 建议先在诊断页签开诊断后再开证(此处也可直接输入)</div></el-form-item>
+            <el-form-item label="病情摘要"><el-input v-model="admitForm.conditionSummary" type="textarea" :rows="3" maxlength="500" show-word-limit placeholder="已自动带入现病史/主诉, 可补充查体与辅检结论"></el-input></el-form-item>
+            <el-form-item label="入院目的"><el-input v-model="admitForm.admitPurpose" maxlength="100" placeholder="如: 进一步检查治疗 / 手术治疗"></el-input></el-form-item>
+            <el-form-item label="紧急程度"><el-radio-group v-model="admitForm.urgency"><el-radio-button :label="1">普通</el-radio-button><el-radio-button :label="2">急</el-radio-button><el-radio-button :label="3">危急</el-radio-button></el-radio-group></el-form-item>
+            <el-form-item label="开证医师"><span class="dw-cert-sign">{{ (visit&&visit.drName) || '-' }}　{{ todayStr() }}　<span class="dim">(随证打印, 持证入院登记时自动预填)</span></span></el-form-item>
+          </el-form>
+          <el-table v-if="admitList.length" :data="admitList" border size="small" max-height="160"><el-table-column type="index" label="序号" width="50"></el-table-column><el-table-column prop="admitDeptName" label="拟收科室" width="110"></el-table-column><el-table-column prop="admitDiagnosis" label="入院诊断" show-overflow-tooltip></el-table-column><el-table-column label="状态" width="80" align="center"><template #default="s"><el-tag :type="admitStatusTone(s.row.status)" size="small">{{ admitStatusText(s.row.status) }}</el-tag></template></el-table-column><el-table-column label="操作" width="64" align="center"><template #default="s"><el-button v-if="Number(s.row.status)===1" link type="danger" size="small" @click="cancelAdmit(s.row)">作废</el-button><span v-else class="dim">—</span></template></el-table-column></el-table>
           <template #footer><el-button @click="admitVisible=false">关闭</el-button><el-button type="primary" :loading="admitSaving" @click="submitAdmit">开具</el-button></template>
         </el-dialog>
 

@@ -59,6 +59,8 @@
     while (s.length < 8) { s = '0' + s; }
     return s;
   }
+  /* 号段数字文本校验: 纯数字字符串(票据号段为高精度整数, 可达 19 位, 不得 Number 化) */
+  function isNoText(v) { return v !== null && v !== undefined && /^\d+$/.test(String(v).trim()); }
   /* 金额带符号(冲销记录负数显示 -¥x.xx) */
   function signedMoney(v) { var n = Number(v) || 0; return (n < 0 ? '-¥' : '¥') + money(Math.abs(n)); }
   /* 行状态(结合单据类型): 退费单直接展示"已退费" */
@@ -809,25 +811,15 @@
       poolTypeTag: function (t) { return t === 'ELECTRONIC' ? 'warning' : 'primary'; },
       poolStatusLabel: function (s) { return POOL_STATUS[s] || orDash(s); },
       poolStatusTag: function (s) { return POOL_STATUS_TAGS[s] || 'info'; },
-      /* 号段总号数(含起止) */
-      poolQty: function (p) {
-        var q = (Number(p.endNo) || 0) - (Number(p.startNo) || 0) + 1;
-        return q > 0 ? q : 0;
+      /* 已用/总数: 直接展示后端派生统计(usedQty/totalQty, 见 InvoiceService.fillPoolStats) ——
+       * 号段为高精度整数, 前端不做 Number 加减与区间推算 */
+      poolUsedText: function (p) {
+        var u = (p.usedQty === null || p.usedQty === undefined || p.usedQty === '') ? 0 : p.usedQty;
+        var t = (p.totalQty === null || p.totalQty === undefined || p.totalQty === '') ? 0 : p.totalQty;
+        return u + ' / ' + t;
       },
-      /* 已用号 = currentNo - startNo + 1(新增未启用 currentNo=startNo-1 -> 0), 越界收敛 */
-      poolUsed: function (p) {
-        var used = (p.currentNo === null || p.currentNo === undefined)
-          ? 0 : (Number(p.currentNo) - Number(p.startNo) + 1);
-        if (used < 0) { used = 0; }
-        var q = this.poolQty(p);
-        if (q > 0 && used > q) { used = q; }
-        return used;
-      },
-      poolUsedText: function (p) { return this.poolUsed(p) + ' / ' + this.poolQty(p); },
-      poolPercent: function (p) {
-        var q = this.poolQty(p);
-        return q > 0 ? Math.round(this.poolUsed(p) * 100 / q) : 0;
-      },
+      /* 使用进度: 后端派生 usedPercent(Integer), 前端只展示 */
+      poolPercent: function (p) { return p.usedPercent != null ? p.usedPercent : 0; },
       poolProgressStatus: function (s) { return s === 2 ? 'exception' : (s === 1 ? 'success' : undefined); },
       openPoolAdd: function () {
         this.poolEditTitle = '新增号段';
@@ -847,14 +839,16 @@
         var vm = this;
         var f = vm.poolForm || {};
         if (!f.poolCode || !String(f.poolCode).trim()) { ElementPlus.ElMessage.warning('请填写号段编码'); return; }
-        if (f.startNo === null || f.startNo === undefined || f.endNo === null || f.endNo === undefined) {
-          ElementPlus.ElMessage.warning('请填写起始号/结束号'); return;
+        /* 号段为高精度整数: 纯数字文本校验 + BigInt 大小比较, 提交原样字符串(后端负责解析/递增/区间校验) */
+        if (!isNoText(f.startNo) || !isNoText(f.endNo)) {
+          ElementPlus.ElMessage.warning('请填写起始号/结束号(纯数字)'); return;
         }
-        if (Number(f.startNo) >= Number(f.endNo)) { ElementPlus.ElMessage.warning('起始号必须小于结束号'); return; }
+        var startTxt = String(f.startNo).trim(), endTxt = String(f.endNo).trim();
+        if (BigInt(startTxt) >= BigInt(endTxt)) { ElementPlus.ElMessage.warning('起始号必须小于结束号'); return; }
         var u = HIS.getUser() || {};
         var body = {
           id: f.id, orgId: u.orgId, poolCode: String(f.poolCode).trim(), invoiceType: f.invoiceType,
-          prefix: f.prefix ? String(f.prefix).trim() : '', startNo: Number(f.startNo), endNo: Number(f.endNo)
+          prefix: f.prefix ? String(f.prefix).trim() : '', startNo: startTxt, endNo: endTxt
         };
         vm.poolSaving = true;
         HIS.post('/api/his/cashier/invoice-pool', body)
@@ -1017,10 +1011,10 @@
       '        <el-input v-model="poolForm.prefix" maxlength="16" placeholder="可空; 取号=前缀+8位序号"></el-input>',
       '      </el-form-item>',
       '      <el-form-item label="起始号" required>',
-      '        <el-input-number v-model="poolForm.startNo" :min="1" :controls="false" style="width:100%;" placeholder="起始号(含)"></el-input-number>',
+      '        <el-input v-model="poolForm.startNo" style="width:100%;" placeholder="起始号(含, 纯数字)"></el-input>',
       '      </el-form-item>',
       '      <el-form-item label="结束号" required>',
-      '        <el-input-number v-model="poolForm.endNo" :min="1" :controls="false" style="width:100%;" placeholder="结束号(含)"></el-input-number>',
+      '        <el-input v-model="poolForm.endNo" style="width:100%;" placeholder="结束号(含, 纯数字)"></el-input>',
       '      </el-form-item>',
       '    </el-form>',
       '    <el-alert type="info" :closable="false" show-icon title="号段区间不可与同机构已有号段重叠; 新增后为未启用状态, 需启用后收费才可用" style="margin-top:4px;"></el-alert>',

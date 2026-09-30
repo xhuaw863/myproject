@@ -6,12 +6,14 @@ import com.yb.hi.entity.basedata.HisDept;
 import com.yb.hi.entity.doctor.HisDiagnosis;
 import com.yb.hi.entity.doctor.HisMedicalCert;
 import com.yb.hi.entity.doctor.HisVisit;
+import com.yb.hi.entity.outpatient.HisPatient;
 import com.yb.hi.framework.common.BizException;
 import com.yb.hi.framework.tenant.LoginUser;
 import com.yb.hi.framework.tenant.UserContext;
 import com.yb.hi.mapper.basedata.HisDeptMapper;
 import com.yb.hi.mapper.doctor.HisMedicalCertMapper;
 import com.yb.hi.mapper.doctor.HisVisitMapper;
+import com.yb.hi.mapper.outpatient.HisPatientMapper;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -19,11 +21,13 @@ import org.springframework.util.CollectionUtils;
 import org.springframework.util.StringUtils;
 
 import java.time.LocalDateTime;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.stream.Collectors;
 
 /**
- * 诊断证明服务: 开具(自动补全患者/医师/机构, 诊断缺省取就诊诊断) / 按就诊查询
+ * 诊断证明服务: 开具(自动补全患者/医师/机构, 诊断缺省取就诊诊断) / 按就诊查询 / 打印数据
  */
 @Slf4j
 @Service
@@ -32,17 +36,47 @@ public class HisMedicalCertService extends ServiceImpl<HisMedicalCertMapper, His
     private final HisVisitMapper visitMapper;
     private final HisDeptMapper deptMapper;
     private final HisDiagnosisService diagnosisService;
+    private final HisPatientMapper patientMapper;
 
     public HisMedicalCertService(HisVisitMapper visitMapper, HisDeptMapper deptMapper,
-                                 HisDiagnosisService diagnosisService) {
+                                 HisDiagnosisService diagnosisService, HisPatientMapper patientMapper) {
         this.visitMapper = visitMapper;
         this.deptMapper = deptMapper;
         this.diagnosisService = diagnosisService;
+        this.patientMapper = patientMapper;
     }
 
     /** 查询某次就诊的诊断证明列表 */
     public List<HisMedicalCert> listByVisit(Long visitId) {
         return lambdaQuery().eq(HisMedicalCert::getVisitId, visitId).orderByDesc(HisMedicalCert::getId).list();
+    }
+
+    /** 诊断证明打印数据: 证明本体 + 患者基本信息 + 类型名 + 医院名(前端 printCert 消费) */
+    public Map<String, Object> printData(Long id) {
+        HisMedicalCert c = getById(id);
+        if (c == null) {
+            throw new BizException(400, "证明不存在");
+        }
+        HisPatient patient = c.getPatientId() == null ? null : patientMapper.selectById(c.getPatientId());
+        LoginUser user = UserContext.get();
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("hospitalName", user == null ? null : user.getTenantName());
+        result.put("cert", c);
+        result.put("patient", patient);
+        result.put("certTypeName", certTypeName(c.getCertType()));
+        return result;
+    }
+
+    /** 证明类型码翻译(与前端 CERT_TYPES 对齐) */
+    private String certTypeName(Integer type) {
+        if (type == null) {
+            return "诊断证明书";
+        }
+        switch (type) {
+            case 2: return "病假证明";
+            case 3: return "转诊证明";
+            default: return "诊断证明书";
+        }
     }
 
     /**

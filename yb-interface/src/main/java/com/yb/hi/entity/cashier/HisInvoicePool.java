@@ -1,6 +1,7 @@
 package com.yb.hi.entity.cashier;
 
 import com.baomidou.mybatisplus.annotation.IdType;
+import com.baomidou.mybatisplus.annotation.TableField;
 import com.baomidou.mybatisplus.annotation.TableId;
 import com.baomidou.mybatisplus.annotation.TableName;
 import com.yb.hi.framework.entity.BaseEntity;
@@ -41,4 +42,15 @@ public class HisInvoicePool extends BaseEntity {
     private String allocBy;
     /** 分配时间 */
     private LocalDateTime allocTime;
+
+    /* ===== 派生展示字段(非表列, poolPage 查询后由 Service 填充; 供前端只读展示, 避免前端对大整数号段做加减) ===== */
+    /** 总号数 = endNo - startNo + 1(含起止) */
+    @TableField(exist = false)
+    private Long totalQty;
+    /** 已用号数 = currentNo - startNo + 1(未启用为 0, 越界收敛至 [0, totalQty]) */
+    @TableField(exist = false)
+    private Long usedQty;
+    /** 已用百分比(0-100, 四舍五入) */
+    @TableField(exist = false)
+    private Integer usedPercent;
 }

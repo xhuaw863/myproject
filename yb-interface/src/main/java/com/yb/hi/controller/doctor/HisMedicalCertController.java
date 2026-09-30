@@ -7,9 +7,10 @@ import com.yb.hi.service.doctor.HisMedicalCertService;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.List;
+import java.util.Map;
 
 /**
- * 诊断证明接口: 开具证明 / 查询就诊诊断证明
+ * 诊断证明接口: 开具证明 / 查询就诊诊断证明 / 打印数据
  */
 @RestController
 @RequestMapping("/api/his/medical-cert")
@@ -31,5 +32,11 @@ public class HisMedicalCertController {
     @GetMapping("/list")
     public R<List<HisMedicalCert>> list(@RequestParam Long visitId) {
         return R.ok(service.listByVisit(visitId));
+    }
+
+    /** 诊断证明打印数据(证明+患者+类型名+医院名) */
+    @GetMapping("/print-data")
+    public R<Map<String, Object>> printData(@RequestParam Long id) {
+        return R.ok(service.printData(id));
     }
 }

@@ -10,6 +10,7 @@ import com.yb.hi.entity.community.HisDrugCatalog;
 import com.yb.hi.entity.community.HisDictEditLog;
 import com.yb.hi.entity.community.HisMedDict;
 import com.yb.hi.entity.community.HisPriceAdjust;
+import com.yb.hi.entity.community.HisValDict;
 import com.yb.hi.framework.common.R;
 import com.yb.hi.platform.service.OrgAccessGuard;
 import com.yb.hi.service.StdDictMaintainService;
@@ -22,6 +23,7 @@ import com.yb.hi.service.community.HisConsCatalogService;
 import com.yb.hi.service.community.HisDiagDictService;
 import com.yb.hi.service.community.HisDrugCatalogService;
 import com.yb.hi.service.community.HisMedDictService;
+import com.yb.hi.service.community.HisValDictService;
 import org.springframework.format.annotation.DateTimeFormat;
 import org.springframework.util.StringUtils;
 import org.springframework.web.bind.annotation.*;
@@ -48,6 +50,7 @@ public class CommunityDictController {
     private final HisChargeItemService chargeService;
     private final HisMedDictService medDictService;
     private final HisDiagDictService diagDictService;
+    private final HisValDictService valDictService;
     private final CommunityPriceAdjustService adjustService;
     private final CommunityDictImportService importService;
     private final StdDictMaintainService stdMaintain;
@@ -60,6 +63,7 @@ public class CommunityDictController {
                                    HisChargeItemService chargeService,
                                    HisMedDictService medDictService,
                                    HisDiagDictService diagDictService,
+                                   HisValDictService valDictService,
                                    CommunityPriceAdjustService adjustService,
                                    CommunityDictImportService importService,
                                    StdDictMaintainService stdMaintain,
@@ -71,6 +75,7 @@ public class CommunityDictController {
         this.chargeService = chargeService;
         this.medDictService = medDictService;
         this.diagDictService = diagDictService;
+        this.valDictService = valDictService;
         this.adjustService = adjustService;
         this.importService = importService;
         this.stdMaintain = stdMaintain;
@@ -388,6 +393,51 @@ public class CommunityDictController {
                                       @RequestParam long stdId) {
         requireLeadOrg();
         return R.ok(diagDictService.previewFromStd(dictType, dictKey, stdId));
+    }
+
+    /* ================= 值域字典(业务自由值域统一取数源, L2 单表 dict_type=源键:分组码) ================= */
+
+    @GetMapping("/val-dict/page")
+    public R<IPage<HisValDict>> valDictPage(@RequestParam(required = false) String dictType,
+                                            @RequestParam(defaultValue = "1") long page,
+                                            @RequestParam(defaultValue = "50") long size,
+                                            @RequestParam(required = false) String keyword,
+                                            @RequestParam(required = false) Integer status) {
+        return R.ok(valDictService.pageQuery(dictType, keyword, status, page, size));
+    }
+
+    /** 业务下拉统一取值: 指定值域启用项 [{code,name}](HIS.stdValues 消费端, 读接口不守卫) */
+    @GetMapping("/val-dict/values")
+    public R<List<Map<String, Object>>> valDictValues(@RequestParam String dictType) {
+        return R.ok(valDictService.listValues(dictType));
+    }
+
+    @PostMapping("/val-dict")
+    public R<Void> valDictCreate(@RequestBody HisValDict e) {
+        requireLeadOrg();
+        valDictService.saveOrUpdateByCode(e);
+        return R.ok();
+    }
+
+    @PutMapping("/val-dict")
+    public R<Void> valDictUpdate(@RequestBody HisValDict e) {
+        requireLeadOrg();
+        valDictService.updateById(e);
+        return R.ok();
+    }
+
+    @DeleteMapping("/val-dict/{id}")
+    public R<Void> valDictDelete(@PathVariable Long id) {
+        requireLeadOrg();
+        valDictService.removeById(id);
+        return R.ok();
+    }
+
+    /** 从标准值域整组导入(幂等): dictType=源键:分组码(如 cv_code:gend), 返回 total/inserted/updated */
+    @PostMapping("/val-dict/import-batch")
+    public R<Map<String, Object>> valDictImport(@RequestParam String dictType) {
+        requireLeadOrg();
+        return R.ok(valDictService.importFromStd(dictType));
     }
 
     /* ================= 调价留痕 ================= */

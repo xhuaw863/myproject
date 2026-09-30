@@ -57,13 +57,19 @@ public class InvoiceService {
 
     // ==================== 号段管理 ====================
 
-    /** 号段分页(按分配时间降序) */
+    /** 号段分页(按分配时间降序); 记录携带派生统计(totalQty/usedQty/usedPercent), 前端只展示不计算 */
     public IPage<HisInvoicePool> poolPage(Long orgId, long page, long size) {
         LambdaQueryWrapper<HisInvoicePool> w = Wrappers.<HisInvoicePool>lambdaQuery()
                 .eq(orgId != null, HisInvoicePool::getOrgId, orgId)
                 .orderByDesc(HisInvoicePool::getAllocTime)
                 .orderByDesc(HisInvoicePool::getId);
-        return poolMapper.selectPage(new Page<>(safePage(page), safeSize(size)), w);
+        IPage<HisInvoicePool> result = poolMapper.selectPage(new Page<>(safePage(page), safeSize(size)), w);
+        if (result != null && result.getRecords() != null) {
+            for (HisInvoicePool p : result.getRecords()) {
+                fillPoolStats(p);
+            }
+        }
+        return result;
     }
 
     /**
@@ -478,6 +484,28 @@ public class InvoiceService {
             return 20;
         }
         return size > 200 ? 200 : size;
+    }
+
+    /** 填充号段派生统计(总号数/已用号数/已用百分比): 大整数号段一律服务端运算, 前端仅字符串展示 */
+    private static void fillPoolStats(HisInvoicePool p) {
+        long total = 0;
+        if (p.getStartNo() != null && p.getEndNo() != null) {
+            long q = p.getEndNo() - p.getStartNo() + 1;
+            total = q > 0 ? q : 0;
+        }
+        long used = 0;
+        if (p.getCurrentNo() != null && p.getStartNo() != null) {
+            used = p.getCurrentNo() - p.getStartNo() + 1;
+            if (used < 0) {
+                used = 0;
+            }
+            if (total > 0 && used > total) {
+                used = total;
+            }
+        }
+        p.setTotalQty(total);
+        p.setUsedQty(used);
+        p.setUsedPercent(total > 0 ? (int) Math.round(used * 100.0 / total) : 0);
     }
 
     private static LocalDate parseDate(String d) {

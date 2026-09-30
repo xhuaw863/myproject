@@ -8,6 +8,7 @@ import org.springframework.core.annotation.Order;
 import org.springframework.stereotype.Component;
 
 import javax.sql.DataSource;
+import java.math.BigDecimal;
 import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
@@ -360,6 +361,19 @@ public class DictSchemaMigration implements ApplicationRunner {
             ensureNurseTables(conn);
             ensureTreatmentTables(conn);
             ensureMedtechTables(conn);
+            // 住院模块基座: 12 张新表(幂等, 新模块非启动关键路径)
+            ensureInpatientTables(conn);
+            // 临床路径 + 手术麻醉两模块基座: 9 张新表 + 住院医嘱/费用明细挂路径与手术补列(幂等, 新模块非启动关键路径)
+            ensurePathwayAndSurgeryTables(conn);
+            // 住院模型增强: 15 张新表(过敏/知情同意/会诊/转科转床/费用预警/医嘱模板/护理量表/病历模板/质控/宏变量/日清单/打印模板/报表快照)
+            // + 10 张存量表扩展列(幂等, 新模块非启动关键路径)
+            ensureInpatientEnhancementTables(conn);
+            // UI升级(住院看板/通知角标): his_inp_notification 住院通知表(幂等, 新模块非启动关键路径)
+            ensureUIEnhancementTables(conn);
+            // P0 安全基座(T34): 危急值规则/危急值处理记录/病案首页/电子签名日志 4 表 + his_inp_order 药审四列 + 危急值规则种子(幂等)
+            ensureP0SafetyTables(conn);
+            // P1/P2 住院深化(T41): 病历版本快照/出入量记录 2 表 + 医嘱续开/病历三级签名/SBAR评估建议/费用结算关联/视频会诊/预入院 12 列(幂等)
+            ensureP1P2Tables(conn);
             // 存量表补列: 药库/药房归属 + 混合支付/发票号/退费关联/部分退费已退数量(幂等, 列已存在则跳过)
             alterExistingTables(conn);
         } catch (Exception e) {
@@ -1307,6 +1321,29 @@ public class DictSchemaMigration implements ApplicationRunner {
                     + "PRIMARY KEY (id), UNIQUE KEY uk_tenant_diag_type_code (tenant_id, dict_type, code),"
                     + "KEY idx_dd_type (dict_type), KEY idx_dd_tenant (tenant_id)"
                     + ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='医共体诊断字典(五类: 西医/中医/症候/手术/肿瘤, 牵头机构维护)'");
+            /* 医共体值域字典: 医疗业务自由值域(性别/险种/剂型/号别等), dict_type=标准源键:分组码(如 cv_code:gend),
+               牵头机构从基本字典(std_cv_code/std_wst364_code/std_hbvalue_code/std_whvalue_code)整组导入并补充机构字段, 业务下拉统一取值源 */
+            st.executeUpdate("CREATE TABLE IF NOT EXISTS his_val_dict ("
+                    + "id BIGINT NOT NULL AUTO_INCREMENT COMMENT '主键',"
+                    + "tenant_id BIGINT NOT NULL COMMENT '租户(医共体)ID',"
+                    + "dict_type VARCHAR(64) NOT NULL COMMENT '值域类别=标准源键:分组码, 如 cv_code:gend / hbvalue:HBCV08.50.029',"
+                    + "type_name VARCHAR(200) NULL COMMENT '值域中文名(导入时取标准字典组名)',"
+                    + "code VARCHAR(64) NOT NULL COMMENT '值编码(租户内同类唯一, 导入取标准值域码)',"
+                    + "name VARCHAR(200) NOT NULL COMMENT '值名称',"
+                    + "yb_code VARCHAR(64) NULL COMMENT '医保值域编码(cv_code 源导入时=code; 卫健/湖北源留空)',"
+                    + "sort_no INT NULL DEFAULT 0 COMMENT '排序号',"
+                    + "status TINYINT NULL DEFAULT 1 COMMENT '状态:1启用 0停用',"
+                    + "memo VARCHAR(500) NULL COMMENT '备注',"
+                    + "src_type VARCHAR(30) NULL COMMENT '来源标准字典key(cv_code/wst364/hbvalue/whvalue)',"
+                    + "src_doc VARCHAR(200) NULL COMMENT '来源文档',"
+                    + "src_code VARCHAR(64) NULL COMMENT '来源编码(标准值域行编码)',"
+                    + "py_code VARCHAR(64) NULL COMMENT '拼音简码(名称首字母, 自动生成只读)',"
+                    + "abbr_code VARCHAR(64) NULL COMMENT '自定义简码(人工维护, 选填)',"
+                    + "create_by VARCHAR(50) NULL, create_time DATETIME NULL,"
+                    + "update_by VARCHAR(50) NULL, update_time DATETIME NULL, deleted TINYINT DEFAULT 0,"
+                    + "PRIMARY KEY (id), UNIQUE KEY uk_tenant_val_type_code (tenant_id, dict_type, code),"
+                    + "KEY idx_vd_type (dict_type), KEY idx_vd_tenant (tenant_id)"
+                    + ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='医共体值域字典(业务自由值域统一取数源, 牵头机构维护)'");
         }
     }
 
@@ -2249,6 +2286,1156 @@ public class DictSchemaMigration implements ApplicationRunner {
                     + "UNIQUE KEY uk_tenant_item_ptype (tenant_id, item_code, patient_type),"
                     + "KEY idx_tenant (tenant_id)"
                     + ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='危急值规则(项目阈值判定)'");
+        }
+    }
+
+    /**
+     * 幂等建表: 住院模块基座(12 张表, 表已存在则跳过)。
+     * 覆盖 病区/床位/住院就诊/诊断/预交金/医嘱/医嘱执行/费用明细/结算/病历/护理/交接班。
+     * 全表含 tenant_id(租户插件自动注入) + org_id(机构隔离) + 审计四列 + 逻辑删除。
+     */
+    private void ensureInpatientTables(Connection conn) throws Exception {
+        try (Statement st = conn.createStatement()) {
+            /* 病区: 床位管理的组织单元, 关联科室与楼栋楼层 */
+            st.executeUpdate("CREATE TABLE IF NOT EXISTS his_ward ("
+                    + "id BIGINT NOT NULL AUTO_INCREMENT COMMENT '主键',"
+                    + "tenant_id BIGINT NOT NULL COMMENT '租户ID',"
+                    + "org_id BIGINT NOT NULL COMMENT '机构ID',"
+                    + "ward_name VARCHAR(100) NOT NULL COMMENT '病区名称',"
+                    + "ward_code VARCHAR(50) DEFAULT NULL COMMENT '病区编码',"
+                    + "dept_id BIGINT DEFAULT NULL COMMENT '关联科室ID(his_dept.id)',"
+                    + "building VARCHAR(100) DEFAULT NULL COMMENT '楼栋',"
+                    + "floor VARCHAR(20) DEFAULT NULL COMMENT '楼层',"
+                    + "bed_count INT DEFAULT 0 COMMENT '床位数',"
+                    + "status TINYINT DEFAULT 1 COMMENT '状态:1启用 0停用',"
+                    + "remark VARCHAR(500) DEFAULT NULL COMMENT '备注',"
+                    + "create_by VARCHAR(50) DEFAULT NULL, create_time DATETIME DEFAULT NULL,"
+                    + "update_by VARCHAR(50) DEFAULT NULL, update_time DATETIME DEFAULT NULL, deleted TINYINT DEFAULT 0,"
+                    + "PRIMARY KEY (id),"
+                    + "UNIQUE KEY uk_tenant_org_wardcode (tenant_id, org_id, ward_code),"
+                    + "KEY idx_org_status (tenant_id, org_id, status)"
+                    + ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='住院病区'");
+            /* 床位: 病区×房间×床位号唯一, 占用状态由入院/出院/转床链路回写 */
+            st.executeUpdate("CREATE TABLE IF NOT EXISTS his_bed ("
+                    + "id BIGINT NOT NULL AUTO_INCREMENT COMMENT '主键',"
+                    + "tenant_id BIGINT NOT NULL COMMENT '租户ID',"
+                    + "org_id BIGINT NOT NULL COMMENT '机构ID',"
+                    + "bed_no VARCHAR(20) NOT NULL COMMENT '床位号',"
+                    + "ward_id BIGINT NOT NULL COMMENT '病区ID(his_ward.id)',"
+                    + "room_no VARCHAR(20) DEFAULT NULL COMMENT '房间号',"
+                    + "bed_type TINYINT DEFAULT 1 COMMENT '床位类型:1普通 2抢救 3监护 4隔离',"
+                    + "status TINYINT DEFAULT 0 COMMENT '状态:0空床 1占用 2停用',"
+                    + "patient_id BIGINT DEFAULT NULL COMMENT '当前患者ID(his_patient.id)',"
+                    + "inp_visit_id BIGINT DEFAULT NULL COMMENT '当前住院就诊ID(his_inp_visit.id)',"
+                    + "daily_price DECIMAL(10,2) DEFAULT 0 COMMENT '床位日费用',"
+                    + "create_by VARCHAR(50) DEFAULT NULL, create_time DATETIME DEFAULT NULL,"
+                    + "update_by VARCHAR(50) DEFAULT NULL, update_time DATETIME DEFAULT NULL, deleted TINYINT DEFAULT 0,"
+                    + "PRIMARY KEY (id),"
+                    + "UNIQUE KEY uk_tenant_ward_bedno (tenant_id, ward_id, bed_no),"
+                    + "KEY idx_ward_status (tenant_id, ward_id, status),"
+                    + "KEY idx_inp_visit (inp_visit_id)"
+                    + ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='住院床位'");
+            /* 住院就诊主表: 全生命周期状态机 1待入院→2在院→3出院办理中→4已出院/5已取消 */
+            st.executeUpdate("CREATE TABLE IF NOT EXISTS his_inp_visit ("
+                    + "id BIGINT NOT NULL AUTO_INCREMENT COMMENT '主键',"
+                    + "tenant_id BIGINT NOT NULL COMMENT '租户ID',"
+                    + "org_id BIGINT NOT NULL COMMENT '机构ID',"
+                    + "inp_no VARCHAR(30) NOT NULL COMMENT '住院号',"
+                    + "patient_id BIGINT NOT NULL COMMENT '患者ID(his_patient.id)',"
+                    + "ward_id BIGINT DEFAULT NULL COMMENT '病区ID(his_ward.id)',"
+                    + "bed_id BIGINT DEFAULT NULL COMMENT '床位ID(his_bed.id)',"
+                    + "dept_id BIGINT DEFAULT NULL COMMENT '住院科室ID(his_dept.id)',"
+                    + "doctor_id BIGINT DEFAULT NULL COMMENT '主治医生ID(his_staff.id)',"
+                    + "nurse_id BIGINT DEFAULT NULL COMMENT '责任护士ID(his_staff.id)',"
+                    + "admit_date DATETIME DEFAULT NULL COMMENT '入院日期',"
+                    + "discharge_date DATETIME DEFAULT NULL COMMENT '出院日期',"
+                    + "visit_status TINYINT DEFAULT 1 COMMENT '状态:1待入院 2在院 3出院办理中 4已出院 5已取消',"
+                    + "admit_diag VARCHAR(500) DEFAULT NULL COMMENT '入院诊断',"
+                    + "total_cost DECIMAL(12,2) DEFAULT 0 COMMENT '总费用',"
+                    + "deposit_balance DECIMAL(12,2) DEFAULT 0 COMMENT '预交金余额',"
+                    + "med_type VARCHAR(10) DEFAULT NULL COMMENT '医疗类别(医保)',"
+                    + "psn_no VARCHAR(50) DEFAULT NULL COMMENT '医保人员编号',"
+                    + "insutype VARCHAR(10) DEFAULT NULL COMMENT '险种类型',"
+                    + "mdtrt_id VARCHAR(50) DEFAULT NULL COMMENT '医保就诊ID',"
+                    + "create_by VARCHAR(50) DEFAULT NULL, create_time DATETIME DEFAULT NULL,"
+                    + "update_by VARCHAR(50) DEFAULT NULL, update_time DATETIME DEFAULT NULL, deleted TINYINT DEFAULT 0,"
+                    + "PRIMARY KEY (id),"
+                    + "UNIQUE KEY uk_tenant_org_inpno (tenant_id, org_id, inp_no),"
+                    + "KEY idx_patient (tenant_id, patient_id),"
+                    + "KEY idx_org_status (tenant_id, org_id, visit_status),"
+                    + "KEY idx_ward (ward_id),"
+                    + "KEY idx_mdtrt (mdtrt_id)"
+                    + ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='住院就诊主表'");
+            /* 住院诊断: 入院/补充/术后/出院四类, 主诊断标志驱动病案首页与医保上报 */
+            st.executeUpdate("CREATE TABLE IF NOT EXISTS his_inp_diagnosis ("
+                    + "id BIGINT NOT NULL AUTO_INCREMENT COMMENT '主键',"
+                    + "tenant_id BIGINT NOT NULL COMMENT '租户ID',"
+                    + "org_id BIGINT NOT NULL COMMENT '机构ID',"
+                    + "inp_visit_id BIGINT NOT NULL COMMENT '住院就诊ID(his_inp_visit.id)',"
+                    + "diag_type TINYINT NOT NULL COMMENT '诊断类型:1入院诊断 2补充诊断 3术后诊断 4出院诊断',"
+                    + "diag_code VARCHAR(30) DEFAULT NULL COMMENT '诊断编码(ICD-10)',"
+                    + "diag_name VARCHAR(200) NOT NULL COMMENT '诊断名称',"
+                    + "is_main TINYINT DEFAULT 0 COMMENT '是否主诊断:1是 0否',"
+                    + "diag_dept_id BIGINT DEFAULT NULL COMMENT '诊断科室ID(his_dept.id)',"
+                    + "diag_doctor_id BIGINT DEFAULT NULL COMMENT '诊断医生ID(his_staff.id)',"
+                    + "diag_time DATETIME DEFAULT NULL COMMENT '诊断时间',"
+                    + "sort_no INT DEFAULT 0 COMMENT '排序号',"
+                    + "create_by VARCHAR(50) DEFAULT NULL, create_time DATETIME DEFAULT NULL,"
+                    + "update_by VARCHAR(50) DEFAULT NULL, update_time DATETIME DEFAULT NULL, deleted TINYINT DEFAULT 0,"
+                    + "PRIMARY KEY (id),"
+                    + "KEY idx_visit (inp_visit_id),"
+                    + "KEY idx_visit_type (inp_visit_id, diag_type)"
+                    + ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='住院诊断'");
+            /* 预交金流水: 缴纳/退还双向, balance_after 记录操作后余额便于对账 */
+            st.executeUpdate("CREATE TABLE IF NOT EXISTS his_inp_deposit ("
+                    + "id BIGINT NOT NULL AUTO_INCREMENT COMMENT '主键',"
+                    + "tenant_id BIGINT NOT NULL COMMENT '租户ID',"
+                    + "org_id BIGINT NOT NULL COMMENT '机构ID',"
+                    + "inp_visit_id BIGINT NOT NULL COMMENT '住院就诊ID(his_inp_visit.id)',"
+                    + "amount DECIMAL(12,2) NOT NULL COMMENT '金额',"
+                    + "pay_type TINYINT DEFAULT 1 COMMENT '支付方式:1现金 2微信 3支付宝 4银行卡',"
+                    + "direction TINYINT NOT NULL COMMENT '方向:1缴纳 2退还',"
+                    + "balance_after DECIMAL(12,2) DEFAULT NULL COMMENT '操作后余额',"
+                    + "operator_id BIGINT DEFAULT NULL COMMENT '操作员ID(his_staff.id)',"
+                    + "receipt_no VARCHAR(50) DEFAULT NULL COMMENT '收据号',"
+                    + "remark VARCHAR(500) DEFAULT NULL COMMENT '备注',"
+                    + "create_by VARCHAR(50) DEFAULT NULL, create_time DATETIME DEFAULT NULL,"
+                    + "update_by VARCHAR(50) DEFAULT NULL, update_time DATETIME DEFAULT NULL, deleted TINYINT DEFAULT 0,"
+                    + "PRIMARY KEY (id),"
+                    + "KEY idx_visit (inp_visit_id),"
+                    + "KEY idx_visit_time (inp_visit_id, create_time)"
+                    + ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='住院预交金流水'");
+            /* 住院医嘱: 长期/临时两类, 开嘱→审核→执行→完成/停止/作废状态机, 成组医嘱号聚合 */
+            st.executeUpdate("CREATE TABLE IF NOT EXISTS his_inp_order ("
+                    + "id BIGINT NOT NULL AUTO_INCREMENT COMMENT '主键',"
+                    + "tenant_id BIGINT NOT NULL COMMENT '租户ID',"
+                    + "org_id BIGINT NOT NULL COMMENT '机构ID',"
+                    + "inp_visit_id BIGINT NOT NULL COMMENT '住院就诊ID(his_inp_visit.id)',"
+                    + "order_type TINYINT NOT NULL COMMENT '医嘱类型:1长期 2临时',"
+                    + "order_category TINYINT NOT NULL COMMENT '医嘱分类:1药品 2检查 3检验 4治疗 5护理 6膳食 7其他',"
+                    + "order_content VARCHAR(500) NOT NULL COMMENT '医嘱内容',"
+                    + "charge_item_id BIGINT DEFAULT NULL COMMENT '收费项目ID',"
+                    + "drug_id BIGINT DEFAULT NULL COMMENT '药品ID(药品目录)',"
+                    + "spec VARCHAR(100) DEFAULT NULL COMMENT '规格',"
+                    + "dosage VARCHAR(50) DEFAULT NULL COMMENT '剂量',"
+                    + "dosage_unit VARCHAR(20) DEFAULT NULL COMMENT '剂量单位',"
+                    + "usage_code VARCHAR(20) DEFAULT NULL COMMENT '用法编码',"
+                    + "freq_code VARCHAR(20) DEFAULT NULL COMMENT '频次编码',"
+                    + "start_time DATETIME DEFAULT NULL COMMENT '开始时间',"
+                    + "stop_time DATETIME DEFAULT NULL COMMENT '停止时间',"
+                    + "order_status TINYINT DEFAULT 1 COMMENT '状态:1新开 2已审核 3执行中 4已完成 5已停止 6已作废',"
+                    + "doctor_id BIGINT DEFAULT NULL COMMENT '开嘱医生ID(his_staff.id)',"
+                    + "audit_nurse_id BIGINT DEFAULT NULL COMMENT '审核护士ID(his_staff.id)',"
+                    + "audit_time DATETIME DEFAULT NULL COMMENT '审核时间',"
+                    + "stop_doctor_id BIGINT DEFAULT NULL COMMENT '停嘱医生ID(his_staff.id)',"
+                    + "stop_nurse_id BIGINT DEFAULT NULL COMMENT '停嘱护士确认ID(his_staff.id)',"
+                    + "group_no VARCHAR(30) DEFAULT NULL COMMENT '成组医嘱号',"
+                    + "quantity DECIMAL(10,2) DEFAULT NULL COMMENT '数量',"
+                    + "unit_price DECIMAL(10,2) DEFAULT NULL COMMENT '单价',"
+                    + "create_by VARCHAR(50) DEFAULT NULL, create_time DATETIME DEFAULT NULL,"
+                    + "update_by VARCHAR(50) DEFAULT NULL, update_time DATETIME DEFAULT NULL, deleted TINYINT DEFAULT 0,"
+                    + "PRIMARY KEY (id),"
+                    + "KEY idx_visit (inp_visit_id, order_status),"
+                    + "KEY idx_visit_type (inp_visit_id, order_type),"
+                    + "KEY idx_doctor (doctor_id),"
+                    + "KEY idx_group (group_no)"
+                    + ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='住院医嘱'");
+            /* 医嘱执行记录: 长期医嘱按频次生成执行计划, 护士逐次签名执行 */
+            st.executeUpdate("CREATE TABLE IF NOT EXISTS his_inp_order_exec ("
+                    + "id BIGINT NOT NULL AUTO_INCREMENT COMMENT '主键',"
+                    + "tenant_id BIGINT NOT NULL COMMENT '租户ID',"
+                    + "org_id BIGINT NOT NULL COMMENT '机构ID',"
+                    + "order_id BIGINT NOT NULL COMMENT '医嘱ID(his_inp_order.id)',"
+                    + "inp_visit_id BIGINT NOT NULL COMMENT '住院就诊ID(his_inp_visit.id)',"
+                    + "plan_time DATETIME DEFAULT NULL COMMENT '计划执行时间',"
+                    + "exec_time DATETIME DEFAULT NULL COMMENT '实际执行时间',"
+                    + "exec_nurse_id BIGINT DEFAULT NULL COMMENT '执行护士ID(his_staff.id)',"
+                    + "exec_status TINYINT DEFAULT 1 COMMENT '状态:1待执行 2已执行 3未执行',"
+                    + "exec_remark VARCHAR(500) DEFAULT NULL COMMENT '执行备注',"
+                    + "create_by VARCHAR(50) DEFAULT NULL, create_time DATETIME DEFAULT NULL,"
+                    + "update_by VARCHAR(50) DEFAULT NULL, update_time DATETIME DEFAULT NULL, deleted TINYINT DEFAULT 0,"
+                    + "PRIMARY KEY (id),"
+                    + "KEY idx_order (order_id),"
+                    + "KEY idx_visit (inp_visit_id),"
+                    + "KEY idx_status_plan (tenant_id, org_id, exec_status, plan_time)"
+                    + ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='住院医嘱执行记录'");
+            /* 住院费用明细: 逐日记账, 医嘱驱动(药品/检查/检验/治疗)+固定费(床位), 结算前汇总 */
+            st.executeUpdate("CREATE TABLE IF NOT EXISTS his_inp_charge_detail ("
+                    + "id BIGINT NOT NULL AUTO_INCREMENT COMMENT '主键',"
+                    + "tenant_id BIGINT NOT NULL COMMENT '租户ID',"
+                    + "org_id BIGINT NOT NULL COMMENT '机构ID',"
+                    + "inp_visit_id BIGINT NOT NULL COMMENT '住院就诊ID(his_inp_visit.id)',"
+                    + "charge_item_id BIGINT DEFAULT NULL COMMENT '收费项目ID',"
+                    + "item_name VARCHAR(200) NOT NULL COMMENT '项目名称',"
+                    + "item_code VARCHAR(50) DEFAULT NULL COMMENT '项目编码',"
+                    + "quantity DECIMAL(10,2) DEFAULT 1 COMMENT '数量',"
+                    + "unit_price DECIMAL(10,2) NOT NULL COMMENT '单价',"
+                    + "amount DECIMAL(12,2) NOT NULL COMMENT '金额',"
+                    + "charge_date DATE DEFAULT NULL COMMENT '记账日期',"
+                    + "order_id BIGINT DEFAULT NULL COMMENT '关联医嘱ID(his_inp_order.id)',"
+                    + "fee_type TINYINT DEFAULT NULL COMMENT '费用类别:1西药 2中药 3检查 4检验 5治疗 6护理 7材料 8床位 9其他',"
+                    + "status TINYINT DEFAULT 1 COMMENT '状态:1正常 2退费',"
+                    + "operator_id BIGINT DEFAULT NULL COMMENT '操作员ID(his_staff.id)',"
+                    + "create_by VARCHAR(50) DEFAULT NULL, create_time DATETIME DEFAULT NULL,"
+                    + "update_by VARCHAR(50) DEFAULT NULL, update_time DATETIME DEFAULT NULL, deleted TINYINT DEFAULT 0,"
+                    + "PRIMARY KEY (id),"
+                    + "KEY idx_visit (inp_visit_id, charge_date),"
+                    + "KEY idx_visit_fee (inp_visit_id, fee_type),"
+                    + "KEY idx_order (order_id)"
+                    + ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='住院费用明细'");
+            /* 住院结算: 出院/中途/退费三类, 医保结算状态与 2207/2208 链路对齐 */
+            st.executeUpdate("CREATE TABLE IF NOT EXISTS his_inp_settle ("
+                    + "id BIGINT NOT NULL AUTO_INCREMENT COMMENT '主键',"
+                    + "tenant_id BIGINT NOT NULL COMMENT '租户ID',"
+                    + "org_id BIGINT NOT NULL COMMENT '机构ID',"
+                    + "inp_visit_id BIGINT NOT NULL COMMENT '住院就诊ID(his_inp_visit.id)',"
+                    + "settle_no VARCHAR(30) DEFAULT NULL COMMENT '结算单号',"
+                    + "total_amount DECIMAL(12,2) DEFAULT NULL COMMENT '总金额',"
+                    + "self_pay DECIMAL(12,2) DEFAULT 0 COMMENT '自付金额',"
+                    + "fund_pay DECIMAL(12,2) DEFAULT 0 COMMENT '基金支付',"
+                    + "cash_pay DECIMAL(12,2) DEFAULT 0 COMMENT '现金支付',"
+                    + "acct_pay DECIMAL(12,2) DEFAULT 0 COMMENT '个账支付',"
+                    + "deposit_deduct DECIMAL(12,2) DEFAULT 0 COMMENT '预交金抵扣',"
+                    + "refund_amount DECIMAL(12,2) DEFAULT 0 COMMENT '退还金额',"
+                    + "settle_type TINYINT DEFAULT NULL COMMENT '结算类型:1出院结算 2中途结算 3退费',"
+                    + "yb_status TINYINT DEFAULT 0 COMMENT '医保状态:0未结算 1结算中 2已结算 3撤销中 4已撤销',"
+                    + "settle_time DATETIME DEFAULT NULL COMMENT '结算时间',"
+                    + "operator_id BIGINT DEFAULT NULL COMMENT '操作员ID(his_staff.id)',"
+                    + "create_by VARCHAR(50) DEFAULT NULL, create_time DATETIME DEFAULT NULL,"
+                    + "update_by VARCHAR(50) DEFAULT NULL, update_time DATETIME DEFAULT NULL, deleted TINYINT DEFAULT 0,"
+                    + "PRIMARY KEY (id),"
+                    + "UNIQUE KEY uk_tenant_settle_no (tenant_id, settle_no),"
+                    + "KEY idx_visit (inp_visit_id),"
+                    + "KEY idx_yb_status (tenant_id, org_id, yb_status)"
+                    + ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='住院结算'");
+            /* 住院病历: 九类结构化文书, 草稿→已提交→已审核三级审核流 */
+            st.executeUpdate("CREATE TABLE IF NOT EXISTS his_inp_medical_record ("
+                    + "id BIGINT NOT NULL AUTO_INCREMENT COMMENT '主键',"
+                    + "tenant_id BIGINT NOT NULL COMMENT '租户ID',"
+                    + "org_id BIGINT NOT NULL COMMENT '机构ID',"
+                    + "inp_visit_id BIGINT NOT NULL COMMENT '住院就诊ID(his_inp_visit.id)',"
+                    + "record_type TINYINT NOT NULL COMMENT '记录类型:1入院记录 2首次病程 3日常病程 4查房记录 5术前小结 6手术记录 7术后病程 8出院小结 9死亡记录',"
+                    + "title VARCHAR(200) DEFAULT NULL COMMENT '标题',"
+                    + "content TEXT NULL COMMENT '内容(JSON)',"
+                    + "record_time DATETIME DEFAULT NULL COMMENT '记录时间',"
+                    + "doctor_id BIGINT DEFAULT NULL COMMENT '记录医生ID(his_staff.id)',"
+                    + "audit_doctor_id BIGINT DEFAULT NULL COMMENT '审核医生ID(his_staff.id)',"
+                    + "audit_time DATETIME DEFAULT NULL COMMENT '审核时间',"
+                    + "status TINYINT DEFAULT 1 COMMENT '状态:1草稿 2已提交 3已审核',"
+                    + "create_by VARCHAR(50) DEFAULT NULL, create_time DATETIME DEFAULT NULL,"
+                    + "update_by VARCHAR(50) DEFAULT NULL, update_time DATETIME DEFAULT NULL, deleted TINYINT DEFAULT 0,"
+                    + "PRIMARY KEY (id),"
+                    + "KEY idx_visit (inp_visit_id, record_type),"
+                    + "KEY idx_doctor (doctor_id)"
+                    + ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='住院病历'");
+            /* 护理记录: 体温单/评估/计划/措施/总结五类, content 为 JSON */
+            st.executeUpdate("CREATE TABLE IF NOT EXISTS his_inp_nursing_record ("
+                    + "id BIGINT NOT NULL AUTO_INCREMENT COMMENT '主键',"
+                    + "tenant_id BIGINT NOT NULL COMMENT '租户ID',"
+                    + "org_id BIGINT NOT NULL COMMENT '机构ID',"
+                    + "inp_visit_id BIGINT NOT NULL COMMENT '住院就诊ID(his_inp_visit.id)',"
+                    + "record_type TINYINT NOT NULL COMMENT '记录类型:1体温单 2护理评估 3护理计划 4护理措施 5护理总结',"
+                    + "content TEXT NULL COMMENT '内容(JSON)',"
+                    + "record_time DATETIME DEFAULT NULL COMMENT '记录时间',"
+                    + "nurse_id BIGINT DEFAULT NULL COMMENT '护士ID(his_staff.id)',"
+                    + "create_by VARCHAR(50) DEFAULT NULL, create_time DATETIME DEFAULT NULL,"
+                    + "update_by VARCHAR(50) DEFAULT NULL, update_time DATETIME DEFAULT NULL, deleted TINYINT DEFAULT 0,"
+                    + "PRIMARY KEY (id),"
+                    + "KEY idx_visit (inp_visit_id, record_type),"
+                    + "KEY idx_nurse (nurse_id)"
+                    + ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='住院护理记录'");
+            /* 交接班: 病区×日期×班次唯一, 交班人→接班人双签闭环 */
+            st.executeUpdate("CREATE TABLE IF NOT EXISTS his_inp_shift_record ("
+                    + "id BIGINT NOT NULL AUTO_INCREMENT COMMENT '主键',"
+                    + "tenant_id BIGINT NOT NULL COMMENT '租户ID',"
+                    + "org_id BIGINT NOT NULL COMMENT '机构ID',"
+                    + "ward_id BIGINT NOT NULL COMMENT '病区ID(his_ward.id)',"
+                    + "shift_date DATE NOT NULL COMMENT '交班日期',"
+                    + "shift_type TINYINT NOT NULL COMMENT '班次:1白班 2小夜 3大夜',"
+                    + "handover_nurse_id BIGINT DEFAULT NULL COMMENT '交班护士ID(his_staff.id)',"
+                    + "takeover_nurse_id BIGINT DEFAULT NULL COMMENT '接班护士ID(his_staff.id)',"
+                    + "total_patients INT DEFAULT 0 COMMENT '在院总数',"
+                    + "new_admit INT DEFAULT 0 COMMENT '新入院',"
+                    + "discharged INT DEFAULT 0 COMMENT '出院',"
+                    + "critical_count INT DEFAULT 0 COMMENT '危重人数',"
+                    + "content TEXT NULL COMMENT '交班内容(JSON)',"
+                    + "status TINYINT DEFAULT 1 COMMENT '状态:1待接班 2已交接',"
+                    + "create_by VARCHAR(50) DEFAULT NULL, create_time DATETIME DEFAULT NULL,"
+                    + "update_by VARCHAR(50) DEFAULT NULL, update_time DATETIME DEFAULT NULL, deleted TINYINT DEFAULT 0,"
+                    + "PRIMARY KEY (id),"
+                    + "UNIQUE KEY uk_ward_date_type (tenant_id, ward_id, shift_date, shift_type),"
+                    + "KEY idx_date (tenant_id, org_id, shift_date)"
+                    + ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='病区交接班记录'");
+        }
+    }
+
+    /**
+     * 幂等建表: 临床路径 + 手术麻醉两模块基座(9 张表, 表已存在则跳过)。
+     * 临床路径: 模板→节点→任务三级定义, 患者实例→逐日执行记录(变异留痕), 住院医嘱挂路径实例;
+     * 手术麻醉: 手术申请→排程→术中→术后→完成状态机, 麻醉记录(评估/生命体征/术中事件 JSON),
+     *          手术费用明细(自动计时+手动记账)与手术耗材, 费用明细挂手术ID。
+     * 存量表补列: his_inp_order.pathway_instance_id / his_inp_charge_detail.surgery_id(列已存在则跳过)。
+     */
+    private void ensurePathwayAndSurgeryTables(Connection conn) throws Exception {
+        /* 存量表补列: 医嘱挂临床路径实例 / 住院费用明细挂手术(MySQL 不支持 ADD COLUMN IF NOT EXISTS, 走幂等助手) */
+        addColumnIfNotExists(conn, "his_inp_order", "pathway_instance_id", "BIGINT DEFAULT NULL COMMENT '临床路径实例ID(his_pathway_instance.id)'");
+        addColumnIfNotExists(conn, "his_inp_charge_detail", "surgery_id", "BIGINT DEFAULT NULL COMMENT '手术ID(his_surgery.id)'");
+        try (Statement st = conn.createStatement()) {
+            /* 路径模板: 病种入径标准(适用诊断+科室+平均住院日+预估总费用), 版本化维护 */
+            st.executeUpdate("CREATE TABLE IF NOT EXISTS his_pathway_template ("
+                    + "id BIGINT NOT NULL COMMENT '主键',"
+                    + "tenant_id BIGINT NOT NULL COMMENT '租户ID',"
+                    + "org_id BIGINT NOT NULL COMMENT '机构ID',"
+                    + "pathway_code VARCHAR(50) NOT NULL COMMENT '路径编码',"
+                    + "pathway_name VARCHAR(200) NOT NULL COMMENT '路径名称',"
+                    + "disease_code VARCHAR(30) DEFAULT NULL COMMENT '适用诊断编码ICD-10',"
+                    + "disease_name VARCHAR(200) DEFAULT NULL COMMENT '适用诊断名称',"
+                    + "dept_id BIGINT DEFAULT NULL COMMENT '适用科室ID(his_dept.id)',"
+                    + "avg_length INT DEFAULT NULL COMMENT '平均住院日',"
+                    + "total_cost DECIMAL(12,2) DEFAULT NULL COMMENT '预估总费用',"
+                    + "version INT DEFAULT 1 COMMENT '版本号',"
+                    + "status TINYINT DEFAULT 1 COMMENT '状态:1启用 0停用',"
+                    + "description VARCHAR(1000) DEFAULT NULL COMMENT '路径描述',"
+                    + "create_by VARCHAR(64) DEFAULT NULL, create_time DATETIME DEFAULT NULL,"
+                    + "update_by VARCHAR(64) DEFAULT NULL, update_time DATETIME DEFAULT NULL, deleted TINYINT DEFAULT 0,"
+                    + "PRIMARY KEY (id),"
+                    + "KEY idx_org_status (tenant_id, org_id, status),"
+                    + "KEY idx_disease (disease_code)"
+                    + ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='临床路径模板'");
+            /* 路径节点: 模板×第X天网格, 同天多节点按 sort_no 排序 */
+            st.executeUpdate("CREATE TABLE IF NOT EXISTS his_pathway_node ("
+                    + "id BIGINT NOT NULL COMMENT '主键',"
+                    + "tenant_id BIGINT NOT NULL COMMENT '租户ID',"
+                    + "org_id BIGINT NOT NULL COMMENT '机构ID',"
+                    + "template_id BIGINT NOT NULL COMMENT '模板ID(his_pathway_template.id)',"
+                    + "day_no INT NOT NULL COMMENT '第X天',"
+                    + "node_name VARCHAR(200) DEFAULT NULL COMMENT '节点名称',"
+                    + "node_desc VARCHAR(500) DEFAULT NULL COMMENT '节点描述',"
+                    + "sort_no INT DEFAULT 0 COMMENT '排序号',"
+                    + "create_by VARCHAR(64) DEFAULT NULL, create_time DATETIME DEFAULT NULL,"
+                    + "update_by VARCHAR(64) DEFAULT NULL, update_time DATETIME DEFAULT NULL, deleted TINYINT DEFAULT 0,"
+                    + "PRIMARY KEY (id),"
+                    + "KEY idx_template_day (template_id, day_no)"
+                    + ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='临床路径节点'");
+            /* 节点任务(医嘱模板): 医护/检查/检验/宣教五类, 药品/收费项目双挂, 必做/可选区分 */
+            st.executeUpdate("CREATE TABLE IF NOT EXISTS his_pathway_task ("
+                    + "id BIGINT NOT NULL COMMENT '主键',"
+                    + "tenant_id BIGINT NOT NULL COMMENT '租户ID',"
+                    + "org_id BIGINT NOT NULL COMMENT '机构ID',"
+                    + "node_id BIGINT NOT NULL COMMENT '节点ID(his_pathway_node.id)',"
+                    + "template_id BIGINT NOT NULL COMMENT '模板ID(his_pathway_template.id)',"
+                    + "task_type TINYINT DEFAULT 1 COMMENT '任务类型:1医嘱 2护理 3检查 4检验 5宣教',"
+                    + "charge_item_id BIGINT DEFAULT NULL COMMENT '收费项目ID',"
+                    + "drug_id BIGINT DEFAULT NULL COMMENT '药品ID(药品目录)',"
+                    + "order_type TINYINT DEFAULT NULL COMMENT '医嘱类型:1长期 2临时',"
+                    + "order_category TINYINT DEFAULT NULL COMMENT '医嘱分类:1药品 2检查 3检验 4治疗 5护理 6膳食 7其他',"
+                    + "order_content VARCHAR(500) DEFAULT NULL COMMENT '医嘱内容',"
+                    + "spec VARCHAR(100) DEFAULT NULL COMMENT '规格',"
+                    + "dosage VARCHAR(50) DEFAULT NULL COMMENT '剂量',"
+                    + "dosage_unit VARCHAR(20) DEFAULT NULL COMMENT '剂量单位',"
+                    + "usage_code VARCHAR(20) DEFAULT NULL COMMENT '用法编码',"
+                    + "freq_code VARCHAR(20) DEFAULT NULL COMMENT '频次编码',"
+                    + "quantity DECIMAL(10,2) DEFAULT NULL COMMENT '数量',"
+                    + "unit_price DECIMAL(10,2) DEFAULT NULL COMMENT '单价',"
+                    + "is_mandatory TINYINT DEFAULT 1 COMMENT '是否必做:1必做 0可选',"
+                    + "sort_no INT DEFAULT 0 COMMENT '排序号',"
+                    + "create_by VARCHAR(64) DEFAULT NULL, create_time DATETIME DEFAULT NULL,"
+                    + "update_by VARCHAR(64) DEFAULT NULL, update_time DATETIME DEFAULT NULL, deleted TINYINT DEFAULT 0,"
+                    + "PRIMARY KEY (id),"
+                    + "KEY idx_node (node_id),"
+                    + "KEY idx_template (template_id)"
+                    + ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='临床路径节点任务(医嘱模板)'");
+            /* 患者路径实例: 住院就诊×模板入径, 进行中/完成/退出/暂停状态机, 退出留原因 */
+            st.executeUpdate("CREATE TABLE IF NOT EXISTS his_pathway_instance ("
+                    + "id BIGINT NOT NULL COMMENT '主键',"
+                    + "tenant_id BIGINT NOT NULL COMMENT '租户ID',"
+                    + "org_id BIGINT NOT NULL COMMENT '机构ID',"
+                    + "inp_visit_id BIGINT NOT NULL COMMENT '住院就诊ID(his_inp_visit.id)',"
+                    + "template_id BIGINT NOT NULL COMMENT '模板ID(his_pathway_template.id)',"
+                    + "start_date DATETIME DEFAULT NULL COMMENT '启动日期',"
+                    + "current_day INT DEFAULT 1 COMMENT '当前天数',"
+                    + "end_date DATETIME DEFAULT NULL COMMENT '结束日期',"
+                    + "status TINYINT DEFAULT 1 COMMENT '状态:1进行中 2已完成 3已退出 4暂停',"
+                    + "exit_reason VARCHAR(500) DEFAULT NULL COMMENT '退出原因',"
+                    + "doctor_id BIGINT DEFAULT NULL COMMENT '主治医生ID(his_staff.id)',"
+                    + "create_by VARCHAR(64) DEFAULT NULL, create_time DATETIME DEFAULT NULL,"
+                    + "update_by VARCHAR(64) DEFAULT NULL, update_time DATETIME DEFAULT NULL, deleted TINYINT DEFAULT 0,"
+                    + "PRIMARY KEY (id),"
+                    + "KEY idx_visit (inp_visit_id, status),"
+                    + "KEY idx_template (template_id),"
+                    + "KEY idx_org_status (tenant_id, org_id, status)"
+                    + ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='患者临床路径实例'");
+            /* 路径执行记录: 实例×任务逐日执行, 待执行/已执行/跳过/变异四态, 变异留原因并回链医嘱 */
+            st.executeUpdate("CREATE TABLE IF NOT EXISTS his_pathway_exec ("
+                    + "id BIGINT NOT NULL COMMENT '主键',"
+                    + "tenant_id BIGINT NOT NULL COMMENT '租户ID',"
+                    + "org_id BIGINT NOT NULL COMMENT '机构ID',"
+                    + "instance_id BIGINT NOT NULL COMMENT '路径实例ID(his_pathway_instance.id)',"
+                    + "task_id BIGINT DEFAULT NULL COMMENT '任务ID(his_pathway_task.id)',"
+                    + "node_id BIGINT DEFAULT NULL COMMENT '节点ID(his_pathway_node.id)',"
+                    + "day_no INT DEFAULT NULL COMMENT '第X天',"
+                    + "exec_date DATE DEFAULT NULL COMMENT '执行日期',"
+                    + "exec_status TINYINT DEFAULT 1 COMMENT '执行状态:1待执行 2已执行 3跳过 4变异',"
+                    + "order_id BIGINT DEFAULT NULL COMMENT '关联医嘱ID(his_inp_order.id)',"
+                    + "variance_reason VARCHAR(500) DEFAULT NULL COMMENT '变异原因',"
+                    + "operator_id BIGINT DEFAULT NULL COMMENT '操作员ID(his_staff.id)',"
+                    + "create_by VARCHAR(64) DEFAULT NULL, create_time DATETIME DEFAULT NULL,"
+                    + "update_by VARCHAR(64) DEFAULT NULL, update_time DATETIME DEFAULT NULL, deleted TINYINT DEFAULT 0,"
+                    + "PRIMARY KEY (id),"
+                    + "KEY idx_instance (instance_id, exec_status),"
+                    + "KEY idx_task (task_id),"
+                    + "KEY idx_order (order_id)"
+                    + ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='临床路径执行记录'");
+            /* 手术主表: 申请→排程→术中→术后→完成状态机, 手术团队八角色 + 切皮/缝合时间轴 */
+            st.executeUpdate("CREATE TABLE IF NOT EXISTS his_surgery ("
+                    + "id BIGINT NOT NULL COMMENT '主键',"
+                    + "tenant_id BIGINT NOT NULL COMMENT '租户ID',"
+                    + "org_id BIGINT NOT NULL COMMENT '机构ID',"
+                    + "inp_visit_id BIGINT NOT NULL COMMENT '住院就诊ID(his_inp_visit.id)',"
+                    + "surgery_code VARCHAR(50) DEFAULT NULL COMMENT '手术编码ICD-9-CM-3',"
+                    + "surgery_name VARCHAR(200) NOT NULL COMMENT '手术名称',"
+                    + "surgery_level TINYINT DEFAULT NULL COMMENT '手术级别:1一级 2二级 3三级 4四级',"
+                    + "surgeon_id BIGINT DEFAULT NULL COMMENT '主刀医师ID(his_staff.id)',"
+                    + "first_assistant_id BIGINT DEFAULT NULL COMMENT '一助ID(his_staff.id)',"
+                    + "second_assistant_id BIGINT DEFAULT NULL COMMENT '二助ID(his_staff.id)',"
+                    + "anesthesiologist_id BIGINT DEFAULT NULL COMMENT '麻醉医师ID(his_staff.id)',"
+                    + "anesthesia_nurse_id BIGINT DEFAULT NULL COMMENT '麻醉护士ID(his_staff.id)',"
+                    + "instrument_nurse_id BIGINT DEFAULT NULL COMMENT '器械护士ID(his_staff.id)',"
+                    + "circulating_nurse_id BIGINT DEFAULT NULL COMMENT '巡回护士ID(his_staff.id)',"
+                    + "room_no VARCHAR(20) DEFAULT NULL COMMENT '手术间号',"
+                    + "schedule_date DATE DEFAULT NULL COMMENT '手术日期',"
+                    + "schedule_time VARCHAR(20) DEFAULT NULL COMMENT '手术时间段',"
+                    + "start_time DATETIME DEFAULT NULL COMMENT '实际开始时间',"
+                    + "end_time DATETIME DEFAULT NULL COMMENT '实际结束时间',"
+                    + "incision_time DATETIME DEFAULT NULL COMMENT '切皮时间',"
+                    + "suture_time DATETIME DEFAULT NULL COMMENT '缝合时间',"
+                    + "asa_grade TINYINT DEFAULT NULL COMMENT 'ASA分级:1-5',"
+                    + "incision_type TINYINT DEFAULT NULL COMMENT '切口类型:1清洁 2清洁污染 3污染 4感染',"
+                    + "status TINYINT DEFAULT 1 COMMENT '状态:1申请 2排程 3术中 4术后 5完成 6取消',"
+                    + "dept_id BIGINT DEFAULT NULL COMMENT '手术科室ID(his_dept.id)',"
+                    + "create_by VARCHAR(64) DEFAULT NULL, create_time DATETIME DEFAULT NULL,"
+                    + "update_by VARCHAR(64) DEFAULT NULL, update_time DATETIME DEFAULT NULL, deleted TINYINT DEFAULT 0,"
+                    + "PRIMARY KEY (id),"
+                    + "KEY idx_visit (inp_visit_id, status),"
+                    + "KEY idx_org_status (tenant_id, org_id, status),"
+                    + "KEY idx_surgeon (surgeon_id),"
+                    + "KEY idx_schedule (tenant_id, org_id, schedule_date)"
+                    + ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='手术记录主表'");
+            /* 麻醉记录: 一台手术一条, 术前/术后评估 + 诱导-插管-拔管-苏醒时间轴, 生命体征/术中事件 JSON */
+            st.executeUpdate("CREATE TABLE IF NOT EXISTS his_anesthesia ("
+                    + "id BIGINT NOT NULL COMMENT '主键',"
+                    + "tenant_id BIGINT NOT NULL COMMENT '租户ID',"
+                    + "org_id BIGINT NOT NULL COMMENT '机构ID',"
+                    + "surgery_id BIGINT NOT NULL COMMENT '手术ID(his_surgery.id)',"
+                    + "anesthesia_type TINYINT DEFAULT NULL COMMENT '麻醉类型:1全麻 2局麻 3椎管内 4神经阻滞 5复合 6其他',"
+                    + "anesthesia_method VARCHAR(100) DEFAULT NULL COMMENT '具体麻醉方式',"
+                    + "pre_assessment TEXT NULL COMMENT '术前评估JSON',"
+                    + "induction_time DATETIME DEFAULT NULL COMMENT '诱导时间',"
+                    + "intubation_time DATETIME DEFAULT NULL COMMENT '插管时间',"
+                    + "extubation_time DATETIME DEFAULT NULL COMMENT '拔管时间',"
+                    + "recovery_time DATETIME DEFAULT NULL COMMENT '苏醒时间',"
+                    + "vital_signs TEXT NULL COMMENT '生命体征JSON数组',"
+                    + "anesthesia_events TEXT NULL COMMENT '术中事件JSON',"
+                    + "post_assessment TEXT NULL COMMENT '术后评估JSON',"
+                    + "status TINYINT DEFAULT 1 COMMENT '状态:1记录中 2已完成',"
+                    + "create_by VARCHAR(64) DEFAULT NULL, create_time DATETIME DEFAULT NULL,"
+                    + "update_by VARCHAR(64) DEFAULT NULL, update_time DATETIME DEFAULT NULL, deleted TINYINT DEFAULT 0,"
+                    + "PRIMARY KEY (id),"
+                    + "KEY idx_surgery (surgery_id)"
+                    + ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='麻醉记录'");
+            /* 手术费用明细: 手术费/麻醉费/监测费/耗材/药品六类, 自动计时(分钟计价)与手动记账双轨 */
+            st.executeUpdate("CREATE TABLE IF NOT EXISTS his_surgery_fee ("
+                    + "id BIGINT NOT NULL COMMENT '主键',"
+                    + "tenant_id BIGINT NOT NULL COMMENT '租户ID',"
+                    + "org_id BIGINT NOT NULL COMMENT '机构ID',"
+                    + "surgery_id BIGINT NOT NULL COMMENT '手术ID(his_surgery.id)',"
+                    + "inp_visit_id BIGINT NOT NULL COMMENT '住院就诊ID(his_inp_visit.id)',"
+                    + "charge_item_id BIGINT DEFAULT NULL COMMENT '收费项目ID',"
+                    + "item_name VARCHAR(200) NOT NULL COMMENT '项目名称',"
+                    + "item_code VARCHAR(50) DEFAULT NULL COMMENT '项目编码',"
+                    + "fee_category TINYINT DEFAULT NULL COMMENT '费用分类:1手术费 2麻醉费 3监测费 4耗材费 5药品费 6其他',"
+                    + "quantity DECIMAL(10,2) DEFAULT 1 COMMENT '数量',"
+                    + "unit_price DECIMAL(10,2) NOT NULL COMMENT '单价',"
+                    + "amount DECIMAL(12,2) NOT NULL COMMENT '金额',"
+                    + "charge_time DATETIME DEFAULT NULL COMMENT '记账时间',"
+                    + "auto_flag TINYINT DEFAULT 0 COMMENT '自动计时:1是 0手动',"
+                    + "duration_minutes INT DEFAULT NULL COMMENT '计时分钟数',"
+                    + "operator_id BIGINT DEFAULT NULL COMMENT '操作员ID(his_staff.id)',"
+                    + "status TINYINT DEFAULT 1 COMMENT '状态:1正常 2退费',"
+                    + "create_by VARCHAR(64) DEFAULT NULL, create_time DATETIME DEFAULT NULL,"
+                    + "update_by VARCHAR(64) DEFAULT NULL, update_time DATETIME DEFAULT NULL, deleted TINYINT DEFAULT 0,"
+                    + "PRIMARY KEY (id),"
+                    + "KEY idx_surgery (surgery_id, fee_category),"
+                    + "KEY idx_visit (inp_visit_id, status)"
+                    + ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='手术费用明细'");
+            /* 手术耗材: 高值耗材逐台登记(批号/供应商可追溯), 与手术费用明细互为补充 */
+            st.executeUpdate("CREATE TABLE IF NOT EXISTS his_surgery_material ("
+                    + "id BIGINT NOT NULL COMMENT '主键',"
+                    + "tenant_id BIGINT NOT NULL COMMENT '租户ID',"
+                    + "org_id BIGINT NOT NULL COMMENT '机构ID',"
+                    + "surgery_id BIGINT NOT NULL COMMENT '手术ID(his_surgery.id)',"
+                    + "material_name VARCHAR(200) NOT NULL COMMENT '耗材名称',"
+                    + "material_code VARCHAR(50) DEFAULT NULL COMMENT '耗材编码',"
+                    + "spec VARCHAR(100) DEFAULT NULL COMMENT '规格',"
+                    + "batch_no VARCHAR(50) DEFAULT NULL COMMENT '批号',"
+                    + "quantity DECIMAL(10,2) DEFAULT 1 COMMENT '数量',"
+                    + "unit_price DECIMAL(10,2) DEFAULT NULL COMMENT '单价',"
+                    + "amount DECIMAL(12,2) DEFAULT NULL COMMENT '金额',"
+                    + "supplier VARCHAR(200) DEFAULT NULL COMMENT '供应商',"
+                    + "create_by VARCHAR(64) DEFAULT NULL, create_time DATETIME DEFAULT NULL,"
+                    + "update_by VARCHAR(64) DEFAULT NULL, update_time DATETIME DEFAULT NULL, deleted TINYINT DEFAULT 0,"
+                    + "PRIMARY KEY (id),"
+                    + "KEY idx_surgery (surgery_id)"
+                    + ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='手术耗材'");
+        }
+    }
+
+    /**
+     * 幂等建表: 住院模型增强(15 张新表, 表已存在则跳过) + 10 张存量表扩展列(列已存在则跳过)。
+     * 业务规则增强: 过敏记录/知情同意/会诊/转科转床申请/费用预警/医嘱模板套餐;
+     * 护理评估量表: 量表定义→计划模板→计划实例三层;
+     * 电子病历: 结构化模板/质控规则/宏变量;
+     * 报表打印: 每日费用清单/打印模板/报表快照。
+     * 存量表补列: his_inp_visit(+15) his_bed(+3) his_inp_order(+5) his_inp_charge_detail(+4)
+     * his_inp_medical_record(+7) his_inp_nursing_record(+4) his_inp_diagnosis(+2) his_inp_settle(+3)
+     * his_surgery(+3) his_inp_shift_record(+2)。
+     */
+    private void ensureInpatientEnhancementTables(Connection conn) throws Exception {
+        /* ---------- 存量表扩展列(10 张 48 列, 列已存在则跳过) ---------- */
+        /* his_inp_visit +15: 联系人/担保人/血型/入院来源/预计出院/预交金预警线/隔离/护理等级/饮食/病情等级/DRG */
+        addColumnIfNotExists(conn, "his_inp_visit", "contact_name", "VARCHAR(50) DEFAULT NULL COMMENT '联系人姓名'");
+        addColumnIfNotExists(conn, "his_inp_visit", "contact_phone", "VARCHAR(20) DEFAULT NULL COMMENT '联系人电话'");
+        addColumnIfNotExists(conn, "his_inp_visit", "contact_relation", "VARCHAR(20) DEFAULT NULL COMMENT '联系人关系'");
+        addColumnIfNotExists(conn, "his_inp_visit", "guarantor_name", "VARCHAR(50) DEFAULT NULL COMMENT '担保人姓名'");
+        addColumnIfNotExists(conn, "his_inp_visit", "guarantor_phone", "VARCHAR(20) DEFAULT NULL COMMENT '担保人电话'");
+        addColumnIfNotExists(conn, "his_inp_visit", "guarantor_id_no", "VARCHAR(30) DEFAULT NULL COMMENT '担保人身份证号'");
+        addColumnIfNotExists(conn, "his_inp_visit", "blood_type", "VARCHAR(10) DEFAULT NULL COMMENT '血型'");
+        addColumnIfNotExists(conn, "his_inp_visit", "admit_source", "INT DEFAULT NULL COMMENT '入院来源:1门诊 2急诊 3转诊 4其他'");
+        addColumnIfNotExists(conn, "his_inp_visit", "expected_discharge_date", "DATE DEFAULT NULL COMMENT '预计出院日期'");
+        addColumnIfNotExists(conn, "his_inp_visit", "deposit_warning_amount", "DECIMAL(12,2) DEFAULT NULL COMMENT '预交金预警线'");
+        addColumnIfNotExists(conn, "his_inp_visit", "is_quarantine", "TINYINT DEFAULT 0 COMMENT '是否隔离:1是 0否'");
+        addColumnIfNotExists(conn, "his_inp_visit", "nursing_level", "INT DEFAULT NULL COMMENT '护理等级:1特级 2一级 3二级 4三级'");
+        addColumnIfNotExists(conn, "his_inp_visit", "diet_type", "VARCHAR(50) DEFAULT NULL COMMENT '饮食类型'");
+        addColumnIfNotExists(conn, "his_inp_visit", "condition_level", "INT DEFAULT NULL COMMENT '病情等级:1危 2重 3一般'");
+        addColumnIfNotExists(conn, "his_inp_visit", "drg_group_code", "VARCHAR(30) DEFAULT NULL COMMENT 'DRG分组编码'");
+        addColumnIfNotExists(conn, "his_inp_visit", "admission_cert_id", "BIGINT DEFAULT NULL COMMENT '来源住院证ID(his_admission_cert.id, 持证入院溯源)'");
+        /* his_admission_cert +1: 持证入院消费回写(证->住院就诊溯源) */
+        addColumnIfNotExists(conn, "his_admission_cert", "admitted_visit_id", "BIGINT DEFAULT NULL COMMENT '消费本证的住院就诊ID(his_inp_visit.id, 已入院时回写)'");
+        /* his_bed +3: 床位等级/加床/性别限制 */
+        addColumnIfNotExists(conn, "his_bed", "bed_level", "INT DEFAULT 1 COMMENT '床位等级:1普通 2单间 3监护 4特需'");
+        addColumnIfNotExists(conn, "his_bed", "is_extra_bed", "TINYINT DEFAULT 0 COMMENT '是否加床:1是 0否'");
+        addColumnIfNotExists(conn, "his_bed", "gender_limit", "INT DEFAULT 0 COMMENT '性别限制:0无 1男 2女'");
+        /* his_inp_order +5: 医嘱模板/套餐溯源 + 高警示/双人核对/合理用药审查 */
+        addColumnIfNotExists(conn, "his_inp_order", "order_template_id", "BIGINT DEFAULT NULL COMMENT '来源医嘱模板ID(his_order_template.id)'");
+        addColumnIfNotExists(conn, "his_inp_order", "order_set_id", "BIGINT DEFAULT NULL COMMENT '来源医嘱套餐ID(his_order_template.id, 套餐型)'");
+        addColumnIfNotExists(conn, "his_inp_order", "high_alert_flag", "TINYINT DEFAULT 0 COMMENT '高警示药品:1是 0否'");
+        addColumnIfNotExists(conn, "his_inp_order", "double_check_flag", "TINYINT DEFAULT 0 COMMENT '需双人核对:1是 0否'");
+        addColumnIfNotExists(conn, "his_inp_order", "rational_check_result", "TEXT NULL COMMENT '合理用药审查结果JSON'");
+        /* his_inp_charge_detail +4: 限额管控与超标审批 */
+        addColumnIfNotExists(conn, "his_inp_charge_detail", "daily_limit", "DECIMAL(12,2) DEFAULT NULL COMMENT '日限额'");
+        addColumnIfNotExists(conn, "his_inp_charge_detail", "total_limit", "DECIMAL(12,2) DEFAULT NULL COMMENT '总限额'");
+        addColumnIfNotExists(conn, "his_inp_charge_detail", "approval_status", "INT DEFAULT 1 COMMENT '审核状态:1待审 2通过 3拒绝'");
+        addColumnIfNotExists(conn, "his_inp_charge_detail", "limit_override_reason", "VARCHAR(200) DEFAULT NULL COMMENT '超标原因'");
+        /* his_inp_medical_record +7: 结构化模板/时限质控/上级医师查房 */
+        addColumnIfNotExists(conn, "his_inp_medical_record", "template_id", "BIGINT DEFAULT NULL COMMENT '结构化模板ID(his_emr_template.id)'");
+        addColumnIfNotExists(conn, "his_inp_medical_record", "structure_data", "TEXT NULL COMMENT '结构化数据JSON'");
+        addColumnIfNotExists(conn, "his_inp_medical_record", "deadline_time", "DATETIME DEFAULT NULL COMMENT '书写截止时间(时限性质控)'");
+        addColumnIfNotExists(conn, "his_inp_medical_record", "quality_score", "DECIMAL(5,2) DEFAULT NULL COMMENT '质控评分'");
+        addColumnIfNotExists(conn, "his_inp_medical_record", "quality_detail", "TEXT NULL COMMENT '质控明细JSON'");
+        addColumnIfNotExists(conn, "his_inp_medical_record", "attending_doctor_id", "BIGINT DEFAULT NULL COMMENT '上级医师ID(his_staff.id)'");
+        addColumnIfNotExists(conn, "his_inp_medical_record", "round_level", "INT DEFAULT NULL COMMENT '查房级别:1住院医师 2主治 3主任'");
+        /* his_inp_nursing_record +4: 量表评估结构化 */
+        addColumnIfNotExists(conn, "his_inp_nursing_record", "scale_code", "VARCHAR(30) DEFAULT NULL COMMENT '量表编码(his_nursing_scale_def.scale_code)'");
+        addColumnIfNotExists(conn, "his_inp_nursing_record", "scale_score", "DECIMAL(5,1) DEFAULT NULL COMMENT '量表评分'");
+        addColumnIfNotExists(conn, "his_inp_nursing_record", "scale_detail", "TEXT NULL COMMENT '量表明细JSON'");
+        addColumnIfNotExists(conn, "his_inp_nursing_record", "plan_template_id", "BIGINT DEFAULT NULL COMMENT '护理计划模板ID(his_nursing_plan_template.id)'");
+        /* his_inp_diagnosis +2: 入院病情与并发症(病案首页口径) */
+        addColumnIfNotExists(conn, "his_inp_diagnosis", "admit_condition", "INT DEFAULT NULL COMMENT '入院病情:1危急 2严重 3一般 4不适用'");
+        addColumnIfNotExists(conn, "his_inp_diagnosis", "complication_flag", "TINYINT DEFAULT 0 COMMENT '并发症标志:1是 0否'");
+        /* his_inp_settle +3: DRG/DIP 分组与支付方式 */
+        addColumnIfNotExists(conn, "his_inp_settle", "drg_group_code", "VARCHAR(30) DEFAULT NULL COMMENT 'DRG分组编码'");
+        addColumnIfNotExists(conn, "his_inp_settle", "dip_code", "VARCHAR(30) DEFAULT NULL COMMENT 'DIP病种编码'");
+        addColumnIfNotExists(conn, "his_inp_settle", "pay_method", "INT DEFAULT NULL COMMENT '支付方式'");
+        /* his_surgery +3: 手术审批与WHO安全核查 */
+        addColumnIfNotExists(conn, "his_surgery", "approval_status", "INT DEFAULT 0 COMMENT '审批状态:0无需 1待审 2通过 3拒绝'");
+        addColumnIfNotExists(conn, "his_surgery", "approval_doctor_id", "BIGINT DEFAULT NULL COMMENT '审批医师ID(his_staff.id)'");
+        addColumnIfNotExists(conn, "his_surgery", "safety_checklist", "TEXT NULL COMMENT 'WHO手术安全核查JSON'");
+        /* his_inp_shift_record +2: SBAR 结构化交班 */
+        addColumnIfNotExists(conn, "his_inp_shift_record", "sbar_situation", "TEXT NULL COMMENT 'SBAR-情景'");
+        addColumnIfNotExists(conn, "his_inp_shift_record", "sbar_background", "TEXT NULL COMMENT 'SBAR-背景'");
+        try (Statement st = conn.createStatement()) {
+            /* ---------- 业务规则增强 6 张表 ---------- */
+            /* 过敏记录: 住院就诊级过敏登记(药物/食物/环境/其他), 驱动开嘱过敏拦截与腕带提示 */
+            st.executeUpdate("CREATE TABLE IF NOT EXISTS his_inp_allergy ("
+                    + "id BIGINT NOT NULL AUTO_INCREMENT COMMENT '主键',"
+                    + "tenant_id BIGINT NOT NULL COMMENT '租户ID',"
+                    + "org_id BIGINT NOT NULL COMMENT '机构ID',"
+                    + "inp_visit_id BIGINT NOT NULL COMMENT '住院就诊ID(his_inp_visit.id)',"
+                    + "patient_id BIGINT NOT NULL COMMENT '患者ID(his_patient.id)',"
+                    + "allergy_type INT NOT NULL COMMENT '过敏类型:1药物 2食物 3环境 4其他',"
+                    + "allergen_name VARCHAR(100) NOT NULL COMMENT '过敏原名称',"
+                    + "allergen_code VARCHAR(50) DEFAULT NULL COMMENT '过敏原编码',"
+                    + "severity INT DEFAULT NULL COMMENT '严重程度:1轻 2中 3重',"
+                    + "reaction_desc VARCHAR(500) DEFAULT NULL COMMENT '过敏反应描述',"
+                    + "record_time DATETIME DEFAULT NULL COMMENT '记录时间',"
+                    + "doctor_id BIGINT DEFAULT NULL COMMENT '记录医生ID(his_staff.id)',"
+                    + "status INT DEFAULT 1 COMMENT '状态:1有效 0已失效',"
+                    + "create_by VARCHAR(50) DEFAULT NULL, create_time DATETIME DEFAULT NULL,"
+                    + "update_by VARCHAR(50) DEFAULT NULL, update_time DATETIME DEFAULT NULL, deleted TINYINT DEFAULT 0,"
+                    + "PRIMARY KEY (id),"
+                    + "KEY idx_allergy_visit (inp_visit_id),"
+                    + "KEY idx_allergy_patient (patient_id)"
+                    + ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='住院患者过敏记录'");
+            /* 知情同意书: 手术/麻醉/输血/特殊检查/特殊治疗/自费/病危七类, 患者-医师-见证人三签闭环 */
+            st.executeUpdate("CREATE TABLE IF NOT EXISTS his_inp_informed_consent ("
+                    + "id BIGINT NOT NULL AUTO_INCREMENT COMMENT '主键',"
+                    + "tenant_id BIGINT NOT NULL COMMENT '租户ID',"
+                    + "org_id BIGINT NOT NULL COMMENT '机构ID',"
+                    + "inp_visit_id BIGINT NOT NULL COMMENT '住院就诊ID(his_inp_visit.id)',"
+                    + "consent_type INT NOT NULL COMMENT '同意书类型:1手术 2麻醉 3输血 4特殊检查 5特殊治疗 6自费 7病危',"
+                    + "title VARCHAR(200) NOT NULL COMMENT '同意书标题',"
+                    + "template_id BIGINT DEFAULT NULL COMMENT '打印模板ID(his_print_template.id)',"
+                    + "content TEXT NULL COMMENT '同意书内容JSON',"
+                    + "patient_sign_time DATETIME DEFAULT NULL COMMENT '患者/家属签字时间',"
+                    + "doctor_sign_time DATETIME DEFAULT NULL COMMENT '医师签字时间',"
+                    + "witness_sign_time DATETIME DEFAULT NULL COMMENT '见证人签字时间',"
+                    + "doctor_id BIGINT DEFAULT NULL COMMENT '谈话医师ID(his_staff.id)',"
+                    + "status INT DEFAULT 1 COMMENT '状态:1待签 2已签 3已撤销',"
+                    + "create_by VARCHAR(50) DEFAULT NULL, create_time DATETIME DEFAULT NULL,"
+                    + "update_by VARCHAR(50) DEFAULT NULL, update_time DATETIME DEFAULT NULL, deleted TINYINT DEFAULT 0,"
+                    + "PRIMARY KEY (id),"
+                    + "KEY idx_consent_visit (inp_visit_id)"
+                    + ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='住院知情同意书'");
+            /* 会诊记录: 普通/急会诊/MDT三类, 申请→受理→完成/拒绝/取消状态机 */
+            st.executeUpdate("CREATE TABLE IF NOT EXISTS his_inp_consultation ("
+                    + "id BIGINT NOT NULL AUTO_INCREMENT COMMENT '主键',"
+                    + "tenant_id BIGINT NOT NULL COMMENT '租户ID',"
+                    + "org_id BIGINT NOT NULL COMMENT '机构ID',"
+                    + "inp_visit_id BIGINT NOT NULL COMMENT '住院就诊ID(his_inp_visit.id)',"
+                    + "consult_type INT NOT NULL COMMENT '会诊类型:1普通 2急会诊 3MDT',"
+                    + "apply_dept_id BIGINT DEFAULT NULL COMMENT '申请科室ID(his_dept.id)',"
+                    + "apply_doctor_id BIGINT DEFAULT NULL COMMENT '申请医师ID(his_staff.id)',"
+                    + "target_dept_id BIGINT DEFAULT NULL COMMENT '受邀科室ID(his_dept.id)',"
+                    + "target_doctor_id BIGINT DEFAULT NULL COMMENT '受邀医师ID(his_staff.id)',"
+                    + "apply_reason TEXT NULL COMMENT '申请理由',"
+                    + "consult_opinion TEXT NULL COMMENT '会诊意见',"
+                    + "apply_time DATETIME DEFAULT NULL COMMENT '申请时间',"
+                    + "response_time DATETIME DEFAULT NULL COMMENT '受理时间',"
+                    + "consult_time DATETIME DEFAULT NULL COMMENT '会诊完成时间',"
+                    + "status INT DEFAULT 1 COMMENT '状态:1申请 2受理 3完成 4拒绝 5取消',"
+                    + "urgency_level INT DEFAULT 1 COMMENT '紧急程度:1普通 2急 3特急',"
+                    + "create_by VARCHAR(50) DEFAULT NULL, create_time DATETIME DEFAULT NULL,"
+                    + "update_by VARCHAR(50) DEFAULT NULL, update_time DATETIME DEFAULT NULL, deleted TINYINT DEFAULT 0,"
+                    + "PRIMARY KEY (id),"
+                    + "KEY idx_consult_visit (inp_visit_id)"
+                    + ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='住院会诊记录'");
+            /* 转科转床申请: 转科/转床/加床三类, 申请→批准→执行闭环(申请审批留痕, 区别于旧即时转科链路) */
+            st.executeUpdate("CREATE TABLE IF NOT EXISTS his_inp_transfer ("
+                    + "id BIGINT NOT NULL AUTO_INCREMENT COMMENT '主键',"
+                    + "tenant_id BIGINT NOT NULL COMMENT '租户ID',"
+                    + "org_id BIGINT NOT NULL COMMENT '机构ID',"
+                    + "inp_visit_id BIGINT NOT NULL COMMENT '住院就诊ID(his_inp_visit.id)',"
+                    + "transfer_type INT NOT NULL COMMENT '申请类型:1转科 2转床 3加床',"
+                    + "from_ward_id BIGINT DEFAULT NULL COMMENT '原病区ID(his_ward.id)',"
+                    + "from_bed_id BIGINT DEFAULT NULL COMMENT '原床位ID(his_bed.id)',"
+                    + "from_dept_id BIGINT DEFAULT NULL COMMENT '原科室ID(his_dept.id)',"
+                    + "to_ward_id BIGINT DEFAULT NULL COMMENT '目标病区ID(his_ward.id)',"
+                    + "to_bed_id BIGINT DEFAULT NULL COMMENT '目标床位ID(his_bed.id)',"
+                    + "to_dept_id BIGINT DEFAULT NULL COMMENT '目标科室ID(his_dept.id)',"
+                    + "reason VARCHAR(500) DEFAULT NULL COMMENT '申请原因',"
+                    + "apply_doctor_id BIGINT DEFAULT NULL COMMENT '申请医生ID(his_staff.id)',"
+                    + "approve_doctor_id BIGINT DEFAULT NULL COMMENT '审批医生ID(his_staff.id)',"
+                    + "apply_time DATETIME DEFAULT NULL COMMENT '申请时间',"
+                    + "approve_time DATETIME DEFAULT NULL COMMENT '审批时间',"
+                    + "status INT DEFAULT 1 COMMENT '状态:1申请 2批准 3拒绝 4已执行 5取消',"
+                    + "create_by VARCHAR(50) DEFAULT NULL, create_time DATETIME DEFAULT NULL,"
+                    + "update_by VARCHAR(50) DEFAULT NULL, update_time DATETIME DEFAULT NULL, deleted TINYINT DEFAULT 0,"
+                    + "PRIMARY KEY (id),"
+                    + "KEY idx_transfer_visit (inp_visit_id)"
+                    + ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='住院转科转床申请'");
+            /* 费用预警: 日限额/总限额/预交金不足/大额费用四类, 放行/拦截处置留痕 */
+            st.executeUpdate("CREATE TABLE IF NOT EXISTS his_inp_fee_alert ("
+                    + "id BIGINT NOT NULL AUTO_INCREMENT COMMENT '主键',"
+                    + "tenant_id BIGINT NOT NULL COMMENT '租户ID',"
+                    + "org_id BIGINT NOT NULL COMMENT '机构ID',"
+                    + "inp_visit_id BIGINT NOT NULL COMMENT '住院就诊ID(his_inp_visit.id)',"
+                    + "alert_type INT NOT NULL COMMENT '预警类型:1日限额 2总限额 3预交金不足 4大额费用',"
+                    + "charge_detail_id BIGINT DEFAULT NULL COMMENT '触发费用明细ID(his_inp_charge_detail.id)',"
+                    + "alert_amount DECIMAL(12,2) DEFAULT NULL COMMENT '预警时金额',"
+                    + "threshold_amount DECIMAL(12,2) DEFAULT NULL COMMENT '阈值金额',"
+                    + "handler_id BIGINT DEFAULT NULL COMMENT '处理人ID(his_staff.id)',"
+                    + "handle_time DATETIME DEFAULT NULL COMMENT '处理时间',"
+                    + "handle_result INT DEFAULT NULL COMMENT '处理结果:1放行 2拦截',"
+                    + "override_reason VARCHAR(500) DEFAULT NULL COMMENT '放行/超标原因',"
+                    + "create_by VARCHAR(50) DEFAULT NULL, create_time DATETIME DEFAULT NULL,"
+                    + "update_by VARCHAR(50) DEFAULT NULL, update_time DATETIME DEFAULT NULL, deleted TINYINT DEFAULT 0,"
+                    + "PRIMARY KEY (id),"
+                    + "KEY idx_fee_alert_visit (inp_visit_id)"
+                    + ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='住院费用预警记录'");
+            /* 医嘱模板/套餐: 个人/科室/全院三级, 单条/套餐两类, items 为医嘱项 JSON 数组 */
+            st.executeUpdate("CREATE TABLE IF NOT EXISTS his_order_template ("
+                    + "id BIGINT NOT NULL AUTO_INCREMENT COMMENT '主键',"
+                    + "tenant_id BIGINT NOT NULL COMMENT '租户ID',"
+                    + "org_id BIGINT NOT NULL COMMENT '机构ID',"
+                    + "template_name VARCHAR(100) NOT NULL COMMENT '模板名称',"
+                    + "template_type INT DEFAULT 1 COMMENT '模板级别:1个人 2科室 3全院',"
+                    + "scope_type INT DEFAULT 1 COMMENT '范围类型:1单条 2套餐',"
+                    + "dept_id BIGINT DEFAULT NULL COMMENT '科室ID(his_dept.id, 科室级模板)',"
+                    + "doctor_id BIGINT DEFAULT NULL COMMENT '医生ID(his_staff.id, 个人级模板)',"
+                    + "items TEXT NULL COMMENT '医嘱项JSON数组',"
+                    + "disease_code VARCHAR(30) DEFAULT NULL COMMENT '适用病种编码',"
+                    + "usage_count INT DEFAULT 0 COMMENT '使用次数',"
+                    + "status INT DEFAULT 1 COMMENT '状态:1启用 0停用',"
+                    + "create_by VARCHAR(50) DEFAULT NULL, create_time DATETIME DEFAULT NULL,"
+                    + "update_by VARCHAR(50) DEFAULT NULL, update_time DATETIME DEFAULT NULL, deleted TINYINT DEFAULT 0,"
+                    + "PRIMARY KEY (id),"
+                    + "KEY idx_order_tpl_type (template_type, scope_type)"
+                    + ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='住院医嘱模板/套餐'");
+        }
+        try (Statement st = conn.createStatement()) {
+            /* ---------- 护理评估量表 3 张表 ---------- */
+            /* 量表定义: 维度定义与分数→风险映射 JSON, 按频次驱动评估任务(量表编码全局唯一) */
+            st.executeUpdate("CREATE TABLE IF NOT EXISTS his_nursing_scale_def ("
+                    + "id BIGINT NOT NULL AUTO_INCREMENT COMMENT '主键',"
+                    + "tenant_id BIGINT NOT NULL COMMENT '租户ID',"
+                    + "org_id BIGINT NOT NULL COMMENT '机构ID',"
+                    + "scale_code VARCHAR(30) NOT NULL COMMENT '量表编码',"
+                    + "scale_name VARCHAR(100) NOT NULL COMMENT '量表名称',"
+                    + "scale_type INT DEFAULT NULL COMMENT '量表类型:1入院评估 2专科 3风险',"
+                    + "dimensions TEXT NULL COMMENT '维度定义JSON',"
+                    + "score_interpretation TEXT NULL COMMENT '分数→风险映射JSON',"
+                    + "required_frequency VARCHAR(200) DEFAULT NULL COMMENT '必评频次说明',"
+                    + "status INT DEFAULT 1 COMMENT '状态:1启用 0停用',"
+                    + "create_by VARCHAR(50) DEFAULT NULL, create_time DATETIME DEFAULT NULL,"
+                    + "update_by VARCHAR(50) DEFAULT NULL, update_time DATETIME DEFAULT NULL, deleted TINYINT DEFAULT 0,"
+                    + "PRIMARY KEY (id),"
+                    + "UNIQUE KEY uk_scale_code (scale_code, deleted)"
+                    + ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='护理评估量表定义'");
+            /* 护理计划模板: 按量表分值区间触发, 护理诊断/目标/措施/评价标准结构化 */
+            st.executeUpdate("CREATE TABLE IF NOT EXISTS his_nursing_plan_template ("
+                    + "id BIGINT NOT NULL AUTO_INCREMENT COMMENT '主键',"
+                    + "tenant_id BIGINT NOT NULL COMMENT '租户ID',"
+                    + "org_id BIGINT NOT NULL COMMENT '机构ID',"
+                    + "plan_name VARCHAR(100) NOT NULL COMMENT '计划名称',"
+                    + "trigger_scale_code VARCHAR(30) DEFAULT NULL COMMENT '触发量表编码(his_nursing_scale_def.scale_code)',"
+                    + "trigger_score_range VARCHAR(50) DEFAULT NULL COMMENT '触发分值区间',"
+                    + "nursing_diagnosis VARCHAR(500) DEFAULT NULL COMMENT '护理诊断',"
+                    + "nursing_goal VARCHAR(500) DEFAULT NULL COMMENT '护理目标',"
+                    + "interventions TEXT NULL COMMENT '护理措施JSON数组',"
+                    + "evaluation_criteria VARCHAR(500) DEFAULT NULL COMMENT '评价标准',"
+                    + "dept_id BIGINT DEFAULT NULL COMMENT '科室ID(his_dept.id)',"
+                    + "status INT DEFAULT 1 COMMENT '状态:1启用 0停用',"
+                    + "create_by VARCHAR(50) DEFAULT NULL, create_time DATETIME DEFAULT NULL,"
+                    + "update_by VARCHAR(50) DEFAULT NULL, update_time DATETIME DEFAULT NULL, deleted TINYINT DEFAULT 0,"
+                    + "PRIMARY KEY (id)"
+                    + ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='护理计划模板'");
+            /* 护理计划实例: 患者级计划执行与评价, 计划/实际措施双留痕 */
+            st.executeUpdate("CREATE TABLE IF NOT EXISTS his_nursing_plan_instance ("
+                    + "id BIGINT NOT NULL AUTO_INCREMENT COMMENT '主键',"
+                    + "tenant_id BIGINT NOT NULL COMMENT '租户ID',"
+                    + "org_id BIGINT NOT NULL COMMENT '机构ID',"
+                    + "inp_visit_id BIGINT NOT NULL COMMENT '住院就诊ID(his_inp_visit.id)',"
+                    + "template_id BIGINT DEFAULT NULL COMMENT '护理计划模板ID(his_nursing_plan_template.id)',"
+                    + "scale_record_id BIGINT DEFAULT NULL COMMENT '触发量表记录ID(his_inp_nursing_record.id)',"
+                    + "nursing_diagnosis VARCHAR(500) DEFAULT NULL COMMENT '护理诊断',"
+                    + "nursing_goal VARCHAR(500) DEFAULT NULL COMMENT '护理目标',"
+                    + "planned_interventions TEXT NULL COMMENT '计划措施JSON',"
+                    + "actual_interventions TEXT NULL COMMENT '实际措施JSON',"
+                    + "start_time DATETIME DEFAULT NULL COMMENT '开始时间',"
+                    + "evaluation_time DATETIME DEFAULT NULL COMMENT '评价时间',"
+                    + "evaluation_result VARCHAR(500) DEFAULT NULL COMMENT '评价结果',"
+                    + "status INT DEFAULT 1 COMMENT '状态:1执行中 2已评价 3已关闭',"
+                    + "nurse_id BIGINT DEFAULT NULL COMMENT '责任护士ID(his_staff.id)',"
+                    + "create_by VARCHAR(50) DEFAULT NULL, create_time DATETIME DEFAULT NULL,"
+                    + "update_by VARCHAR(50) DEFAULT NULL, update_time DATETIME DEFAULT NULL, deleted TINYINT DEFAULT 0,"
+                    + "PRIMARY KEY (id),"
+                    + "KEY idx_plan_inst_visit (inp_visit_id)"
+                    + ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='护理计划实例'");
+        }
+        try (Statement st = conn.createStatement()) {
+            /* ---------- 电子病历 3 张表 ---------- */
+            /* 病历结构化模板: 九类文书字段定义 JSON, dept_id=0 表全院通用(模板编码全局唯一) */
+            st.executeUpdate("CREATE TABLE IF NOT EXISTS his_emr_template ("
+                    + "id BIGINT NOT NULL AUTO_INCREMENT COMMENT '主键',"
+                    + "tenant_id BIGINT NOT NULL COMMENT '租户ID',"
+                    + "org_id BIGINT NOT NULL COMMENT '机构ID',"
+                    + "template_code VARCHAR(50) NOT NULL COMMENT '模板编码',"
+                    + "template_name VARCHAR(100) NOT NULL COMMENT '模板名称',"
+                    + "record_type INT DEFAULT NULL COMMENT '记录类型(对应his_inp_medical_record.record_type的9种类型)',"
+                    + "template_category INT DEFAULT NULL COMMENT '模板类别:1入院记录 2首次病程 3日常病程 4上级查房 5手术记录 6术后病程 7出院小结 8死亡记录 9病危通知',"
+                    + "fields TEXT NULL COMMENT '字段定义JSON',"
+                    + "dept_id BIGINT DEFAULT 0 COMMENT '科室ID(his_dept.id, 0=全院)',"
+                    + "version INT DEFAULT 1 COMMENT '版本号',"
+                    + "status INT DEFAULT 1 COMMENT '状态:1启用 0停用',"
+                    + "create_by VARCHAR(50) DEFAULT NULL, create_time DATETIME DEFAULT NULL,"
+                    + "update_by VARCHAR(50) DEFAULT NULL, update_time DATETIME DEFAULT NULL, deleted TINYINT DEFAULT 0,"
+                    + "PRIMARY KEY (id),"
+                    + "UNIQUE KEY uk_emr_tpl_code (template_code, deleted)"
+                    + ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='病历结构化模板'");
+            /* 病历质控规则: 完整性/时限性/逻辑性/规范性四类, 扣分+严重度分级 */
+            st.executeUpdate("CREATE TABLE IF NOT EXISTS his_emr_quality_rule ("
+                    + "id BIGINT NOT NULL AUTO_INCREMENT COMMENT '主键',"
+                    + "tenant_id BIGINT NOT NULL COMMENT '租户ID',"
+                    + "org_id BIGINT NOT NULL COMMENT '机构ID',"
+                    + "rule_code VARCHAR(50) NOT NULL COMMENT '规则编码',"
+                    + "rule_name VARCHAR(100) NOT NULL COMMENT '规则名称',"
+                    + "record_type INT DEFAULT NULL COMMENT '适用记录类型(his_inp_medical_record.record_type)',"
+                    + "rule_type INT DEFAULT NULL COMMENT '规则类型:1完整性 2时限性 3逻辑性 4规范性',"
+                    + "rule_config TEXT NULL COMMENT '检查条件JSON',"
+                    + "deduct_score DECIMAL(3,1) DEFAULT NULL COMMENT '扣分分值',"
+                    + "severity INT DEFAULT NULL COMMENT '严重程度:1警告 2扣分 3一票否决',"
+                    + "description VARCHAR(500) DEFAULT NULL COMMENT '规则说明',"
+                    + "status INT DEFAULT 1 COMMENT '状态:1启用 0停用',"
+                    + "create_by VARCHAR(50) DEFAULT NULL, create_time DATETIME DEFAULT NULL,"
+                    + "update_by VARCHAR(50) DEFAULT NULL, update_time DATETIME DEFAULT NULL, deleted TINYINT DEFAULT 0,"
+                    + "PRIMARY KEY (id)"
+                    + ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='病历质控规则'");
+            /* 病历宏变量: 患者/就诊/诊断/医嘱/检验/体征六源取值, 书写时自动替换占位符(宏编码全局唯一) */
+            st.executeUpdate("CREATE TABLE IF NOT EXISTS his_emr_macro ("
+                    + "id BIGINT NOT NULL AUTO_INCREMENT COMMENT '主键',"
+                    + "tenant_id BIGINT NOT NULL COMMENT '租户ID',"
+                    + "org_id BIGINT NOT NULL COMMENT '机构ID',"
+                    + "macro_code VARCHAR(50) NOT NULL COMMENT '宏变量编码',"
+                    + "macro_name VARCHAR(100) NOT NULL COMMENT '宏变量名称',"
+                    + "data_source INT DEFAULT NULL COMMENT '数据来源:1患者 2就诊 3诊断 4医嘱 5检验 6体征',"
+                    + "source_field VARCHAR(100) DEFAULT NULL COMMENT '来源字段',"
+                    + "format_pattern VARCHAR(200) DEFAULT NULL COMMENT '格式化模式',"
+                    + "description VARCHAR(500) DEFAULT NULL COMMENT '说明',"
+                    + "create_by VARCHAR(50) DEFAULT NULL, create_time DATETIME DEFAULT NULL,"
+                    + "update_by VARCHAR(50) DEFAULT NULL, update_time DATETIME DEFAULT NULL, deleted TINYINT DEFAULT 0,"
+                    + "PRIMARY KEY (id),"
+                    + "UNIQUE KEY uk_macro_code (macro_code, deleted)"
+                    + ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='病历宏变量定义'");
+        }
+        try (Statement st = conn.createStatement()) {
+            /* ---------- 报表与打印 3 张表 ---------- */
+            /* 每日费用清单: 就诊×日期一份(软删不参与唯一碰撞), 费用项 JSON + 当日/累计/预交金余额三金额, 打印留痕 */
+            st.executeUpdate("CREATE TABLE IF NOT EXISTS his_inp_daily_bill ("
+                    + "id BIGINT NOT NULL AUTO_INCREMENT COMMENT '主键',"
+                    + "tenant_id BIGINT NOT NULL COMMENT '租户ID',"
+                    + "org_id BIGINT NOT NULL COMMENT '机构ID',"
+                    + "inp_visit_id BIGINT NOT NULL COMMENT '住院就诊ID(his_inp_visit.id)',"
+                    + "bill_date DATE NOT NULL COMMENT '清单日期',"
+                    + "items TEXT NULL COMMENT '费用项JSON数组',"
+                    + "total_amount DECIMAL(12,2) DEFAULT NULL COMMENT '当日费用合计',"
+                    + "cumulative_amount DECIMAL(12,2) DEFAULT NULL COMMENT '在院累计费用',"
+                    + "deposit_balance DECIMAL(12,2) DEFAULT NULL COMMENT '预交金余额',"
+                    + "generated_time DATETIME DEFAULT NULL COMMENT '生成时间',"
+                    + "printed_flag TINYINT DEFAULT 0 COMMENT '是否已打印:1是 0否',"
+                    + "print_time DATETIME DEFAULT NULL COMMENT '打印时间',"
+                    + "create_by VARCHAR(50) DEFAULT NULL, create_time DATETIME DEFAULT NULL,"
+                    + "update_by VARCHAR(50) DEFAULT NULL, update_time DATETIME DEFAULT NULL, deleted TINYINT DEFAULT 0,"
+                    + "PRIMARY KEY (id),"
+                    + "UNIQUE KEY uk_daily_bill (inp_visit_id, bill_date, deleted),"
+                    + "KEY idx_daily_bill_date (bill_date)"
+                    + ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='住院每日费用清单'");
+            /* 打印模板: HTML模板+页眉页脚+CSS, 支持纸张/方向, 版本化维护(模板编码全局唯一) */
+            st.executeUpdate("CREATE TABLE IF NOT EXISTS his_print_template ("
+                    + "id BIGINT NOT NULL AUTO_INCREMENT COMMENT '主键',"
+                    + "tenant_id BIGINT NOT NULL COMMENT '租户ID',"
+                    + "org_id BIGINT NOT NULL COMMENT '机构ID',"
+                    + "template_code VARCHAR(50) NOT NULL COMMENT '模板编码',"
+                    + "template_name VARCHAR(100) NOT NULL COMMENT '模板名称',"
+                    + "template_type INT DEFAULT NULL COMMENT '模板类型:1日清单 2结算单 3医嘱单 4护理记录单 5体温单 6病历 7腕带 8知情同意书',"
+                    + "paper_size VARCHAR(20) DEFAULT 'A4' COMMENT '纸张尺寸',"
+                    + "orientation VARCHAR(20) DEFAULT 'portrait' COMMENT '方向:portrait纵向 landscape横向',"
+                    + "template_content TEXT NULL COMMENT 'HTML模板内容',"
+                    + "header_html TEXT NULL COMMENT '页眉HTML',"
+                    + "footer_html TEXT NULL COMMENT '页脚HTML',"
+                    + "css_style TEXT NULL COMMENT 'CSS样式',"
+                    + "version INT DEFAULT 1 COMMENT '版本号',"
+                    + "status INT DEFAULT 1 COMMENT '状态:1启用 0停用',"
+                    + "create_by VARCHAR(50) DEFAULT NULL, create_time DATETIME DEFAULT NULL,"
+                    + "update_by VARCHAR(50) DEFAULT NULL, update_time DATETIME DEFAULT NULL, deleted TINYINT DEFAULT 0,"
+                    + "PRIMARY KEY (id),"
+                    + "UNIQUE KEY uk_print_tpl_code (template_code, deleted)"
+                    + ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='打印模板'");
+            /* 报表快照: 床位/费用/科室/住院日/DRG五类报表按日落盘, data 为 JSON */
+            st.executeUpdate("CREATE TABLE IF NOT EXISTS his_inp_report_snapshot ("
+                    + "id BIGINT NOT NULL AUTO_INCREMENT COMMENT '主键',"
+                    + "tenant_id BIGINT NOT NULL COMMENT '租户ID',"
+                    + "org_id BIGINT NOT NULL COMMENT '机构ID',"
+                    + "report_type INT NOT NULL COMMENT '报表类型:1床位 2费用 3科室 4住院日 5DRG',"
+                    + "report_date DATE NOT NULL COMMENT '报表日期',"
+                    + "dept_id BIGINT DEFAULT NULL COMMENT '科室ID(his_dept.id)',"
+                    + "ward_id BIGINT DEFAULT NULL COMMENT '病区ID(his_ward.id)',"
+                    + "data TEXT NULL COMMENT '报表数据JSON',"
+                    + "generated_time DATETIME DEFAULT NULL COMMENT '生成时间',"
+                    + "create_by VARCHAR(50) DEFAULT NULL, create_time DATETIME DEFAULT NULL,"
+                    + "update_by VARCHAR(50) DEFAULT NULL, update_time DATETIME DEFAULT NULL, deleted TINYINT DEFAULT 0,"
+                    + "PRIMARY KEY (id),"
+                    + "KEY idx_report_type_date (report_type, report_date)"
+                    + ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='住院报表快照'");
+        }
+    }
+
+    /**
+     * 幂等建表: UI 升级数据层(1 张新表, 表已存在则跳过)。
+     * 住院通知: user_id 级站内通知(类型: 1医嘱/2会诊/3病历/4预警/5评估/6系统), 支撑未读角标分组统计与消息中心分页。
+     * 索引: (user_id, is_read, deleted) 支撑未读角标; (notify_type, deleted) 支撑类型维度检索。
+     */
+    private void ensureUIEnhancementTables(Connection conn) throws Exception {
+        try (Statement st = conn.createStatement()) {
+            st.executeUpdate("CREATE TABLE IF NOT EXISTS his_inp_notification ("
+                    + "id BIGINT NOT NULL AUTO_INCREMENT COMMENT '主键',"
+                    + "tenant_id BIGINT NOT NULL DEFAULT 0 COMMENT '租户ID',"
+                    + "org_id BIGINT NOT NULL DEFAULT 0 COMMENT '机构ID',"
+                    + "user_id BIGINT NOT NULL COMMENT '接收用户ID(sys_user.id)',"
+                    + "notify_type INT NOT NULL COMMENT '通知类型:1医嘱 2会诊 3病历 4预警 5评估 6系统',"
+                    + "title VARCHAR(200) NOT NULL COMMENT '标题',"
+                    + "content VARCHAR(500) DEFAULT NULL COMMENT '内容',"
+                    + "ref_type VARCHAR(50) DEFAULT NULL COMMENT '关联业务类型',"
+                    + "ref_id BIGINT DEFAULT NULL COMMENT '关联业务ID',"
+                    + "is_read TINYINT NOT NULL DEFAULT 0 COMMENT '是否已读:1是 0否',"
+                    + "create_time DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',"
+                    + "read_time DATETIME DEFAULT NULL COMMENT '读取时间',"
+                    + "create_by VARCHAR(50) DEFAULT NULL, update_by VARCHAR(50) DEFAULT NULL,"
+                    + "update_time DATETIME DEFAULT NULL, deleted TINYINT NOT NULL DEFAULT 0,"
+                    + "PRIMARY KEY (id),"
+                    + "KEY idx_user_read (user_id, is_read, deleted),"
+                    + "KEY idx_type (notify_type, deleted)"
+                    + ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='住院通知'");
+        }
+    }
+
+    /**
+     * 幂等建表: P0 安全基座(T34)——四张新表 + his_inp_order 补药审四列 + 危急值规则种子。
+     * 1) his_critical_value_rule 危急值规则(检验项目阈值, 性别/年龄分段, 低于下限或高于上限即告警);
+     * 2) his_critical_value_record 危急值处理记录(报告→通知→确认→处置→关闭闭环留痕);
+     * 3) his_case_front_page 病案首页(诊断/手术/费用分项/质量评分 + 医师/护士/质控签名图);
+     * 4) his_signature_log 电子签名留痕(签名场景/关联单据/签名图URL/IP, 供病历与医嘱签名追溯);
+     * 5) his_inp_order 药审四列(药审状态/审核药师/药审时间/驳回原因, 处方药审拦截);
+     * 6) 播种 15 条常见危急值规则(tenant_id=1 默认租户, gender=0 通用; INSERT IGNORE 幂等不覆盖用户维护值)。
+     * 全程幂等: CREATE TABLE IF NOT EXISTS + addColumnIfNotExists, 重复启动无副作用。
+     */
+    private void ensureP0SafetyTables(Connection conn) throws Exception {
+        try (Statement st = conn.createStatement()) {
+            /* 危急值规则: 阈值判定元数据(通用/男女分段 + 年龄区间), 唯一键防同租户同项目同性别重复 */
+            st.executeUpdate("CREATE TABLE IF NOT EXISTS his_critical_value_rule ("
+                    + "id BIGINT NOT NULL AUTO_INCREMENT COMMENT '主键',"
+                    + "item_code VARCHAR(50) NOT NULL COMMENT '检验项目编码',"
+                    + "item_name VARCHAR(100) NOT NULL COMMENT '检验项目名称',"
+                    + "unit VARCHAR(30) DEFAULT NULL COMMENT '单位',"
+                    + "critical_low DECIMAL(12,4) DEFAULT NULL COMMENT '危急值下限(低于即告警)',"
+                    + "critical_high DECIMAL(12,4) DEFAULT NULL COMMENT '危急值上限(高于即告警)',"
+                    + "gender TINYINT DEFAULT 0 COMMENT '性别:0通用 1男 2女',"
+                    + "age_min INT DEFAULT NULL COMMENT '年龄下限',"
+                    + "age_max INT DEFAULT NULL COMMENT '年龄上限',"
+                    + "alert_level TINYINT DEFAULT 1 COMMENT '告警级别:1危急 2异常',"
+                    + "enabled TINYINT DEFAULT 1 COMMENT '是否启用',"
+                    + "tenant_id BIGINT NOT NULL COMMENT '租户ID',"
+                    + "deleted TINYINT DEFAULT 0,"
+                    + "create_time DATETIME DEFAULT CURRENT_TIMESTAMP,"
+                    + "PRIMARY KEY (id),"
+                    + "UNIQUE KEY uk_item_tenant (item_code, gender, tenant_id, deleted)"
+                    + ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='危急值规则'");
+            /* 危急值处理记录: 报告→通知→确认→处置→关闭闭环, 状态推进逐级留痕 */
+            st.executeUpdate("CREATE TABLE IF NOT EXISTS his_critical_value_record ("
+                    + "id BIGINT NOT NULL AUTO_INCREMENT COMMENT '主键',"
+                    + "visit_id BIGINT NOT NULL COMMENT '就诊ID',"
+                    + "patient_id BIGINT NOT NULL COMMENT '患者ID',"
+                    + "item_code VARCHAR(50) NOT NULL COMMENT '检验项目编码',"
+                    + "item_name VARCHAR(100) NOT NULL COMMENT '检验项目名称',"
+                    + "result_value VARCHAR(50) NOT NULL COMMENT '检验结果值',"
+                    + "unit VARCHAR(30) DEFAULT NULL COMMENT '单位',"
+                    + "ref_range VARCHAR(100) DEFAULT NULL COMMENT '参考范围',"
+                    + "alert_level TINYINT DEFAULT 1 COMMENT '告警级别:1危急 2异常',"
+                    + "report_time DATETIME NOT NULL COMMENT '报告时间',"
+                    + "notify_doctor_time DATETIME DEFAULT NULL COMMENT '通知医生时间',"
+                    + "confirm_doctor_id BIGINT DEFAULT NULL COMMENT '确认医生ID(his_staff.id)',"
+                    + "confirm_time DATETIME DEFAULT NULL COMMENT '确认时间',"
+                    + "handle_measures TEXT DEFAULT NULL COMMENT '处置措施',"
+                    + "handle_time DATETIME DEFAULT NULL COMMENT '处置时间',"
+                    + "status TINYINT DEFAULT 1 COMMENT '状态:1待通知 2已通知 3已确认 4已处置 5已关闭',"
+                    + "notification_id BIGINT DEFAULT NULL COMMENT '关联通知ID(his_inp_notification.id)',"
+                    + "tenant_id BIGINT NOT NULL COMMENT '租户ID',"
+                    + "deleted TINYINT DEFAULT 0,"
+                    + "create_time DATETIME DEFAULT CURRENT_TIMESTAMP,"
+                    + "update_time DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,"
+                    + "PRIMARY KEY (id),"
+                    + "KEY idx_visit_status (visit_id, status, deleted)"
+                    + ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='危急值处理记录'");
+            /* 病案首页: 就诊唯一, 诊断/手术 JSON 明细 + 费用分项 + 质量评分 + 三类电子签名图 */
+            st.executeUpdate("CREATE TABLE IF NOT EXISTS his_case_front_page ("
+                    + "id BIGINT NOT NULL AUTO_INCREMENT COMMENT '主键',"
+                    + "visit_id BIGINT NOT NULL COMMENT '就诊ID',"
+                    + "patient_id BIGINT NOT NULL COMMENT '患者ID',"
+                    + "admission_date DATETIME DEFAULT NULL COMMENT '入院时间',"
+                    + "discharge_date DATETIME DEFAULT NULL COMMENT '出院时间',"
+                    + "los_days INT DEFAULT NULL COMMENT '住院天数',"
+                    + "admission_dept_id BIGINT DEFAULT NULL COMMENT '入院科室ID(his_dept.id)',"
+                    + "discharge_dept_id BIGINT DEFAULT NULL COMMENT '出院科室ID(his_dept.id)',"
+                    + "admission_diag_code VARCHAR(50) DEFAULT NULL COMMENT '入院诊断编码',"
+                    + "admission_diag_name VARCHAR(200) DEFAULT NULL COMMENT '入院诊断名称',"
+                    + "discharge_main_diag_code VARCHAR(50) DEFAULT NULL COMMENT '出院主要诊断编码',"
+                    + "discharge_main_diag_name VARCHAR(200) DEFAULT NULL COMMENT '出院主要诊断名称',"
+                    + "discharge_other_diags TEXT DEFAULT NULL COMMENT '其他出院诊断JSON',"
+                    + "pathology_diag VARCHAR(200) DEFAULT NULL COMMENT '病理诊断',"
+                    + "injury_poison_code VARCHAR(50) DEFAULT NULL COMMENT '损伤中毒编码',"
+                    + "operation_records TEXT DEFAULT NULL COMMENT '手术操作JSON',"
+                    + "blood_type VARCHAR(10) DEFAULT NULL COMMENT '血型',"
+                    + "rh VARCHAR(10) DEFAULT NULL COMMENT 'Rh血型',"
+                    + "allergy_drugs VARCHAR(500) DEFAULT NULL COMMENT '药物过敏史',"
+                    + "autopsy TINYINT DEFAULT 0 COMMENT '尸检:0否 1是',"
+                    + "total_cost DECIMAL(12,2) DEFAULT 0 COMMENT '总费用',"
+                    + "drug_cost DECIMAL(12,2) DEFAULT 0 COMMENT '药品费',"
+                    + "exam_cost DECIMAL(12,2) DEFAULT 0 COMMENT '检查费',"
+                    + "treatment_cost DECIMAL(12,2) DEFAULT 0 COMMENT '治疗费',"
+                    + "bed_cost DECIMAL(12,2) DEFAULT 0 COMMENT '床位费',"
+                    + "nursing_cost DECIMAL(12,2) DEFAULT 0 COMMENT '护理费',"
+                    + "material_cost DECIMAL(12,2) DEFAULT 0 COMMENT '材料费',"
+                    + "other_cost DECIMAL(12,2) DEFAULT 0 COMMENT '其他费用',"
+                    + "self_pay DECIMAL(12,2) DEFAULT 0 COMMENT '自付金额',"
+                    + "insurance_pay DECIMAL(12,2) DEFAULT 0 COMMENT '医保支付金额',"
+                    + "quality_score INT DEFAULT NULL COMMENT '病案质量评分',"
+                    + "qc_doctor_id BIGINT DEFAULT NULL COMMENT '质控医生ID(his_staff.id)',"
+                    + "qc_time DATETIME DEFAULT NULL COMMENT '质控时间',"
+                    + "status TINYINT DEFAULT 1 COMMENT '状态:1草稿 2已提交 3已审核',"
+                    + "doctor_sign_img VARCHAR(255) DEFAULT NULL COMMENT '医师签名图URL(/uploads/...)',"
+                    + "nurse_sign_img VARCHAR(255) DEFAULT NULL COMMENT '护士签名图URL(/uploads/...)',"
+                    + "qc_sign_img VARCHAR(255) DEFAULT NULL COMMENT '质控签名图URL(/uploads/...)',"
+                    + "tenant_id BIGINT NOT NULL COMMENT '租户ID',"
+                    + "deleted TINYINT DEFAULT 0,"
+                    + "create_time DATETIME DEFAULT CURRENT_TIMESTAMP,"
+                    + "update_time DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,"
+                    + "PRIMARY KEY (id),"
+                    + "UNIQUE KEY uk_visit (visit_id, tenant_id, deleted)"
+                    + ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='病案首页'");
+            /* 电子签名日志: 每次签名落一行(场景/单据/签名图/IP), 供签署追溯与合规审计 */
+            st.executeUpdate("CREATE TABLE IF NOT EXISTS his_signature_log ("
+                    + "id BIGINT NOT NULL AUTO_INCREMENT COMMENT '主键',"
+                    + "user_id BIGINT NOT NULL COMMENT '签名用户ID(sys_user.id)',"
+                    + "user_name VARCHAR(50) NOT NULL COMMENT '签名用户姓名',"
+                    + "action_type VARCHAR(50) NOT NULL COMMENT '签名场景:order_submit/record_submit/pharm_audit/case_page/exec_verify',"
+                    + "ref_type VARCHAR(50) DEFAULT NULL COMMENT '关联类型',"
+                    + "ref_id BIGINT DEFAULT NULL COMMENT '关联ID',"
+                    + "sign_img_url VARCHAR(255) DEFAULT NULL COMMENT '签名图片URL(/uploads/...)',"
+                    + "ip_address VARCHAR(50) DEFAULT NULL COMMENT '签名来源IP',"
+                    + "sign_time DATETIME DEFAULT CURRENT_TIMESTAMP COMMENT '签名时间',"
+                    + "tenant_id BIGINT NOT NULL COMMENT '租户ID',"
+                    + "deleted TINYINT DEFAULT 0,"
+                    + "PRIMARY KEY (id),"
+                    + "KEY idx_ref (ref_type, ref_id, tenant_id, deleted)"
+                    + ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='电子签名日志'");
+        }
+        /* 住院医嘱药审四列(药审状态/审核药师/药审时间/驳回原因): 处方下达到药房前拦截, 驳回留原因 */
+        addColumnIfNotExists(conn, "his_inp_order", "pharm_audit_status", "TINYINT DEFAULT 0 COMMENT '药审状态:0无需 1待审 2通过 3驳回'");
+        addColumnIfNotExists(conn, "his_inp_order", "pharm_audit_id", "BIGINT DEFAULT NULL COMMENT '审核药师ID(his_staff.id)'");
+        addColumnIfNotExists(conn, "his_inp_order", "pharm_audit_time", "DATETIME DEFAULT NULL COMMENT '药审时间'");
+        addColumnIfNotExists(conn, "his_inp_order", "pharm_reject_reason", "VARCHAR(500) DEFAULT NULL COMMENT '驳回原因'");
+        // 播种常见危急值规则(tenant_id=1 默认租户; INSERT IGNORE 幂等, 已有规则不覆盖)
+        seedCriticalValueRules(conn);
+    }
+
+    /**
+     * 幂等建表 + 存量表补列: P1/P2 住院深化基座(T41)——
+     * 1) his_emr_version 病历版本快照(每次 save/submit/audit 落一行, content/structure 双快照支持历史回溯);
+     * 2) his_inp_io_record 出入量记录(进量/出量逐笔登记, 护士站出入量平衡统计口径);
+     * 3) 存量表 12 列: 医嘱续开来源(his_inp_order.source_order_id)/病历主治·主任签名两段
+     *    (his_inp_medical_record)/交接班 SBAR 评估与建议(his_inp_shift_record)/费用明细结算关联
+     *    (his_inp_charge_detail.settle_id)/视频会诊房间与录像/预入院检查项与登记时间(his_inp_visit)。
+     * 注意: 视频会诊两列落在实际会诊表 his_inp_consultation(任务书原写 his_inp_consult, 项目中不存在该表)。
+     * 两张新表均带 create_by/create_time/update_by/update_time 审计列, 兼容实体(BaseEntity 自动填充)与 JdbcTemplate 双模式。
+     * 全程幂等: CREATE TABLE IF NOT EXISTS + addColumnIfNotExists, 重复启动无副作用。
+     */
+    private void ensureP1P2Tables(Connection conn) throws Exception {
+        try (Statement st = conn.createStatement()) {
+            /* 病历版本快照: 每次 save/submit/audit 落一行, 双快照支持富文书与结构化双模式回溯 */
+            st.executeUpdate("CREATE TABLE IF NOT EXISTS his_emr_version ("
+                    + "id BIGINT NOT NULL AUTO_INCREMENT COMMENT '主键',"
+                    + "record_id BIGINT NOT NULL COMMENT '关联his_inp_medical_record',"
+                    + "version_no INT NOT NULL COMMENT '版本号',"
+                    + "content_snapshot TEXT DEFAULT NULL COMMENT '内容快照',"
+                    + "structure_snapshot TEXT DEFAULT NULL COMMENT '结构化数据快照',"
+                    + "operator_id BIGINT NOT NULL COMMENT '操作人ID(sys_user.id)',"
+                    + "operator_name VARCHAR(50) NOT NULL COMMENT '操作人姓名',"
+                    + "operate_time DATETIME DEFAULT CURRENT_TIMESTAMP COMMENT '操作时间',"
+                    + "operate_type VARCHAR(20) NOT NULL COMMENT '操作:save/submit/audit',"
+                    + "tenant_id BIGINT NOT NULL COMMENT '租户ID',"
+                    + "create_by VARCHAR(50) DEFAULT NULL, create_time DATETIME DEFAULT NULL,"
+                    + "update_by VARCHAR(50) DEFAULT NULL, update_time DATETIME DEFAULT NULL, deleted TINYINT DEFAULT 0,"
+                    + "PRIMARY KEY (id),"
+                    + "KEY idx_record (record_id, deleted)"
+                    + ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='病历版本快照'");
+            /* 出入量记录: 进量/出量逐笔登记(饮水/静脉/尿量/引流等), 供护士站出入量与平衡统计 */
+            st.executeUpdate("CREATE TABLE IF NOT EXISTS his_inp_io_record ("
+                    + "id BIGINT NOT NULL AUTO_INCREMENT COMMENT '主键',"
+                    + "visit_id BIGINT NOT NULL COMMENT '就诊ID(his_inp_visit.id)',"
+                    + "patient_id BIGINT NOT NULL COMMENT '患者ID(his_patient.id)',"
+                    + "record_time DATETIME NOT NULL COMMENT '记录时间',"
+                    + "io_type TINYINT NOT NULL COMMENT '1进量 2出量',"
+                    + "category VARCHAR(50) NOT NULL COMMENT '类别:饮水/静脉/尿量/引流等',"
+                    + "volume DECIMAL(10,2) NOT NULL COMMENT '量(ml)',"
+                    + "route VARCHAR(50) DEFAULT NULL COMMENT '途径',"
+                    + "note VARCHAR(200) DEFAULT NULL COMMENT '备注',"
+                    + "nurse_id BIGINT DEFAULT NULL COMMENT '登记护士ID(his_staff.id)',"
+                    + "tenant_id BIGINT NOT NULL COMMENT '租户ID',"
+                    + "create_by VARCHAR(50) DEFAULT NULL, create_time DATETIME DEFAULT NULL,"
+                    + "update_by VARCHAR(50) DEFAULT NULL, update_time DATETIME DEFAULT NULL, deleted TINYINT DEFAULT 0,"
+                    + "PRIMARY KEY (id),"
+                    + "KEY idx_visit_date (visit_id, record_time, deleted)"
+                    + ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='住院出入量记录'");
+        }
+        /* 医嘱续开来源: 续开医嘱回指原医嘱ID */
+        addColumnIfNotExists(conn, "his_inp_order", "source_order_id", "BIGINT DEFAULT NULL COMMENT '续开来源医嘱ID'");
+        /* 病历三级签名: 主治/主任签名医师与时间 */
+        addColumnIfNotExists(conn, "his_inp_medical_record", "attending_sign_id", "BIGINT DEFAULT NULL COMMENT '主治签名医师ID'");
+        addColumnIfNotExists(conn, "his_inp_medical_record", "attending_sign_time", "DATETIME DEFAULT NULL COMMENT '主治签名时间'");
+        addColumnIfNotExists(conn, "his_inp_medical_record", "director_sign_id", "BIGINT DEFAULT NULL COMMENT '主任签名医师ID'");
+        addColumnIfNotExists(conn, "his_inp_medical_record", "director_sign_time", "DATETIME DEFAULT NULL COMMENT '主任签名时间'");
+        /* 交接班 SBAR: 评估(Assessment)与建议(Recommendation), 与既有 sbar_situation/sbar_background 合成四要素 */
+        addColumnIfNotExists(conn, "his_inp_shift_record", "sbar_assessment", "TEXT DEFAULT NULL COMMENT 'SBAR评估'");
+        addColumnIfNotExists(conn, "his_inp_shift_record", "sbar_recommendation", "TEXT DEFAULT NULL COMMENT 'SBAR建议'");
+        /* 费用明细结算关联: 出院结算时回写结算单ID, 支撑按结算单追溯费用组成 */
+        addColumnIfNotExists(conn, "his_inp_charge_detail", "settle_id", "BIGINT DEFAULT NULL COMMENT '关联结算ID'");
+        /* 视频会诊: 视频房间ID与录像URL */
+        addColumnIfNotExists(conn, "his_inp_consultation", "video_room_id", "VARCHAR(100) DEFAULT NULL COMMENT '视频房间ID'");
+        addColumnIfNotExists(conn, "his_inp_consultation", "video_record_url", "VARCHAR(500) DEFAULT NULL COMMENT '视频录像URL'");
+        /* 预入院: 检查项JSON与预登记时间 */
+        addColumnIfNotExists(conn, "his_inp_visit", "pre_check_items", "TEXT DEFAULT NULL COMMENT '预入院检查项JSON'");
+        addColumnIfNotExists(conn, "his_inp_visit", "pre_admit_time", "DATETIME DEFAULT NULL COMMENT '预入院登记时间'");
+    }
+
+    /**
+     * 播种 15 条常见危急值规则(tenant_id=1 默认租户, gender=0 通用, alert_level=1 危急)。
+     * 阈值方向口径: critical_low=低于即告警, critical_high=高于即告警(与 his_critical_rule.low/high_threshold 同语义);
+     * WBC_LOW/PLT_LOW/HGB/PaO2 等"低值告警"单边项目的阈值统一落 critical_low, high 留空,
+     * 保证通用判定(value < critical_low || value > critical_high)精确命中;
+     * 幂等: 唯一键 uk_item_tenant(item_code, gender, tenant_id, deleted) + INSERT IGNORE, 重复启动不产生副本。
+     */
+    private void seedCriticalValueRules(Connection conn) throws Exception {
+        String sql = "INSERT IGNORE INTO his_critical_value_rule"
+                + " (item_code, item_name, unit, critical_low, critical_high, gender, alert_level, enabled, tenant_id, deleted)"
+                + " VALUES (?, ?, ?, ?, ?, 0, 1, 1, 1, 0)";
+        /* {item_code, item_name, unit, critical_low, critical_high}; 单边阈值另一侧置 null */
+        Object[][] seeds = {
+                {"WBC", "白细胞计数", "10^9/L", null, "30"},
+                {"WBC_LOW", "白细胞计数(低)", "10^9/L", "2", null},
+                {"HGB", "血红蛋白", "g/L", "60", null},
+                {"PLT", "血小板计数", "10^9/L", null, "600"},
+                {"PLT_LOW", "血小板计数(低)", "10^9/L", "50", null},
+                {"K", "血钾", "mmol/L", "2.5", "6.5"},
+                {"Na", "血钠", "mmol/L", "120", "160"},
+                {"GLU", "血糖", "mmol/L", "2.8", "22.2"},
+                {"BUN", "尿素氮", "mmol/L", null, "35.7"},
+                {"Cr", "肌酐", "μmol/L", null, "707"},
+                {"PT", "凝血酶原时间", "s", null, "30"},
+                {"APTT", "活化部分凝血活酶时间", "s", null, "80"},
+                {"INR", "国际标准化比值", "-", null, "4.5"},
+                {"PH", "血气pH", "-", "7.20", "7.60"},
+                {"PaO2", "动脉血氧分压", "mmHg", "40", null},
+        };
+        try (PreparedStatement ps = conn.prepareStatement(sql)) {
+            for (Object[] s : seeds) {
+                ps.setString(1, (String) s[0]);
+                ps.setString(2, (String) s[1]);
+                ps.setString(3, (String) s[2]);
+                // 数值经字符串转 BigDecimal, 避免 double 字面量引入 DECIMAL 精度噪音
+                ps.setBigDecimal(4, s[3] == null ? null : new BigDecimal((String) s[3]));
+                ps.setBigDecimal(5, s[4] == null ? null : new BigDecimal((String) s[4]));
+                ps.addBatch();
+            }
+            ps.executeBatch();
         }
     }
 

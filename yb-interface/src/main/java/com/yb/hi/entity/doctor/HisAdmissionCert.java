@@ -50,4 +50,6 @@ public class HisAdmissionCert extends BaseEntity {
     private LocalDateTime applyTime;
     /** 机构ID(开具时就诊科室归属机构) */
     private Long orgId;
+    /** 消费本证的住院就诊ID(持证入院登记回写, his_inp_visit.id) */
+    private Long admittedVisitId;
 }
