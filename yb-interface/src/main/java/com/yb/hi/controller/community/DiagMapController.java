@@ -6,6 +6,7 @@ import com.yb.hi.dto.community.CatalogMapApplyReq;
 import com.yb.hi.dto.community.CatalogMapAutoReq;
 import com.yb.hi.dto.community.CatalogMapClearReq;
 import com.yb.hi.entity.community.HisYbMapLog;
+import com.yb.hi.framework.common.BizException;
 import com.yb.hi.framework.common.R;
 import com.yb.hi.platform.service.OrgAccessGuard;
 import com.yb.hi.service.community.DiagMapService;
@@ -50,7 +51,8 @@ public class DiagMapController {
                                                @RequestParam(defaultValue = "20") long size,
                                                @RequestParam(required = false) Integer mapped,
                                                @RequestParam(required = false) String keyword) {
-        return R.ok(diagMapService.items(dictType, page, size, mapped, keyword));
+        checkMapped(mapped);
+        return R.ok(diagMapService.items(dictType, normPage(page), normSize(size), mapped, keyword));
     }
 
     /** 打分候选: 选中院内条目后拉取标准字典候选(按名称匹配) */
@@ -59,7 +61,7 @@ public class DiagMapController {
                                                    @RequestParam Long itemId,
                                                    @RequestParam(required = false) String keyword,
                                                    @RequestParam(defaultValue = "20") int limit) {
-        return R.ok(diagMapService.candidates(dictType, itemId, keyword, limit));
+        return R.ok(diagMapService.candidates(dictType, itemId, keyword, normLimit(limit)));
     }
 
     /** 人工/预览确认写入对照(幂等); 已对照条目改码属变更对照, 需前端二次确认后带 force=true */
@@ -69,21 +71,24 @@ public class DiagMapController {
         if (req == null || req.getItems() == null || req.getItems().isEmpty()) {
             return R.ok(0);
         }
+        checkBatch(req.getItems().size());
+        String src = HisYbMapLog.SRC_AUTO.equals(req.getSrc()) ? HisYbMapLog.SRC_AUTO : HisYbMapLog.SRC_MANUAL;
         return R.ok(diagMapService.apply(req.getCatalog(), req.getItems(),
-                HisYbMapLog.SRC_MANUAL, Boolean.TRUE.equals(req.getForce())));
+                src, Boolean.TRUE.equals(req.getForce())));
     }
 
-    /** 批量自动对照: dryRun=true 仅预览, 否则写入达阈值项 */
+    /** 批量自动对照: dryRun=true 仅预览, 否则写入达阈值项。预览与写入同为重查询/写操作, 一律牵头机构守卫 */
     @PostMapping("/auto")
     public R<Map<String, Object>> auto(@RequestBody CatalogMapAutoReq req) {
+        requireLeadOrg();
         if (req == null) {
             return R.ok(null);
         }
-        boolean dryRun = Boolean.TRUE.equals(req.getDryRun());
-        if (!dryRun) {
-            requireLeadOrg();
+        if (req.getItemIds() != null) {
+            checkBatch(req.getItemIds().size());
         }
-        return R.ok(diagMapService.auto(req.getCatalog(), req.getItemIds(), req.getThreshold(), dryRun));
+        return R.ok(diagMapService.auto(req.getCatalog(), req.getItemIds(), req.getThreshold(),
+                Boolean.TRUE.equals(req.getDryRun())));
     }
 
     /** 清除对照(医保码置空, 留痕 CLEAR) */
@@ -93,19 +98,20 @@ public class DiagMapController {
         if (req == null || req.getItemIds() == null || req.getItemIds().isEmpty()) {
             return R.ok(0);
         }
+        checkBatch(req.getItemIds().size());
         return R.ok(diagMapService.clear(req.getCatalog(), req.getItemIds()));
     }
 
-    /** 对照变更留痕分页: dictType/itemId 可选, kw=院内码/院内名/医保码, start/end=变更日期(含两端) */
+    /** 对照变更留痕分页: dictType 必填(四类之一, 防经本接口直读三目录留痕), kw=院内码/院内名/医保码, start/end=变更日期(含两端) */
     @GetMapping("/logs")
-    public R<IPage<HisYbMapLog>> logs(@RequestParam(required = false) String dictType,
+    public R<IPage<HisYbMapLog>> logs(@RequestParam String dictType,
                                       @RequestParam(required = false) Long itemId,
                                       @RequestParam(required = false) String kw,
                                       @RequestParam(required = false) @DateTimeFormat(pattern = "yyyy-MM-dd") LocalDate start,
                                       @RequestParam(required = false) @DateTimeFormat(pattern = "yyyy-MM-dd") LocalDate end,
                                       @RequestParam(defaultValue = "1") long page,
                                       @RequestParam(defaultValue = "20") long size) {
-        return R.ok(diagMapService.logs(dictType, itemId, kw, start, end, page, size));
+        return R.ok(diagMapService.logs(dictType, itemId, kw, start, end, normPage(page), normSize(size)));
     }
 
     /** 导出对照结果(xlsx): 与列表同一筛选条件, 一次性导出全部匹配行 */
@@ -114,6 +120,7 @@ public class DiagMapController {
                        @RequestParam(required = false) Integer mapped,
                        @RequestParam(required = false) String keyword,
                        HttpServletResponse resp) throws IOException {
+        checkMapped(mapped);
         Map<String, Object> data = diagMapService.exportRows(dictType, mapped, keyword);
         String fname = "医保疾病对照结果_" + typeLabel(dictType) + "_" + LocalDate.now() + ".xlsx";
         String enc = URLEncoder.encode(fname, "UTF-8").replace("+", "%20");
@@ -147,5 +154,31 @@ public class DiagMapController {
     /** 仅租户牵头机构(org_level=1)的 ADMIN 可写对照; 平台超管只读不参与写。 */
     private void requireLeadOrg() {
         guard.requireLeadOrg("仅牵头机构管理员可维护医保疾病对照");
+    }
+
+    /* ==== 参数边界收敛(防超大页拉全表/超批量顶穿 IN/非法 mapped 静默变筛选) ==== */
+
+    private static long normPage(long page) {
+        return Math.max(1, page);
+    }
+
+    private static long normSize(long size) {
+        return Math.min(Math.max(1, size), 200);
+    }
+
+    private static int normLimit(int limit) {
+        return Math.min(Math.max(1, limit), 100);
+    }
+
+    private static void checkMapped(Integer mapped) {
+        if (mapped != null && mapped != 0 && mapped != 1) {
+            throw new BizException(400, "mapped 仅支持 0(仅未对照)/1(仅已对照), 全部请不传");
+        }
+    }
+
+    private static void checkBatch(int n) {
+        if (n > 1000) {
+            throw new BizException(400, "单次批量上限 1000 条, 请分批提交");
+        }
     }
 }

@@ -241,6 +241,12 @@
     if (token) { headers['Authorization'] = 'Bearer ' + token; }
     return fetch(url, { headers: headers }).then(function (resp) {
       if (!resp.ok) { throw new Error('下载失败(HTTP ' + resp.status + ')'); }
+      /* 后端全局异常处理器对 BizException 返 HTTP 200 + R JSON 信封: 若不判 Content-Type,
+       * 导出失败会把 JSON 错误体当文件存盘并误报成功。JSON 响应一律拆出 msg 抛错。 */
+      var ct = resp.headers.get('Content-Type') || '';
+      if (ct.indexOf('json') >= 0) {
+        return resp.json().then(function (j) { throw new Error((j && j.msg) || '下载失败'); });
+      }
       var cd = resp.headers.get('Content-Disposition') || '';
       var name = fallbackName || 'download';
       var m = /filename\*=UTF-8''([^;]+)/i.exec(cd) || /filename="?([^";]+)"?/i.exec(cd);

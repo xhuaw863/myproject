@@ -45,9 +45,10 @@
     created: function () { this.loadSummary(); this.loadItems(); },
     computed: {
       cov: function () {
+        // summary 嵌套计数受全局 Long->String 序列化影响为字符串("0" 为真值会算出 NaN), 必须 Number 归一
         var s = this.summary[this.dictType] || {};
-        var t = s.total || 0; var m = s.mapped || 0;
-        return { total: t, mapped: m, unmapped: s.unmapped || 0, pct: t ? Math.round(m * 100 / t) : 0 };
+        var t = Number(s.total || 0); var m = Number(s.mapped || 0);
+        return { total: t, mapped: m, unmapped: Number(s.unmapped || 0), pct: t ? Math.round(m * 100 / t) : 0 };
       },
       curLabel: function () {
         for (var i = 0; i < TYPES.length; i++) { if (TYPES[i].v === this.dictType) { return TYPES[i].l; } }
@@ -159,6 +160,10 @@
       },
       exportRows: function () {
         var vm = this;
+        if (Number(vm.total) > 50000) {
+          ElementPlus.ElMessage.warning('当前筛选命中 ' + vm.total + ' 条, 超出单次导出上限 5 万, 请缩小筛选范围后导出');
+          return;
+        }
         var q = '/api/diag-map/export?dictType=' + vm.dictType;
         if (vm.mappedFilter !== '') { q += '&mapped=' + vm.mappedFilter; }
         if (vm.keyword) { q += '&keyword=' + encodeURIComponent(vm.keyword); }
@@ -180,7 +185,7 @@
           catalog: vm.dictType, itemIds: itemIds, threshold: vm.autoThreshold, dryRun: dryRun
         }).then(function (d) {
           vm.autoPreview = (d && d.preview) || []; vm.autoSel = [];
-          vm.autoStats = { matched: d && d.matched, reviewed: d && d.reviewed, skipped: d && d.skipped, threshold: d && d.threshold };
+          vm.autoStats = { matched: d && d.matched, reviewed: d && d.reviewed, skipped: d && d.skipped, threshold: d && d.threshold, truncated: d && d.truncated };
         }).catch(HIS.notifyError).finally(function () { vm.autoLoading = false; });
       },
       onAutoSel: function (rows) { this.autoSel = rows || []; },
@@ -190,8 +195,8 @@
         if (!pairs.length) { ElementPlus.ElMessage.warning('没有可提交的对照配对'); return; }
         vm.autoCommitting = true;
         HIS.post('/api/diag-map/apply', {
-          catalog: vm.dictType,
-          items: pairs.map(function (p) { return { itemId: p.itemId, stdId: p.stdId }; })
+          catalog: vm.dictType, src: 'auto',
+          items: pairs.map(function (p) { return { itemId: p.itemId, stdId: p.stdId, score: p.score }; })
         }).then(function (n) {
           HIS.notifySuccess('批量对照完成: 写入 ' + (n || 0) + ' 条');
           vm.autoDlg = false; vm.loadSummary(); vm.loadItems();
@@ -312,6 +317,7 @@
       '      <el-input-number v-model="autoThreshold" :min="0.5" :max="0.99" :step="0.05" :precision="2" style="width:120px"></el-input-number>',
       '      <el-button @click="runAuto(true)" :loading="autoLoading">重新预览</el-button>',
       '      <span style="color:var(--yb-ink-2);font-size:13px;">达标 {{ autoStats.matched||0 }} · 待复核 {{ autoStats.reviewed||0 }} · 跳过 {{ autoStats.skipped||0 }}</span>',
+      '      <span v-if="autoStats.truncated" style="color:var(--yb-warning);font-size:13px;">⚠ 超出单次扫描上限, 仅预览前部分, 请勾选子集分批处理</span>',
       '      <span style="color:var(--yb-ink-2);font-size:13px;">{{ selection.length? "(仅选中 "+selection.length+" 条)": "(全部未对照)" }}</span>',
       '    </div>',
       '    <el-table :data="autoPreview" v-loading="autoLoading" border stripe size="small" height="380" @selection-change="onAutoSel">',

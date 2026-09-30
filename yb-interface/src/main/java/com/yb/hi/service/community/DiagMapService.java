@@ -14,6 +14,7 @@ import com.yb.hi.framework.tenant.UserContext;
 import com.yb.hi.mapper.community.HisYbMapLogMapper;
 import com.yb.hi.service.StdDictMaintainService;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.StringUtils;
 
 import java.time.LocalDate;
@@ -44,8 +45,15 @@ public class DiagMapService {
     public static final String T_SYMP = "symp";
     public static final String T_OPER = "oper";
 
-    /** 导出行数上限(按当前筛选一次性导出, 不分页) */
-    private static final long EXPORT_MAX = 200000L;
+    /** 导出行数上限(按当前筛选一次性导出, 不分页; 诊断表体量远大于三目录, 低于 catalog-map 的 20 万) */
+    private static final long EXPORT_MAX = 50000L;
+
+    /** 批量自动对照单次扫描/预览上限: 未对照全量跑名称匹配每条要 1~2 轮标准字典 LIKE 全表扫描, 必须设闸(超上限请勾选子集分批) */
+    private static final int AUTO_SCAN_MAX = 2000;
+    private static final int AUTO_PREVIEW_MAX = 500;
+
+    /** 医保名称回显分片大小(std_* 主码无唯一约束, infoByCode 用 IN 拼接, 受 MySQL 预处理占位符上限约束) */
+    private static final int INFO_CHUNK = 500;
 
     private final HisDiagDictService diagService;
     private final StdDictMaintainService stdMaintain;
@@ -145,6 +153,7 @@ public class DiagMapService {
         IPage<HisDiagDict> p = q.orderByAsc(HisDiagDict::getSortNo).orderByAsc(HisDiagDict::getId)
                 .page(new Page<>(page, size));
         Page<Map<String, Object>> out = new Page<>(p.getCurrent(), p.getSize(), p.getTotal());
+        String stdKey = stdKeyOf(dictType);
         List<Map<String, Object>> recs = new ArrayList<>();
         List<String> codes = new ArrayList<>();
         for (HisDiagDict e : p.getRecords()) {
@@ -160,8 +169,11 @@ public class DiagMapService {
             }
             recs.add(m);
         }
-        Map<String, Map<String, Object>> info = codes.isEmpty()
-                ? new LinkedHashMap<>() : stdMaintain.infoByCode(stdKeyOf(dictType), codes);
+        // 分片回显: 导出路径单页可达 EXPORT_MAX 行, 一次性 IN 会顶穿预处理占位符上限(65535)
+        Map<String, Map<String, Object>> info = new LinkedHashMap<>();
+        for (int i = 0; i < codes.size(); i += INFO_CHUNK) {
+            info.putAll(stdMaintain.infoByCode(stdKey, codes.subList(i, Math.min(i + INFO_CHUNK, codes.size()))));
+        }
         for (Map<String, Object> m : recs) {
             String c = str(m.get("ybCode"));
             Map<String, Object> si = c.isEmpty() ? null : info.get(c);
@@ -180,6 +192,10 @@ public class DiagMapService {
         HisDiagDict e = diagService.getById(itemId);
         if (e == null) {
             throw new BizException(404, "诊断条目不存在: " + itemId);
+        }
+        // 单表异值类别: 条目 dict_type 必须与请求类别一致(含防把四目录之外的 tumor 混入)
+        if (!dictType.equals(e.getDictType())) {
+            throw new BizException(400, "条目 " + itemId + " 属类别 " + e.getDictType() + ", 与请求类别 " + dictType + " 不符");
         }
         boolean manual = StringUtils.hasText(keyword);
         String base = manual ? keyword : e.getName();
@@ -207,12 +223,7 @@ public class DiagMapService {
             return d != 0 ? (d < 0 ? -1 : 1) : String.valueOf(a.get("code")).compareTo(String.valueOf(b.get("code")));
         });
         List<Map<String, Object>> fin = out.size() > limit ? new ArrayList<>(out.subList(0, limit)) : out;
-        for (Map<String, Object> m : fin) {
-            Object sid = m.get("stdId");
-            if (sid instanceof Number) {
-                m.put("row", stdMaintain.row(stdKey, ((Number) sid).longValue()));
-            }
-        }
+        // 不再逐行 row() 回补整行: 前端右栏仅消费归一列(code/name/spec/extra/score/reasons), 省 N 次单行查询
         return fin;
     }
 
@@ -244,12 +255,8 @@ public class DiagMapService {
 
     /* ================= 写入对照 ================= */
 
-    /** 人工/预览确认写入, 返回写入条数(幂等: 重复对照即更新) */
-    public int apply(String dictType, List<CatalogMapApplyReq.Item> items) {
-        return apply(dictType, items, HisYbMapLog.SRC_MANUAL, false);
-    }
-
-    /** 写入对照并留痕: force=false 时, 已对照且目标医保码不同的条目视为"变更对照", 直接拒绝(需前端二次确认后带 force=true) */
+    /** 写入对照并留痕(事务: 批量中途 409/异常整批回滚, 不留半截写入); force=false 时, 已对照且目标医保码不同的条目视为"变更对照", 直接拒绝(需前端二次确认后带 force=true) */
+    @Transactional(rollbackFor = Exception.class)
     public int apply(String dictType, List<CatalogMapApplyReq.Item> items, String src, boolean force) {
         String stdKey = stdKeyOf(dictType);
         int applied = 0;
@@ -258,22 +265,24 @@ public class DiagMapService {
                 continue;
             }
             Map<String, Object> std = stdMaintain.row(stdKey, it.getStdId());
-            if (applyOne(dictType, it.getItemId(), std, src, force)) {
+            if (applyOne(dictType, it.getItemId(), str(std.get(stdCodeCol(dictType))), src, force, it.getScore())) {
                 applied++;
             }
         }
         return applied;
     }
 
-    /** 单条写入: 仅更新 yb_code; 码变化时写变更留痕(MAP/CHANGE); 已对照改码需 force=true。 */
-    private boolean applyOne(String dictType, Long itemId, Map<String, Object> std, String src, boolean force) {
+    /** 单条写入: 仅更新 yb_code; 码变化时写变更留痕(MAP/CHANGE); 已对照改码需 force=true; 条目类别与请求类别不符拒绝(防跨类别污染)。 */
+    private boolean applyOne(String dictType, Long itemId, String neu, String src, boolean force, Double score) {
         HisDiagDict e = diagService.getById(itemId);
         if (e == null) {
-            return false;
+            throw new BizException(404, "诊断条目不存在: " + itemId);
+        }
+        if (!dictType.equals(e.getDictType())) {
+            throw new BizException(400, "条目 " + itemId + " 属类别 " + e.getDictType() + ", 与请求类别 " + dictType + " 不符");
         }
         String old = str(e.getYbCode());
-        String neu = str(std.get(stdCodeCol(dictType)));
-        if (neu.isEmpty()) {
+        if (neu == null || neu.isEmpty()) {
             throw new BizException(400, "标准字典行缺少医保编码, 无法对照");
         }
         if (!force && !old.isEmpty() && !old.equals(neu)) {
@@ -288,21 +297,27 @@ public class DiagMapService {
         boolean ok = diagService.updateById(e);
         if (ok) {
             logChange(dictType, e.getId(), e.getCode(), e.getName(), old, neu,
-                    old.isEmpty() ? HisYbMapLog.TYPE_MAP : HisYbMapLog.TYPE_CHANGE, null, src);
+                    old.isEmpty() ? HisYbMapLog.TYPE_MAP : HisYbMapLog.TYPE_CHANGE, score, src);
         }
         return ok;
     }
 
     /* ================= 批量自动对照 ================= */
 
-    /** 批量自动对照: dryRun 仅预览; 否则写入达阈值项。返回 {dryRun,threshold,matched,reviewed,skipped,preview} */
+    /** 批量自动对照: dryRun 仅预览; 否则写入达阈值项(带置信度留痕, src=auto)。返回 {dryRun,threshold,matched,reviewed,skipped,truncated,preview} */
+    @Transactional(rollbackFor = Exception.class)
     public Map<String, Object> auto(String dictType, List<Long> itemIds, Double threshold, boolean dryRun) {
         String stdKey = stdKeyOf(dictType);
         double thr = threshold != null ? threshold : CatalogMapMatcher.DEFAULT_AUTO_THRESHOLD;
         List<HisDiagDict> scope = loadUnmapped(dictType, itemIds);
         List<Map<String, Object>> preview = new ArrayList<>();
         int reviewed = 0;
+        boolean truncated = false;
         for (HisDiagDict e : scope) {
+            if (preview.size() >= AUTO_PREVIEW_MAX) {
+                truncated = true;
+                break;
+            }
             Map<String, Object> best = bestMatch(stdKey, e, thr);
             if (best == null) {
                 reviewed++;
@@ -325,29 +340,34 @@ public class DiagMapService {
         out.put("matched", preview.size());
         out.put("reviewed", reviewed);
         out.put("skipped", skipped);
+        // 扫描设闸: 命中上限说明确有未扫完的存量, 前端提示勾选子集分批处理
+        out.put("truncated", truncated || scope.size() >= AUTO_SCAN_MAX);
+        out.put("scanMax", AUTO_SCAN_MAX);
         out.put("preview", preview);
         if (dryRun) {
             return out;
         }
-        List<CatalogMapApplyReq.Item> pairs = new ArrayList<>();
+        int written = 0;
         for (Map<String, Object> m : preview) {
-            CatalogMapApplyReq.Item it = new CatalogMapApplyReq.Item();
-            it.setItemId(((Number) m.get("itemId")).longValue());
-            it.setStdId(((Number) m.get("stdId")).longValue());
-            pairs.add(it);
+            double sc = ((Number) m.get("score")).doubleValue();
+            if (applyOne(dictType, ((Number) m.get("itemId")).longValue(), str(m.get("stdCode")),
+                    HisYbMapLog.SRC_AUTO, true, sc)) {
+                written++;
+            }
         }
-        int written = apply(dictType, pairs, HisYbMapLog.SRC_AUTO, true);
         out.put("matched", written);
         return out;
     }
 
-    /** 取未对照条目(可选 id 子集) */
+    /** 取未对照条目(可选 id 子集), 单次扫描上限 AUTO_SCAN_MAX 条(防全表 LIKE 匹配风暴打满连接池) */
     private List<HisDiagDict> loadUnmapped(String dictType, List<Long> itemIds) {
         return diagService.lambdaQuery()
                 .eq(HisDiagDict::getDictType, dictType)
                 .and(w -> w.isNull(HisDiagDict::getYbCode).or().eq(HisDiagDict::getYbCode, ""))
                 .in(itemIds != null && !itemIds.isEmpty(), HisDiagDict::getId, itemIds)
-                .list();
+                .orderByAsc(HisDiagDict::getId)
+                .page(new Page<>(1, AUTO_SCAN_MAX, false))
+                .getRecords();
     }
 
     /** 单条目最优匹配(达阈值才返回) */
@@ -375,7 +395,8 @@ public class DiagMapService {
 
     /* ================= 清除对照 ================= */
 
-    /** 将指定诊断条目的医保对照码置空, 返回处理条数; 清除同样留痕(CLEAR) */
+    /** 将指定诊断条目的医保对照码置空, 返回处理条数; 清除同样留痕(CLEAR); 事务 + 类别双重拦截 */
+    @Transactional(rollbackFor = Exception.class)
     public int clear(String dictType, List<Long> itemIds) {
         requireType(dictType);
         if (itemIds == null || itemIds.isEmpty()) {
@@ -384,13 +405,15 @@ public class DiagMapService {
         int n = 0;
         for (Long itemId : itemIds) {
             HisDiagDict e = diagService.getById(itemId);
-            if (e == null || !StringUtils.hasText(e.getYbCode())) {
+            // 跳不存在/未对照/跨类别条目(后者若不清除会把留痕类别记错)
+            if (e == null || !dictType.equals(e.getDictType()) || !StringUtils.hasText(e.getYbCode())) {
                 continue;
             }
             String old = e.getYbCode();
             boolean ok = diagService.update(null, new LambdaUpdateWrapper<HisDiagDict>()
                     .set(HisDiagDict::getYbCode, null)
-                    .eq(HisDiagDict::getId, itemId));
+                    .eq(HisDiagDict::getId, itemId)
+                    .eq(HisDiagDict::getDictType, dictType));
             if (ok) {
                 logChange(dictType, itemId, e.getCode(), e.getName(), old, null,
                         HisYbMapLog.TYPE_CLEAR, null, HisYbMapLog.SRC_MANUAL);
@@ -402,19 +425,16 @@ public class DiagMapService {
 
     /* ================= 变更留痕查询 ================= */
 
-    /** 对照变更留痕分页: dictType/itemId 可选过滤; kw 匹配院内码/院内名/医保码; start/end 为变更日期(含两端)。 */
+    /** 对照变更留痕分页: dictType 必填(四类之一, 防经本接口直读三目录 charge/drug/cons 留痕); itemId 可选过滤; kw 匹配院内码/院内名/医保码; start/end 为变更日期(含两端)。 */
     public IPage<HisYbMapLog> logs(String dictType, Long itemId, String kw, LocalDate start, LocalDate end, long page, long size) {
+        requireType(dictType);
         LambdaQueryWrapper<HisYbMapLog> q = new LambdaQueryWrapper<HisYbMapLog>()
-                .eq(StringUtils.hasText(dictType), HisYbMapLog::getCatalogType, dictType)
+                .eq(HisYbMapLog::getCatalogType, dictType)
                 .eq(itemId != null, HisYbMapLog::getCatalogId, itemId)
                 .ge(start != null, HisYbMapLog::getChangeTime, start == null ? null : start.atStartOfDay())
                 .lt(end != null, HisYbMapLog::getChangeTime, end == null ? null : end.plusDays(1).atStartOfDay())
                 .orderByDesc(HisYbMapLog::getChangeTime)
                 .orderByDesc(HisYbMapLog::getId);
-        // 仅保留四类诊断留痕(排除三目录 charge/drug/cons 混入)
-        if (!StringUtils.hasText(dictType)) {
-            q.in(HisYbMapLog::getCatalogType, T_WEST, T_TCM, T_SYMP, T_OPER);
-        }
         if (StringUtils.hasText(kw)) {
             final String k = kw.trim();
             q.and(w -> w.like(HisYbMapLog::getItemCode, k).or().like(HisYbMapLog::getItemName, k)
