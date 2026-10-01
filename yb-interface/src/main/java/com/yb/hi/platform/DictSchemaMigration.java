@@ -431,6 +431,8 @@ public class DictSchemaMigration implements ApplicationRunner {
             ensureOutpWsEnhancementTables(conn);
             // 门诊医生站对标优化 OP-B(诊断进阶): 诊断高频/疾病报卡/诊断→模板链接 3 表 + his_diagnosis牙位/his_medical_cert审核/his_dept审核开关补列(幂等)
             ensureOutpWsDiagnosisTables(conn);
+            // 门诊医生站对标优化 OP-C(医嘱处方专业化): 拆方规则/自动计费规则/医嘱高频/慢特病备案 4 表 + his_prescription_item草药5列/his_drug_catalog适应症补列(幂等)
+            ensureOutpRxOrderTables(conn);
             // 存量表补列: 药库/药房归属 + 混合支付/发票号/退费关联/部分退费已退数量(幂等, 列已存在则跳过)
             alterExistingTables(conn);
         } catch (Exception e) {
@@ -4166,6 +4168,100 @@ public class DictSchemaMigration implements ApplicationRunner {
         addColumnIfNotExists(conn, "his_medical_cert", "audit_remark", "VARCHAR(500) DEFAULT NULL COMMENT '审核意见/驳回原因'");
         // his_dept 诊断证明审核开关(按科室配置: 0直接可打印 1需审核)
         addColumnIfNotExists(conn, "his_dept", "cert_audit_required", "TINYINT DEFAULT 0 COMMENT '诊断证明审核开关:0直接可打印 1需审核'");
+    }
+
+    /**
+     * 门诊医生站对标优化 OP-C(医嘱/处方专业化, 需求2.2.2.3.14.3/14.4):
+     * 拆方规则/自动计费规则/医嘱处方高频/慢特病备案 4 新表 + his_prescription_item 草药5列 + his_drug_catalog 适应症列(幂等)。
+     */
+    private void ensureOutpRxOrderTables(Connection conn) throws Exception {
+        try (Statement st = conn.createStatement()) {
+            st.executeUpdate("CREATE TABLE IF NOT EXISTS his_rx_split_rule ("
+                    + "id BIGINT NOT NULL AUTO_INCREMENT COMMENT '主键',"
+                    + "tenant_id BIGINT NOT NULL COMMENT '租户ID',"
+                    + "org_id BIGINT DEFAULT NULL COMMENT '机构ID(空=租户通用)',"
+                    + "dept_id BIGINT DEFAULT NULL COMMENT '科室ID(空=全院通用)',"
+                    + "rule_name VARCHAR(100) DEFAULT NULL COMMENT '规则名称',"
+                    + "split_dim VARCHAR(30) NOT NULL COMMENT '拆方维度: usage/insutype/chronic_dise/special_drug/pharmacy',"
+                    + "dim_value VARCHAR(100) DEFAULT NULL COMMENT '维度匹配值',"
+                    + "priority INT NOT NULL DEFAULT 100 COMMENT '拆分优先级(小者优先)',"
+                    + "status TINYINT NOT NULL DEFAULT 1 COMMENT '状态:1启用 0停用',"
+                    + "create_by VARCHAR(50) DEFAULT NULL, create_time DATETIME DEFAULT NULL,"
+                    + "update_by VARCHAR(50) DEFAULT NULL, update_time DATETIME DEFAULT NULL, deleted TINYINT DEFAULT 0,"
+                    + "PRIMARY KEY (id),"
+                    + "KEY idx_org_dept (tenant_id, org_id, dept_id, status)"
+                    + ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='处方自动拆方规则'"
+            );
+            st.executeUpdate("CREATE TABLE IF NOT EXISTS his_charge_addon_rule ("
+                    + "id BIGINT NOT NULL AUTO_INCREMENT COMMENT '主键',"
+                    + "tenant_id BIGINT NOT NULL COMMENT '租户ID',"
+                    + "org_id BIGINT DEFAULT NULL COMMENT '机构ID(空=租户通用)',"
+                    + "dept_id BIGINT DEFAULT NULL COMMENT '科室ID(空=全院通用)',"
+                    + "item_id BIGINT NOT NULL COMMENT '主项目ID(his_base_item.id)',"
+                    + "item_name VARCHAR(200) DEFAULT NULL COMMENT '主项目名称(冗余)',"
+                    + "dim_type VARCHAR(30) NOT NULL COMMENT '加收维度: part/index/consult/herb_process',"
+                    + "dim_threshold INT NOT NULL DEFAULT 1 COMMENT '触发阈值',"
+                    + "calc_mode VARCHAR(20) NOT NULL DEFAULT 'fixed' COMMENT '计价方式: fixed/formula',"
+                    + "unit_price DECIMAL(12,2) DEFAULT NULL COMMENT '加收单位价格',"
+                    + "formula VARCHAR(500) DEFAULT NULL COMMENT '计费公式(formula模式)',"
+                    + "addon_item_code VARCHAR(50) DEFAULT NULL COMMENT '加收项编码',"
+                    + "addon_item_name VARCHAR(200) DEFAULT NULL COMMENT '加收项名称',"
+                    + "status TINYINT NOT NULL DEFAULT 1 COMMENT '状态:1启用 0停用',"
+                    + "create_by VARCHAR(50) DEFAULT NULL, create_time DATETIME DEFAULT NULL,"
+                    + "update_by VARCHAR(50) DEFAULT NULL, update_time DATETIME DEFAULT NULL, deleted TINYINT DEFAULT 0,"
+                    + "PRIMARY KEY (id),"
+                    + "KEY idx_item (tenant_id, item_id, status),"
+                    + "KEY idx_org_dept (tenant_id, org_id, dept_id, status)"
+                    + ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='开立项目自动计费(加收)规则'"
+            );
+            st.executeUpdate("CREATE TABLE IF NOT EXISTS his_order_freq ("
+                    + "id BIGINT NOT NULL AUTO_INCREMENT COMMENT '主键',"
+                    + "tenant_id BIGINT NOT NULL COMMENT '租户ID',"
+                    + "org_id BIGINT DEFAULT NULL COMMENT '机构ID',"
+                    + "staff_id BIGINT DEFAULT NULL COMMENT '医师ID(个人常用维度)',"
+                    + "dept_id BIGINT DEFAULT NULL COMMENT '科室ID(科室高频维度)',"
+                    + "item_kind VARCHAR(20) NOT NULL COMMENT '项目类型: rx处方项/order医嘱项',"
+                    + "item_code VARCHAR(50) NOT NULL COMMENT '项目代码',"
+                    + "item_name VARCHAR(200) DEFAULT NULL COMMENT '项目名称',"
+                    + "use_count INT NOT NULL DEFAULT 0 COMMENT '累计使用次数',"
+                    + "last_time DATETIME DEFAULT NULL COMMENT '最近使用时间',"
+                    + "create_by VARCHAR(50) DEFAULT NULL, create_time DATETIME DEFAULT NULL,"
+                    + "update_by VARCHAR(50) DEFAULT NULL, update_time DATETIME DEFAULT NULL, deleted TINYINT DEFAULT 0,"
+                    + "PRIMARY KEY (id),"
+                    + "UNIQUE KEY uk_staff_dept_item (tenant_id, staff_id, dept_id, item_kind, item_code),"
+                    + "KEY idx_dept (tenant_id, dept_id, use_count),"
+                    + "KEY idx_staff (tenant_id, staff_id, use_count)"
+                    + ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='医嘱/处方高频使用沉淀(助手数据源)'"
+            );
+            st.executeUpdate("CREATE TABLE IF NOT EXISTS his_chronic_disease ("
+                    + "id BIGINT NOT NULL AUTO_INCREMENT COMMENT '主键',"
+                    + "tenant_id BIGINT NOT NULL COMMENT '租户ID',"
+                    + "org_id BIGINT DEFAULT NULL COMMENT '机构ID',"
+                    + "patient_id BIGINT NOT NULL COMMENT '患者ID(his_patient.id)',"
+                    + "patient_name VARCHAR(100) DEFAULT NULL COMMENT '患者姓名(冗余)',"
+                    + "dise_code VARCHAR(50) NOT NULL COMMENT '病种编码',"
+                    + "dise_name VARCHAR(200) DEFAULT NULL COMMENT '病种名称',"
+                    + "dise_type VARCHAR(20) DEFAULT NULL COMMENT '备案类型:1门特 2门慢',"
+                    + "register_no VARCHAR(50) DEFAULT NULL COMMENT '备案编号',"
+                    + "valid_from DATE DEFAULT NULL COMMENT '备案有效期起',"
+                    + "valid_to DATE DEFAULT NULL COMMENT '备案有效期止',"
+                    + "status TINYINT NOT NULL DEFAULT 1 COMMENT '状态:1有效 0失效',"
+                    + "source VARCHAR(20) DEFAULT 'manual' COMMENT '来源: manual/import/insutype',"
+                    + "create_by VARCHAR(50) DEFAULT NULL, create_time DATETIME DEFAULT NULL,"
+                    + "update_by VARCHAR(50) DEFAULT NULL, update_time DATETIME DEFAULT NULL, deleted TINYINT DEFAULT 0,"
+                    + "PRIMARY KEY (id),"
+                    + "KEY idx_patient (tenant_id, patient_id, status)"
+                    + ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='患者门诊慢特病备案'"
+            );
+        }
+        // his_prescription_item 草药/中成药专业化补列(煎法/炮制/治法/药剂形式/倍数基础量)
+        addColumnIfNotExists(conn, "his_prescription_item", "decoction", "VARCHAR(30) DEFAULT NULL COMMENT '煎法: 先煎/后煎/包煎/烊化等'");
+        addColumnIfNotExists(conn, "his_prescription_item", "processing", "VARCHAR(30) DEFAULT NULL COMMENT '炮制: 炒/炙/煅/蒸等'");
+        addColumnIfNotExists(conn, "his_prescription_item", "therapy", "VARCHAR(50) DEFAULT NULL COMMENT '治法: 汗/吐/下/和/温/清/消/补等'");
+        addColumnIfNotExists(conn, "his_prescription_item", "herb_form", "VARCHAR(20) DEFAULT NULL COMMENT '药剂形式: 饮片/颗粒/成药/自备'");
+        addColumnIfNotExists(conn, "his_prescription_item", "multiple_base", "INT DEFAULT 0 COMMENT '倍数基础量(0=不启用), 单味剂量须为其整数倍'");
+        // his_drug_catalog 适应症编码补列(医嘱开立适应症/给药途径/频次联审)
+        addColumnIfNotExists(conn, "his_drug_catalog", "indication_codes", "VARCHAR(500) DEFAULT NULL COMMENT '适应症编码(院内用药规则, 供联审)'");
     }
 
     /**

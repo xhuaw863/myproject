@@ -62,4 +62,16 @@ public class HisPrescriptionItem extends BaseEntity {
     private Integer days;
     /** 医保目录编码 */
     private String medListCodg;
+
+    // ===== 门诊医生站对标 OP-C: 草药/中成药专业化(需求2.2.2.3.14.3) =====
+    /** 煎法代码: 先煎/后煎/包煎/烊化等 */
+    private String decoction;
+    /** 炮制代码: 炒/炙/煅/蒸等 */
+    private String processing;
+    /** 治法代码: 汗/吐/下/和/温/清/消/补等 */
+    private String therapy;
+    /** 药剂形式: 饮片/颗粒/成药/自备 */
+    private String herbForm;
+    /** 倍数基础量(0=不启用): 单味剂量须为其整数倍, 保存时服务端校验 */
+    private Integer multipleBase;
 }

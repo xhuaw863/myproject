@@ -129,6 +129,9 @@ public class HisDrugCatalog extends BaseEntity {
     private String pregClass;
     /** 皮试标志:1需皮试 0否 */
     private Integer skinTestFlag;
+
+    /** 适应症编码(院内用药规则, 非国家医保字段; OP-C 增加, 供医嘱开立适应症/给药途径/频次联审) */
+    private String indicationCodes;
     /** 储存条件编码(cv_code:storage_cond) */
     private String storageCond;
     /** 储存条件名称(字典回填) */
