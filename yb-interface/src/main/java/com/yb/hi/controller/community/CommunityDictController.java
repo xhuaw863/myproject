@@ -127,8 +127,9 @@ public class CommunityDictController {
     public R<IPage<HisDrugCatalog>> drugPage(@RequestParam(defaultValue = "1") long page,
                                              @RequestParam(defaultValue = "20") long size,
                                              @RequestParam(required = false) String keyword,
-                                             @RequestParam(required = false) Integer status) {
-        IPage<HisDrugCatalog> p = drugService.pageQuery(page, size, keyword, status);
+                                             @RequestParam(required = false) Integer status,
+                                             @RequestParam(required = false) String mapped) {
+        IPage<HisDrugCatalog> p = drugService.pageQuery(page, size, keyword, status, mapped);
         fillYbName(p.getRecords(), "drug", HisDrugCatalog::getYbDrugCode, HisDrugCatalog::setYbName);
         return R.ok(p);
     }
@@ -186,8 +187,9 @@ public class CommunityDictController {
     public R<IPage<HisConsCatalog>> consPage(@RequestParam(defaultValue = "1") long page,
                                              @RequestParam(defaultValue = "20") long size,
                                              @RequestParam(required = false) String keyword,
-                                             @RequestParam(required = false) Integer status) {
-        IPage<HisConsCatalog> p = consService.pageQuery(page, size, keyword, status);
+                                             @RequestParam(required = false) Integer status,
+                                             @RequestParam(required = false) String mapped) {
+        IPage<HisConsCatalog> p = consService.pageQuery(page, size, keyword, status, mapped);
         fillYbName(p.getRecords(), "consumable", HisConsCatalog::getYbConsCode, HisConsCatalog::setYbName);
         return R.ok(p);
     }
@@ -237,10 +239,22 @@ public class CommunityDictController {
     public R<IPage<HisChargeItem>> chargePage(@RequestParam(defaultValue = "1") long page,
                                               @RequestParam(defaultValue = "20") long size,
                                               @RequestParam(required = false) String keyword,
-                                              @RequestParam(required = false) String itemType) {
-        IPage<HisChargeItem> p = chargeService.pageQuery(page, size, keyword, itemType);
+                                              @RequestParam(required = false) String itemType,
+                                              @RequestParam(required = false) String mapped,
+                                              @RequestParam(required = false) String invoiceClass,
+                                              @RequestParam(required = false) String acctClass,
+                                              @RequestParam(required = false) String mrCostClass,
+                                              @RequestParam(required = false) String catCodes) {
+        IPage<HisChargeItem> p = chargeService.pageQuery(page, size, keyword, itemType, mapped,
+                invoiceClass, acctClass, mrCostClass, catCodes);
         fillYbName(p.getRecords(), "med_service", HisChargeItem::getMedListCodg, HisChargeItem::setYbName);
         return R.ok(p);
+    }
+
+    /** 四个分类维度项目计数(供统一字典收费项目tab左目录树节点角标) */
+    @GetMapping("/charge/class-counts")
+    public R<Map<String, Map<String, Long>>> chargeClassCounts() {
+        return R.ok(chargeService.classCounts());
     }
 
     @GetMapping("/charge/{id}")
@@ -350,8 +364,9 @@ public class CommunityDictController {
                                               @RequestParam(defaultValue = "1") long page,
                                               @RequestParam(defaultValue = "20") long size,
                                               @RequestParam(required = false) String keyword,
-                                              @RequestParam(required = false) Integer status) {
-        return R.ok(diagDictService.pageQuery(dictType, keyword, status, page, size));
+                                              @RequestParam(required = false) Integer status,
+                                              @RequestParam(required = false) String mapped) {
+        return R.ok(diagDictService.pageQuery(dictType, keyword, status, mapped, page, size));
     }
 
     @GetMapping("/diag-dict/{id}")
@@ -412,6 +427,12 @@ public class CommunityDictController {
         return R.ok(valDictService.listValues(dictType));
     }
 
+    /** 维护页类别下拉动态源: 当前租户已导入的全部值域分组 [{v,l,count}](读接口不守卫) */
+    @GetMapping("/val-dict/types")
+    public R<List<Map<String, Object>>> valDictTypes() {
+        return R.ok(valDictService.listTypes());
+    }
+
     @PostMapping("/val-dict")
     public R<Void> valDictCreate(@RequestBody HisValDict e) {
         requireLeadOrg();
@@ -438,6 +459,20 @@ public class CommunityDictController {
     public R<Map<String, Object>> valDictImport(@RequestParam String dictType) {
         requireLeadOrg();
         return R.ok(valDictService.importFromStd(dictType));
+    }
+
+    /** 卫健值域"域清单"(按域挑选导入用): src=wst364(国标)/hbvalue(省标), 携国标优先/待核标记 */
+    @GetMapping("/val-dict/domains")
+    public R<List<Map<String, Object>>> valDictDomains(@RequestParam String src,
+                                                       @RequestParam(required = false) String keyword) {
+        return R.ok(valDictService.listWjDomains(src, keyword));
+    }
+
+    /** 按域挑选导入卫健值域(国标>省标, 同名同码取国标, 同名不同码待核不自动并) */
+    @PostMapping("/val-dict/import-domains")
+    public R<Map<String, Object>> valDictImportDomains(@RequestBody List<Map<String, String>> refs) {
+        requireLeadOrg();
+        return R.ok(valDictService.importWjDomains(refs));
     }
 
     /* ================= 调价留痕 ================= */

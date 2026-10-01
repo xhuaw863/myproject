@@ -32,6 +32,8 @@
       '.iw-deadline-banner.urgent { background:var(--yb-warning-bg); border-color:var(--yb-warning-border); color:var(--yb-warning-strong); animation:iwDeadlineBlink 1.2s ease-in-out infinite; }',
       '.iw-deadline-banner.over { background:var(--yb-danger-bg); border-color:var(--yb-danger-border); color:var(--yb-danger-strong); animation:iwDeadlineBlink 1.2s ease-in-out infinite; }',
       '.iw-req-star { color:var(--yb-danger); margin-right:2px; }',
+      '.iw-rf-emr { display:flex; align-items:flex-start; gap:8px; }',
+      '.iw-rf-emr .emr-field { flex:1; min-width:0; margin:6px 0; }',
       '.iw-qc-score { font-size:40px; font-weight:700; line-height:1.1; font-variant-numeric:tabular-nums; }',
       '.iw-qc-score.good { color:var(--yb-success-strong); }',
       '.iw-qc-score.mid { color:var(--yb-warning-strong); }',
@@ -210,6 +212,7 @@
 
   const InpRecordPanel = {
     name: 'InpRecordPanel',
+    components: { 'emr-field': (window.HIS.components || {}).EmrField },
     props: { visitId: { type: [String, Number], default: null } },
     data() {
       return {
@@ -266,7 +269,22 @@
         previewTitle: '',
         diffVisible: false,       /* 版本对比弹窗 */
         diffLoading: false,
-        diffData: null
+        diffData: null,
+        /* Phase D 互操作导出 + SM2 可靠电子签名 */
+        exporting: false,         /* 导出请求中 */
+        sigDlgVisible: false,     /* 电子签名(SM2)弹窗 */
+        sigChain: [],             /* 有效签名链 */
+        sigLoading: false,
+        sigStage: 'author',       /* 当前选择的签名环节 */
+        sigStages: [
+          { value: 'author', label: '书写医师' },
+          { value: 'resident', label: '住院医师' },
+          { value: 'attending', label: '主治医师' },
+          { value: 'director', label: '主任医师' }
+        ],
+        sigSigning: false,
+        sigVerifying: false,
+        verifyResult: null        /* 验签结果 {passed,sigValid,digestMatch,certSn,signerName,signTime} */
       };
     },
     computed: {
@@ -520,14 +538,16 @@
       loadStructFields(templateId) {
         const vm = this;
         if (templateId == null) { return Promise.resolve(); }
-        return HIS.get('/api/his/emr/template/' + HIS.idParam(templateId) + '/fields')
+        return HIS.get('/api/his/emr/template/' + HIS.idParam(templateId) + '/defs')
           .then(function (fields) {
-            vm.structFields = fields || [];
-            const out = {};
+            vm.structFields = (Array.isArray(fields) ? fields : [])
+              .filter(function (f) { return f && f.fieldKey; });
             vm.structFields.forEach(function (f) {
-              out[f.fieldKey] = vm.structForm[f.fieldKey] != null ? vm.structForm[f.fieldKey] : '';
+              const multi = f.type === 'checkbox' || f.type === 'multiselect' || f.type === 'table';
+              if (vm.structForm[f.fieldKey] === undefined) {
+                vm.$set ? vm.$set(vm.structForm, f.fieldKey, multi ? [] : '') : (vm.structForm[f.fieldKey] = multi ? [] : '');
+              }
             });
-            vm.structForm = out;
           })
           .catch(function (e) { console.warn('病历模板字段加载失败', e); });
       },
@@ -669,6 +689,89 @@
           })
           .catch(HIS.notifyError)
           .finally(function () { vm.printing = false; });
+      },
+      /* ===== Phase D 互操作导出(FHIR R4 / WS-T500 CDA) ===== */
+      /* 导出端点返回原始文档体(FHIR 为 application/fhir+json), 不能用 HIS.download(会把 json 当错误信封),
+       * 故携 Bearer 头 fetch 取文本后本地 Blob 下载 */
+      downloadExport(fmt) {
+        const vm = this;
+        if (!vm.current || !vm.current.id) { ElementPlus.ElMessage.warning('请先保存草稿后再导出'); return; }
+        if (vm.exporting) { return; }
+        vm.exporting = true;
+        const url = '/api/emr/export/1/' + HIS.idParam(vm.current.id) + '?format=' + encodeURIComponent(fmt);
+        const headers = {};
+        const token = HIS.getToken();
+        if (token) { headers['Authorization'] = 'Bearer ' + token; }
+        fetch(url, { headers: headers }).then(function (resp) {
+          if (!resp.ok) { throw new Error('导出失败(HTTP ' + resp.status + ')'); }
+          return resp.text();
+        }).then(function (text) {
+          const isCda = fmt === 'cda';
+          const blob = new Blob([text], { type: (isCda ? 'application/xml' : 'application/json') + ';charset=utf-8' });
+          const u = URL.createObjectURL(blob);
+          const a = document.createElement('a');
+          a.href = u; a.download = 'emr_ipd_' + HIS.idParam(vm.current.id) + '.' + (isCda ? 'xml' : 'json');
+          document.body.appendChild(a); a.click();
+          setTimeout(function () { URL.revokeObjectURL(u); if (a.parentNode) { a.parentNode.removeChild(a); } }, 1000);
+          HIS.notifySuccess('已导出 ' + (isCda ? 'WS/T 500 CDA' : 'FHIR R4 Bundle') + ' 文档');
+        }).catch(HIS.notifyError).finally(function () { vm.exporting = false; });
+      },
+      /* ===== Phase D 病历可靠电子签名(SM2) ===== */
+      stageText(s) {
+        const m = { author: '书写医师', resident: '住院医师', attending: '主治医师', director: '主任医师', doctor: '接诊医师' };
+        return m[s] || s || '-';
+      },
+      openSigDialog() {
+        const vm = this;
+        if (!vm.current || !vm.current.id) { ElementPlus.ElMessage.warning('请先保存草稿后再签名'); return; }
+        vm.sigDlgVisible = true;
+        vm.verifyResult = null;
+        vm.loadSigChain();
+      },
+      loadSigChain() {
+        const vm = this;
+        if (!vm.current || !vm.current.id) { vm.sigChain = []; return Promise.resolve(); }
+        vm.sigLoading = true;
+        return HIS.get('/api/emr/sign/chain/1/' + HIS.idParam(vm.current.id))
+          .then(function (d) { vm.sigChain = d || []; })
+          .catch(function () { vm.sigChain = []; })
+          .finally(function () { vm.sigLoading = false; });
+      },
+      /* SM2 签名: 先静默保存草稿(确保签的是当前编辑内容), 再经签名板捕获, 最后落 his_emr_signature */
+      doSm2Sign() {
+        const vm = this;
+        if (!vm.current) { return; }
+        if (!vm.sigStage) { ElementPlus.ElMessage.warning('请选择签名环节'); return; }
+        if (!HIS.SignaturePad || typeof HIS.SignaturePad.open !== 'function') {
+          ElementPlus.ElMessage.warning('电子签名组件未加载, 无法签名'); return;
+        }
+        if (vm.sigSigning) { return; }
+        vm.saveDraft(true).then(function () {
+          if (!vm.current || !vm.current.id) { throw new Error('保存后未取得病历ID'); }
+          return HIS.SignaturePad.open({ actionType: 'emr_sm2_sign', refType: 'medical_record', refId: HIS.id(vm.current.id) });
+        }).then(function (r) {
+          vm.sigSigning = true;
+          return HIS.post('/api/emr/sign/1/' + HIS.idParam(vm.current.id) + '?stage=' + encodeURIComponent(vm.sigStage),
+            { signImg: r && r.signImgUrl });
+        }).then(function () {
+          HIS.notifySuccess('SM2 可靠电子签名完成');
+          vm.verifyResult = null;
+          return vm.loadSigChain();
+        }).catch(function (e) {
+          if (e === 'cancelled') { ElementPlus.ElMessage.info('已取消签名'); return; }
+          if (e !== 'busy' && e !== 'no-record' && e !== 'no-title') { HIS.notifyError(e); }
+        }).finally(function () { vm.sigSigning = false; });
+      },
+      doSm2Verify() {
+        const vm = this;
+        if (!vm.current || !vm.current.id) { return; }
+        if (vm.sigVerifying) { return; }
+        vm.sigVerifying = true;
+        const url = '/api/emr/sign/verify/1/' + HIS.idParam(vm.current.id)
+          + (vm.sigStage ? ('?stage=' + encodeURIComponent(vm.sigStage)) : '');
+        HIS.get(url).then(function (d) { vm.verifyResult = d || null; })
+          .catch(HIS.notifyError)
+          .finally(function () { vm.sigVerifying = false; });
       },
       /* ===== 空白新建(向后兼容纯文本编辑) ===== */
       openCreate(type) {
@@ -1163,24 +1266,12 @@
                   <el-button size="small" :disabled="readonly" :loading="macroFilling" @click="resolveAllMacros">一键填充所有宏</el-button>
                   <span class="iw-dim">结构化模板字段, 红色星号为必填项</span>
                 </div>
-                <div class="iw-rf-field" v-for="f in structFields" :key="f.fieldKey">
-                  <span class="lb"><span v-if="isReq(f)" class="iw-req-star">*</span>{{ f.label || f.fieldKey }}</span>
-                  <el-input v-if="f.type === 'textarea'" v-model="structForm[f.fieldKey]" type="textarea" :rows="3"
-                            :disabled="readonly" :maxlength="fieldMax(f)" :placeholder="f.placeholder || ''" class="iw-grow"></el-input>
-                  <el-date-picker v-else-if="f.type === 'date'" v-model="structForm[f.fieldKey]" type="date"
-                                  value-format="YYYY-MM-DD" :disabled="readonly" style="width:220px"></el-date-picker>
-                  <el-date-picker v-else-if="f.type === 'datetime'" v-model="structForm[f.fieldKey]" type="datetime"
-                                  value-format="YYYY-MM-DD HH:mm:ss" :disabled="readonly" style="width:220px"></el-date-picker>
-                  <el-input-number v-else-if="f.type === 'number'" v-model="structForm[f.fieldKey]"
-                                   :disabled="readonly" controls-position="right"></el-input-number>
-                  <el-select v-else-if="f.type === 'select'" v-model="structForm[f.fieldKey]" clearable
-                             :disabled="readonly" style="width:220px" :placeholder="f.placeholder || '请选择'">
-                    <el-option v-for="o in fieldOptions(f)" :key="o" :label="o" :value="o"></el-option>
-                  </el-select>
-                  <el-input v-else v-model="structForm[f.fieldKey]" size="small" :disabled="readonly" style="width:220px"
-                            :maxlength="fieldMax(f)" :placeholder="f.placeholder || ''"></el-input>
-                  <el-button v-if="hasMacro(f)" size="small" :disabled="readonly" @click="resolveMacro(f)">自动填充</el-button>
-                </div>
+                <template v-for="f in structFields">
+                  <div class="iw-rf-emr" :key="f.fieldKey">
+                    <emr-field :field="f" :model="structForm" :readonly="readonly" class="iw-grow"></emr-field>
+                    <el-button v-if="hasMacro(f) && !readonly" size="small" @click="resolveMacro(f)">自动填充</el-button>
+                  </div>
+                </template>
                 <div class="iw-rf-field" v-if="currentCategory === 4">
                   <span class="lb">查房级别</span>
                   <el-select v-model="roundLevel" :disabled="readonly" clearable style="width:150px" placeholder="选择查房级别">
@@ -1209,6 +1300,16 @@
                 <template v-if="Number(current.status) === 3"> | 已审核归档</template>
               </span>
               <span class="iw-toolbar-right">
+                <el-dropdown size="small" trigger="click" :disabled="!current.id || exporting" @command="downloadExport" style="margin-right:8px">
+                  <el-button size="small" :loading="exporting"><span class="iw-bicon" v-html="icons.send"></span>互操作导出</el-button>
+                  <template #dropdown>
+                    <el-dropdown-menu>
+                      <el-dropdown-item command="fhir">FHIR R4 Bundle(Document)</el-dropdown-item>
+                      <el-dropdown-item command="cda">WS/T 500 CDA 文档</el-dropdown-item>
+                    </el-dropdown-menu>
+                  </template>
+                </el-dropdown>
+                <el-button size="small" :disabled="!current.id" @click="openSigDialog">电子签名(SM2)</el-button>
                 <el-button size="small" :loading="printing" @click="printRecord"><span class="iw-bicon" v-html="icons.printer"></span>打印</el-button>
                 <el-button size="small" :disabled="!current.id" @click="openVersions"><span class="iw-bicon" v-html="icons.clock"></span>版本历史</el-button>
                 <el-button size="small" :disabled="readonly" :loading="saving" @click="saveDraft(false)"><span class="iw-bicon" v-html="icons.save"></span>保存草稿</el-button>
@@ -1319,6 +1420,33 @@
             </template>
             <div v-else-if="!diffLoading" class="iw-empty-line" style="padding:20px 0">暂无可对比的内容</div>
           </div>
+        </el-dialog>
+
+        <!-- Phase D 病历可靠电子签名(SM2): 环节选择 + 签名/验签 + 有效签名链 -->
+        <el-dialog v-model="sigDlgVisible" title="病历可靠电子签名(SM2)" width="680px" append-to-body>
+          <div style="display:flex;align-items:center;gap:8px;margin-bottom:12px;flex-wrap:wrap">
+            <span style="font-size:13px">签名环节</span>
+            <el-select v-model="sigStage" size="small" style="width:140px">
+              <el-option v-for="s in sigStages" :key="s.value" :label="s.label" :value="s.value"></el-option>
+            </el-select>
+            <el-button size="small" type="primary" :loading="sigSigning" @click="doSm2Sign">SM2 签名</el-button>
+            <el-button size="small" :loading="sigVerifying" @click="doSm2Verify">验签</el-button>
+            <el-button size="small" @click="loadSigChain">刷新链</el-button>
+          </div>
+          <div v-if="verifyResult" style="padding:8px 12px;margin-bottom:10px;border:1px solid var(--yb-border);border-radius:var(--yb-r-sm);background:var(--yb-surface);font-size:13px">
+            <span>{{ stageText(verifyResult.stage) }} · {{ verifyResult.signerName || '-' }} · </span>
+            <el-tag size="small" :type="verifyResult.passed ? 'success' : 'danger'">{{ verifyResult.passed ? '验签通过' : '验签失败' }}</el-tag>
+            <span style="margin-left:8px">签名有效 {{ verifyResult.sigValid ? '✓' : '✗' }} / 摘要一致 {{ verifyResult.digestMatch ? '✓' : '✗' }}</span>
+            <span style="margin-left:8px">证书 {{ verifyResult.certSn || '-' }} · {{ timeText(verifyResult.signTime) }}</span>
+          </div>
+          <div class="iw-tpl-group-head">有效签名链</div>
+          <el-table :data="sigChain" size="small" v-loading="sigLoading" empty-text="暂无签名" max-height="280">
+            <el-table-column label="环节" width="90"><template #default="s">{{ stageText(s.row.stage) }}</template></el-table-column>
+            <el-table-column prop="signerName" label="签名人" width="100"></el-table-column>
+            <el-table-column prop="provider" label="算法" width="70"></el-table-column>
+            <el-table-column prop="certSn" label="证书号" min-width="120"></el-table-column>
+            <el-table-column label="签名时间" width="130"><template #default="s">{{ timeText(s.row.signTime) }}</template></el-table-column>
+          </el-table>
         </el-dialog>
       </div>
     `

@@ -136,7 +136,7 @@ CREATE TABLE his_charge_item (
     item_code        VARCHAR(40)  NOT NULL COMMENT '院内收费项目编码',
     item_name        VARCHAR(200) NOT NULL COMMENT '院内项目名称',
     item_type        VARCHAR(20)  DEFAULT '诊疗' COMMENT '项目大类:药品/诊疗/耗材/其他',
-    item_cat         VARCHAR(50)  DEFAULT NULL COMMENT '细分类别',
+    item_cat         VARCHAR(255) DEFAULT NULL COMMENT '细分类别(msi_hb/cat_name 含分类路径)',
     spec             VARCHAR(200) DEFAULT NULL COMMENT '规格',
     unit             VARCHAR(30)  DEFAULT NULL COMMENT '单位',
     price            DECIMAL(12,4) DEFAULT 0.0000 COMMENT '单价',

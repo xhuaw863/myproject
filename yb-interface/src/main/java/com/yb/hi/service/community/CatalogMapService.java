@@ -468,10 +468,8 @@ public class CatalogMapService {
             hospSpec = "";
             hospMfr = h.manufacturer;
         } else if (CAT_CHARGE.equals(catalog)) {
-            stdSpec = str(row.get("spec"));
-            stdMfr = "";
-            hospSpec = h.unit;
-            hospMfr = "";
+            // 医疗服务项目: 规格不可比(院内取单位、标准取计价单位, 二者不同源), 仅按名称比对
+            return CatalogMapMatcher.score(h.name, "", "", stdName, "", "", true);
         } else {
             stdSpec = str(row.get("spec"));
             stdMfr = str(row.get("extra"));
@@ -656,6 +654,50 @@ public class CatalogMapService {
         }
     }
 
+    /**
+     * 药品规格组合(2026-10): 将标准字典规格组合为「实际规格*最小包装数量」。
+     * - 纯规格(不含中文)如 "25mg" 直接取用, 追加最小包装 → "25mg*12";
+     * - 复合规格含中文多成分(如 "氢氧化铝0.245g,三硅酸镁0.105g,颠茄流浸膏0.0026ml")则提取第一个"数值+单位"规格(保留单位, 取 "0.245g") → "0.245g*1";
+     * - 最小包装数量为空/0/非法时不追加星号, 仅返回规格本身。
+     */
+    public static String composeDrugSpec(String rawSpec, String minPackQty) {
+        if (!StringUtils.hasText(rawSpec)) {
+            return rawSpec;
+        }
+        String s = rawSpec.trim();
+        String core = s;
+        if (containsCjk(s)) {
+            java.util.regex.Matcher m = java.util.regex.Pattern.compile("\\d+(?:\\.\\d+)?\\s*(?:[\u03bc\u00b5]g|ug|mcg|mg|kg|g|ml|dl|ul|nl|l|iu|%)").matcher(s);
+            if (m.find()) {
+                core = m.group();
+            }
+        }
+        core = core.replaceAll("\\s+", "");
+        Integer mp = null;
+        if (StringUtils.hasText(minPackQty)) {
+            try {
+                mp = new BigDecimal(minPackQty.trim()).intValue();
+            } catch (NumberFormatException ignore) {
+                mp = null;
+            }
+        }
+        if (mp != null && mp > 0) {
+            return core + "*" + mp;
+        }
+        return core;
+    }
+
+    /** 是否含中日韩统一表意文字(用于判定规格是否为需提取的复合中文说明) */
+    private static boolean containsCjk(String s) {
+        for (int i = 0; i < s.length(); i++) {
+            char c = s.charAt(i);
+            if (c >= '\u4e00' && c <= '\u9fff') {
+                return true;
+            }
+        }
+        return false;
+    }
+
     /** 已对照条目换成不同医保码 => 变更对照, 必须显式确认, 避免误操作覆盖既有对照 */
     private void guardChange(String catalog, boolean force, String oldCode, String newCode, String itemName) {
         if (force || oldCode == null || oldCode.isEmpty() || oldCode.equals(newCode)) {
@@ -683,7 +725,7 @@ public class CatalogMapService {
             fillIfEmpty(e::setDrugStdCode, e.getDrugStdCode(), str(std.get("drug_std_code")));
             fillIfEmpty(e::setApprovalNo, e.getApprovalNo(), str(std.get("approval_no")));
             fillIfEmpty(e::setManufacturer, e.getManufacturer(), str(std.get("drug_entp")));
-            fillIfEmpty(e::setSpec, e.getSpec(), str(std.get("act_spec")));
+            fillIfEmpty(e::setSpec, e.getSpec(), composeDrugSpec(str(std.get("act_spec")), str(std.get("min_pack_qty"))));
             // 甲乙丙类以标准字典为准强制覆盖(对照/改码即同步): std_drug.chrgitm_lv 存文本(甲/乙/乙(单独支付)), 归一为 cv_code:chrgitm_lv 编码(1/2/3/4)
             e.setChrgitmLv(normalizeChrgitmLvToCode(str(std.get("chrgitm_lv"))));
             fillIfEmpty(e::setPayStdPrep, e.getPayStdPrep(), str(std.get("pay_std_prep")));

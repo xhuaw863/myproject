@@ -430,6 +430,48 @@ public class EmrQualityService implements ApplicationRunner {
                 if (Boolean.FALSE.equals(passed)) {
                     extra = "(记录时间 " + actual.format(DT_FMT) + ", 截止 " + deadline.format(DT_FMT) + ")";
                 }
+            } else if ("pattern".equals(cfgType)) {
+                /* 规范性: 字段值须匹配正则(空值交由 required 规则负责, 此处不重复判错) */
+                String field = cfg.getString("field");
+                String regex = cfg.getString("regex");
+                String v = fieldValue(rec, field);
+                if (!StringUtils.hasText(v) || !StringUtils.hasText(regex)) {
+                    passed = true;
+                } else {
+                    try {
+                        passed = v.matches(regex);
+                    } catch (Exception rex) {
+                        passed = true; // 非法正则不判错
+                    }
+                    if (Boolean.FALSE.equals(passed)) {
+                        extra = "(" + field + " 格式不符合规范)";
+                    }
+                }
+            } else if ("logic".equals(cfgType)) {
+                /* 逻辑性: 两字段(或字段与常量)比较 eq/ne/gt/lt/ge/le/before/after/contains; 基准缺失跳过 */
+                Boolean lp = evalLogic(cfg, rec);
+                if (lp == null) {
+                    continue;
+                }
+                passed = lp;
+                if (Boolean.FALSE.equals(passed)) {
+                    extra = "(" + cfg.getString("left") + " " + cfg.getString("op") + " "
+                            + (cfg.containsKey("rightValue") ? cfg.getString("rightValue") : cfg.getString("right"))
+                            + " 不成立)";
+                }
+            } else if ("term".equals(cfgType)) {
+                /* 规范性: 字段值须命中允许值域(空/无值域配置不判错) */
+                String field = cfg.getString("field");
+                String v = fieldValue(rec, field);
+                JSONArray allowed = cfg.getJSONArray("values");
+                if (!StringUtils.hasText(v) || allowed == null || allowed.isEmpty()) {
+                    passed = true;
+                } else {
+                    passed = containsValue(allowed, v);
+                    if (Boolean.FALSE.equals(passed)) {
+                        extra = "(值'" + v + "'不在允许值域内)";
+                    }
+                }
             } else {
                 continue; // 未知检查类型, 跳过
             }
@@ -637,6 +679,77 @@ public class EmrQualityService implements ApplicationRunner {
                 JSONObject sd = parseObjectSafe(rec.getStructureData());
                 return text(sd.get(field));
             }
+        }
+    }
+
+    /** 逻辑性判定: 取 left / right(字段或 rightValue 常量) 字符串值按 op 比较; 基准缺失/无法解析返回 null(跳过) */
+    private Boolean evalLogic(JSONObject cfg, HisInpMedicalRecord rec) {
+        String op = cfg.getString("op");
+        if (!StringUtils.hasText(op)) {
+            return null;
+        }
+        String left = fieldValue(rec, cfg.getString("left"));
+        String right = cfg.containsKey("rightValue")
+                ? cfg.getString("rightValue") : fieldValue(rec, cfg.getString("right"));
+        if (!StringUtils.hasText(left)) {
+            return null;
+        }
+        switch (op) {
+            case "eq":
+                return left.equals(right);
+            case "ne":
+                return !left.equals(right);
+            case "contains":
+                return StringUtils.hasText(right) && left.contains(right);
+            case "gt":
+            case "lt":
+            case "ge":
+            case "le": {
+                BigDecimal a = toNum(left);
+                BigDecimal b = toNum(right);
+                if (a == null || b == null) {
+                    return null;
+                }
+                int c = a.compareTo(b);
+                switch (op) {
+                    case "gt": return c > 0;
+                    case "lt": return c < 0;
+                    case "ge": return c >= 0;
+                    default: return c <= 0;
+                }
+            }
+            case "before":
+            case "after": {
+                LocalDateTime a = toDateTime(left);
+                LocalDateTime b = toDateTime(right);
+                if (a == null || b == null) {
+                    return null;
+                }
+                return "before".equals(op) ? a.isBefore(b) : a.isAfter(b);
+            }
+            default:
+                return null;
+        }
+    }
+
+    /** 值域命中: allowed(字符串数组) 是否含 value */
+    private boolean containsValue(JSONArray allowed, String value) {
+        for (int i = 0; i < allowed.size(); i++) {
+            if (value.equals(allowed.getString(i))) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private BigDecimal toNum(String s) {
+        if (!StringUtils.hasText(s)) {
+            return null;
+        }
+        try {
+            return new BigDecimal(s.trim());
+        } catch (Exception e) {
+            return null;
         }
     }
 
@@ -862,6 +975,49 @@ public class EmrQualityService implements ApplicationRunner {
         if (fromField != null) {
             o.put("fromField", fromField);
         }
+        if (category != null) {
+            o.put("category", category);
+        }
+        return o;
+    }
+
+    /** 正则(规范性)配置: {"type":"pattern","field":...,"regex":..., ["category":N]} */
+    private static JSONObject pat(Integer category, String field, String regex) {
+        JSONObject o = new JSONObject();
+        o.put("type", "pattern");
+        o.put("field", field);
+        o.put("regex", regex);
+        if (category != null) {
+            o.put("category", category);
+        }
+        return o;
+    }
+
+    /** 逻辑性配置: {"type":"logic","op":eq/ne/gt/lt/ge/le/before/after/contains,"left":字段,["right":字段|"rightValue":常量],["category":N]} */
+    private static JSONObject lgc(Integer category, String op, String left, String right) {
+        JSONObject o = new JSONObject();
+        o.put("type", "logic");
+        o.put("op", op);
+        o.put("left", left);
+        if (right != null) {
+            o.put("right", right);
+        }
+        if (category != null) {
+            o.put("category", category);
+        }
+        return o;
+    }
+
+    /** 值域(规范性)配置: {"type":"term","field":...,"values":[...], ["category":N]} */
+    private static JSONObject trm(Integer category, String field, String... values) {
+        JSONObject o = new JSONObject();
+        o.put("type", "term");
+        o.put("field", field);
+        JSONArray arr = new JSONArray();
+        for (String v : values) {
+            arr.add(v);
+        }
+        o.put("values", arr);
         if (category != null) {
             o.put("category", category);
         }

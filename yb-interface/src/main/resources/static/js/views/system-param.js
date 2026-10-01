@@ -460,7 +460,7 @@
       }
     },
     template: [
-      '<div class="page-card" v-loading="loading">',
+      '<div class="page-card cd-fill" v-loading="loading">',
       '  <div class="page-title">系统参数 <span style="font-size:12px;color:var(--yb-ink-2);font-weight:normal;">多级作用域配置 · 全局默认 → 租户/机构/科室逐级覆盖 · 留空继承</span></div>',
       '  <el-alert v-if="!canAccess" type="warning" :closable="false" show-icon title="系统参数维护仅对机构管理员及以上角色开放, 您的账号无权访问。"></el-alert>',
       '  <template v-else>',
@@ -490,9 +490,9 @@
       '    </div>',
       '    <el-alert v-if="scopeLevel===3 && !scopeDeptId" type="info" :closable="false" show-icon style="margin-bottom:10px;"',
       '      title="请先选择机构与科室, 查看该科室的参数覆盖(未覆盖参数继承机构/租户/全局默认)。"></el-alert>',
-      '    <div style="display:flex;gap:12px;align-items:stretch;">',
+      '    <div class="sp-split" style="display:flex;gap:12px;align-items:stretch;">',
       /* ---- 左侧分组导航 ---- */
-      '      <div style="width:190px;flex:none;border:1px solid var(--yb-border);border-radius:4px;padding:8px;display:flex;flex-direction:column;gap:8px;">',
+      '      <div class="sp-side" style="width:190px;flex:none;border:1px solid var(--yb-border);border-radius:4px;padding:8px;display:flex;flex-direction:column;gap:8px;">',
       '        <div style="font-size:13px;color:var(--yb-ink-2);font-weight:600;">参数分组</div>',
       '        <el-menu :default-active="activeGroup" style="border-right:none;" @select="onGroupSelect">',
       '          <el-menu-item index="__all__" style="height:36px;line-height:36px;">全部参数</el-menu-item>',
@@ -503,7 +503,7 @@
       '        <el-button v-if="isSuper" size="small" plain style="width:100%;" @click="openGroupDialog">管理分组</el-button>',
       '      </div>',
       /* ---- 右侧参数表格 ---- */
-      '      <div style="flex:1;min-width:0;">',
+      '      <div class="sp-main" style="flex:1;min-width:0;">',
       '        <div class="toolbar" style="margin-bottom:10px;">',
       '          <el-button size="small" @click="loadParams">刷新</el-button>',
       '          <el-button v-if="isSuper && scopeLevel===0" type="primary" size="small" @click="openDefCreate">新增参数</el-button>',
@@ -513,7 +513,7 @@
       '            :page-size="size" :current-page="page" :page-sizes="[20, 50, 100]"',
       '            @current-change="onPage" @size-change="onSize"></el-pagination>',
       '        </div>',
-      '        <el-table :data="pagedList" border size="small" style="width:100%" empty-text="暂无参数(该分组/作用域下无参数定义)">',
+      '        <el-table :data="pagedList" border size="small" height="100%" style="width:100%" empty-text="暂无参数(该分组/作用域下无参数定义)">',
       '          <el-table-column type="index" :index="seqNo" label="序号" width="55" align="center"></el-table-column>',
       '          <el-table-column label="参数名" min-width="200">',
       '            <template #default="s">',

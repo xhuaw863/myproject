@@ -74,6 +74,8 @@ body { font-family: var(--yb-font-sans); background: var(--yb-canvas); }
 /* ================= 科室管理: 左机构列表 + 右科室树 分栏 =================
  * 分栏高度拉满至屏幕底部(扣顶栏/内边距/页标题), 左右各自内部滚动 */
 .dept-split { display: flex; gap: 12px; align-items: stretch; height: calc(100vh - 172px); min-height: 420px; }
+/* 页签内嵌形态: 高度由外层 flex 容器撑满(统一字典收费项目tab左目录树), 不用视口calc */
+.dept-split.fill { height: auto; flex: 1; min-height: 0; }
 .dept-orgs { width: 232px; flex: none; border: 1px solid var(--yb-border-light); border-radius: 4px; display: flex; flex-direction: column; }
 .dept-orgs-hd { display: flex; align-items: center; justify-content: space-between; gap: 4px; padding: 7px 10px; border-bottom: 1px solid var(--yb-border-light); font-weight: 600; font-size: 13px; color: var(--yb-ink-2); background: var(--yb-surface-2); border-radius: 4px 4px 0 0; }
 .dept-orgs-tg { padding: 2px 4px; color: var(--yb-ink-2); font-weight: 600; }
@@ -113,6 +115,45 @@ body { font-family: var(--yb-font-sans); background: var(--yb-canvas); }
 .dept-main .table-box { flex: 1; min-height: 0; }
 /* 分页条: 固定底部(仅分页模式渲染) */
 .dept-main .pager { flex: none; display: flex; justify-content: flex-end; padding-top: 10px; }
+
+/* ================= 统一字典/机构目录: 表格随视口自适应填充(替代 max-height 魔法数) =================
+ * page-card 作 flex 列并撑满 layout-main(其有确定高度=100vh-56); 表格 flex:1 吃掉工具栏与分页条之间剩余空间,
+ * 分页条固定底部, 高矮屏都不留大白边也不把分页顶出视口。表格须配 height="100%" prop 触发 EP 固定表头+内部滚动。
+ * 两页结构不同: 机构目录表格是 page-card 直接子级(el-tabs 仅空壳 tab 头须保持紧凑)→用 .cd-fill;
+ * 统一字典表格在 el-tab-pane 内(el-tabs 须撑满并向页签传递高度)→额外加 .cd-tabs。 */
+.cd-fill { display: flex; flex-direction: column; height: 100%; margin-bottom: 0; }
+.cd-fill > .page-title { flex: none; }
+.cd-fill > .el-alert { flex: none; }
+.cd-fill > .toolbar { flex: none; }
+.cd-fill > .el-table { flex: 1; min-height: 0; }
+.cd-fill > .el-pagination { flex: none; }
+.cd-fill.cd-tabs > .el-tabs { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.cd-fill.cd-tabs .el-tabs__header { flex: none; }
+.cd-fill.cd-tabs .el-tabs__content { flex: 1; min-height: 0; overflow: hidden; }
+.cd-fill.cd-tabs .el-tabs__content > .el-tab-pane { height: 100%; display: flex; flex-direction: column; }
+.cd-fill.cd-tabs .el-tab-pane > .toolbar { flex: none; }
+.cd-fill.cd-tabs .el-tab-pane > .el-alert { flex: none; }
+.cd-fill.cd-tabs .el-tab-pane > .el-table { flex: 1; min-height: 0; }
+.cd-fill.cd-tabs .el-tab-pane > .el-pagination { flex: none; }
+/* 追加(2026-09-30): 覆盖含统计卡行/内层卡片的复杂列表页(挂号明细 RegStatistics、住院患者列表 InpPatientList)。
+ * .cd-fill 直接子 el-row(统计/概览卡行)与非增长的 page-card 一律固定高度;
+ * 需吸收剩余空间并把表格撑满的内层卡片挂 .cd-grow(自身作 flex 列, 表格 flex:1)。 */
+.cd-fill > .el-row { flex: none; }
+.cd-fill > .page-card:not(.cd-grow) { flex: none; }
+.cd-fill > .cd-grow { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.cd-grow > .page-title { flex: none; }
+.cd-grow > .toolbar { flex: none; }
+.cd-grow > .el-alert { flex: none; }
+.cd-grow > .el-table { flex: 1; min-height: 0; }
+.cd-grow > .el-pagination { flex: none; }
+
+/* 追加(2026-09-30): 系统参数页(左分组导航 + 右参数表)分栏变体。cd-fill 页内 flex 行撑满剩余高度,
+ * 右栏作 flex 列让表格 height=100% 固定表头+内部滚动; 左栏自身 overflow 滚动避免撑破整行。 */
+.sp-split { flex: 1; min-height: 0; }
+.sp-side { overflow: auto; }
+.sp-main { display: flex; flex-direction: column; min-height: 0; }
+.sp-main > .toolbar { flex: none; }
+.sp-main > .el-table { flex: 1; min-height: 0; }
 
 /* ================= Dashboard 运营看板 ================= */
 /* 统计卡片: 顶部彩色识别条 + 图标色块 + 大数字(等宽数字避免跳动) */

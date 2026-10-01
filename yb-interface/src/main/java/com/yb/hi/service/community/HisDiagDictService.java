@@ -64,8 +64,8 @@ public class HisDiagDictService extends ServiceImpl<HisDiagDictMapper, HisDiagDi
         this.dataSource = dataSource;
     }
 
-    /** 分页查询(关键字: 名称/院内码/医保码/类目/简码) */
-    public IPage<HisDiagDict> pageQuery(String dictType, String keyword, Integer status, long page, long size) {
+    /** 分页查询(关键字: 名称/院内码/医保码/类目/简码; mapped=1已对照/0未对照/空全部) */
+    public IPage<HisDiagDict> pageQuery(String dictType, String keyword, Integer status, String mapped, long page, long size) {
         LambdaQueryChainWrapper<HisDiagDict> q = lambdaQuery()
                 .eq(StringUtils.hasText(dictType), HisDiagDict::getDictType, dictType)
                 .eq(status != null, HisDiagDict::getStatus, status);
@@ -76,6 +76,11 @@ public class HisDiagDictService extends ServiceImpl<HisDiagDictMapper, HisDiagDi
                     .or().like(HisDiagDict::getCategory, keyword)
                     .or().like(HisDiagDict::getPyCode, keyword)
                     .or().like(HisDiagDict::getAbbrCode, keyword));
+        }
+        if ("1".equals(mapped)) {
+            q.isNotNull(HisDiagDict::getYbCode).ne(HisDiagDict::getYbCode, "");
+        } else if ("0".equals(mapped)) {
+            q.and(w -> w.isNull(HisDiagDict::getYbCode).or().eq(HisDiagDict::getYbCode, ""));
         }
         return q.orderByAsc(HisDiagDict::getSortNo).orderByAsc(HisDiagDict::getId)
                 .page(new Page<>(page, size));

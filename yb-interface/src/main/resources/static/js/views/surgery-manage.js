@@ -1154,7 +1154,7 @@
       '        <el-button type="primary" size="small" @click="onSearch">查询</el-button>',
       '        <el-button type="primary" size="small" plain @click="openCreate">新增手术</el-button>',
       '      </div>',
-      '      <el-table :data="filteredRows" border size="small" v-loading="loading">',
+      '      <el-table :data="filteredRows" border size="small" v-loading="loading" max-height="calc(100vh - 240px)">',
       '        <el-table-column label="序号" width="56" align="center"><template #default="s">{{ seqNo(s.$index) }}</template></el-table-column>',
       '        <el-table-column prop="patient_name" label="患者姓名" width="92"></el-table-column>',
       '        <el-table-column prop="inp_no" label="住院号" width="120"></el-table-column>',

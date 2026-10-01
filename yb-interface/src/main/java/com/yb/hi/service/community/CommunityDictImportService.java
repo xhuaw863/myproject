@@ -69,7 +69,7 @@ public class CommunityDictImportService {
         d.setMajorClass(str(r, "major_class"));
         d.setDosform(str(r, "hi_dosform"));
         d.setDosformName(str(r, "act_dosform"));
-        d.setSpec(firstNonBlank(str(r, "act_spec"), str(r, "reg_spec")));
+        d.setSpec(CatalogMapService.composeDrugSpec(firstNonBlank(str(r, "act_spec"), str(r, "reg_spec")), str(r, "min_pack_qty")));
         d.setManufacturer(str(r, "drug_entp"));
         d.setMktHolder(str(r, "mkt_holder"));
         d.setChrgitmLv(str(r, "chrgitm_lv"));

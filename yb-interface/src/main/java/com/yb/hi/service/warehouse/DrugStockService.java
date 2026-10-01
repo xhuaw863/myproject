@@ -13,6 +13,7 @@ import com.yb.hi.entity.community.HisOrgCatalog;
 import com.yb.hi.entity.warehouse.HisDrugStock;
 import com.yb.hi.entity.warehouse.HisStockCheck;
 import com.yb.hi.entity.warehouse.HisStockCheckItem;
+import com.yb.hi.entity.warehouse.HisStockBalance;
 import com.yb.hi.entity.warehouse.HisStockIn;
 import com.yb.hi.entity.warehouse.HisStockInItem;
 import com.yb.hi.entity.warehouse.HisStockOut;
@@ -26,6 +27,7 @@ import com.yb.hi.mapper.community.HisOrgCatalogMapper;
 import com.yb.hi.mapper.warehouse.HisDrugStockMapper;
 import com.yb.hi.mapper.warehouse.HisStockCheckItemMapper;
 import com.yb.hi.mapper.warehouse.HisStockCheckMapper;
+import com.yb.hi.mapper.warehouse.HisStockBalanceMapper;
 import com.yb.hi.mapper.warehouse.HisStockInItemMapper;
 import com.yb.hi.mapper.warehouse.HisStockInMapper;
 import com.yb.hi.mapper.warehouse.HisStockOutItemMapper;
@@ -78,6 +80,7 @@ public class DrugStockService {
     private final HisWarehouseDefMapper warehouseDefMapper;
     private final HisStockCheckMapper stockCheckMapper;
     private final HisStockCheckItemMapper stockCheckItemMapper;
+    private final HisStockBalanceMapper stockBalanceMapper;
     private final HisDrugCatalogMapper drugCatalogMapper;
     private final HisOrgCatalogMapper orgCatalogMapper;
 
@@ -90,7 +93,7 @@ public class DrugStockService {
                             HisStockOutItemMapper stockOutItemMapper, SysOrgMapper orgMapper,
                             HisWarehouseDefMapper warehouseDefMapper, HisStockCheckMapper stockCheckMapper,
                             HisStockCheckItemMapper stockCheckItemMapper, HisDrugCatalogMapper drugCatalogMapper,
-                            HisOrgCatalogMapper orgCatalogMapper) {
+                            HisOrgCatalogMapper orgCatalogMapper, HisStockBalanceMapper stockBalanceMapper) {
         this.stockMapper = stockMapper;
         this.stockInMapper = stockInMapper;
         this.stockInItemMapper = stockInItemMapper;
@@ -100,6 +103,7 @@ public class DrugStockService {
         this.warehouseDefMapper = warehouseDefMapper;
         this.stockCheckMapper = stockCheckMapper;
         this.stockCheckItemMapper = stockCheckItemMapper;
+        this.stockBalanceMapper = stockBalanceMapper;
         this.drugCatalogMapper = drugCatalogMapper;
         this.orgCatalogMapper = orgCatalogMapper;
     }
@@ -228,6 +232,16 @@ public class DrugStockService {
         main.setStatus(0);
         main.setRemark(req.getRemark());
         main.setTotalAmount(BigDecimal.ZERO);
+        // 采购入库增强(批次B): 购入方式缺省正常(1); 挂账(2)派生未验收(0), 其余已验收(1)
+        int mode = req.getPurchaseMode() == null ? 1 : req.getPurchaseMode();
+        main.setPurchaseMode(mode);
+        main.setPurchaseOrderId(req.getPurchaseOrderId());
+        main.setInvoiceNo(blankToNull(req.getInvoiceNo()));
+        main.setInvoiceDate(parseDate(req.getInvoiceDate(), "发票日期"));
+        main.setTargetWarehouseId(req.getTargetWarehouseId());
+        main.setSupplierId(req.getSupplierId());
+        main.setAcceptStatus(mode == 2 ? 0 : 1);
+        main.setReversedFlag(0);
         stockInMapper.insert(main);
 
         BigDecimal total = BigDecimal.ZERO;
@@ -262,6 +276,10 @@ public class DrugStockService {
         if (main.getStatus() == null || main.getStatus() != 0) {
             throw new BizException("入库单已作废, 不可确认: " + main.getInNo());
         }
+        // 票未到(3): 仅允许建草稿单留档, 不可确认入库(实物已到但发票未到, 不进财务账)
+        if (main.getPurchaseMode() != null && main.getPurchaseMode() == 3) {
+            throw new BizException("票未到(仅单据)的入库单不可确认入库, 待发票到达后改为正常/挂账再确认: " + main.getInNo());
+        }
         List<HisStockInItem> items = listInItems(id);
         for (HisStockInItem item : items) {
             upsertStock(main.getOrgId(), main.getWarehouseId(), item);
@@ -273,6 +291,84 @@ public class DrugStockService {
         upd.setConfirmTime(LocalDateTime.now());
         stockInMapper.updateById(upd);
         log.info("确认入库: id={}, inNo={}, items={}", id, main.getInNo(), items.size());
+        // 定向出库: 指定目标库时, 确认入库后自动从本源库调拨出 + 目标库调入(复用配对出入库机制)
+        if (main.getTargetWarehouseId() != null) {
+            directedTransferOut(main, items);
+        }
+    }
+
+    /**
+     * 定向出库(确认入库钩子): 本单入库货已上至源库, 按明细从源库指定批次调拨出(out_type=4)并调入目标库(in_type=4)。
+     * 目标库调入单不再携带 target_warehouse_id, 避免递归触发定向。同事务内执行。
+     */
+    private void directedTransferOut(HisStockIn main, List<HisStockInItem> items) {
+        Long targetWh = main.getTargetWarehouseId();
+        if (Objects.equals(targetWh, main.getWarehouseId())) {
+            throw new BizException("定向出库目标库不能与入库源库相同: " + main.getInNo());
+        }
+        HisWarehouseDef target = warehouseDefMapper.selectById(targetWh);
+        if (target == null || !Objects.equals(target.getOrgId(), main.getOrgId())) {
+            throw new BizException("定向出库目标库不存在或不属于本机构: warehouseId=" + targetWh);
+        }
+        // 调拨出: 逐条定位源库刚入库的批次行, 按 drugStockId 精确扣减
+        StockOutReq outReq = new StockOutReq();
+        outReq.setOrgId(main.getOrgId());
+        outReq.setWarehouseId(main.getWarehouseId());
+        outReq.setOutType(4);
+        outReq.setRefId(main.getId());
+        outReq.setRefNo(main.getInNo());
+        outReq.setRemark("定向出库(入库直拨): " + main.getInNo());
+        List<StockOutItemReq> outItems = new ArrayList<>();
+        for (HisStockInItem it : items) {
+            HisDrugStock row = stockMapper.selectOne(new LambdaQueryWrapper<HisDrugStock>()
+                    .eq(HisDrugStock::getOrgId, main.getOrgId())
+                    .eq(HisDrugStock::getWarehouseId, main.getWarehouseId())
+                    .eq(HisDrugStock::getDrugCatalogId, it.getDrugCatalogId())
+                    .eq(HisDrugStock::getBatchNo, it.getBatchNo())
+                    .last("LIMIT 1"));
+            if (row == null) {
+                throw new BizException("定向出库失败, 源库无该批次库存: " + it.getDrugName() + " 批号" + it.getBatchNo());
+            }
+            StockOutItemReq oi = new StockOutItemReq();
+            oi.setDrugStockId(row.getId());
+            oi.setQty(it.getQty());
+            outItems.add(oi);
+        }
+        outReq.setItems(outItems);
+        HisStockOut out = createStockOut(outReq);
+        confirmStockOut(out.getId());
+        // 调入: 目标库按同批次快照建入库单并确认(in_type=4 调拨入)
+        StockInReq inReq = new StockInReq();
+        inReq.setOrgId(main.getOrgId());
+        inReq.setWarehouseId(targetWh);
+        inReq.setInType(4);
+        inReq.setRemark("定向入库(来自 " + main.getInNo() + ")");
+        List<StockInItemReq> inItems = new ArrayList<>();
+        for (HisStockInItem it : items) {
+            StockInItemReq ii = new StockInItemReq();
+            ii.setDrugCatalogId(it.getDrugCatalogId());
+            ii.setDrugCode(it.getDrugCode());
+            ii.setDrugName(it.getDrugName());
+            ii.setSpec(it.getSpec());
+            ii.setBatchNo(it.getBatchNo());
+            ii.setManufacturer(it.getManufacturer());
+            ii.setQty(it.getQty());
+            ii.setCostPrice(it.getCostPrice());
+            ii.setRetailPrice(it.getRetailPrice());
+            if (it.getProdDate() != null) {
+                ii.setProdDate(it.getProdDate().toString());
+            }
+            if (it.getExpDate() != null) {
+                ii.setExpDate(it.getExpDate().toString());
+            }
+            ii.setAmount(it.getAmount());
+            inItems.add(ii);
+        }
+        inReq.setItems(inItems);
+        HisStockIn targetIn = createStockIn(inReq);
+        confirmStockIn(targetIn.getId());
+        log.info("定向出库完成: 源入库单={}, 调拨出={}, 目标入库={}, 目标库={}",
+                main.getInNo(), out.getOutNo(), targetIn.getInNo(), targetWh);
     }
 
     /** 作废入库单: 仅草稿态可作废(已确认单据已影响库存, 不可作废); 行锁与确认互斥, 防确认/作废并发交错 */
@@ -292,6 +388,99 @@ public class DrugStockService {
         upd.setStatus(2);
         stockInMapper.updateById(upd);
         log.info("作废入库单: id={}, inNo={}", id, main.getInNo());
+    }
+
+    /**
+     * 入库冲红(批次B): 对已确认入库单生成红字反向单(数量取负/red_of_id 指向原单)并回退库存。
+     * 仅未冲红的已确认单可冲红; 回退按 (机构+药库+药品+批次) 乐观锁扣减, 不足(已消耗)则拒绝。
+     */
+    @Transactional(rollbackFor = Exception.class)
+    public HisStockIn redReverseStockIn(Long id) {
+        HisStockIn main = stockInMapper.selectOne(new LambdaQueryWrapper<HisStockIn>()
+                .eq(HisStockIn::getId, id)
+                .last("FOR UPDATE"));
+        if (main == null) {
+            throw new BizException(400, "入库单不存在");
+        }
+        if (main.getStatus() == null || main.getStatus() != 1) {
+            throw new BizException("仅已确认的入库单可冲红: " + main.getInNo());
+        }
+        if (main.getReversedFlag() != null && main.getReversedFlag() == 1) {
+            throw new BizException("该入库单已冲红, 不可重复冲红: " + main.getInNo());
+        }
+        if (main.getRedOfId() != null) {
+            throw new BizException("红字冲账单不可再冲红: " + main.getInNo());
+        }
+        List<HisStockInItem> items = listInItems(id);
+        // 建红字主单(已确认态, 金额/数量取负, 继承购入方式/验收态)
+        HisStockIn red = new HisStockIn();
+        red.setOrgId(main.getOrgId());
+        red.setWarehouseId(main.getWarehouseId());
+        red.setInNo(generateNo("RK"));
+        red.setInType(main.getInType());
+        red.setSupplier(main.getSupplier());
+        red.setSupplierContact(main.getSupplierContact());
+        red.setStatus(1);
+        red.setConfirmBy(currentUserName());
+        red.setConfirmTime(LocalDateTime.now());
+        red.setRemark("红字冲红: 原单" + main.getInNo());
+        red.setPurchaseMode(main.getPurchaseMode());
+        red.setPurchaseOrderId(main.getPurchaseOrderId());
+        red.setInvoiceNo(main.getInvoiceNo());
+        red.setInvoiceDate(main.getInvoiceDate());
+        red.setAcceptStatus(main.getAcceptStatus());
+        red.setReversedFlag(0);
+        red.setRedOfId(id);
+        red.setTotalAmount(BigDecimal.ZERO);
+        stockInMapper.insert(red);
+
+        BigDecimal total = BigDecimal.ZERO;
+        for (HisStockInItem it : items) {
+            // 回退库存: 按批次行乐观锁扣减(不足即已消耗, 拒绝冲红)
+            HisDrugStock row = stockMapper.selectOne(new LambdaQueryWrapper<HisDrugStock>()
+                    .eq(HisDrugStock::getOrgId, main.getOrgId())
+                    .eq(HisDrugStock::getWarehouseId, main.getWarehouseId())
+                    .eq(HisDrugStock::getDrugCatalogId, it.getDrugCatalogId())
+                    .eq(HisDrugStock::getBatchNo, it.getBatchNo())
+                    .last("LIMIT 1"));
+            if (row == null || row.getQty() == null || row.getQty().compareTo(nvl(it.getQty())) < 0) {
+                throw new BizException("冲红失败, 该批次库存已不足回退(可能已出库): " + it.getDrugName() + " 批号" + it.getBatchNo());
+            }
+            int affected = stockMapper.deductQty(row.getId(), it.getQty());
+            if (affected == 0) {
+                throw new BizException("冲红失败, 库存回退并发冲突: " + it.getDrugName() + " 批号" + it.getBatchNo());
+            }
+            HisStockInItem redItem = new HisStockInItem();
+            redItem.setStockInId(red.getId());
+            redItem.setDrugCatalogId(it.getDrugCatalogId());
+            redItem.setDrugCode(it.getDrugCode());
+            redItem.setDrugName(it.getDrugName());
+            redItem.setSpec(it.getSpec());
+            redItem.setBatchNo(it.getBatchNo());
+            redItem.setManufacturer(it.getManufacturer());
+            redItem.setQty(nvl(it.getQty()).negate());
+            redItem.setCostPrice(it.getCostPrice());
+            redItem.setRetailPrice(it.getRetailPrice());
+            redItem.setProdDate(it.getProdDate());
+            redItem.setExpDate(it.getExpDate());
+            BigDecimal amount = it.getAmount() == null ? null : it.getAmount().negate();
+            redItem.setAmount(amount);
+            redItem.setPackQty(it.getPackQty() == null ? null : it.getPackQty().negate());
+            redItem.setPackRatio(it.getPackRatio());
+            redItem.setMinQty(it.getMinQty() == null ? null : it.getMinQty().negate());
+            redItem.setPurchasePrice(it.getPurchasePrice());
+            stockInItemMapper.insert(redItem);
+            total = total.add(nvl(amount));
+        }
+        red.setTotalAmount(total.setScale(2, RoundingMode.HALF_UP));
+        stockInMapper.updateById(red);
+        // 原单标记已冲红
+        HisStockIn srcUpd = new HisStockIn();
+        srcUpd.setId(id);
+        srcUpd.setReversedFlag(1);
+        stockInMapper.updateById(srcUpd);
+        log.info("入库冲红: 原单id={}, inNo={}, 红字单id={}, redNo={}", id, main.getInNo(), red.getId(), red.getInNo());
+        return red;
     }
 
     /* ================= 出库管理 ================= */
@@ -427,7 +616,69 @@ public class DrugStockService {
         upd.setConfirmTime(LocalDateTime.now());
         upd.setTotalAmount(total.setScale(2, RoundingMode.HALF_UP));
         stockOutMapper.updateById(upd);
+        // 未验收平账钩子(批次B): 出库批次若来源未验收(accept_status=0)挂账入库单, 按进价差写平账记录
+        List<HisStockOutItem> deducted = stockOutItemMapper.selectList(new LambdaQueryWrapper<HisStockOutItem>()
+                .eq(HisStockOutItem::getStockOutId, id).orderByAsc(HisStockOutItem::getId));
+        for (HisStockOutItem di : deducted) {
+            recordBalanceIfUnaccepted(main, di);
+        }
         log.info("确认出库: id={}, outNo={}, items={}, total={}", id, main.getOutNo(), items.size(), upd.getTotalAmount());
+    }
+
+    /**
+     * 出库平账(批次B): 若该出库明细批次来源入库单尚未财务验收(accept_status=0),
+     * 按 (机构+药库+药品+批次) 回溯来源入库明细, 以 (实际出库结转进价 - 原挂账进价) * 数量 写平账记录。
+     * his_drug_stock 不携带来源 stock_in_item_id, 故按维度近似匹配最早一张未验收入库单(挂账时适用)。
+     */
+    private void recordBalanceIfUnaccepted(HisStockOut out, HisStockOutItem item) {
+        if (item.getDrugCatalogId() == null || !StringUtils.hasText(item.getBatchNo())
+                || item.getQty() == null || item.getQty().compareTo(BigDecimal.ZERO) <= 0) {
+            return;
+        }
+        // 候选来源: 本机构/库 已确认且未验收(accept_status=0)的入库单
+        List<HisStockIn> pendingIns = stockInMapper.selectList(new LambdaQueryWrapper<HisStockIn>()
+                .eq(HisStockIn::getOrgId, out.getOrgId())
+                .eq(out.getWarehouseId() != null, HisStockIn::getWarehouseId, out.getWarehouseId())
+                .eq(HisStockIn::getStatus, 1)
+                .eq(HisStockIn::getAcceptStatus, 0)
+                .orderByAsc(HisStockIn::getId));
+        if (CollectionUtils.isEmpty(pendingIns)) {
+            return;
+        }
+        List<Long> inIds = new ArrayList<>();
+        for (HisStockIn pi : pendingIns) {
+            inIds.add(pi.getId());
+        }
+        HisStockInItem src = stockInItemMapper.selectOne(new LambdaQueryWrapper<HisStockInItem>()
+                .in(HisStockInItem::getStockInId, inIds)
+                .eq(HisStockInItem::getDrugCatalogId, item.getDrugCatalogId())
+                .eq(HisStockInItem::getBatchNo, item.getBatchNo())
+                .orderByAsc(HisStockInItem::getId)
+                .last("LIMIT 1"));
+        if (src == null) {
+            return;
+        }
+        BigDecimal orig = src.getPurchasePrice() != null ? src.getPurchasePrice() : nvl(src.getCostPrice());
+        BigDecimal actual = nvl(item.getCostPrice());
+        BigDecimal diff = actual.subtract(orig).multiply(item.getQty()).setScale(2, RoundingMode.HALF_UP);
+        HisStockIn srcIn = stockInMapper.selectById(src.getStockInId());
+        HisStockBalance bal = new HisStockBalance();
+        bal.setOrgId(out.getOrgId());
+        bal.setWarehouseId(out.getWarehouseId());
+        bal.setStockOutId(out.getId());
+        bal.setStockOutItemId(item.getId());
+        bal.setStockInId(src.getStockInId());
+        bal.setStockInItemId(src.getId());
+        bal.setDrugCatalogId(item.getDrugCatalogId());
+        bal.setDrugName(item.getDrugName());
+        bal.setBatchNo(item.getBatchNo());
+        bal.setOrigInPrice(orig);
+        bal.setActualInPrice(actual);
+        bal.setQty(item.getQty());
+        bal.setDiffAmount(diff);
+        bal.setBalanceDate(LocalDate.now());
+        bal.setRemark("未验收入库(" + (srcIn == null ? "" : srcIn.getInNo()) + ")出库进价差冲");
+        stockBalanceMapper.insert(bal);
     }
 
     /** 作废出库单: 仅草稿态可作废; 行锁与确认互斥, 防确认/作废并发交错 */
@@ -1000,6 +1251,15 @@ public class DrugStockService {
             amount = it.getQty().multiply(it.getCostPrice()).setScale(2, RoundingMode.HALF_UP);
         }
         item.setAmount(amount);
+        // 多单位录入(批次B): 大包装数/包装比快照; 最小单位量缺省=大包装数*包装比(qty 仍为权威扣减口径)
+        item.setPackQty(it.getPackQty());
+        item.setPackRatio(it.getPackRatio());
+        BigDecimal minQty = it.getMinQty();
+        if (minQty == null && it.getPackQty() != null && it.getPackRatio() != null) {
+            minQty = it.getPackQty().multiply(BigDecimal.valueOf(it.getPackRatio()));
+        }
+        item.setMinQty(minQty);
+        item.setPurchasePrice(it.getPurchasePrice());
         return item;
     }
 

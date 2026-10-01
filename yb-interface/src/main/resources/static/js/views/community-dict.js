@@ -3,7 +3,12 @@
   var HIS = (window.HIS = window.HIS || {});
   HIS.views = HIS.views || {};
 
+  /* 列表显示模式默认值: 委托全局 HIS.pagedDefault(见 api.js), 键保持 his.dict.<tab>Paged 不变 */
+  function dictPagedDefault(tab) { return HIS.pagedDefault('dict.' + tab + 'Paged'); }
+
   var ITEM_TYPES = ['药品', '诊疗', '耗材', '其他'];
+  /* 医保对照状态快筛(四目录通用): 空=全部 / 1=已对照 / 0=未对照 */
+  var MAPPED_OPTS = [{ v: '1', l: '已对照' }, { v: '0', l: '未对照' }];
   var ROUND_RULES = [{ v: 1, l: '向上取整' }, { v: 2, l: '向下取整' }, { v: 3, l: '四舍五入' }];
   var PRICE_LV = [{ v: 1, l: '一级价格' }, { v: 2, l: '二级价格' }, { v: 3, l: '三级价格' }];
   /* 用药字典(用法/频次)导入源: 从医保/医疗标准值域拉取, value=type:code */
@@ -57,6 +62,9 @@
     { v: 'hbvalue:GB/T 4761-2008', l: '家庭关系代码(GB/T 4761)' },
     { v: 'whvalue:CT98.00.024', l: '执业类别(武汉平台)' }
   ];
+  /* 预设分组友好标签映射: 动态下拉中命中预设项时用更可读的中文标签, 未命中(如卫健按域导入的归一化域名)则用库内 type_name */
+  var VAL_LABEL = {};
+  VAL_TYPES.forEach(function (t) { VAL_LABEL[t.v] = t.l; });
   /* 标准字典导入源: 类型 -> 可选字典(诊断类携 diagType=目标字典类别) */
   var IMPORT_DICTS = {
     drug: [{ key: 'drug', label: '湖北医保药品(西药/中成药)' }],
@@ -76,6 +84,10 @@
       { key: 'icd9', label: '医保ICD9手术操作(手术代码)', diagType: 'oper' },
       { key: 'icd9_nat', label: '国家临床版手术操作分类与代码(手术代码)', diagType: 'oper' },
       { key: 'morphology', label: '肿瘤形态学编码(肿瘤代码)', diagType: 'tumor' }
+    ],
+    val: [
+      { key: 'wst364', label: 'WS/T 364 值域代码(国标·优先)' },
+      { key: 'hbvalue', label: '湖北采集规范值域代码(省标·补充)' }
     ]
   };
 
@@ -89,41 +101,50 @@
       return {
         activeTab: 'charge',
         /* 字典下拉选项 */
-        dosformOpts: [], chrgLvOpts: [], drugClassOpts: [], storageOpts: [],
+        dosformOpts: [], chrgLvOpts: [], drugClassOpts: [], storageOpts: [], majorClassOpts: [],
         invClassOpts: [], acctClassOpts: [], mrCostOpts: [], msiCatMap: {}, msiCatOpts: [],
-        doseUnitOpts: [], packUnitOpts: [], abxOpts: [],
-        itemTypes: ITEM_TYPES, roundRules: ROUND_RULES, priceLv: PRICE_LV,
+        /* 收费项目左目录树: 原始字典记录(拼树用) + 维度选项 */
+        mrCostRaw: [], msiCatList: [],
+        chgDims: [{ v: 'cat', l: '物价分类目录(类>章>节)' }, { v: 'inv', l: '收费票据分类' }, { v: 'acct', l: '会计科目分类' }, { v: 'mr', l: '病案首页归并' }],
+        doseUnitOpts: [], packUnitOpts: [], abxOpts: [], negoFlagOpts: [],
+        yesNoOpts: [{ code: '0', name: '否' }, { code: '1', name: '是' }],
+        pregOpts: [{ code: 'A', name: 'A(安全)' }, { code: 'B', name: 'B' }, { code: 'C', name: 'C' }, { code: 'D', name: 'D' }, { code: 'X', name: 'X(禁忌)' }],
+        /* 供货商(企业)字典远程下拉: 按目录企业槽位分别缓存候选, 避免多框互污 */
+        supplierOpts: { drugMfr: [], drugHold: [], consMfr: [] }, supplierLoading: false,
+        itemTypes: ITEM_TYPES, roundRules: ROUND_RULES, priceLv: PRICE_LV, mappedOpts: MAPPED_OPTS,
         /* 收费项目 */
-        chg: { loading: false, list: [], total: 0, page: 1, size: 20, keyword: '', itemType: '' },
+        chg: { loading: false, paged: dictPagedDefault('charge'), list: [], total: 0, page: 1, size: 20, keyword: '', itemType: '', mapped: '',
+          dim: 'cat', treeKw: '', sel: null, folded: {}, counts: null },
         chgDlg: false, chgEditing: false, chgImport: false, chgForm: this.emptyCharge(), chgYb: {},
         /* 药品 */
-        drug: { loading: false, list: [], total: 0, page: 1, size: 20, keyword: '' },
+        drug: { loading: false, paged: dictPagedDefault('drug'), list: [], total: 0, page: 1, size: 20, keyword: '', mapped: '' },
         drugDlg: false, drugEditing: false, drugImport: false, drugForm: this.emptyDrug(), drugYb: {},
         /* 耗材 */
-        cons: { loading: false, list: [], total: 0, page: 1, size: 20, keyword: '' },
+        cons: { loading: false, paged: dictPagedDefault('cons'), list: [], total: 0, page: 1, size: 20, keyword: '', mapped: '' },
         consDlg: false, consEditing: false, consImport: false, consForm: this.emptyCons(), consYb: {},
         /* 诊断字典(西医/中医/症候/手术/肿瘤) */
         diagTypes: DIAG_TYPES,
-        diag: { loading: false, list: [], total: 0, page: 1, size: 20, keyword: '', dictType: 'west' },
+        diag: { loading: false, paged: dictPagedDefault('diag'), list: [], total: 0, page: 1, size: 20, keyword: '', dictType: 'west', mapped: '' },
         diagDlg: false, diagEditing: false, diagImport: false, diagForm: this.emptyDiag(),
         /* 值域字典(业务自由值域统一取数源) */
         valTypes: VAL_TYPES,
-        val: { loading: false, list: [], total: 0, page: 1, size: 50, keyword: '', dictType: 'cv_code:gend' },
+        val: { loading: false, paged: dictPagedDefault('val'), list: [], total: 0, page: 1, size: 50, keyword: '', dictType: 'cv_code:gend' },
         valDlg: false, valEditing: false, valForm: this.emptyVal('cv_code:gend'),
         /* 调价记录 */
-        adj: { loading: false, list: [], total: 0, page: 1, size: 20, catalogType: '' },
+        adj: { loading: false, paged: dictPagedDefault('adjust'), list: [], total: 0, page: 1, size: 20, catalogType: '' },
         /* 字段级修改记录(价格/医保码之外的全部字段变更) */
-        elog: { loading: false, list: [], total: 0, page: 1, size: 20, catalogType: '', keyword: '', range: [] },
+        elog: { loading: false, paged: dictPagedDefault('elog'), list: [], total: 0, page: 1, size: 20, catalogType: '', keyword: '', range: [] },
         adjDlg: false, adjForm: this.emptyAdjust(),
         /* 标准字典导入 */
         impType: 'drug', impDictKey: 'drug', impDicts: IMPORT_DICTS.drug,
-        std: { loading: false, list: [], total: 0, page: 1, size: 20, keyword: '' },
+        std: { loading: false, paged: dictPagedDefault('import'), list: [], total: 0, page: 1, size: 20, keyword: '' },
         stdBatchLoading: false,
         stdDetailDlg: false, stdDetailTitle: '', stdDetailRows: [], stdDetailLoading: false,
+        valDomains: { loading: false, list: [] }, valSel: [],
         /* 用药字典(用法/用药频次) */
         med: {
-          usage: { loading: false, list: [], total: 0, page: 1, size: 20, keyword: '' },
-          freq: { loading: false, list: [], total: 0, page: 1, size: 20, keyword: '' }
+          usage: { loading: false, paged: dictPagedDefault('usage'), list: [], total: 0, page: 1, size: 20, keyword: '' },
+          freq: { loading: false, paged: dictPagedDefault('freq'), list: [], total: 0, page: 1, size: 20, keyword: '' }
         },
         medDlg: false, medEditing: false, medForm: this.emptyMed('usage'),
         medImpDlg: false, medImpType: 'usage', medImpSrcs: MED_IMPORT_SRCS.usage,
@@ -132,17 +153,112 @@
     },
     created: function () {
       this.loadDicts();
+      this.loadValTypes();
+      this.loadChargeCounts();
+      this.syncPaged('charge');
       this.loadCharge();
+    },
+    computed: {
+      /* 当前维度的分类树(含子树级联值与滚动计数): roots + byKey */
+      chgTreeData: function () {
+        var vm = this; var dim = vm.chg.dim;
+        var cntKey = { cat: 'cat', inv: 'invoice', acct: 'acct', mr: 'mr' }[dim] || 'cat';
+        var cnt = ((vm.chg.counts || {})[cntKey]) || {};
+        var byKey = {}; var all = [];
+        function mk(key, label, parent, ownVals) {
+          var n = { key: key, label: label, parent: parent || '', _own: ownVals || [], values: [], kids: [], cnt: 0 };
+          byKey[key] = n; all.push(n); return n;
+        }
+        if (dim === 'cat') {
+          /* 物价分类: std_msi_cat 沿 parent_code 拼三层级; 节点值=纯分类码(落库口径 cat_code) */
+          (vm.msiCatList || []).forEach(function (o) {
+            var p = o.p && byKey['cat|' + o.p] ? 'cat|' + o.p : '';
+            mk('cat|' + o.code, o.name, p, [o.code]);
+          });
+        } else if (dim === 'mr') {
+          /* 病案首页: 大类(spec) > 分项(raw_value); 分项节点值=raw_value(落库口径), 大类自身无值 */
+          (vm.mrCostRaw || []).forEach(function (o) {
+            var cn = o.spec || '其他';
+            var ck = 'mr|@' + cn;
+            if (!byKey[ck]) { mk(ck, cn, '', []); }
+            var v = o.extra || o.name; var k = 'mr|' + v;
+            if (byKey[k]) { return; }
+            mk(k, o.name, ck, [v]);
+          });
+        } else {
+          var opts = dim === 'inv' ? vm.invClassOpts : vm.acctClassOpts;
+          (opts || []).forEach(function (o) { if (!byKey[dim + '|' + o.v]) { mk(dim + '|' + o.v, o.l || o.v, '', [o.v]); } });
+        }
+        /* 未分类节点(该列无值的项目) */
+        var emptyCnt = cnt[''] || 0;
+        if (emptyCnt > 0) { mk(dim + '|__EMPTY__', '未分类', '', ['__EMPTY__']); }
+        /* 挂接子节点 + 计算缩进层级 */
+        var roots = [];
+        all.forEach(function (n) {
+          if (n.parent && byKey[n.parent]) { byKey[n.parent].kids.push(n); }
+        });
+        function depth(n, guard) {
+          if (!n.parent || !byKey[n.parent] || guard > 8) { return 0; }
+          return 1 + depth(byKey[n.parent], guard + 1);
+        }
+        all.forEach(function (n) { n.pad = depth(n, 0); if (!n.parent) { roots.push(n); } });
+        /* 级联值: 自身落库值 + 全部后代值(父节点点击含子树); 计数同构滚动汇总(带 seen 守卫防脏数据成环) */
+        function collect(n, seen) {
+          if (seen[n.key]) { return { vals: [], sum: 0 }; }
+          seen[n.key] = true;
+          var vals = n._own.slice(); var s = 0;
+          n._own.forEach(function (v) { s += (v === '__EMPTY__' ? (cnt[''] || 0) : (cnt[v] || 0)); });
+          n.kids.forEach(function (k) {
+            var r = collect(k, seen); vals = vals.concat(r.vals); s += r.sum;
+          });
+          n.values = vals; n.cnt = s;
+          return { vals: vals, sum: s };
+        }
+        roots.forEach(function (r) { collect(r, {}); });
+        return { roots: roots, byKey: byKey };
+      },
+      /* 展平渲染行: 折叠态跳过子树; 搜索态强制展平且仅保留命中节点及其父链 */
+      chgTreeRows: function () {
+        var vm = this; var d = vm.chgTreeData;
+        var kw = String(vm.chg.treeKw || '').trim().toLowerCase();
+        var out = [];
+        function hit(n) {
+          if (kw && String(n.label).toLowerCase().indexOf(kw) >= 0) { return true; }
+          for (var i = 0; i < n.kids.length; i++) { if (hit(n.kids[i])) { return true; } }
+          return !kw;
+        }
+        function walk(list) {
+          list.forEach(function (n) {
+            if (kw && !hit(n)) { return; }
+            out.push(n);
+            if (!kw && vm.chg.folded[n.key]) { return; }
+            walk(n.kids);
+          });
+        }
+        walk(d.roots);
+        return out;
+      },
+      chgAllCnt: function () {
+        var c = ((this.chg.counts || {})[{ cat: 'cat', inv: 'invoice', acct: 'acct', mr: 'mr' }[this.chg.dim]] || {});
+        var s = 0; for (var k in c) { s += c[k] || 0; } return s;
+      },
+      chgSelKey: function () { return this.chg.sel ? this.chg.sel.key : ''; },
+      chgSelDimLabel: function () {
+        var d = (this.chgDims || []).filter((function (vm) { return function (x) { return x.v === vm.chg.dim; }; }(this)))[0];
+        return d ? d.l : '分类';
+      }
     },
     methods: {
       loadDicts: function () {
         var vm = this;
-        HIS.stdValues('cv_code', 'dosform').then(function (l) { vm.dosformOpts = l || []; }).catch(function () {});
+        HIS.valByType('药品剂型').then(function (l) { vm.dosformOpts = l || []; }).catch(function () {});
+        HIS.valByType('药品大类').then(function (l) { vm.majorClassOpts = l || []; }).catch(function () {});
         HIS.stdValues('cv_code', 'chrgitm_lv').then(function (l) { vm.chrgLvOpts = l || []; }).catch(function () {});
         HIS.stdValues('cv_code', 'drug_class').then(function (l) { vm.drugClassOpts = l || []; }).catch(function () {});
         HIS.stdValues('cv_code', 'storage_cond').then(function (l) { vm.storageOpts = l || []; }).catch(function () {});
         HIS.stdValues('cv_code', 'dose_unit').then(function (l) { vm.doseUnitOpts = l || []; }).catch(function () {});
         HIS.stdValues('cv_code', 'pack_unit').then(function (l) { vm.packUnitOpts = l || []; }).catch(function () {});
+        HIS.stdValues('cv_code', 'hi_nego_drug_flag').then(function (l) { vm.negoFlagOpts = l || []; }).catch(function () {});
         HIS.stdValues('hbvalue', 'HBCV08.50.029').then(function (l) { vm.abxOpts = l || []; }).catch(function () {});
         /* 费用分类三字典(物价标准·财务归集口径): 票据分类/会计科目/病案首页归并 */
         HIS.get('/api/std-dict/query/invoice_class?page=1&size=100').then(function (d) {
@@ -152,6 +268,7 @@
           vm.acctClassOpts = ((d && d.records) || []).map(function (o) { return { v: o.name, l: o.name, inv: o.spec }; });
         }).catch(function () {});
         HIS.get('/api/std-dict/query/mr_cost_class?page=1&size=100').then(function (d) {
+          vm.mrCostRaw = (d && d.records) || [];
           vm.mrCostOpts = ((d && d.records) || []).map(function (o) {
             return { v: o.extra || o.name, l: o.extra || (o.spec + '：' + o.name) };
           });
@@ -167,9 +284,11 @@
             opts.push({ v: o.code, l: parts.join(' > ') });
           });
           vm.msiCatMap = m; vm.msiCatOpts = opts;
+          vm.msiCatList = ((d && d.records) || []).map(function (o) { return { code: o.code, name: o.name, p: o.spec }; });
         }).catch(function () {});
       },
       onTab: function (name) {
+        this.syncPaged(name);
         if (name === 'charge') { this.loadCharge(); }
         else if (name === 'drug') { this.loadDrug(); }
         else if (name === 'cons') { this.loadCons(); }
@@ -182,6 +301,33 @@
         else if (name === 'freq') { this.loadMed('freq'); }
       },
       seq: function (state) { return function (i) { return (state.page - 1) * state.size + i + 1; }; },
+      /* ==== 分页/全量双模式(统一字典各列表, 对齐列表统一规范): 全量仅把请求 size 置大, 不改各 load 函数 ==== */
+      /* tab 名 → 该列表状态对象(usage/freq 挂在 med 下) */
+      dictState: function (tab) {
+        var m = { charge: 'chg', drug: 'drug', cons: 'cons', diag: 'diag', val: 'val', adjust: 'adj', elog: 'elog', import: 'std' };
+        if (m[tab]) { return this[m[tab]]; }
+        if (tab === 'usage' || tab === 'freq') { return this.med[tab]; }
+        return null;
+      },
+      /* 依 paged 同步请求 size: 分页用每页行数(首次记为 _base), 全量用超大 size 一次取回 */
+      syncPaged: function (tab) {
+        var st = this.dictState(tab); if (!st) { return; }
+        if (st._base === undefined) { st._base = st.size; }
+        st.size = st.paged ? st._base : 100000;
+      },
+      /* 分页/全量切换(本地持久化): 切全量且总数超阈值时软提示确认, 取消则回分页 */
+      onDictPaged: function (tab) {
+        var vm = this; var st = this.dictState(tab); if (!st) { return; }
+        var threshold = (HIS.params && HIS.params.listFullThreshold) || 2000;
+        function persist() { try { localStorage.setItem('his.dict.' + tab + 'Paged', st.paged ? '1' : '0'); } catch (e) { } }
+        function apply() { persist(); st.page = 1; vm.syncPaged(tab); vm.onTab(tab); }
+        if (!st.paged && st.total > threshold) {
+          ElementPlus.ElMessageBox.confirm(
+            '当前范围共 ' + st.total + ' 条，全量显示可能卡顿数秒，是否继续？',
+            '提示', { confirmButtonText: '继续全量', cancelButtonText: '保持分页', type: 'warning' }
+          ).then(apply).catch(function () { st.paged = true; persist(); });
+        } else { apply(); }
+      },
 
       /* ============ 字段级修改记录 ============ */
       elCatText: function (c) { return { charge: '收费项目', drug: '药品', cons: '耗材' }[c] || c; },
@@ -246,8 +392,45 @@
         var q = '/api/community-dict/charge/page?page=' + vm.chg.page + '&size=' + vm.chg.size;
         if (vm.chg.keyword) { q += '&keyword=' + encodeURIComponent(vm.chg.keyword); }
         if (vm.chg.itemType) { q += '&itemType=' + encodeURIComponent(vm.chg.itemType); }
+        if (vm.chg.mapped) { q += '&mapped=' + encodeURIComponent(vm.chg.mapped); }
+        /* 左目录树分类过滤: 节点 values 为子树级联集(父节点含全部后代), 竖线分隔 */
+        if (vm.chg.sel && vm.chg.sel.values && vm.chg.sel.values.length) {
+          var p = { cat: 'catCodes', inv: 'invoiceClass', acct: 'acctClass', mr: 'mrCostClass' }[vm.chg.sel.dim];
+          if (p) { q += '&' + p + '=' + encodeURIComponent(vm.chg.sel.values.join('|')); }
+        }
         HIS.get(q).then(function (d) { vm.chg.list = (d && d.records) || []; vm.chg.total = (d && d.total) || 0; })
           .catch(HIS.notifyError).finally(function () { vm.chg.loading = false; });
+      },
+      /* 左目录树: 分类计数(节点角标); 全局 Long→String 序列化故逐值 Number 化后再参与算术 */
+      loadChargeCounts: function () {
+        var vm = this;
+        HIS.get('/api/community-dict/charge/class-counts').then(function (d) {
+          var out = {};
+          Object.keys(d || {}).forEach(function (k) {
+            var m = {};
+            Object.keys(d[k] || {}).forEach(function (c) { m[c] = Number(d[k][c]) || 0; });
+            out[k] = m;
+          });
+          vm.chg.counts = out;
+        }).catch(function () {});
+      },
+      chgDimChange: function () { this.chg.sel = null; this.chg.treeKw = ''; this.chg.page = 1; this.loadCharge(); },
+      chgNodeClick: function (n) {
+        var vm = this;
+        if (vm.chg.sel && vm.chg.sel.key === n.key) { vm.chgClearSel(); return; }
+        vm.chg.sel = { key: n.key, label: n.label, dim: vm.chg.dim, values: n.values };
+        vm.chg.page = 1; vm.loadCharge();
+      },
+      chgClearSel: function () { this.chg.sel = null; this.chg.page = 1; this.loadCharge(); },
+      chgToggleFold: function (n) { this.chg.folded[n.key] = !this.chg.folded[n.key]; },
+      /* 树节点关键字高亮(先转义后包 mark, 与职工管理左树同口径) */
+      chgHl: function (s) {
+        var kw = String(this.chg.treeKw || '').trim();
+        var esc = String(s == null ? '' : s).replace(/[&<>"]/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]; });
+        if (!kw) { return esc; }
+        var i = esc.toLowerCase().indexOf(kw.toLowerCase());
+        if (i < 0) { return esc; }
+        return esc.slice(0, i) + '<mark class="kw-hit">' + esc.slice(i, i + kw.length) + '</mark>' + esc.slice(i + kw.length);
       },
       chgSearch: function () { this.chg.page = 1; this.loadCharge(); },
       chgPage: function (p) { this.chg.page = p; this.loadCharge(); },
@@ -285,11 +468,11 @@
           var willSync = !vm.chgEditing || ((vm.chgOrigYb || '') !== (f.medListCodg || ''));
           vm.confirmLvMismatch(vm.chgYb, f.chrgitmLv, willSync, function () {
             var p = vm.chgEditing ? HIS.put('/api/community-dict/charge', f) : HIS.post('/api/community-dict/charge', f);
-            p.then(function () { HIS.notifySuccess('保存成功'); vm.chgDlg = false; vm.loadCharge(); }).catch(HIS.notifyError);
+            p.then(function () { HIS.notifySuccess('保存成功'); vm.chgDlg = false; vm.loadCharge(); vm.loadChargeCounts(); }).catch(HIS.notifyError);
           });
         });
       },
-      chgDel: function (row) { var vm = this; HIS.del('/api/community-dict/charge/' + row.id).then(function () { HIS.notifySuccess('已删除'); vm.loadCharge(); }).catch(HIS.notifyError); },
+      chgDel: function (row) { var vm = this; HIS.del('/api/community-dict/charge/' + row.id).then(function () { HIS.notifySuccess('已删除'); vm.loadCharge(); vm.loadChargeCounts(); }).catch(HIS.notifyError); },
       chgAdjust: function (row) {
         this.adjForm = this.emptyAdjust();
         this.adjForm.catalogType = 'charge'; this.adjForm.catalogId = row.id; this.adjForm.catalogName = row.itemName;
@@ -301,7 +484,7 @@
       emptyDrug: function () {
         return {
           id: null, drugCode: '', ybDrugCode: '', drugStdCode: '', approvalNo: '',
-          genericName: '', tradeName: '', majorClass: '', dosform: '', spec: '', manufacturer: '', mktHolder: '',
+          genericName: '', tradeName: '', majorClass: '', dosform: '', spec: '', manufacturer: '', manufacturerCode: '', mktHolder: '', mktHolderCode: '',
           chrgitmLv: '', selfpayProp: null, payStdPrep: '', negoFlag: '', msdFlag: '', ltdSelfFlag: '', limitScope: '',
           doseUnit: '', unitDose: null, minUnit: '', packUnit: '', packRatio: null, roundRule: 1,
           purchasePrice: null, retailPrice: null, zeroMargin: 1,
@@ -313,16 +496,38 @@
         var vm = this; vm.drug.loading = true;
         var q = '/api/community-dict/drug/page?page=' + vm.drug.page + '&size=' + vm.drug.size;
         if (vm.drug.keyword) { q += '&keyword=' + encodeURIComponent(vm.drug.keyword); }
+        if (vm.drug.mapped) { q += '&mapped=' + encodeURIComponent(vm.drug.mapped); }
         HIS.get(q).then(function (d) { vm.drug.list = (d && d.records) || []; vm.drug.total = (d && d.total) || 0; })
           .catch(HIS.notifyError).finally(function () { vm.drug.loading = false; });
       },
       drugSearch: function () { this.drug.page = 1; this.loadDrug(); },
       drugPage: function (p) { this.drug.page = p; this.loadDrug(); },
       drugSize: function (s) { this.drug.size = s; this.drug.page = 1; this.loadDrug(); },
-      drugAdd: function () { this.drugEditing = false; this.drugImport = false; this.drugOrigYb = ''; this.drugForm = this.emptyDrug(); this.drugYb = {}; this.drugDlg = true; },
+      /* ==== 供货商(企业)字典远程下拉: 名称/编码/拼音检索 + 选中回填名称 ==== */
+      supSearch: function (slot, q) {
+        var vm = this;
+        if (!q || !String(q).trim()) { vm.supplierOpts[slot] = []; return; }
+        vm.supplierLoading = true;
+        HIS.get('/api/std-dict/query/supplier?page=1&size=30&keyword=' + encodeURIComponent(String(q).trim()))
+          .then(function (d) {
+            vm.supplierOpts[slot] = ((d && d.records) || []).map(function (o) { return { code: o.code, name: o.name, type: o.spec }; });
+          }).catch(function () {}).finally(function () { vm.supplierLoading = false; });
+      },
+      supChange: function (form, codeField, nameField, slot) {
+        var code = form[codeField];
+        var hit = (this.supplierOpts[slot] || []).filter(function (o) { return o.code === code; })[0];
+        form[nameField] = hit ? hit.name : '';
+      },
+      supSeed: function (form, codeField, nameField, slot) {
+        this.supplierOpts[slot] = (form[codeField]) ? [{ code: form[codeField], name: form[nameField] || form[codeField] }] : [];
+      },
+      drugAdd: function () { this.drugEditing = false; this.drugImport = false; this.drugOrigYb = ''; this.drugForm = this.emptyDrug(); this.drugYb = {}; this.supplierOpts.drugMfr = []; this.supplierOpts.drugHold = []; this.drugDlg = true; },
       drugEdit: function (row) {
         this.drugEditing = true; this.drugImport = false; this.drugOrigYb = row.ybDrugCode || '';
-        this.drugForm = clean(Object.assign(this.emptyDrug(), row)); this.loadYbInfo('drug', row.ybDrugCode, 'drugYb'); this.drugDlg = true;
+        this.drugForm = clean(Object.assign(this.emptyDrug(), row)); this.loadYbInfo('drug', row.ybDrugCode, 'drugYb');
+        this.supSeed(this.drugForm, 'manufacturerCode', 'manufacturer', 'drugMfr');
+        this.supSeed(this.drugForm, 'mktHolderCode', 'mktHolder', 'drugHold');
+        this.drugDlg = true;
       },
       drugSubmit: function () {
         var vm = this; var f = vm.drugForm;
@@ -350,7 +555,7 @@
       emptyCons: function () {
         return {
           id: null, consCode: '', ybConsCode: '', regCertNo: '', name: '', cat1: '', cat2: '', cat3: '',
-          specModel: '', material: '', feature: '', manufacturer: '',
+          specModel: '', material: '', feature: '', manufacturer: '', manufacturerCode: '',
           minUnit: '', packUnit: '', packRatio: null,
           purchasePrice: null, chargePrice: null, chargeFlag: 1, chrgitmLv: '', selfpayProp: null, payStd: '',
           highValueFlag: 0, implantFlag: 0, sterileFlag: 0, status: 1, effDate: '', endDate: '', memo: ''
@@ -360,14 +565,15 @@
         var vm = this; vm.cons.loading = true;
         var q = '/api/community-dict/cons/page?page=' + vm.cons.page + '&size=' + vm.cons.size;
         if (vm.cons.keyword) { q += '&keyword=' + encodeURIComponent(vm.cons.keyword); }
+        if (vm.cons.mapped) { q += '&mapped=' + encodeURIComponent(vm.cons.mapped); }
         HIS.get(q).then(function (d) { vm.cons.list = (d && d.records) || []; vm.cons.total = (d && d.total) || 0; })
           .catch(HIS.notifyError).finally(function () { vm.cons.loading = false; });
       },
       consSearch: function () { this.cons.page = 1; this.loadCons(); },
       consPage: function (p) { this.cons.page = p; this.loadCons(); },
       consSize: function (s) { this.cons.size = s; this.cons.page = 1; this.loadCons(); },
-      consAdd: function () { this.consEditing = false; this.consImport = false; this.consOrigYb = ''; this.consForm = this.emptyCons(); this.consYb = {}; this.consDlg = true; },
-      consEdit: function (row) { this.consEditing = true; this.consImport = false; this.consOrigYb = row.ybConsCode || ''; this.consForm = clean(Object.assign(this.emptyCons(), row)); this.loadYbInfo('cons', row.ybConsCode, 'consYb'); this.consDlg = true; },
+      consAdd: function () { this.consEditing = false; this.consImport = false; this.consOrigYb = ''; this.consForm = this.emptyCons(); this.consYb = {}; this.supplierOpts.consMfr = []; this.consDlg = true; },
+      consEdit: function (row) { this.consEditing = true; this.consImport = false; this.consOrigYb = row.ybConsCode || ''; this.consForm = clean(Object.assign(this.emptyCons(), row)); this.loadYbInfo('cons', row.ybConsCode, 'consYb'); this.supSeed(this.consForm, 'manufacturerCode', 'manufacturer', 'consMfr'); this.consDlg = true; },
       consSubmit: function () {
         var vm = this; var f = vm.consForm;
         if (!f.name) { ElementPlus.ElMessage.warning('耗材名称必填'); return; }
@@ -443,7 +649,8 @@
       impTypeChange: function () {
         this.impDicts = IMPORT_DICTS[this.impType] || [];
         this.impDictKey = this.impDicts.length ? this.impDicts[0].key : '';
-        this.std.page = 1; this.std.keyword = ''; this.loadStd();
+        this.std.page = 1; this.std.keyword = '';
+        if (this.impType === 'val') { this.loadValDomains(); } else { this.loadStd(); }
       },
       loadStd: function () {
         var vm = this;
@@ -455,9 +662,43 @@
         HIS.get(q).then(function (d) { vm.std.list = (d && d.records) || []; vm.std.total = (d && d.total) || 0; })
           .catch(HIS.notifyError).finally(function () { vm.std.loading = false; });
       },
-      stdSearch: function () { this.std.page = 1; this.loadStd(); },
+      stdSearch: function () { if (this.impType === 'val') { this.loadValDomains(); return; } this.std.page = 1; this.loadStd(); },
       stdPage: function (p) { this.std.page = p; this.loadStd(); },
       stdSize: function (s) { this.std.size = s; this.std.page = 1; this.loadStd(); },
+      /* 卫健值域"域清单"(国标>省标 归一化名称, 按域挑选导入) */
+      loadValDomains: function () {
+        var vm = this;
+        if (!vm.impDictKey) { return; }
+        vm.valDomains.loading = true; vm.valSel = [];
+        var q = '/api/community-dict/val-dict/domains?src=' + encodeURIComponent(vm.impDictKey);
+        if (vm.std.keyword) { q += '&keyword=' + encodeURIComponent(vm.std.keyword); }
+        HIS.get(q).then(function (d) { vm.valDomains.list = d || []; })
+          .catch(HIS.notifyError).finally(function () { vm.valDomains.loading = false; });
+      },
+      valSelChange: function (rows) { this.valSel = rows || []; },
+      valSelectable: function (row) { return !row.review; },
+      valImportSelected: function () {
+        var vm = this;
+        if (!vm.valSel.length) { return; }
+        var refs = vm.valSel.map(function (r) {
+          return { src: vm.impDictKey, groupCode: r.groupCode, normName: r.normName, rawName: r.rawName };
+        });
+        ElementPlus.ElMessageBox.confirm(
+          '将选中 ' + refs.length + ' 个值域导入医共体统一字典(国标>省标·同名同码取国标·同名不同码不自动并): 值域类别用归一化域名。继续?',
+          '按域导入', { type: 'warning' }
+        ).then(function () {
+          vm.stdBatchLoading = true;
+          HIS.post('/api/community-dict/val-dict/import-domains', refs).then(function (r) {
+            var msg = '导入完成: 值域 ' + ((r && r.imported) || 0) + ' 个, 新增 ' + ((r && r.rowsInserted) || 0)
+              + ' 行, 更新 ' + ((r && r.rowsUpdated) || 0) + ' 行';
+            if (r && r.redirected && r.redirected.length) { msg += '; 国标优先取国标 ' + r.redirected.length + ' 个'; }
+            if (r && r.needsReview && r.needsReview.length) { msg += '; 同名不同码待核 ' + r.needsReview.length + ' 个(未导入)'; }
+            HIS.notifySuccess(msg);
+            vm.loadValDomains();
+            vm.loadValTypes();
+          }).catch(HIS.notifyError).finally(function () { vm.stdBatchLoading = false; });
+        }).catch(function () {});
+      },
       /* 标准字典全表批量导入(收费项目/诊断字典; 幂等: 已存在编码更新) */
       stdBatchImport: function () {
         var vm = this;
@@ -575,6 +816,7 @@
         var q = '/api/community-dict/diag-dict/page?dictType=' + vm.diag.dictType
           + '&page=' + vm.diag.page + '&size=' + vm.diag.size;
         if (vm.diag.keyword) { q += '&keyword=' + encodeURIComponent(vm.diag.keyword); }
+        if (vm.diag.mapped) { q += '&mapped=' + encodeURIComponent(vm.diag.mapped); }
         HIS.get(q).then(function (d) { vm.diag.list = (d && d.records) || []; vm.diag.total = (d && d.total) || 0; })
           .catch(HIS.notifyError).finally(function () { vm.diag.loading = false; });
       },
@@ -611,8 +853,25 @@
         };
       },
       valLabel: function (t) {
-        var o = VAL_TYPES.filter(function (x) { return x.v === t; })[0];
+        var o = (this.valTypes || []).filter(function (x) { return x.v === t; })[0] || VAL_TYPES.filter(function (x) { return x.v === t; })[0];
         return o ? o.l : (t || '');
+      },
+      /* 动态加载类别下拉: 以库内实际 dict_type 为准(方案2根治), 预设白名单仅作标签美化与未导入项补位 */
+      loadValTypes: function () {
+        var vm = this;
+        HIS.get('/api/community-dict/val-dict/types').then(function (list) {
+          var seen = {}; var out = [];
+          (list || []).forEach(function (t) {
+            if (!t || !t.v || seen[t.v]) { return; }
+            seen[t.v] = 1;
+            out.push({ v: t.v, l: VAL_LABEL[t.v] || t.l || t.v, count: t.count });
+          });
+          VAL_TYPES.forEach(function (t) {
+            if (!seen[t.v]) { seen[t.v] = 1; out.push({ v: t.v, l: t.l, count: 0 }); }
+          });
+          vm.valTypes = out;
+          if (vm.val.dictType && !seen[vm.val.dictType] && out.length) { vm.val.dictType = out[0].v; }
+        }).catch(function () {});
       },
       loadVal: function () {
         var vm = this; vm.val.loading = true;
@@ -649,7 +908,7 @@
               .then(function (r) {
                 r = r || {};
                 HIS.notifySuccess('导入完成: 源 ' + (r.total || 0) + ' 行, 新增 ' + (r.inserted || 0) + ', 更新 ' + (r.updated || 0));
-                vm.val.page = 1; vm.loadVal();
+                vm.val.page = 1; vm.loadVal(); vm.loadValTypes();
               })
               .catch(HIS.notifyError)
               .finally(function () { vm.val.loading = false; });
@@ -697,52 +956,83 @@
       }
     },
     template: [
-      '<div class="page-card">',
+      '<div class="page-card cd-fill cd-tabs">',
       '  <div class="page-title">医共体统一字典 <span style="font-size:12px;color:var(--yb-ink-2);font-weight:normal;">(牵头机构统一维护三目录 · 含分级价格 · 调价留痕)</span></div>',
       '  <el-tabs v-model="activeTab" @tab-change="onTab">',
 
       /* ---- 收费项目目录 ---- */
       '    <el-tab-pane label="收费项目目录" name="charge">',
-      '      <div class="toolbar">',
-      '        <el-select v-model="chg.itemType" placeholder="全部大类" clearable style="width:120px" @change="chgSearch"><el-option v-for="t in itemTypes" :key="t" :label="t" :value="t"></el-option></el-select>',
-      '        <el-input v-model="chg.keyword" placeholder="名称/编码/拼音简码/医保码" clearable style="width:220px" @keyup.enter="chgSearch"></el-input>',
-      '        <el-button @click="chgSearch">查询</el-button>',
-      '        <el-button type="primary" @click="chgAdd">新增项目</el-button>',
-      '        <span style="color:var(--yb-ink-2);font-size:13px;">共 {{ chg.total }} 项</span>',
+      '      <div class="dept-split fill">',
+      '        <div class="dept-orgs">',
+      '          <div class="dept-orgs-hd"><span>分类目录树</span></div>',
+      '          <div style="padding:6px 8px 0;">',
+      '            <el-select v-model="chg.dim" size="small" style="width:100%" @change="chgDimChange"><el-option v-for="d in chgDims" :key="d.v" :label="d.l" :value="d.v"></el-option></el-select>',
+      '            <el-input v-model="chg.treeKw" size="small" clearable placeholder="过滤目录名称" style="margin-top:6px"></el-input>',
+      '          </div>',
+      '          <el-scrollbar>',
+      '            <div class="dept-org-item" :class="{active: !chg.sel}" @click="chgClearSel"><span class="tree-caret"></span><span>全部项目</span><span class="tree-cnt">{{ chgAllCnt }}</span></div>',
+      '            <div v-for="n in chgTreeRows" :key="n.key" class="dept-org-item" :style="{paddingLeft: (12 + n.pad * 16) + \'px\'}" :class="{active: chgSelKey === n.key}" :title="n.label" @click="chgNodeClick(n)">',
+      '              <span v-if="n.kids.length" class="tree-caret" :class="{\'is-inert\': !!String(chg.treeKw||\'\').trim()}" :title="chg.treeKw?\'过滤态自动展开全部, 清空关键字后可折叠\':\'折叠/展开\'" @click.stop="chg.treeKw ? null : chgToggleFold(n)">{{ (!chg.treeKw && chg.folded[n.key]) ? \'▸\' : \'▾\' }}</span>',
+      '              <span v-else class="tree-caret"></span>',
+      '              <span v-html="chgHl(n.label)"></span>',
+      '              <span v-if="n.cnt" class="tree-cnt" title="项目数(含下级分类)">{{ n.cnt }}</span>',
+      '            </div>',
+      '            <div v-if="chg.treeKw && !chgTreeRows.length" class="dept-tree-empty">无匹配目录</div>',
+      '          </el-scrollbar>',
+      '        </div>',
+      '        <div class="dept-main">',
+      '          <div class="toolbar">',
+      '            <el-select v-model="chg.itemType" placeholder="全部大类" clearable style="width:120px" @change="chgSearch"><el-option v-for="t in itemTypes" :key="t" :label="t" :value="t"></el-option></el-select>',
+      '            <el-input v-model="chg.keyword" placeholder="名称/编码/拼音简码/医保码" clearable style="width:220px" @keyup.enter="chgSearch"></el-input>',
+      '            <el-select v-model="chg.mapped" placeholder="对照状态" clearable style="width:110px" @change="chgSearch"><el-option v-for="o in mappedOpts" :key="o.v" :label="o.l" :value="o.v"></el-option></el-select>',
+      '            <el-button @click="chgSearch">查询</el-button>',
+      '            <el-button type="primary" @click="chgAdd">新增项目</el-button>',
+      '            <span v-if="chg.sel" class="filter-chip" :title="chg.sel.label"><span v-text="chgSelDimLabel"></span>：{{ chg.sel.label }}</span><span v-if="chg.sel" class="filter-chip-x" @click="chgClearSel">×</span>',
+      '            <span style="color:var(--yb-ink-2);font-size:13px;">共 {{ chg.total }} 项</span>',
+      '            <el-radio-group v-model="chg.paged" size="small" style="margin-left:8px" @change="onDictPaged(\'charge\')"><el-radio-button :label="true">分页</el-radio-button><el-radio-button :label="false">全量</el-radio-button></el-radio-group>',
+      '          </div>',
+      '          <div class="table-box">',
+      '          <el-table :data="chg.list" v-loading="chg.loading" border stripe size="small" height="100%">',
+      '            <el-table-column type="index" label="序号" width="55" :index="seq(chg)"></el-table-column>',
+      '            <el-table-column prop="itemCode" label="院内编码" width="110"></el-table-column>',
+      '            <el-table-column prop="itemName" label="项目名称" min-width="160" show-overflow-tooltip></el-table-column>',
+      '            <el-table-column prop="pyCode" label="拼音码" width="90"><template #default="s">{{ s.row.pyCode || \'-\' }}</template></el-table-column>',
+      '            <el-table-column prop="abbrCode" label="自定义码" width="90"><template #default="s">{{ s.row.abbrCode || \'-\' }}</template></el-table-column>',
+      '            <el-table-column prop="medListCodg" label="医保编码" width="150" show-overflow-tooltip><template #default="s">{{ s.row.medListCodg || "—" }}</template></el-table-column>',
+      '            <el-table-column prop="ybName" label="医保名称" min-width="160" show-overflow-tooltip><template #default="s">{{ s.row.ybName || "—" }}</template></el-table-column>',
+      '            <el-table-column prop="itemType" label="大类" width="70"></el-table-column>',
+      '            <el-table-column prop="unit" label="单位" width="60"></el-table-column>',
+      '            <el-table-column label="一级价" width="80"><template #default="s">{{ s.row.priceL1 }}</template></el-table-column>',
+      '            <el-table-column label="二级价" width="80"><template #default="s">{{ s.row.priceL2 }}</template></el-table-column>',
+      '            <el-table-column label="三级价" width="80"><template #default="s">{{ s.row.priceL3 }}</template></el-table-column>',
+      '            <el-table-column prop="invoiceClass" label="票据分类" min-width="110" show-overflow-tooltip><template #default="s">{{ s.row.invoiceClass || "—" }}</template></el-table-column>',
+      '            <el-table-column prop="acctClass" label="会计科目" min-width="110" show-overflow-tooltip><template #default="s">{{ s.row.acctClass || "—" }}</template></el-table-column>',
+      '            <el-table-column prop="mrCostClass" label="病案首页归并" min-width="140" show-overflow-tooltip><template #default="s">{{ s.row.mrCostClass || "—" }}</template></el-table-column>',
+      '            <el-table-column label="物价分类" min-width="200" show-overflow-tooltip><template #default="s"><span :title="s.row.catCode">{{ catPath(s.row.catCode) || "—" }}</span></template></el-table-column>',
+      '            <el-table-column label="状态" width="70"><template #default="s"><el-tag size="small" :type="s.row.status===1?\'success\':\'info\'">{{ s.row.status===1?"启用":"停用" }}</el-tag></template></el-table-column>',
+      '            <el-table-column label="操作" width="180" fixed="right"><template #default="s">',
+      '              <el-button link type="primary" @click="chgEdit(s.row)">编辑</el-button>',
+      '              <el-button link type="warning" @click="chgAdjust(s.row)">调价</el-button>',
+      '              <el-popconfirm title="确认删除？" @confirm="chgDel(s.row)"><template #reference><el-button link type="danger">删除</el-button></template></el-popconfirm>',
+      '            </template></el-table-column>',
+      '          </el-table>',
+      '          </div>',
+      '          <el-pagination v-if="chg.paged" style="margin-top:12px;justify-content:flex-end;" background layout="total, sizes, prev, pager, next" :total="chg.total" :page-size="chg.size" :page-sizes="[10,20,50,100]" :current-page="chg.page" @current-change="chgPage" @size-change="chgSize"></el-pagination>',
+      '        </div>',
       '      </div>',
-      '      <el-table :data="chg.list" v-loading="chg.loading" border stripe size="small">',
-      '        <el-table-column type="index" label="序号" width="55" :index="seq(chg)"></el-table-column>',
-      '        <el-table-column prop="itemCode" label="院内编码" width="110"></el-table-column>',
-      '        <el-table-column prop="itemName" label="项目名称" min-width="160" show-overflow-tooltip></el-table-column>',
-      '        <el-table-column prop="pyCode" label="拼音码" width="90"><template #default="s">{{ s.row.pyCode || \'-\' }}</template></el-table-column>',
-      '        <el-table-column prop="abbrCode" label="自定义码" width="90"><template #default="s">{{ s.row.abbrCode || \'-\' }}</template></el-table-column>',
-      '        <el-table-column prop="medListCodg" label="医保编码" width="150" show-overflow-tooltip><template #default="s">{{ s.row.medListCodg || "—" }}</template></el-table-column>',
-      '        <el-table-column prop="ybName" label="医保名称" min-width="160" show-overflow-tooltip><template #default="s">{{ s.row.ybName || "—" }}</template></el-table-column>',
-      '        <el-table-column prop="itemType" label="大类" width="70"></el-table-column>',
-      '        <el-table-column prop="unit" label="单位" width="60"></el-table-column>',
-      '        <el-table-column label="一级价" width="80"><template #default="s">{{ s.row.priceL1 }}</template></el-table-column>',
-      '        <el-table-column label="二级价" width="80"><template #default="s">{{ s.row.priceL2 }}</template></el-table-column>',
-      '        <el-table-column label="三级价" width="80"><template #default="s">{{ s.row.priceL3 }}</template></el-table-column>',
-      '        <el-table-column label="物价分类" min-width="200" show-overflow-tooltip><template #default="s"><span :title="s.row.catCode">{{ catPath(s.row.catCode) }}</span></template></el-table-column>',
-      '        <el-table-column label="状态" width="70"><template #default="s"><el-tag size="small" :type="s.row.status===1?\'success\':\'info\'">{{ s.row.status===1?"启用":"停用" }}</el-tag></template></el-table-column>',
-      '        <el-table-column label="操作" width="180" fixed="right"><template #default="s">',
-      '          <el-button link type="primary" @click="chgEdit(s.row)">编辑</el-button>',
-      '          <el-button link type="warning" @click="chgAdjust(s.row)">调价</el-button>',
-      '          <el-popconfirm title="确认删除？" @confirm="chgDel(s.row)"><template #reference><el-button link type="danger">删除</el-button></template></el-popconfirm>',
-      '        </template></el-table-column>',
-      '      </el-table>',
-      '      <el-pagination style="margin-top:12px;justify-content:flex-end;" background layout="total, sizes, prev, pager, next" :total="chg.total" :page-size="chg.size" :page-sizes="[10,20,50,100]" :current-page="chg.page" @current-change="chgPage" @size-change="chgSize"></el-pagination>',
       '    </el-tab-pane>',
 
       /* ---- 药品目录 ---- */
       '    <el-tab-pane label="药品目录" name="drug">',
       '      <div class="toolbar">',
       '        <el-input v-model="drug.keyword" placeholder="通用名/商品名/编码/拼音简码" clearable style="width:240px" @keyup.enter="drugSearch"></el-input>',
+      '        <el-select v-model="drug.mapped" placeholder="对照状态" clearable style="width:110px" @change="drugSearch"><el-option v-for="o in mappedOpts" :key="o.v" :label="o.l" :value="o.v"></el-option></el-select>',
       '        <el-button @click="drugSearch">查询</el-button>',
       '        <el-button type="primary" @click="drugAdd">新增药品</el-button>',
       '        <span style="color:var(--yb-ink-2);font-size:13px;">共 {{ drug.total }} 项</span>',
+      '        <el-radio-group v-model="drug.paged" size="small" style="margin-left:8px" @change="onDictPaged(\'drug\')"><el-radio-button :label="true">分页</el-radio-button><el-radio-button :label="false">全量</el-radio-button></el-radio-group>',
       '      </div>',
-      '      <el-table :data="drug.list" v-loading="drug.loading" border stripe size="small">',
+      '      <el-table :data="drug.list" v-loading="drug.loading" border stripe size="small" height="100%">',
       '        <el-table-column type="index" label="序号" width="55" :index="seq(drug)"></el-table-column>',
       '        <el-table-column prop="drugCode" label="院内码" width="160" show-overflow-tooltip></el-table-column>',
       '        <el-table-column prop="genericName" label="通用名" min-width="150" show-overflow-tooltip></el-table-column>',
@@ -762,18 +1052,20 @@
       '          <el-popconfirm title="确认删除？" @confirm="drugDel(s.row)"><template #reference><el-button link type="danger">删</el-button></template></el-popconfirm>',
       '        </template></el-table-column>',
       '      </el-table>',
-      '      <el-pagination style="margin-top:12px;justify-content:flex-end;" background layout="total, sizes, prev, pager, next" :total="drug.total" :page-size="drug.size" :page-sizes="[10,20,50,100]" :current-page="drug.page" @current-change="drugPage" @size-change="drugSize"></el-pagination>',
+      '      <el-pagination v-if="drug.paged" style="margin-top:12px;justify-content:flex-end;" background layout="total, sizes, prev, pager, next" :total="drug.total" :page-size="drug.size" :page-sizes="[10,20,50,100]" :current-page="drug.page" @current-change="drugPage" @size-change="drugSize"></el-pagination>',
       '    </el-tab-pane>',
 
       /* ---- 耗材目录 ---- */
       '    <el-tab-pane label="耗材目录" name="cons">',
       '      <div class="toolbar">',
       '        <el-input v-model="cons.keyword" placeholder="名称/编码/拼音简码/注册证号" clearable style="width:240px" @keyup.enter="consSearch"></el-input>',
+      '        <el-select v-model="cons.mapped" placeholder="对照状态" clearable style="width:110px" @change="consSearch"><el-option v-for="o in mappedOpts" :key="o.v" :label="o.l" :value="o.v"></el-option></el-select>',
       '        <el-button @click="consSearch">查询</el-button>',
       '        <el-button type="primary" @click="consAdd">新增耗材</el-button>',
       '        <span style="color:var(--yb-ink-2);font-size:13px;">共 {{ cons.total }} 项</span>',
+      '        <el-radio-group v-model="cons.paged" size="small" style="margin-left:8px" @change="onDictPaged(\'cons\')"><el-radio-button :label="true">分页</el-radio-button><el-radio-button :label="false">全量</el-radio-button></el-radio-group>',
       '      </div>',
-      '      <el-table :data="cons.list" v-loading="cons.loading" border stripe size="small">',
+      '      <el-table :data="cons.list" v-loading="cons.loading" border stripe size="small" height="100%">',
       '        <el-table-column type="index" label="序号" width="55" :index="seq(cons)"></el-table-column>',
       '        <el-table-column prop="consCode" label="院内码" width="160" show-overflow-tooltip></el-table-column>',
       '        <el-table-column prop="name" label="耗材名称" min-width="160" show-overflow-tooltip></el-table-column>',
@@ -791,7 +1083,7 @@
       '          <el-popconfirm title="确认删除？" @confirm="consDel(s.row)"><template #reference><el-button link type="danger">删除</el-button></template></el-popconfirm>',
       '        </template></el-table-column>',
       '      </el-table>',
-      '      <el-pagination style="margin-top:12px;justify-content:flex-end;" background layout="total, sizes, prev, pager, next" :total="cons.total" :page-size="cons.size" :page-sizes="[10,20,50,100]" :current-page="cons.page" @current-change="consPage" @size-change="consSize"></el-pagination>',
+      '      <el-pagination v-if="cons.paged" style="margin-top:12px;justify-content:flex-end;" background layout="total, sizes, prev, pager, next" :total="cons.total" :page-size="cons.size" :page-sizes="[10,20,50,100]" :current-page="cons.page" @current-change="consPage" @size-change="consSize"></el-pagination>',
       '    </el-tab-pane>',
 
       /* ---- 诊断字典(西医/中医/症候/手术/肿瘤) ---- */
@@ -799,13 +1091,15 @@
       '      <div class="toolbar">',
       '        <el-select v-model="diag.dictType" style="width:120px" @change="diagTypeChange"><el-option v-for="t in diagTypes" :key="t.v" :label="t.l" :value="t.v"></el-option></el-select>',
       '        <el-input v-model="diag.keyword" placeholder="名称/编码/拼音简码/医保码/类目" clearable style="width:240px" @keyup.enter="diagSearch"></el-input>',
+      '        <el-select v-model="diag.mapped" placeholder="对照状态" clearable style="width:110px" @change="diagSearch"><el-option v-for="o in mappedOpts" :key="o.v" :label="o.l" :value="o.v"></el-option></el-select>',
       '        <el-button @click="diagSearch">查询</el-button>',
       '        <el-button type="primary" @click="diagAdd">新增条目</el-button>',
       '        <el-button type="success" @click="gotoDiagImport">从标准字典批量导入</el-button>',
       '        <span style="color:var(--yb-ink-2);font-size:13px;">共 {{ diag.total }} 条</span>',
+      '        <el-radio-group v-model="diag.paged" size="small" style="margin-left:8px" @change="onDictPaged(\'diag\')"><el-radio-button :label="true">分页</el-radio-button><el-radio-button :label="false">全量</el-radio-button></el-radio-group>',
       '      </div>',
       '      <el-alert type="info" :closable="false" show-icon style="margin-bottom:10px;" title="西医诊断/中医诊断/症候/手术/肿瘤五类统一字典: 导入源字典(ICD-10/ICD-9/形态学/中医病证)可达数万行, 建议用关键字检索验证而非翻页; 医生站诊断录入统一检索本字典启用项。"></el-alert>',
-      '      <el-table :data="diag.list" v-loading="diag.loading" border stripe size="small">',
+      '      <el-table :data="diag.list" v-loading="diag.loading" border stripe size="small" height="100%">',
       '        <el-table-column type="index" label="序号" width="55" :index="seq(diag)"></el-table-column>',
       '        <el-table-column prop="code" label="编码" width="130" show-overflow-tooltip></el-table-column>',
       '        <el-table-column prop="name" label="名称" min-width="200" show-overflow-tooltip></el-table-column>',
@@ -820,7 +1114,7 @@
       '          <el-popconfirm title="确认删除？" @confirm="diagDel(s.row)"><template #reference><el-button link type="danger">删除</el-button></template></el-popconfirm>',
       '        </template></el-table-column>',
       '      </el-table>',
-      '      <el-pagination style="margin-top:12px;justify-content:flex-end;" background layout="total, sizes, prev, pager, next" :total="diag.total" :page-size="diag.size" :page-sizes="[10,20,50,100]" :current-page="diag.page" @current-change="diagPage" @size-change="diagSize"></el-pagination>',
+      '      <el-pagination v-if="diag.paged" style="margin-top:12px;justify-content:flex-end;" background layout="total, sizes, prev, pager, next" :total="diag.total" :page-size="diag.size" :page-sizes="[10,20,50,100]" :current-page="diag.page" @current-change="diagPage" @size-change="diagSize"></el-pagination>',
       '    </el-tab-pane>',
 
       /* ---- 值域字典(业务自由值域统一取数源) ---- */
@@ -832,9 +1126,10 @@
       '        <el-button type="primary" @click="valAdd">新增条目</el-button>',
       '        <el-button type="success" @click="valImportStd">从标准值域整组导入</el-button>',
       '        <span style="color:var(--yb-ink-2);font-size:13px;">共 {{ val.total }} 条</span>',
+      '        <el-radio-group v-model="val.paged" size="small" style="margin-left:8px" @change="onDictPaged(\'val\')"><el-radio-button :label="true">分页</el-radio-button><el-radio-button :label="false">全量</el-radio-button></el-radio-group>',
       '      </div>',
       '      <el-alert type="info" :closable="false" show-icon style="margin-bottom:10px;" title="字典分层口径: 医疗业务下拉(性别/险种/剂型/号别/抗菌分级等值域)统一从本字典取数; 基本字典(std_*值域)仅作导入源。新增值域分组可在「标准源键:分组码」约定下扩展, 整组导入自动溯源。医生站/门诊/住院/基础数据页下拉已接入本字典。"></el-alert>',
-      '      <el-table :data="val.list" v-loading="val.loading" border stripe size="small">',
+      '      <el-table :data="val.list" v-loading="val.loading" border stripe size="small" height="100%">',
       '        <el-table-column type="index" label="序号" width="55" :index="seq(val)"></el-table-column>',
       '        <el-table-column prop="code" label="值编码" width="120" show-overflow-tooltip></el-table-column>',
       '        <el-table-column prop="name" label="值名称" min-width="180" show-overflow-tooltip></el-table-column>',
@@ -850,7 +1145,7 @@
       '          <el-popconfirm title="确认删除？" @confirm="valDel(s.row)"><template #reference><el-button link type="danger">删除</el-button></template></el-popconfirm>',
       '        </template></el-table-column>',
       '      </el-table>',
-      '      <el-pagination style="margin-top:12px;justify-content:flex-end;" background layout="total, sizes, prev, pager, next" :total="val.total" :page-size="val.size" :page-sizes="[20,50,100,200]" :current-page="val.page" @current-change="valPage" @size-change="valSize"></el-pagination>',
+      '      <el-pagination v-if="val.paged" style="margin-top:12px;justify-content:flex-end;" background layout="total, sizes, prev, pager, next" :total="val.total" :page-size="val.size" :page-sizes="[20,50,100,200]" :current-page="val.page" @current-change="valPage" @size-change="valSize"></el-pagination>',
       '    </el-tab-pane>',
 
       /* ---- 调价记录 ---- */
@@ -861,8 +1156,9 @@
       '        </el-select>',
       '        <el-button @click="adjSearch">查询</el-button>',
       '        <span style="color:var(--yb-ink-2);font-size:13px;">共 {{ adj.total }} 条</span>',
+      '        <el-radio-group v-model="adj.paged" size="small" style="margin-left:8px" @change="onDictPaged(\'adjust\')"><el-radio-button :label="true">分页</el-radio-button><el-radio-button :label="false">全量</el-radio-button></el-radio-group>',
       '      </div>',
-      '      <el-table :data="adj.list" v-loading="adj.loading" border stripe size="small">',
+      '      <el-table :data="adj.list" v-loading="adj.loading" border stripe size="small" height="100%">',
       '        <el-table-column type="index" label="序号" width="55" :index="seq(adj)"></el-table-column>',
       '        <el-table-column prop="catalogType" label="目录" width="70"></el-table-column>',
       '        <el-table-column prop="catalogName" label="项目" min-width="150" show-overflow-tooltip></el-table-column>',
@@ -873,7 +1169,7 @@
       '        <el-table-column prop="effDate" label="生效日期" width="110"></el-table-column>',
       '        <el-table-column prop="operatorName" label="操作人" width="90"></el-table-column>',
       '      </el-table>',
-      '      <el-pagination style="margin-top:12px;justify-content:flex-end;" background layout="total, sizes, prev, pager, next" :total="adj.total" :page-size="adj.size" :page-sizes="[10,20,50,100]" :current-page="adj.page" @current-change="adjPage" @size-change="adjSize"></el-pagination>',
+      '      <el-pagination v-if="adj.paged" style="margin-top:12px;justify-content:flex-end;" background layout="total, sizes, prev, pager, next" :total="adj.total" :page-size="adj.size" :page-sizes="[10,20,50,100]" :current-page="adj.page" @current-change="adjPage" @size-change="adjSize"></el-pagination>',
       '    </el-tab-pane>',
 
       /* ---- 修改记录(字段级留痕) ---- */
@@ -885,8 +1181,9 @@
       '        <el-input v-model="elog.keyword" placeholder="院内码/名称/字段" clearable style="width:200px" @keyup.enter="elogSearch"></el-input>',
       '        <el-button @click="elogSearch">查询</el-button>',
       '        <span style="color:var(--yb-ink-2);font-size:13px;">共 {{ elog.total }} 条</span>',
+      '        <el-radio-group v-model="elog.paged" size="small" style="margin-left:8px" @change="onDictPaged(\'elog\')"><el-radio-button :label="true">分页</el-radio-button><el-radio-button :label="false">全量</el-radio-button></el-radio-group>',
       '      </div>',
-      '      <el-table :data="elog.list" v-loading="elog.loading" border stripe size="small">',
+      '      <el-table :data="elog.list" v-loading="elog.loading" border stripe size="small" height="100%">',
       '        <el-table-column type="index" label="序号" width="55" :index="seq(elog)"></el-table-column>',
       '        <el-table-column prop="changeTime" label="变更时间" width="160"></el-table-column>',
       '        <el-table-column label="目录" width="90"><template #default="s">{{ elCatText(s.row.catalogType) }}</template></el-table-column>',
@@ -898,7 +1195,7 @@
       '        <el-table-column prop="source" label="来源" width="70"></el-table-column>',
       '        <el-table-column prop="operatorName" label="操作人" width="90"><template #default="s">{{ s.row.operatorName || s.row.operator || "—" }}</template></el-table-column>',
       '      </el-table>',
-      '      <el-pagination style="margin-top:12px;justify-content:flex-end;" background layout="total, sizes, prev, pager, next" :total="elog.total" :page-size="elog.size" :page-sizes="[10,20,50,100]" :current-page="elog.page" @current-change="elogPage" @size-change="elogSize"></el-pagination>',
+      '      <el-pagination v-if="elog.paged" style="margin-top:12px;justify-content:flex-end;" background layout="total, sizes, prev, pager, next" :total="elog.total" :page-size="elog.size" :page-sizes="[10,20,50,100]" :current-page="elog.page" @current-change="elogPage" @size-change="elogSize"></el-pagination>',
       '    </el-tab-pane>',
 
       /* ---- 标准字典导入 ---- */
@@ -906,15 +1203,29 @@
       '      <el-alert type="info" :closable="false" show-icon style="margin-bottom:10px;" title="从标准字典(L1)勾选行导入医共体目录(L2): 自动带出编码/名称/规格等, 弹窗补录分级价格/三级单位换算/管理分类后按医保编码幂等写入。"></el-alert>',
       '      <div class="toolbar">',
       '        <el-select v-model="impType" style="width:120px" @change="impTypeChange">',
-      '          <el-option label="药品" value="drug"></el-option><el-option label="耗材" value="cons"></el-option><el-option label="收费项目" value="charge"></el-option><el-option label="诊断字典" value="diag"></el-option>',
+      '          <el-option label="药品" value="drug"></el-option><el-option label="耗材" value="cons"></el-option><el-option label="收费项目" value="charge"></el-option><el-option label="诊断字典" value="diag"></el-option><el-option label="值域字典" value="val"></el-option>',
       '        </el-select>',
       '        <el-select v-model="impDictKey" style="width:280px" @change="stdSearch"><el-option v-for="d in impDicts" :key="d.key" :label="d.label" :value="d.key"></el-option></el-select>',
       '        <el-input v-model="std.keyword" placeholder="编码/名称检索" clearable style="width:200px" @keyup.enter="stdSearch"></el-input>',
       '        <el-button @click="stdSearch">查询</el-button>',
       '        <el-button v-if="impType===\'charge\'||impType===\'diag\'" type="warning" :loading="stdBatchLoading" @click="stdBatchImport">批量导入全库</el-button>',
-      '        <span style="color:var(--yb-ink-2);font-size:13px;">共 {{ std.total }} 条</span>',
+      '        <el-button v-if="impType===\'val\'" type="primary" :disabled="!valSel.length" :loading="stdBatchLoading" @click="valImportSelected">导入选中域({{ valSel.length }})</el-button>',
+      '        <span style="color:var(--yb-ink-2);font-size:13px;">共 {{ impType===\'val\' ? valDomains.list.length : std.total }} 条</span>',
+      '        <el-radio-group v-if="impType!==\'val\'" v-model="std.paged" size="small" style="margin-left:8px" @change="onDictPaged(\'import\')"><el-radio-button :label="true">分页</el-radio-button><el-radio-button :label="false">全量</el-radio-button></el-radio-group>',
       '      </div>',
-      '      <el-table :data="std.list" v-loading="std.loading" border stripe size="small">',
+      '      <template v-if="impType===\'val\'">',
+      '        <el-alert type="info" :closable="false" show-icon style="margin-bottom:8px;" title="卫健值域按国标>省标合并: 同名同码自动取国标; 标“待核”的是同名但码不同(不自动并), 不可勾选; 市标(武汉)按决策不并入。勾选域后点“导入选中域”。"></el-alert>',
+      '        <el-table :data="valDomains.list" v-loading="valDomains.loading" border stripe size="small" height="100%" @selection-change="valSelChange">',
+      '          <el-table-column type="selection" width="45" :selectable="valSelectable"></el-table-column>',
+      '          <el-table-column prop="normName" label="域名称(归一)" min-width="170" show-overflow-tooltip></el-table-column>',
+      '          <el-table-column prop="groupCode" label="分组码" width="150" show-overflow-tooltip></el-table-column>',
+      '          <el-table-column prop="rawName" label="标准原名" min-width="180" show-overflow-tooltip></el-table-column>',
+      '          <el-table-column prop="count" label="值数" width="70" align="center"></el-table-column>',
+      '          <el-table-column label="状态" width="230"><template #default="s"><el-tag size="small" :type="s.row.review?\'danger\':(s.row.covered?\'warning\':\'success\')">{{ s.row.status }}</el-tag></template></el-table-column>',
+      '        </el-table>',
+      '      </template>',
+      '      <template v-else>',
+      '      <el-table :data="std.list" v-loading="std.loading" border stripe size="small" height="100%">',
       '        <el-table-column type="index" label="序号" width="55" :index="seq(std)"></el-table-column>',
       '        <el-table-column prop="code" label="编码" width="200" show-overflow-tooltip></el-table-column>',
       '        <el-table-column prop="name" label="名称" min-width="200" show-overflow-tooltip></el-table-column>',
@@ -925,7 +1236,8 @@
       '          <el-button link type="primary" @click="pickStd(s.row)">导入</el-button>',
       '        </template></el-table-column>',
       '      </el-table>',
-      '      <el-pagination style="margin-top:12px;justify-content:flex-end;" background layout="total, sizes, prev, pager, next" :total="std.total" :page-size="std.size" :page-sizes="[10,20,50,100]" :current-page="std.page" @current-change="stdPage" @size-change="stdSize"></el-pagination>',
+      '      <el-pagination v-if="std.paged" style="margin-top:12px;justify-content:flex-end;" background layout="total, sizes, prev, pager, next" :total="std.total" :page-size="std.size" :page-sizes="[10,20,50,100]" :current-page="std.page" @current-change="stdPage" @size-change="stdSize"></el-pagination>',
+      '      </template>',
       '    </el-tab-pane>',
 
       /* ---- 用法(给药途径) ---- */
@@ -936,8 +1248,9 @@
       '        <el-button type="primary" @click="medAdd(\'usage\')">新增用法</el-button>',
       '        <el-button type="success" @click="openMedImp(\'usage\')">从医保值域导入</el-button>',
       '        <span style="color:var(--yb-ink-2);font-size:13px;">共 {{ med.usage.total }} 项</span>',
+      '        <el-radio-group v-model="med.usage.paged" size="small" style="margin-left:8px" @change="onDictPaged(\'usage\')"><el-radio-button :label="true">分页</el-radio-button><el-radio-button :label="false">全量</el-radio-button></el-radio-group>',
       '      </div>',
-      '      <el-table :data="med.usage.list" v-loading="med.usage.loading" border stripe size="small">',
+      '      <el-table :data="med.usage.list" v-loading="med.usage.loading" border stripe size="small" height="100%">',
       '        <el-table-column type="index" label="序号" width="55" :index="seq(med.usage)"></el-table-column>',
       '        <el-table-column prop="code" label="院内码" width="110"></el-table-column>',
       '        <el-table-column prop="name" label="用法名称" min-width="160" show-overflow-tooltip></el-table-column>',
@@ -952,7 +1265,7 @@
       '          <el-popconfirm title="确认删除？" @confirm="medDel(s.row)"><template #reference><el-button link type="danger">删除</el-button></template></el-popconfirm>',
       '        </template></el-table-column>',
       '      </el-table>',
-      '      <el-pagination style="margin-top:12px;justify-content:flex-end;" background layout="total, sizes, prev, pager, next" :total="med.usage.total" :page-size="med.usage.size" :page-sizes="[10,20,50,100]" :current-page="med.usage.page" @current-change="function(p){medPage(\'usage\',p)}" @size-change="function(s){medSize(\'usage\',s)}"></el-pagination>',
+      '      <el-pagination v-if="med.usage.paged" style="margin-top:12px;justify-content:flex-end;" background layout="total, sizes, prev, pager, next" :total="med.usage.total" :page-size="med.usage.size" :page-sizes="[10,20,50,100]" :current-page="med.usage.page" @current-change="function(p){medPage(\'usage\',p)}" @size-change="function(s){medSize(\'usage\',s)}"></el-pagination>',
       '    </el-tab-pane>',
 
       /* ---- 用药频次 ---- */
@@ -963,8 +1276,9 @@
       '        <el-button type="primary" @click="medAdd(\'freq\')">新增频次</el-button>',
       '        <el-button type="success" @click="openMedImp(\'freq\')">从医保值域导入</el-button>',
       '        <span style="color:var(--yb-ink-2);font-size:13px;">共 {{ med.freq.total }} 项</span>',
+      '        <el-radio-group v-model="med.freq.paged" size="small" style="margin-left:8px" @change="onDictPaged(\'freq\')"><el-radio-button :label="true">分页</el-radio-button><el-radio-button :label="false">全量</el-radio-button></el-radio-group>',
       '      </div>',
-      '      <el-table :data="med.freq.list" v-loading="med.freq.loading" border stripe size="small">',
+      '      <el-table :data="med.freq.list" v-loading="med.freq.loading" border stripe size="small" height="100%">',
       '        <el-table-column type="index" label="序号" width="55" :index="seq(med.freq)"></el-table-column>',
       '        <el-table-column prop="code" label="院内码" width="110"></el-table-column>',
       '        <el-table-column prop="name" label="频次名称" min-width="160" show-overflow-tooltip></el-table-column>',
@@ -979,7 +1293,7 @@
       '          <el-popconfirm title="确认删除？" @confirm="medDel(s.row)"><template #reference><el-button link type="danger">删除</el-button></template></el-popconfirm>',
       '        </template></el-table-column>',
       '      </el-table>',
-      '      <el-pagination style="margin-top:12px;justify-content:flex-end;" background layout="total, sizes, prev, pager, next" :total="med.freq.total" :page-size="med.freq.size" :page-sizes="[10,20,50,100]" :current-page="med.freq.page" @current-change="function(p){medPage(\'freq\',p)}" @size-change="function(s){medSize(\'freq\',s)}"></el-pagination>',
+      '      <el-pagination v-if="med.freq.paged" style="margin-top:12px;justify-content:flex-end;" background layout="total, sizes, prev, pager, next" :total="med.freq.total" :page-size="med.freq.size" :page-sizes="[10,20,50,100]" :current-page="med.freq.page" @current-change="function(p){medPage(\'freq\',p)}" @size-change="function(s){medSize(\'freq\',s)}"></el-pagination>',
       '    </el-tab-pane>',
 
       '  </el-tabs>',
@@ -1006,7 +1320,6 @@
       '        <el-col :span="12"><el-form-item label="医疗科室类别"><el-input v-model="chgForm.deptCaty"></el-input></el-form-item></el-col>',
       '        <el-col :span="12"><el-form-item label="医保目录编码"><el-input v-model="chgForm.medListCodg" @change="loadYbInfo(\'charge\', $event, \'chgYb\')"></el-input></el-form-item></el-col>',
       '        <el-col :span="12"><el-form-item label="医保名称"><el-input :value="chgYb.name || \'—\'" readonly></el-input></el-form-item></el-col>',
-      '        <el-col :span="12"><el-form-item label="医保甲乙分类"><el-input :value="ybLvLabel(chgYb.chrgitmLv) || \'—\'" readonly></el-input></el-form-item></el-col>',
       '        <el-col :span="24"><el-form-item label="项目内涵"><el-input v-model="chgForm.itemContent" type="textarea" :rows="2"></el-input></el-form-item></el-col>',
       '        <el-col :span="24"><el-form-item label="除外内容"><el-input v-model="chgForm.itemExcluded" type="textarea" :rows="2"></el-input></el-form-item></el-col>',
       '        <el-col :span="12"><el-form-item label="甲乙丙类"><el-select v-model="chgForm.chrgitmLv" clearable style="width:100%"><el-option v-for="o in chrgLvOpts" :key="o.code" :label="o.name" :value="o.code"></el-option></el-select></el-form-item></el-col>',
@@ -1028,7 +1341,6 @@
       '        <el-col :span="12"><el-form-item label="院内药品码"><el-input v-model="drugForm.drugCode"></el-input></el-form-item></el-col>',
       '        <el-col :span="12"><el-form-item label="医保药品码"><el-input v-model="drugForm.ybDrugCode" @change="loadYbInfo(\'drug\', $event, \'drugYb\')"></el-input></el-form-item></el-col>',
       '        <el-col :span="12"><el-form-item label="医保名称"><el-input :value="drugYb.name || \'—\'" readonly></el-input></el-form-item></el-col>',
-      '        <el-col :span="12"><el-form-item label="医保甲乙分类"><el-input :value="ybLvLabel(drugYb.chrgitmLv) || \'—\'" readonly></el-input></el-form-item></el-col>',
       '        <el-col :span="12"><el-form-item label="本位码"><el-input v-model="drugForm.drugStdCode"></el-input></el-form-item></el-col>',
       '        <el-col :span="12"><el-form-item label="批准文号"><el-input v-model="drugForm.approvalNo"></el-input></el-form-item></el-col>',
       '      </el-row>',
@@ -1038,17 +1350,17 @@
       '        <el-col :span="12"><el-form-item label="拼音码"><el-input v-model="drugForm.pyCode" disabled placeholder="保存时按通用名自动生成"></el-input></el-form-item></el-col>',
       '        <el-col :span="12"><el-form-item label="自定义码"><el-input v-model="drugForm.abbrCode" maxlength="64" placeholder="选填, 人工简码"></el-input></el-form-item></el-col>',
       '        <el-col :span="12"><el-form-item label="商品名"><el-input v-model="drugForm.tradeName"></el-input></el-form-item></el-col>',
-      '        <el-col :span="12"><el-form-item label="大类"><el-input v-model="drugForm.majorClass"></el-input></el-form-item></el-col>',
+      '        <el-col :span="12"><el-form-item label="大类"><el-select v-model="drugForm.majorClass" clearable filterable style="width:100%" placeholder="从标准字典选择"><el-option v-for="o in majorClassOpts" :key="o.code" :label="o.name" :value="o.name"></el-option></el-select></el-form-item></el-col>',
       '        <el-col :span="12"><el-form-item label="剂型"><el-select v-model="drugForm.dosform" clearable filterable style="width:100%"><el-option v-for="o in dosformOpts" :key="o.code" :label="o.name" :value="o.code"></el-option></el-select></el-form-item></el-col>',
       '        <el-col :span="12"><el-form-item label="规格"><el-input v-model="drugForm.spec"></el-input></el-form-item></el-col>',
-      '        <el-col :span="12"><el-form-item label="生产企业"><el-input v-model="drugForm.manufacturer"></el-input></el-form-item></el-col>',
-      '        <el-col :span="24"><el-form-item label="上市持有人"><el-input v-model="drugForm.mktHolder"></el-input></el-form-item></el-col>',
+      '        <el-col :span="12"><el-form-item label="生产企业"><el-select v-model="drugForm.manufacturerCode" filterable remote reserve-keyword clearable :remote-method="function(q){ supSearch(\u0027drugMfr\u0027, q) }" :loading="supplierLoading" @change="supChange(drugForm,\u0027manufacturerCode\u0027,\u0027manufacturer\u0027,\u0027drugMfr\u0027)" placeholder="输入企业名称/编码/拼音检索" style="width:100%"><el-option v-for="o in supplierOpts.drugMfr" :key="o.code" :label="o.name" :value="o.code"></el-option></el-select></el-form-item></el-col>',
+      '        <el-col :span="24"><el-form-item label="上市持有人"><el-select v-model="drugForm.mktHolderCode" filterable remote reserve-keyword clearable :remote-method="function(q){ supSearch(\u0027drugHold\u0027, q) }" :loading="supplierLoading" @change="supChange(drugForm,\u0027mktHolderCode\u0027,\u0027mktHolder\u0027,\u0027drugHold\u0027)" placeholder="输入企业名称/编码/拼音检索" style="width:100%"><el-option v-for="o in supplierOpts.drugHold" :key="o.code" :label="o.name" :value="o.code"></el-option></el-select></el-form-item></el-col>',
       '      </el-row>',
       '      <el-divider content-position="left">三级单位与换算</el-divider>',
       '      <el-row :gutter="12">',
       '        <el-col :span="8"><el-form-item label="剂量单位"><el-select v-model="drugForm.doseUnit" clearable filterable allow-create style="width:100%"><el-option v-for="o in doseUnitOpts" :key="o.code" :label="o.name" :value="o.code"></el-option></el-select></el-form-item></el-col>',
       '        <el-col :span="8"><el-form-item label="单位含药量"><el-input v-model.number="drugForm.unitDose" type="number" placeholder="如0.25"></el-input></el-form-item></el-col>',
-      '        <el-col :span="8"><el-form-item label="最小/发药单位"><el-input v-model="drugForm.minUnit" placeholder="片/粒/支"></el-input></el-form-item></el-col>',
+      '        <el-col :span="8"><el-form-item label="最小/发药单位"><el-select v-model="drugForm.minUnit" clearable filterable allow-create style="width:100%"><el-option v-for="o in packUnitOpts" :key="o.code" :label="o.name" :value="o.code"></el-option></el-select></el-form-item></el-col>',
       '        <el-col :span="8"><el-form-item label="采购/大包装"><el-select v-model="drugForm.packUnit" clearable filterable allow-create style="width:100%"><el-option v-for="o in packUnitOpts" :key="o.code" :label="o.name" :value="o.code"></el-option></el-select></el-form-item></el-col>',
       '        <el-col :span="8"><el-form-item label="包装换算比"><el-input v-model.number="drugForm.packRatio" type="number" placeholder="如24粒/盒"></el-input></el-form-item></el-col>',
       '        <el-col :span="8"><el-form-item label="发药取整"><el-select v-model="drugForm.roundRule" style="width:100%"><el-option v-for="o in roundRules" :key="o.v" :label="o.l" :value="o.v"></el-option></el-select></el-form-item></el-col>',
@@ -1064,9 +1376,9 @@
       '        <el-col :span="8"><el-form-item label="甲乙丙类"><el-select v-model="drugForm.chrgitmLv" clearable style="width:100%"><el-option v-for="o in chrgLvOpts" :key="o.code" :label="o.name" :value="o.code"></el-option></el-select></el-form-item></el-col>',
       '        <el-col :span="8"><el-form-item label="自付比例"><el-input v-model.number="drugForm.selfpayProp" type="number"></el-input></el-form-item></el-col>',
       '        <el-col :span="8"><el-form-item label="支付标准"><el-input v-model="drugForm.payStdPrep"></el-input></el-form-item></el-col>',
-      '        <el-col :span="8"><el-form-item label="谈判药"><el-input v-model="drugForm.negoFlag"></el-input></el-form-item></el-col>',
-      '        <el-col :span="8"><el-form-item label="门特标识"><el-input v-model="drugForm.msdFlag"></el-input></el-form-item></el-col>',
-      '        <el-col :span="8"><el-form-item label="限自费标识"><el-input v-model="drugForm.ltdSelfFlag"></el-input></el-form-item></el-col>',
+      '        <el-col :span="8"><el-form-item label="谈判药"><el-select v-model="drugForm.negoFlag" clearable style="width:100%"><el-option v-for="o in negoFlagOpts" :key="o.code" :label="o.name" :value="o.code"></el-option></el-select></el-form-item></el-col>',
+      '        <el-col :span="8"><el-form-item label="门特标识"><el-select v-model="drugForm.msdFlag" clearable style="width:100%"><el-option v-for="o in yesNoOpts" :key="o.code" :label="o.name" :value="o.code"></el-option></el-select></el-form-item></el-col>',
+      '        <el-col :span="8"><el-form-item label="限自费标识"><el-select v-model="drugForm.ltdSelfFlag" clearable style="width:100%"><el-option v-for="o in yesNoOpts" :key="o.code" :label="o.name" :value="o.code"></el-option></el-select></el-form-item></el-col>',
       '        <el-col :span="24"><el-form-item label="限定支付范围"><el-input v-model="drugForm.limitScope"></el-input></el-form-item></el-col>',
       '      </el-row>',
       '      <el-divider content-position="left">药事管理分类</el-divider>',
@@ -1077,7 +1389,7 @@
       '        <el-col :span="6"><el-form-item label="OTC"><el-switch v-model="drugForm.otcFlag" :active-value="1" :inactive-value="0"></el-switch></el-form-item></el-col>',
       '        <el-col :span="6"><el-form-item label="基本药物"><el-switch v-model="drugForm.essentialFlag" :active-value="1" :inactive-value="0"></el-switch></el-form-item></el-col>',
       '        <el-col :span="6"><el-form-item label="需皮试"><el-switch v-model="drugForm.skinTestFlag" :active-value="1" :inactive-value="0"></el-switch></el-form-item></el-col>',
-      '        <el-col :span="6"><el-form-item label="妊娠分级"><el-input v-model="drugForm.pregClass" placeholder="A/B/C/D/X"></el-input></el-form-item></el-col>',
+      '        <el-col :span="6"><el-form-item label="妊娠分级"><el-select v-model="drugForm.pregClass" clearable style="width:100%"><el-option v-for="o in pregOpts" :key="o.code" :label="o.name" :value="o.code"></el-option></el-select></el-form-item></el-col>',
       '        <el-col :span="8"><el-form-item label="单次最大量"><el-input v-model.number="drugForm.maxQtyOnce" type="number"></el-input></el-form-item></el-col>',
       '        <el-col :span="8"><el-form-item label="生效日期"><el-date-picker v-model="drugForm.effDate" type="date" value-format="YYYY-MM-DD" style="width:100%"></el-date-picker></el-form-item></el-col>',
       '        <el-col :span="8"><el-form-item label="状态"><el-switch v-model="drugForm.status" :active-value="1" :inactive-value="0" active-text="启用" inactive-text="停用"></el-switch></el-form-item></el-col>',
@@ -1095,7 +1407,6 @@
       '        <el-col :span="12"><el-form-item label="院内耗材码"><el-input v-model="consForm.consCode"></el-input></el-form-item></el-col>',
       '        <el-col :span="12"><el-form-item label="医保耗材码"><el-input v-model="consForm.ybConsCode" placeholder="20位" @change="loadYbInfo(\'cons\', $event, \'consYb\')"></el-input></el-form-item></el-col>',
       '        <el-col :span="12"><el-form-item label="医保名称"><el-input :value="consYb.name || \'—\'" readonly></el-input></el-form-item></el-col>',
-      '        <el-col :span="12"><el-form-item label="医保甲乙分类"><el-input :value="ybLvLabel(consYb.chrgitmLv) || \'—\'" readonly></el-input></el-form-item></el-col>',
       '        <el-col :span="12"><el-form-item label="耗材名称"><el-input v-model="consForm.name"></el-input></el-form-item></el-col>',
       '        <el-col :span="12"><el-form-item label="拼音码"><el-input v-model="consForm.pyCode" disabled placeholder="保存时按名称自动生成"></el-input></el-form-item></el-col>',
       '        <el-col :span="12"><el-form-item label="自定义码"><el-input v-model="consForm.abbrCode" maxlength="64" placeholder="选填, 人工简码"></el-input></el-form-item></el-col>',
@@ -1104,11 +1415,11 @@
       '        <el-col :span="8"><el-form-item label="二级分类"><el-input v-model="consForm.cat2"></el-input></el-form-item></el-col>',
       '        <el-col :span="8"><el-form-item label="三级分类"><el-input v-model="consForm.cat3"></el-input></el-form-item></el-col>',
       '        <el-col :span="12"><el-form-item label="规格型号"><el-input v-model="consForm.specModel"></el-input></el-form-item></el-col>',
-      '        <el-col :span="12"><el-form-item label="生产企业"><el-input v-model="consForm.manufacturer"></el-input></el-form-item></el-col>',
+      '        <el-col :span="12"><el-form-item label="生产企业"><el-select v-model="consForm.manufacturerCode" filterable remote reserve-keyword clearable :remote-method="function(q){ supSearch(\u0027consMfr\u0027, q) }" :loading="supplierLoading" @change="supChange(consForm,\u0027manufacturerCode\u0027,\u0027manufacturer\u0027,\u0027consMfr\u0027)" placeholder="输入企业名称/编码/拼音检索" style="width:100%"><el-option v-for="o in supplierOpts.consMfr" :key="o.code" :label="o.name" :value="o.code"></el-option></el-select></el-form-item></el-col>',
       '        <el-col :span="12"><el-form-item label="材质"><el-input v-model="consForm.material"></el-input></el-form-item></el-col>',
       '        <el-col :span="12"><el-form-item label="特征"><el-input v-model="consForm.feature"></el-input></el-form-item></el-col>',
-      '        <el-col :span="8"><el-form-item label="最小单位"><el-input v-model="consForm.minUnit" placeholder="个/套"></el-input></el-form-item></el-col>',
-      '        <el-col :span="8"><el-form-item label="采购单位"><el-input v-model="consForm.packUnit" placeholder="盒/包"></el-input></el-form-item></el-col>',
+      '        <el-col :span="8"><el-form-item label="最小单位"><el-select v-model="consForm.minUnit" clearable filterable allow-create style="width:100%"><el-option v-for="o in packUnitOpts" :key="o.code" :label="o.name" :value="o.code"></el-option></el-select></el-form-item></el-col>',
+      '        <el-col :span="8"><el-form-item label="采购单位"><el-select v-model="consForm.packUnit" clearable filterable allow-create style="width:100%"><el-option v-for="o in packUnitOpts" :key="o.code" :label="o.name" :value="o.code"></el-option></el-select></el-form-item></el-col>',
       '        <el-col :span="8"><el-form-item label="换算比"><el-input v-model.number="consForm.packRatio" type="number"></el-input></el-form-item></el-col>',
       '        <el-col :span="8"><el-form-item label="进货价"><el-input v-model.number="consForm.purchasePrice" type="number" :disabled="consEditing"></el-input></el-form-item></el-col>',
       '        <el-col :span="8"><el-form-item label="收费价"><el-input v-model.number="consForm.chargePrice" type="number" :disabled="consEditing"></el-input></el-form-item></el-col>',

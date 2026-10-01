@@ -25,8 +25,8 @@
         /* 查询条件(前端即时过滤) */
         keyword: '', filterType: null, filterStatus: null,
         exporting: false,
-        /* 显示模式: paged=true 分页 / false 全量(默认, localStorage 持久化) */
-        paged: (function () { try { return localStorage.getItem('his.rolePaged') === '1'; } catch (e) { return false; } })(),
+        /* 显示模式: paged=true 分页(默认) / false 全量; 本地偏好 his.rolePaged 优先, 回落租户参数 list_default_paged */
+        paged: HIS.pagedDefault('rolePaged'),
         page: 1, size: 20,
         dlg: false, editing: false, form: this.emptyRole(),
         menuDlg: false, menuTree: [], checkedKeys: [], currentRole: null, treeProps: { label: 'menuName', children: 'children' }
@@ -131,7 +131,7 @@
       }
     },
     template: [
-      '<div class="page-card">',
+      '<div class="page-card cd-fill">',
       '  <div class="page-title">角色权限 <span style="font-size:12px;color:var(--yb-ink-2);font-weight:normal;">(全局预置角色只读 · 租户自定义角色可增改删/授权)</span></div>',
       '  <el-alert type="info" :closable="false" show-icon style="margin-bottom:12px;"',
       '    title="ADMIN/SUPER_ADMIN 拥有全部菜单; 其余角色按分配的菜单树授权。用户登录后左侧菜单按其角色动态下发。"></el-alert>',
@@ -148,7 +148,7 @@
       '    </el-radio-group>',
       '    <span style="color:var(--yb-ink-2);font-size:13px;">共 {{ filteredList.length }} 个角色</span>',
       '  </div>',
-      '  <el-table :data="pagedList" v-loading="loading" border stripe size="small">',
+      '  <el-table :data="pagedList" v-loading="loading" border stripe size="small" height="100%">',
       '    <el-table-column type="index" :index="seqNo" label="序号" width="60"></el-table-column>',
       '    <el-table-column prop="roleCode" label="角色编码" width="150"></el-table-column>',
       '    <el-table-column prop="roleName" label="角色名称" width="150"></el-table-column>',
@@ -196,8 +196,8 @@
         /* 查询条件(前端即时过滤) */
         keyword: '', filterType: null, filterStatus: null,
         exporting: false,
-        /* 显示模式: paged=true 分页 / false 全量(默认, localStorage 持久化) */
-        paged: (function () { try { return localStorage.getItem('his.menuPaged') === '1'; } catch (e) { return false; } })(),
+        /* 显示模式: paged=true 分页(默认) / false 全量; 本地偏好 his.menuPaged 优先, 回落租户参数 list_default_paged */
+        paged: HIS.pagedDefault('menuPaged'),
         page: 1, size: 20,
         dlg: false, editing: false, form: this.empty()
       };
@@ -329,7 +329,7 @@
       }
     },
     template: [
-      '<div class="page-card">',
+      '<div class="page-card cd-fill">',
       '  <div class="page-title">菜单管理 <span style="font-size:12px;color:var(--yb-ink-2);font-weight:normal;">(全局菜单真源 · 仅 ADMIN 可维护)</span></div>',
       '  <el-alert type="warning" :closable="false" show-icon style="margin-bottom:12px;"',
       '    title="菜单为全局真源, 修改将影响所有租户。菜单键需与前端组件路由键一致; comp 为 HIS.views 组件名, 目录留空。"></el-alert>',
@@ -346,7 +346,7 @@
       '    </el-radio-group>',
       '    <span style="color:var(--yb-ink-2);font-size:13px;">共 {{ filteredCount }} 个菜单</span>',
       '  </div>',
-      '  <el-table :data="pagedTree" v-loading="loading" border stripe size="small" row-key="id" :tree-props="{ children: \'children\' }" default-expand-all>',
+      '  <el-table :data="pagedTree" v-loading="loading" border stripe size="small" height="100%" row-key="id" :tree-props="{ children: \'children\' }" default-expand-all>',
       '    <el-table-column type="index" :index="seqNo" label="序号" width="60"></el-table-column>',
       '    <el-table-column prop="menuName" label="菜单名称" min-width="180"></el-table-column>',
       '    <el-table-column prop="menuKey" label="菜单键" width="150"></el-table-column>',

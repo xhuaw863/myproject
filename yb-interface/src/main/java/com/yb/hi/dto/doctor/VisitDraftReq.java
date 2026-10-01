@@ -25,6 +25,11 @@ public class VisitDraftReq {
     private String auxExam;
     /** 处理意见 */
     private String treatmentOpinion;
+    /* ---------- 结构化病历(Phase B 并入 EMR 引擎, 可空则保持 SOAP 纯文本模式) ---------- */
+    /** 结构化病历内容 JSON(his_emr_template scope=2 fields 取值, 按 fieldKey 存值) */
+    private String structure;
+    /** 结构化病历模板ID(his_emr_template.id) */
+    private Long emrTemplateId;
     /* ---------- 医保字段(2203 mdtrtinfo) ---------- */
     /** 病种类型代码 */
     private String diseTypeCode;

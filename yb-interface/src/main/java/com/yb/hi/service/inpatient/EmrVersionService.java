@@ -35,7 +35,7 @@ public class EmrVersionService {
 
     /**
      * 保存当前版本快照(在修改前调用): 读取 his_inp_medical_record 的 content/structure_data,
-     * version_no 按 record 维度自增(含逻辑删除行取 MAX, 避免版本号重用), 落一行 his_emr_version。
+     * 委托 saveVersionByScope(scope=1, refId=recordId)。住院行为与旧实现一致(仅额外落 scope/ref_id 列)。
      */
     public void saveVersion(Long recordId, String operateType, Long operatorId, String operatorName) {
         if (recordId == null || operatorId == null) {
@@ -51,35 +51,57 @@ public class EmrVersionService {
             return; // 记录不存在(异常路径), 不落快照
         }
         Map<String, Object> row = rows.get(0);
+        saveVersionByScope(1, recordId, text(row.get("content")), text(row.get("structure_data")),
+                operatorId, operatorName, operateType);
+    }
+
+    /**
+     * 作用域版快照(统一引擎): scope=1 住院(refId=病历id), scope=2 门诊(refId=visitId)。
+     * 快照正文由调用方传入(避开对具体业务表的耦合); record_id 与 ref_id 同写 refId 以保持旧住院查询口径。
+     */
+    public void saveVersionByScope(Integer scope, Long refId, String contentSnapshot, String structureSnapshot,
+                                   Long operatorId, String operatorName, String operateType) {
+        if (refId == null || operatorId == null) {
+            log.warn("病历版本快照跳过(参数缺失): scope={}, refId={}, operatorId={}", scope, refId, operatorId);
+            return;
+        }
+        int sc = scope == null ? 1 : scope;
+        Long tenantId = TenantContext.require();
         Integer maxNo = jdbcTemplate.queryForObject(
-                "SELECT COALESCE(MAX(version_no), 0) FROM his_emr_version WHERE record_id = ? AND tenant_id = ?",
-                Integer.class, recordId, tenantId);
+                "SELECT COALESCE(MAX(version_no), 0) FROM his_emr_version WHERE scope = ? AND ref_id = ? AND tenant_id = ?",
+                Integer.class, sc, refId, tenantId);
         int nextNo = (maxNo == null ? 0 : maxNo) + 1;
         jdbcTemplate.update("INSERT INTO his_emr_version"
-                        + " (record_id, version_no, content_snapshot, structure_snapshot, operator_id, operator_name,"
-                        + "  operate_time, operate_type, tenant_id, create_time, deleted)"
-                        + " VALUES (?, ?, ?, ?, ?, ?, NOW(), ?, ?, NOW(), 0)",
-                recordId, nextNo, text(row.get("content")), text(row.get("structure_data")),
+                        + " (record_id, scope, ref_id, version_no, content_snapshot, structure_snapshot,"
+                        + "  operator_id, operator_name, operate_time, operate_type, tenant_id, create_time, deleted)"
+                        + " VALUES (?, ?, ?, ?, ?, ?, ?, ?, NOW(), ?, ?, NOW(), 0)",
+                refId, sc, refId, nextNo, contentSnapshot, structureSnapshot,
                 operatorId, StringUtils.hasText(operatorName) ? operatorName : ("user-" + operatorId),
                 operateType, tenantId);
-        log.info("病历版本快照: recordId={}, versionNo={}, operateType={}, operatorId={}",
-                recordId, nextNo, operateType, operatorId);
+        log.info("病历版本快照: scope={}, refId={}, versionNo={}, operateType={}, operatorId={}",
+                sc, refId, nextNo, operateType, operatorId);
     }
 
     /* ================= 查询 ================= */
 
-    /** 版本列表(按版本号倒序): 元信息 + 内容长度, 不含快照正文(列表轻量) */
+    /** 版本列表(按版本号倒序): 元信息 + 内容长度, 不含快照正文(列表轻量)。住院入口保持原签名, 委托 scope=1。 */
     public List<Map<String, Object>> listVersions(Long recordId) {
-        if (recordId == null) {
+        return listVersionsByScope(1, recordId);
+    }
+
+    /** 作用域版版本列表: scope=1 住院(refId=病历id), scope=2 门诊(refId=visitId)。 */
+    public List<Map<String, Object>> listVersionsByScope(Integer scope, Long refId) {
+        if (refId == null) {
             throw new BizException(400, "病历ID不能为空");
         }
+        int sc = scope == null ? 1 : scope;
         return jdbcTemplate.queryForList(
                 "SELECT id, version_no AS versionNo, operator_id AS operatorId, operator_name AS operatorName,"
                         + " DATE_FORMAT(operate_time, '%Y-%m-%d %H:%i:%s') AS operateTime, operate_type AS operateType,"
                         + " CHAR_LENGTH(COALESCE(content_snapshot, structure_snapshot, '')) AS contentLength"
-                        + " FROM his_emr_version WHERE record_id = ? AND tenant_id = ? AND deleted = 0"
+                        + " FROM his_emr_version WHERE scope = ? AND ref_id = ? AND tenant_id = ? AND deleted = 0"
                         + " ORDER BY version_no DESC, id DESC",
-                recordId, TenantContext.require());
+                sc, refId, TenantContext.require());
     }
 
     /** 指定版本详情(含双快照正文), 不存在抛 400 */

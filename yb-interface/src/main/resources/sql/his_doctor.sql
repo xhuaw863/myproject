@@ -40,6 +40,8 @@ CREATE TABLE his_visit (
     past_history       VARCHAR(1000) DEFAULT NULL COMMENT '既往史',
     physical_exam      VARCHAR(1000) DEFAULT NULL COMMENT '体格检查',
     treatment_opinion  VARCHAR(1000) DEFAULT NULL COMMENT '处理意见',
+    structure          TEXT         DEFAULT NULL COMMENT '结构化病历JSON(his_emr_template scope=2 fields 取值)',
+    emr_template_id    BIGINT       DEFAULT NULL COMMENT '结构化病历模板ID(his_emr_template.id)',
     visit_time         DATETIME     DEFAULT NULL COMMENT '接诊时间',
     finish_time        DATETIME     DEFAULT NULL COMMENT '完成时间',
     create_by          VARCHAR(50)  DEFAULT NULL,

@@ -24,14 +24,19 @@ public class HisDrugCatalogService extends ServiceImpl<HisDrugCatalogMapper, His
     public static final String ABX_DICT_TYPE = "hbvalue";
     public static final String ABX_DICT_CODE = "HBCV08.50.029";
 
-    private final StdDictQueryService stdDict;
+    /** 剂型统一取数源: 医共体统一字典卫健国标「药品剂型」(dict_type=归一化域名) */
+    public static final String DOSFORM_DICT_TYPE = "药品剂型";
 
-    public HisDrugCatalogService(StdDictQueryService stdDict) {
+    private final StdDictQueryService stdDict;
+    private final HisValDictService valDict;
+
+    public HisDrugCatalogService(StdDictQueryService stdDict, HisValDictService valDict) {
         this.stdDict = stdDict;
+        this.valDict = valDict;
     }
 
-    /** 分页查询(关键字: 通用名/商品名/院内码/医保码) */
-    public IPage<HisDrugCatalog> pageQuery(long page, long size, String keyword, Integer status) {
+    /** 分页查询(关键字: 通用名/商品名/院内码/医保码; mapped=1已对照/0未对照/空全部) */
+    public IPage<HisDrugCatalog> pageQuery(long page, long size, String keyword, Integer status, String mapped) {
         LambdaQueryChainWrapper<HisDrugCatalog> q = lambdaQuery()
                 .eq(status != null, HisDrugCatalog::getStatus, status);
         if (StringUtils.hasText(keyword)) {
@@ -41,6 +46,11 @@ public class HisDrugCatalogService extends ServiceImpl<HisDrugCatalogMapper, His
                     .or().like(HisDrugCatalog::getYbDrugCode, keyword)
                     .or().like(HisDrugCatalog::getPyCode, keyword)
                     .or().like(HisDrugCatalog::getAbbrCode, keyword));
+        }
+        if ("1".equals(mapped)) {
+            q.isNotNull(HisDrugCatalog::getYbDrugCode).ne(HisDrugCatalog::getYbDrugCode, "");
+        } else if ("0".equals(mapped)) {
+            q.and(w -> w.isNull(HisDrugCatalog::getYbDrugCode).or().eq(HisDrugCatalog::getYbDrugCode, ""));
         }
         IPage<HisDrugCatalog> r = q.orderByDesc(HisDrugCatalog::getId).page(new Page<>(page, size));
         r.getRecords().forEach(this::derivePackPrice);
@@ -75,7 +85,7 @@ public class HisDrugCatalogService extends ServiceImpl<HisDrugCatalogMapper, His
         if (StringUtils.hasText(e.getGenericName())) {
             e.setPyCode(PinyinUtil.initials(e.getGenericName()));
         }
-        fillCv(e.getDosform(), "dosform", e::setDosformName, e::setDosformSrc);
+        fillDosform(e);
         fillCv(e.getChrgitmLv(), "chrgitm_lv", e::setChrgitmLvName, e::setChrgitmLvSrc);
         fillCv(e.getDrugClass(), "drug_class", e::setDrugClassName, e::setDrugClassSrc);
         fillCv(e.getStorageCond(), "storage_cond", e::setStorageCondName, e::setStorageCondSrc);
@@ -98,6 +108,29 @@ public class HisDrugCatalogService extends ServiceImpl<HisDrugCatalogMapper, His
         } else {
             nameSetter.accept(null);
             srcSetter.accept(null);
+        }
+    }
+
+    /**
+     * 剂型回填(口径: 医共体统一字典用卫健国标「药品剂型」)。
+     * 传入值可能是国标码或医保/接口中文文本: 先按码/唯一名归一到国标码, 命中则回填国标名与 src=药品剂型;
+     * 归一不到(同名多义/国标无此剂型)则保留原值、名称按原样、src 标 '药品剂型:待核' 交人工确认(不猜码)。
+     */
+    private void fillDosform(HisDrugCatalog e) {
+        String df = e.getDosform();
+        if (!StringUtils.hasText(df)) {
+            e.setDosformName(null);
+            e.setDosformSrc(null);
+            return;
+        }
+        String code = valDict.normalizeToCode(DOSFORM_DICT_TYPE, df);
+        if (code != null) {
+            e.setDosform(code);
+            e.setDosformName(valDict.nameOf(DOSFORM_DICT_TYPE, code));
+            e.setDosformSrc(DOSFORM_DICT_TYPE);
+        } else {
+            e.setDosformName(df.trim());
+            e.setDosformSrc(DOSFORM_DICT_TYPE + ":待核");
         }
     }
 }

@@ -34,4 +34,13 @@ public class StockInItemReq {
     private String expDate;
     /** 小计金额(空则按 数量*进价 计算) */
     private BigDecimal amount;
+    /* ---- 采购入库增强(批次B) ---- */
+    /** 大包装数(多单位录入) */
+    private BigDecimal packQty;
+    /** 包装换算比(大包装→最小单位) */
+    private Integer packRatio;
+    /** 最小单位量(空则按 大包装数*包装比 计算) */
+    private BigDecimal minQty;
+    /** 挂账进价(待核) */
+    private BigDecimal purchasePrice;
 }

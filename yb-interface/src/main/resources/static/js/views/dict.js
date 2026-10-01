@@ -42,7 +42,7 @@
       }
     },
     template: [
-      '<div class="page-card">',
+      '<div class="page-card cd-fill">',
       '  <div class="page-title">医保基础字典下载</div>',
       '  <el-alert type="info" :closable="false" show-icon style="margin-bottom:14px;"',
       '    title="按当前登录医院(租户)下载并入库, 各医院字典相互隔离。首次下载为全量, 之后按本地版本号增量。"></el-alert>',
@@ -50,7 +50,7 @@
       '    <el-button v-for="t in types" :key="t.path" :loading="busy && busyLabel===t.label" @click="dl(t)">{{ t.label }}</el-button>',
       '    <el-button type="warning" :loading="busy && busyLabel===\'全部字典\'" @click="dlAll">下载全部</el-button>',
       '  </div>',
-      '  <el-table :data="results" size="small" border stripe style="margin-top:8px;">',
+      '  <el-table :data="results" size="small" border stripe height="100%" style="margin-top:8px;">',
       '    <el-table-column type="index" label="序号" width="60"></el-table-column>',
       '    <el-table-column prop="time" label="时间" width="110"></el-table-column>',
       '    <el-table-column prop="label" label="字典" min-width="200"></el-table-column>',
@@ -75,11 +75,11 @@
       }
     },
     template: [
-      '<div class="page-card">',
+      '<div class="page-card cd-fill">',
       '  <div class="page-title">字典版本状态(本院)</div>',
       '  <div class="toolbar"><el-button @click="load">刷新</el-button>',
       '    <span style="color:var(--yb-ink-2);font-size:13px;">共 {{ list.length }} 类字典</span></div>',
-      '  <el-table :data="list" v-loading="loading" border stripe size="small">',
+      '  <el-table :data="list" v-loading="loading" border stripe size="small" height="100%">',
       '    <el-table-column type="index" label="序号" width="60"></el-table-column>',
       '    <el-table-column prop="dictType" label="字典类型" width="180"></el-table-column>',
       '    <el-table-column prop="dictName" label="字典名称" min-width="160"></el-table-column>',

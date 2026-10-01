@@ -73,6 +73,10 @@ public class HisVisit extends BaseEntity {
     private String physicalExam;
     /** 处理意见 */
     private String treatmentOpinion;
+    /** 结构化病历JSON(his_emr_template scope=2 fields 取值; 空则回退 SOAP 文本列) */
+    private String structure;
+    /** 结构化病历模板ID(his_emr_template.id) */
+    private Long emrTemplateId;
     /** 医疗类别(2203 medType, 自挂号同步: 11普通门诊 14急诊) */
     private String medType;
     /** 过敏史 */

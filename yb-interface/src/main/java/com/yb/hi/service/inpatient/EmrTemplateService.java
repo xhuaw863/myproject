@@ -9,7 +9,10 @@ import com.yb.hi.dto.inpatient.EmrTemplateDTO;
 import com.yb.hi.entity.inpatient.HisEmrTemplate;
 import com.yb.hi.framework.common.BizException;
 import com.yb.hi.framework.common.R;
+import com.yb.hi.framework.common.Roles;
+import com.yb.hi.framework.tenant.LoginUser;
 import com.yb.hi.framework.tenant.TenantContext;
+import com.yb.hi.framework.tenant.UserContext;
 import com.yb.hi.mapper.inpatient.HisEmrTemplateMapper;
 import com.yb.hi.platform.entity.SysTenant;
 import com.yb.hi.platform.service.OrgAccessGuard;
@@ -42,16 +45,17 @@ import java.util.Map;
 @Service
 public class EmrTemplateService implements ApplicationRunner {
 
-    /** 种子模板: {模板编码, 模板名称, record_type, template_category} */
+    /** 种子模板: {模板编码, 模板名称, record_type, template_category, scope(1住院 2门诊)} */
     private static final String[][] SEED_TEMPLATES = {
-            {"EMR_ADMIT", "入院记录", "1", "1"},
-            {"EMR_FIRST_PROG", "首次病程记录", "1", "2"},
-            {"EMR_DAILY_PROG", "日常病程记录", "1", "3"},
-            {"EMR_SENIOR_ROUND", "上级医师查房记录", "1", "4"},
-            {"EMR_SURGERY", "手术记录", "6", "5"},
-            {"EMR_POST_SURGERY", "术后病程记录", "1", "6"},
-            {"EMR_DISCHARGE", "出院小结", "7", "7"},
-            {"EMR_DEATH", "死亡记录", "1", "8"}
+            {"EMR_ADMIT", "入院记录", "1", "1", "1"},
+            {"EMR_FIRST_PROG", "首次病程记录", "1", "2", "1"},
+            {"EMR_DAILY_PROG", "日常病程记录", "1", "3", "1"},
+            {"EMR_SENIOR_ROUND", "上级医师查房记录", "1", "4", "1"},
+            {"EMR_SURGERY", "手术记录", "6", "5", "1"},
+            {"EMR_POST_SURGERY", "术后病程记录", "1", "6", "1"},
+            {"EMR_DISCHARGE", "出院小结", "7", "7", "1"},
+            {"EMR_DEATH", "死亡记录", "1", "8", "1"},
+            {"EMR_OUTP_GENERAL", "门诊病历(通用)", "2", "21", "2"}
     };
 
     private final HisEmrTemplateMapper templateMapper;
@@ -133,6 +137,7 @@ public class EmrTemplateService implements ApplicationRunner {
                 t.setTemplateCategory(Integer.valueOf(def[3]));
                 t.setFields(buildSeedFields(code));
                 t.setDeptId(0L);
+                t.setScope(Integer.valueOf(def[4]));
                 t.setVersion(1);
                 t.setStatus(1);
                 templateMapper.insert(t);
@@ -172,16 +177,35 @@ public class EmrTemplateService implements ApplicationRunner {
 
     /* ================= 模板查询 ================= */
 
-    /** 模板列表(recordType/category 可选筛选; deptId 非空时含全院通用模板 dept_id=0) */
-    public R<List<HisEmrTemplate>> listTemplates(Integer recordType, Integer category, Long deptId) {
-        List<HisEmrTemplate> list = templateMapper.selectList(Wrappers.<HisEmrTemplate>lambdaQuery()
+    /** 模板列表(recordType/category/scope 可选筛选; mine=true 仅返回当前用户可见的启用模板[全院+本科室+本人]; 否则 deptId 非空时含全院 dept_id=0) */
+    public R<List<HisEmrTemplate>> listTemplates(Integer recordType, Integer category, Long deptId, Integer scope, boolean mine) {
+        com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper<HisEmrTemplate> qw =
+                Wrappers.<HisEmrTemplate>lambdaQuery()
                 .eq(recordType != null, HisEmrTemplate::getRecordType, recordType)
                 .eq(category != null, HisEmrTemplate::getTemplateCategory, category)
-                .and(deptId != null, w -> w.eq(HisEmrTemplate::getDeptId, deptId).or().eq(HisEmrTemplate::getDeptId, 0L))
+                .eq(scope != null, HisEmrTemplate::getScope, scope);
+        LoginUser lu = UserContext.get();
+        if (mine && lu != null) {
+            final Long sId = lu.getStaffId();
+            final Long dId = lu.getDeptId();
+            qw.eq(HisEmrTemplate::getStatus, 1);
+            qw.and(w -> {
+                w.nested(g -> g.eq(HisEmrTemplate::getDeptId, 0L).isNull(HisEmrTemplate::getStaffId));
+                if (dId != null) {
+                    w.or(d -> d.eq(HisEmrTemplate::getDeptId, dId).isNull(HisEmrTemplate::getStaffId));
+                }
+                if (sId != null) {
+                    w.or(s -> s.eq(HisEmrTemplate::getStaffId, sId));
+                }
+            });
+        } else if (deptId != null) {
+            qw.and(w -> w.eq(HisEmrTemplate::getDeptId, deptId).or().eq(HisEmrTemplate::getDeptId, 0L));
+        }
+        qw.orderByAsc(HisEmrTemplate::getScope)
                 .orderByAsc(HisEmrTemplate::getRecordType)
                 .orderByAsc(HisEmrTemplate::getTemplateCategory)
-                .orderByAsc(HisEmrTemplate::getId));
-        return R.ok(list);
+                .orderByAsc(HisEmrTemplate::getId);
+        return R.ok(templateMapper.selectList(qw));
     }
 
     /** 模板详情 */
@@ -220,14 +244,39 @@ public class EmrTemplateService implements ApplicationRunner {
         }
         String code = dto.getTemplateCode().trim();
         ensureCodeAvailable(code);
+        LoginUser lu = UserContext.get();
+        String ownerScope = StringUtils.hasText(dto.getOwnerScope()) ? dto.getOwnerScope().trim().toLowerCase() : "global";
+        Long staffId = null;
+        Long deptId;
+        if ("personal".equals(ownerScope)) {
+            if (lu == null || lu.getStaffId() == null) {
+                throw new BizException(400, "个人模板须绑定当前登录职工");
+            }
+            staffId = lu.getStaffId();
+            deptId = lu.getDeptId() != null ? lu.getDeptId() : 0L;
+        } else if ("dept".equals(ownerScope)) {
+            if (lu == null || lu.getDeptId() == null) {
+                throw new BizException(400, "科室模板须指定归属科室");
+            }
+            deptId = dto.getDeptId() != null ? dto.getDeptId() : lu.getDeptId();
+            if (!deptId.equals(lu.getDeptId()) && !isAdmin(lu)) {
+                throw new BizException(403, "无权为其他科室创建模板");
+            }
+        } else {
+            guard.requireLeadOrg("仅牵头机构管理员可维护全院病历模板");
+            deptId = 0L;
+        }
         HisEmrTemplate t = new HisEmrTemplate();
         t.setOrgId(guard.currentOrgId());
         t.setTemplateCode(code);
         t.setTemplateName(dto.getTemplateName().trim());
         t.setRecordType(dto.getRecordType());
         t.setTemplateCategory(dto.getTemplateCategory());
-        t.setFields(JSON.toJSONString(toFieldJsonArray(dto.getFields())));
-        t.setDeptId(dto.getDeptId() != null ? dto.getDeptId() : 0L);
+        t.setFields(resolveFieldsJson(dto));
+        t.setLayout(dto.getLayout());
+        t.setScope(dto.getScope() != null ? dto.getScope() : 1);
+        t.setStaffId(staffId);
+        t.setDeptId(deptId);
         t.setVersion(dto.getVersion() != null ? dto.getVersion() : 1);
         t.setStatus(dto.getStatus() != null ? dto.getStatus() : 1);
         try {
@@ -235,7 +284,7 @@ public class EmrTemplateService implements ApplicationRunner {
         } catch (DuplicateKeyException e) {
             throw new BizException(400, "模板编码已存在: " + code);
         }
-        log.info("新建病历模板: id={}, code={}, name={}", t.getId(), code, t.getTemplateName());
+        log.info("新建病历模板: id={}, code={}, name={}, owner={}", t.getId(), code, t.getTemplateName(), ownerScope);
         return R.ok(templateMapper.selectById(t.getId()));
     }
 
@@ -245,6 +294,7 @@ public class EmrTemplateService implements ApplicationRunner {
         if (exist == null) {
             throw new BizException(400, "病历模板不存在");
         }
+        guardEditable(exist);
         if (dto == null) {
             throw new BizException(400, "模板内容不能为空");
         }
@@ -264,8 +314,14 @@ public class EmrTemplateService implements ApplicationRunner {
         if (dto.getTemplateCategory() != null) {
             exist.setTemplateCategory(dto.getTemplateCategory());
         }
-        if (dto.getFields() != null) {
-            exist.setFields(JSON.toJSONString(toFieldJsonArray(dto.getFields())));
+        if (dto.getFields() != null || dto.getRawFields() != null) {
+            exist.setFields(resolveFieldsJson(dto));
+        }
+        if (dto.getLayout() != null) {
+            exist.setLayout(dto.getLayout());
+        }
+        if (dto.getScope() != null) {
+            exist.setScope(dto.getScope());
         }
         if (dto.getDeptId() != null) {
             exist.setDeptId(dto.getDeptId());
@@ -283,14 +339,25 @@ public class EmrTemplateService implements ApplicationRunner {
         return R.ok();
     }
 
-    /** 删除模板(逻辑删除) */
+    /** 删除模板(逻辑删除; 按归属层级鉴权) */
     public R<Void> removeTemplate(Long id) {
-        if (id == null || templateMapper.selectById(id) == null) {
+        HisEmrTemplate exist = id == null ? null : templateMapper.selectById(id);
+        if (exist == null) {
             throw new BizException(400, "病历模板不存在");
         }
+        guardEditable(exist);
         templateMapper.deleteById(id);
         log.info("删除病历模板: id={}", id);
         return R.ok();
+    }
+
+    /** 获取模板完整字段定义 JSON(含 dictRef/subFields/section 等新属性, 供设计器/增强渲染器使用) */
+    public R<Object> getDefs(Long id) {
+        HisEmrTemplate t = id == null ? null : templateMapper.selectById(id);
+        if (t == null) {
+            throw new BizException(400, "病历模板不存在");
+        }
+        return R.ok(parseArraySafe(t.getFields()));
     }
 
     /** 获取模板字段定义(供前端渲染表单): 规范化为纯字符串键值对列表 */
@@ -329,6 +396,34 @@ public class EmrTemplateService implements ApplicationRunner {
         }
         if (existsGlobal(code)) {
             throw new BizException(400, "模板编码已被占用(标准编码全租户共享): " + code);
+        }
+    }
+
+    /** 字段 JSON 落库: 设计器 rawFields 优先(原样序列化保留 dictRef/subFields/section), 否则回退 EmrFieldDefDTO 规范形状 */
+    private String resolveFieldsJson(EmrTemplateDTO dto) {
+        if (dto.getRawFields() != null) {
+            return JSON.toJSONString(dto.getRawFields());
+        }
+        return JSON.toJSONString(toFieldJsonArray(dto.getFields()));
+    }
+
+    private boolean isAdmin(LoginUser lu) {
+        return lu != null && lu.hasAnyRole(Roles.ADMIN, Roles.SUPER_ADMIN, Roles.ORG_ADMIN);
+    }
+
+    /** 模板可编辑性守卫: 个人=本人或管理员; 科室=同科室或管理员; 全院=牵头机构管理员 */
+    private void guardEditable(HisEmrTemplate t) {
+        LoginUser lu = UserContext.get();
+        if (t.getStaffId() != null) {
+            if (!isAdmin(lu) && (lu == null || !t.getStaffId().equals(lu.getStaffId()))) {
+                throw new BizException(403, "无权编辑他人个人模板");
+            }
+        } else if (t.getDeptId() != null && t.getDeptId() != 0L) {
+            if (!isAdmin(lu) && (lu == null || !t.getDeptId().equals(lu.getDeptId()))) {
+                throw new BizException(403, "无权编辑其他科室模板");
+            }
+        } else {
+            guard.requireLeadOrg("仅牵头机构管理员可维护全院病历模板");
         }
     }
 
@@ -520,6 +615,21 @@ public class EmrTemplateService implements ApplicationRunner {
                 a.add(f("deathCause", "死亡原因", "textarea", true));
                 a.add(f("treatProcess", "诊疗经过", "textarea", true));
                 a.add(f("rescueProcess", "抢救经过", "textarea", false));
+                break;
+            case "EMR_OUTP_GENERAL":
+                a.add(f("sec_1", "主诉与病史", "section", false));
+                a.add(f("chiefComplaint", "主诉", "textarea", true, "maxLength", 200));
+                a.add(f("presentIllness", "现病史", "textarea", true));
+                a.add(f("pastHistory", "既往史", "textarea", false, "defaultMacro", "past_history"));
+                a.add(f("allergyHistory", "过敏史", "textarea", false, "defaultMacro", "allergy_info"));
+                a.add(f("sec_2", "体格检查", "section", false));
+                a.add(f("vitals", "生命体征", "vitals", false));
+                a.add(f("physicalExam", "体格检查", "textarea", true));
+                a.add(f("auxExam", "辅助检查", "textarea", false));
+                a.add(f("sec_3", "诊断与处理", "section", false));
+                a.add(f("diagnosis", "门诊诊断", "diagnosis", false, "defaultMacro", "main_diag"));
+                a.add(f("treatmentOpinion", "处理意见", "textarea", true));
+                a.add(f("followupNote", "随访建议", "textarea", false));
                 break;
             default:
                 break;

@@ -24,7 +24,8 @@
           group: '基础数据', children: [
             { key: 'catalog-map', label: '医保目录对照', comp: 'CatalogMap' },
             { key: 'diag-map', label: '医保疾病对照', comp: 'DiagMap' },
-            { key: 'community-dict', label: '医共体字典', comp: 'CommunityDict' }
+            { key: 'community-dict', label: '医共体字典', comp: 'CommunityDict' },
+            { key: 'supplier-dict', label: '供货商维护', comp: 'SupplierDict' }
           ]
         },
         {
@@ -70,7 +71,15 @@
       group: '门诊医生站', children: [
         { key: 'doctor-ws', label: '门诊医生工作站', comp: 'DoctorWorkstation' },
         { key: 'doctor-worklog', label: '医生工作日志', comp: 'DoctorWorklog' },
-        { key: 'medical-template', label: '病历模板管理', comp: 'MedicalTemplateManage' }
+        { key: 'medical-template', label: '病历模板管理', comp: 'MedicalTemplateManage' },
+        { key: 'emr-designer', label: '病历模板设计器', comp: 'EmrTemplateDesigner' }
+      ]
+    },
+    {
+      group: '病历质控与数据元', children: [
+        { key: 'emr-quality-rule', label: '质控规则维护', comp: 'EmrQualityRuleManage' },
+        { key: 'emr-element-search', label: '病历检索上报', comp: 'EmrElementSearch' },
+        { key: 'emr-quality-board', label: '质控评分看板', comp: 'EmrQualityBoard' }
       ]
     },
     {
@@ -87,16 +96,31 @@
     },
     {
       group: '药库系统', children: [
-        { key: 'wh-drug', label: '药品目录', comp: 'DrugCatalogView' },
+        /* 药品采购 */
+        { key: 'supplier-mgr', label: '供应商管理', comp: 'SupplierManage' },
+        { key: 'purchase-rule', label: '采购规则', comp: 'PurchaseRule' },
+        { key: 'purchase-plan', label: '采购计划', comp: 'PurchasePlan' },
+        { key: 'purchase-order', label: '采购订单', comp: 'PurchaseOrder' },
+        /* 库存作业(采购入库已含购入方式/发票/定向出库/多单位/冲红) */
         { key: 'wh-in', label: '采购入库', comp: 'StockInManage' },
         { key: 'wh-out', label: '出库管理', comp: 'StockOutManage' },
-        { key: 'wh-stock', label: '库存/流水', comp: 'DrugStock' },
-        { key: 'wh-check', label: '盘点', comp: 'StockCheck' },
-        { key: 'warehouse-def', label: '药库管理', comp: 'WarehouseDef' },
-        { key: 'warehouse-rpt', label: '药库统计', comp: 'WarehouseReport' },
         { key: 'trf-mgr', label: '库存调拨', comp: 'TransferManage' },
+        { key: 'wh-check', label: '盘点', comp: 'StockCheck' },
+        { key: 'wh-stock', label: '库存/流水', comp: 'DrugStock' },
+        { key: 'warehouse-def', label: '药库管理', comp: 'WarehouseDef' },
+        { key: 'wh-drug', label: '药品目录', comp: 'DrugCatalogView' },
+        /* 财务结算 */
+        { key: 'stock-accept', label: '财务验收', comp: 'StockAccept' },
+        { key: 'supplier-pay', label: '供应商付款', comp: 'SupplierPayment' },
+        { key: 'payable-rpt', label: '应付账款', comp: 'PayableReport' },
         { key: 'price-adjust', label: '药品调价', comp: 'PriceAdjust' },
-        { key: 'stock-ledger', label: '进销存台账', comp: 'DrugLedger' }
+        { key: 'month-end', label: '库房月结', comp: 'MonthEnd' },
+        /* 账簿统计(进销存台账已含进价/零售口径与财务/实物账) */
+        { key: 'stock-ledger', label: '进销存台账', comp: 'DrugLedger' },
+        { key: 'warehouse-rpt', label: '药库统计', comp: 'WarehouseReport' },
+        /* 养护管理 */
+        { key: 'drug-maint', label: '药品养护', comp: 'DrugMaintenance' },
+        { key: 'maint-template', label: '养护模板', comp: 'MaintenanceTemplate' }
       ]
     },
     /* 2026-09 三模块基座(静态兑底菜单, 与 RbacInitializer 动态菜单同 key 同名):

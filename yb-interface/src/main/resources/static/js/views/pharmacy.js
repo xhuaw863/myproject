@@ -254,7 +254,7 @@
       money: money
     },
     template: [
-      '<div class="page-card">',
+      '<div class="page-card cd-fill">',
       '  <div class="page-title">待发药 <span style="font-size:12px;color:var(--yb-ink-2);font-weight:normal;">(已开立未发药处方 · 先开先发 · <span v-if="refreshSecs>0">列表每{{ refreshSecs }}秒自动刷新</span><span v-else>已关闭自动刷新</span>)</span></div>',
       '  <div class="toolbar">',
       '    <span style="font-weight:600;color:var(--yb-ink-1);">当前药房</span>',
@@ -269,7 +269,7 @@
       '    <span style="flex:1;"></span>',
       '    <span style="color:var(--yb-ink-2);font-size:13px;">共 {{ total }} 张<span v-if="refreshSecs>0"> · 每{{ refreshSecs }}秒自动刷新</span></span>',
       '  </div>',
-      '  <el-table :data="list" v-loading="loading" border stripe size="small">',
+      '  <el-table :data="list" v-loading="loading" border stripe size="small" height="100%">',
       '    <el-table-column type="index" label="序号" width="60" :index="seqNo"></el-table-column>',
       '    <el-table-column prop="rxNo" label="处方号" width="150"></el-table-column>',
       '    <el-table-column prop="patientName" label="患者姓名" width="100"></el-table-column>',
@@ -412,7 +412,7 @@
       fmtTime: fmtTime
     },
     template: [
-      '<div class="page-card">',
+      '<div class="page-card cd-fill">',
       '  <div class="page-title">调剂发药记录 <span style="font-size:12px;color:var(--yb-ink-2);font-weight:normal;">(发药/核对双签留痕 · 导出按药房+日期区间口径)</span></div>',
       '  <div class="toolbar">',
       '    <span style="font-weight:600;color:var(--yb-ink-1);">当前药房</span>',
@@ -431,7 +431,7 @@
       '    <span style="flex:1;"></span>',
       '    <span style="color:var(--yb-ink-2);font-size:13px;">共 {{ total }} 条</span>',
       '  </div>',
-      '  <el-table :data="list" v-loading="loading" border stripe size="small">',
+      '  <el-table :data="list" v-loading="loading" border stripe size="small" height="100%">',
       '    <el-table-column type="index" label="序号" width="60" :index="seqNo"></el-table-column>',
       '    <el-table-column prop="dispenseNo" label="发药单号" width="150"></el-table-column>',
       '    <el-table-column label="药房" width="100"><template #default="s">{{ pharmacyName(pharmacyDefs, s.row.pharmacyId) }}</template></el-table-column>',
@@ -604,7 +604,7 @@
       '    <el-tab-pane label="已退药" name="1"></el-tab-pane>',
       '    <el-tab-pane label="已驳回" name="2"></el-tab-pane>',
       '  </el-tabs>',
-      '  <el-table :data="list" v-loading="loading" border stripe size="small">',
+      '  <el-table :data="list" v-loading="loading" border stripe size="small" max-height="560">',
       '    <el-table-column type="index" label="序号" width="60" :index="seqNo"></el-table-column>',
       '    <el-table-column prop="returnNo" label="退药单号" width="150"></el-table-column>',
       '    <el-table-column prop="patientName" label="患者姓名" width="100"></el-table-column>',
@@ -734,7 +734,7 @@
       pharmacyTypeTag: pharmacyTypeTag
     },
     template: [
-      '<div class="page-card">',
+      '<div class="page-card cd-fill">',
       '  <div class="page-title">药房管理 <span style="font-size:12px;color:var(--yb-ink-2);font-weight:normal;">(机构级多药房 · 待发药/发药记录/退药按药房过滤 · 维护仅牵头机构管理员)</span></div>',
       '  <div class="toolbar">',
       '    <el-button v-if="lead" type="primary" @click="openAdd">新增药房</el-button>',
@@ -743,7 +743,7 @@
       '    <span style="color:var(--yb-ink-2);font-size:13px;">共 {{ list.length }} 个启用中药房</span>',
       '  </div>',
       '  <el-alert type="info" :closable="false" show-icon style="margin-bottom:12px;" title="列表仅显示启用中的药房; 停用后药房从各工作站药房下拉中移除, 历史发药/退药单据不受影响"></el-alert>',
-      '  <el-table :data="list" v-loading="loading" border stripe size="small">',
+      '  <el-table :data="list" v-loading="loading" border stripe size="small" height="100%">',
       '    <el-table-column type="index" label="序号" width="60"></el-table-column>',
       '    <el-table-column prop="code" label="编码" width="130"></el-table-column>',
       '    <el-table-column prop="name" label="名称" width="150"></el-table-column>',
@@ -982,7 +982,7 @@
       reqLabel: reqLabel, reqTag: reqTag, pharmacyName: pharmacyName, money: money, fmtTime: fmtTime
     },
     template: [
-      '<div class="page-card">',
+      '<div class="page-card cd-fill">',
       '  <div class="page-title">药品请领 <span style="font-size:12px;color:var(--yb-ink-2);font-weight:normal;">(药房→药库 · 发起请领 → 药库审核发货 → 药房确认收货)</span></div>',
       '  <div class="toolbar">',
       '    <span style="font-weight:600;color:var(--yb-ink-1);">当前药房</span>',
@@ -1000,7 +1000,7 @@
       '    <span style="flex:1;"></span>',
       '    <el-button type="primary" @click="openCreate">发起请领</el-button>',
       '  </div>',
-      '  <el-table :data="list" v-loading="loading" border stripe size="small">',
+      '  <el-table :data="list" v-loading="loading" border stripe size="small" height="100%">',
       '    <el-table-column type="index" label="序号" width="60" :index="seqNo"></el-table-column>',
       '    <el-table-column prop="reqNo" label="请领单号" width="150"></el-table-column>',
       '    <el-table-column label="请领药房" width="110"><template #default="s">{{ pharmacyName(pharmacyDefs, s.row.pharmacyId) }}</template></el-table-column>',
@@ -1260,7 +1260,7 @@
       trfLabel: trfLabel, trfTag: trfTag, trfKindLabel: trfKindLabel, money: money, fmtTime: fmtTime
     },
     template: [
-      '<div class="page-card">',
+      '<div class="page-card cd-fill">',
       '  <div class="page-title">库存调拨 <span style="font-size:12px;color:var(--yb-ink-2);font-weight:normal;">(药库/药房库存位之间 · 建单 → 调出 → 调入 · 批次随行数量守恒)</span></div>',
       '  <div class="toolbar">',
       '    <el-select v-model="filterStatus" placeholder="全部状态" clearable style="width:130px" @change="search">',
@@ -1272,7 +1272,7 @@
       '    <span style="flex:1;"></span>',
       '    <el-button type="primary" @click="openCreate">新建调拨</el-button>',
       '  </div>',
-      '  <el-table :data="list" v-loading="loading" border stripe size="small">',
+      '  <el-table :data="list" v-loading="loading" border stripe size="small" height="100%">',
       '    <el-table-column type="index" label="序号" width="60" :index="seqNo"></el-table-column>',
       '    <el-table-column prop="transferNo" label="调拨单号" width="150"></el-table-column>',
       '    <el-table-column label="调出库位" width="150"><template #default="s">{{ locationName(s.row.fromLocationId) }} <span style="color:var(--yb-ink-2);">{{ locationKindLabel(s.row.fromLocationId) }}</span></template></el-table-column>',
@@ -1522,7 +1522,7 @@
       paLabel: paLabel, paTag: paTag, money: money, fmtTime: fmtTime
     },
     template: [
-      '<div class="page-card">',
+      '<div class="page-card cd-fill">',
       '  <div class="page-title">药品调价 <span style="font-size:12px;color:var(--yb-ink-2);font-weight:normal;">(批次调价 · 预览影响 → 存草稿 → 生效 · 仅牵头机构可维护)</span></div>',
       '  <div class="toolbar">',
       '    <el-select v-model="filterStatus" placeholder="全部状态" clearable style="width:120px" @change="search">',
@@ -1534,7 +1534,7 @@
       '    <span style="flex:1;"></span>',
       '    <el-button v-if="lead" type="primary" @click="openCreate">新建调价单</el-button>',
       '  </div>',
-      '  <el-table :data="list" v-loading="loading" border stripe size="small">',
+      '  <el-table :data="list" v-loading="loading" border stripe size="small" height="100%">',
       '    <el-table-column type="index" label="序号" width="60" :index="seqNo"></el-table-column>',
       '    <el-table-column prop="adjustNo" label="调价单号" width="150"></el-table-column>',
       '    <el-table-column prop="effectiveDate" label="生效日期" width="110"></el-table-column>',
@@ -1649,6 +1649,8 @@
     data: function () {
       return {
         loading: false, rows: [], summary: {}, exporting: false,
+        /* 账簿整合(2026-10): tab=ledger进销存台账(数量+进价金额,可导出) / book财务账簿(进价/零售口径与财务/实物账) */
+        tab: 'ledger', std: 1, bookLoading: false, bookRows: [], bookSummary: {},
         locations: [], warehouseId: '', dateRange: [], drugKw: ''
       };
     },
@@ -1685,6 +1687,23 @@
           vm.rows = (d && d.rows) || []; vm.summary = (d && d.summary) || {};
         }).catch(HIS.notifyError).finally(function () { vm.loading = false; });
       },
+      stdLabel: function (v) { return v === 3 ? '零售价' : '进价'; },
+      buildBookQuery: function () {
+        var vm = this; var parts = ['standard=' + vm.std];
+        if (vm.warehouseId) { parts.push('warehouseId=' + vm.warehouseId); }
+        if (vm.dateRange && vm.dateRange.length === 2) { parts.push('beginDate=' + vm.dateRange[0]); parts.push('endDate=' + vm.dateRange[1]); }
+        return '?' + parts.join('&');
+      },
+      /* 财务账簿(收发存): 按记账标准汇总财务账金额 + 实物账数量 */
+      queryBook: function () {
+        var vm = this; vm.bookLoading = true;
+        HIS.get('/api/warehouse/report/stock-book' + vm.buildBookQuery()).then(function (d) {
+          vm.bookRows = (d && d.rows) || []; vm.bookSummary = (d && d.summary) || {};
+        }).catch(HIS.notifyError).finally(function () { vm.bookLoading = false; });
+      },
+      onTab: function (name) { if (name === 'book') { this.queryBook(); } else { this.load(); } },
+      /* 统一查询入口: 当前页签刷新 */
+      reload: function () { if (this.tab === 'book') { this.queryBook(); } else { this.load(); } },
       doExport: function () {
         var vm = this; vm.exporting = true;
         HIS.download('/api/his/stock/ledger/export' + vm.buildQuery(), '进销存台账.xlsx')
@@ -1695,41 +1714,66 @@
       money: money
     },
     template: [
-      '<div class="page-card">',
-      '  <div class="page-title">进销存台账 <span style="font-size:12px;color:var(--yb-ink-2);font-weight:normal;">(期初+本期入-本期出=期末 · 选药房库存位即该药房库存台账 · 日期留空看全部历史)</span></div>',
+      '<div class="page-card cd-fill">',
+      '  <div class="page-title">进销存台账 <span style="font-size:12px;color:var(--yb-ink-2);font-weight:normal;">(期初+本期入-本期出=期末 · 选药房库存位即该药房库存台账 · 财务账簿页签可按进价/零售口径查看收发存)</span></div>',
       '  <div class="toolbar">',
-      '    <el-select v-model="warehouseId" placeholder="全部库位" clearable filterable style="width:220px" @change="load">',
+      '    <el-select v-model="warehouseId" placeholder="全部库位" clearable filterable style="width:220px" @change="reload">',
       '      <el-option v-for="l in locations" :key="l.id" :label="l.name + \'(\' + (l.kind===\'PHARMACY\'?\'药房\':\'药库\') + \')\'" :value="l.id"></el-option>',
       '    </el-select>',
-      '    <el-date-picker v-model="dateRange" type="daterange" value-format="YYYY-MM-DD" range-separator="至" start-placeholder="开始日期" end-placeholder="结束日期" style="width:260px" @change="load"></el-date-picker>',
-      '    <el-input v-model="drugKw" placeholder="药品名称/编码(行内过滤)" clearable style="width:220px"></el-input>',
-      '    <el-button type="primary" @click="load">查询</el-button>',
-      '    <el-button type="success" :loading="exporting" @click="doExport">导出</el-button>',
+      '    <el-date-picker v-model="dateRange" type="daterange" value-format="YYYY-MM-DD" range-separator="至" start-placeholder="开始日期" end-placeholder="结束日期" style="width:260px" @change="reload"></el-date-picker>',
+      '    <el-input v-if="tab===\'ledger\'" v-model="drugKw" placeholder="药品名称/编码(行内过滤)" clearable style="width:220px"></el-input>',
+      '    <el-select v-if="tab===\'book\'" v-model="std" style="width:120px" @change="queryBook"><el-option label="进价口径" :value="1"></el-option><el-option label="零售口径" :value="3"></el-option></el-select>',
+      '    <el-button type="primary" @click="reload">查询</el-button>',
+      '    <el-button v-if="tab===\'ledger\'" type="success" :loading="exporting" @click="doExport">导出</el-button>',
       '    <span style="flex:1;"></span>',
-      '    <span style="color:var(--yb-ink-2);font-size:13px;">{{ locName }} · 共 {{ filteredRows.length }} 行</span>',
+      '    <span style="color:var(--yb-ink-2);font-size:13px;">{{ locName }} · 共 {{ tab===\'book\' ? bookRows.length : filteredRows.length }} 行</span>',
       '  </div>',
-      '  <el-row :gutter="12" style="margin-bottom:10px;">',
-      '    <el-col :span="4"><div class="page-card" style="padding:10px;text-align:center;">期初数量<br/><b>{{ summary.totalOpeningQty != null ? summary.totalOpeningQty : 0 }}</b></div></el-col>',
-      '    <el-col :span="4"><div class="page-card" style="padding:10px;text-align:center;">入库数量<br/><b style="color:var(--yb-success);">{{ summary.totalInQty != null ? summary.totalInQty : 0 }}</b></div></el-col>',
-      '    <el-col :span="4"><div class="page-card" style="padding:10px;text-align:center;">出库数量<br/><b style="color:var(--yb-warning);">{{ summary.totalOutQty != null ? summary.totalOutQty : 0 }}</b></div></el-col>',
-      '    <el-col :span="4"><div class="page-card" style="padding:10px;text-align:center;">期末数量<br/><b>{{ summary.totalClosingQty != null ? summary.totalClosingQty : 0 }}</b></div></el-col>',
-      '    <el-col :span="4"><div class="page-card" style="padding:10px;text-align:center;">入库金额(进价)<br/><b>￥{{ money(summary.totalInAmount) }}</b></div></el-col>',
-      '    <el-col :span="4"><div class="page-card" style="padding:10px;text-align:center;">出库金额(零售)<br/><b>￥{{ money(summary.totalOutAmount) }}</b></div></el-col>',
-      '  </el-row>',
-      '  <el-table :data="filteredRows" v-loading="loading" border stripe size="small" max-height="540">',
-      '    <el-table-column type="index" label="序号" width="60" :index="seqNo"></el-table-column>',
-      '    <el-table-column prop="drugCode" label="药品编码" width="120" show-overflow-tooltip></el-table-column>',
-      '    <el-table-column prop="drugName" label="药品名称" min-width="160" show-overflow-tooltip></el-table-column>',
-      '    <el-table-column prop="spec" label="规格" width="120" show-overflow-tooltip></el-table-column>',
-      '    <el-table-column prop="openingQty" label="期初数量" width="90" align="right"></el-table-column>',
-      '    <el-table-column prop="inQty" label="入库数量" width="90" align="right"></el-table-column>',
-      '    <el-table-column label="入库金额" width="100" align="right"><template #default="s">￥{{ money(s.row.inAmount) }}</template></el-table-column>',
-      '    <el-table-column prop="outQty" label="出库数量" width="90" align="right"></el-table-column>',
-      '    <el-table-column label="出库金额" width="100" align="right"><template #default="s">￥{{ money(s.row.outAmount) }}</template></el-table-column>',
-      '    <el-table-column prop="closingQty" label="期末数量" width="90" align="right"></el-table-column>',
-      '    <el-table-column label="期末金额(进价)" width="120" align="right"><template #default="s">￥{{ money(s.row.closingCostAmount) }}</template></el-table-column>',
-      '    <el-table-column label="当前零售价" width="110" align="right"><template #default="s">￥{{ money(s.row.retailPrice) }}</template></el-table-column>',
-      '  </el-table>',
+      '  <el-tabs v-model="tab" @tab-change="onTab">',
+      '    <el-tab-pane label="进销存台账" name="ledger">',
+      '      <el-row :gutter="12" style="margin-bottom:10px;">',
+      '        <el-col :span="4"><div class="page-card" style="padding:10px;text-align:center;">期初数量<br/><b>{{ summary.totalOpeningQty != null ? summary.totalOpeningQty : 0 }}</b></div></el-col>',
+      '        <el-col :span="4"><div class="page-card" style="padding:10px;text-align:center;">入库数量<br/><b style="color:var(--yb-success);">{{ summary.totalInQty != null ? summary.totalInQty : 0 }}</b></div></el-col>',
+      '        <el-col :span="4"><div class="page-card" style="padding:10px;text-align:center;">出库数量<br/><b style="color:var(--yb-warning);">{{ summary.totalOutQty != null ? summary.totalOutQty : 0 }}</b></div></el-col>',
+      '        <el-col :span="4"><div class="page-card" style="padding:10px;text-align:center;">期末数量<br/><b>{{ summary.totalClosingQty != null ? summary.totalClosingQty : 0 }}</b></div></el-col>',
+      '        <el-col :span="4"><div class="page-card" style="padding:10px;text-align:center;">入库金额(进价)<br/><b>￥{{ money(summary.totalInAmount) }}</b></div></el-col>',
+      '        <el-col :span="4"><div class="page-card" style="padding:10px;text-align:center;">出库金额(零售)<br/><b>￥{{ money(summary.totalOutAmount) }}</b></div></el-col>',
+      '      </el-row>',
+      '      <el-table :data="filteredRows" v-loading="loading" border stripe size="small" height="100%">',
+      '        <el-table-column type="index" label="序号" width="60" :index="seqNo"></el-table-column>',
+      '        <el-table-column prop="drugCode" label="药品编码" width="120" show-overflow-tooltip></el-table-column>',
+      '        <el-table-column prop="drugName" label="药品名称" min-width="160" show-overflow-tooltip></el-table-column>',
+      '        <el-table-column prop="spec" label="规格" width="120" show-overflow-tooltip></el-table-column>',
+      '        <el-table-column prop="openingQty" label="期初数量" width="90" align="right"></el-table-column>',
+      '        <el-table-column prop="inQty" label="入库数量" width="90" align="right"></el-table-column>',
+      '        <el-table-column label="入库金额" width="100" align="right"><template #default="s">￥{{ money(s.row.inAmount) }}</template></el-table-column>',
+      '        <el-table-column prop="outQty" label="出库数量" width="90" align="right"></el-table-column>',
+      '        <el-table-column label="出库金额" width="100" align="right"><template #default="s">￥{{ money(s.row.outAmount) }}</template></el-table-column>',
+      '        <el-table-column prop="closingQty" label="期末数量" width="90" align="right"></el-table-column>',
+      '        <el-table-column label="期末金额(进价)" width="120" align="right"><template #default="s">￥{{ money(s.row.closingCostAmount) }}</template></el-table-column>',
+      '        <el-table-column label="当前零售价" width="110" align="right"><template #default="s">￥{{ money(s.row.retailPrice) }}</template></el-table-column>',
+      '      </el-table>',
+      '    </el-tab-pane>',
+      '    <el-tab-pane label="财务账簿(收发存)" name="book">',
+      '      <el-row :gutter="12" style="margin-bottom:10px;">',
+      '        <el-col :span="6"><div class="page-card" style="padding:10px;text-align:center;">品种数<br/><b>{{ bookSummary.drugCount != null ? bookSummary.drugCount : 0 }}</b></div></el-col>',
+      '        <el-col :span="6"><div class="page-card" style="padding:10px;text-align:center;">期初金额({{ stdLabel(std) }})<br/><b style="color:var(--yb-gold);">￥{{ money(bookSummary.openingAmount) }}</b></div></el-col>',
+      '        <el-col :span="6"><div class="page-card" style="padding:10px;text-align:center;">本期收入 / 支出<br/><b>￥{{ money(bookSummary.incomeAmount) }} / ￥{{ money(bookSummary.expenseAmount) }}</b></div></el-col>',
+      '        <el-col :span="6"><div class="page-card" style="padding:10px;text-align:center;">期末金额 · 实物量<br/><b style="color:var(--yb-danger);">￥{{ money(bookSummary.closingAmount) }}</b> · {{ bookSummary.closingQty != null ? bookSummary.closingQty : 0 }}</div></el-col>',
+      '      </el-row>',
+      '      <el-table :data="bookRows" v-loading="bookLoading" border stripe size="small" height="100%">',
+      '        <el-table-column type="index" label="序号" width="60" :index="seqNo"></el-table-column>',
+      '        <el-table-column prop="drugCode" label="药品编码" width="120" show-overflow-tooltip></el-table-column>',
+      '        <el-table-column prop="drugName" label="药品名称" min-width="160" show-overflow-tooltip></el-table-column>',
+      '        <el-table-column prop="spec" label="规格" width="120" show-overflow-tooltip></el-table-column>',
+      '        <el-table-column prop="openingQty" label="期初数量" width="90" align="right"></el-table-column>',
+      '        <el-table-column prop="inQty" label="入库数量" width="90" align="right"></el-table-column>',
+      '        <el-table-column prop="outQty" label="出库数量" width="90" align="right"></el-table-column>',
+      '        <el-table-column prop="closingQty" label="期末数量" width="90" align="right"></el-table-column>',
+      '        <el-table-column label="单价" width="90" align="right"><template #default="s">￥{{ money(s.row.unitPrice) }}</template></el-table-column>',
+      '        <el-table-column label="期末金额" width="120" align="right"><template #default="s"><b>￥{{ money(s.row.closingAmount) }}</b></template></el-table-column>',
+      '      </el-table>',
+      '    </el-tab-pane>',
+      '  </el-tabs>',
       '</div>'
     ].join('\n')
   };
@@ -1887,7 +1931,7 @@
       traceLabel: traceLabel, traceTag: traceTag, uploadLabel: uploadLabel, uploadTag: uploadTag, fmtTime: fmtTime
     },
     template: [
-      '<div class="page-card">',
+      '<div class="page-card cd-fill">',
       '  <div class="page-title">医保药品追溯码 <span style="font-size:12px;color:var(--yb-ink-2);font-weight:normal;">(入库采集 → 发药绑定 → 状态流转 → Mock报送 · 本机构可维护)</span></div>',
       '  <el-row :gutter="12" style="margin-bottom:10px;">',
       '    <el-col :span="4"><div class="page-card" style="padding:10px;text-align:center;">追溯码总数<br/><b>{{ stats.total }}</b></div></el-col>',
@@ -1922,7 +1966,7 @@
       '    <span style="flex:1;"></span>',
       '    <span style="color:var(--yb-ink-2);font-size:13px;">共 {{ total }} 条</span>',
       '  </div>',
-      '  <el-table :data="list" v-loading="loading" border stripe size="small" @selection-change="onSelection">',
+      '  <el-table :data="list" v-loading="loading" border stripe size="small" height="100%" @selection-change="onSelection">',
       '    <el-table-column type="selection" width="45"></el-table-column>',
       '    <el-table-column type="index" label="序号" width="60" :index="seqNo"></el-table-column>',
       '    <el-table-column prop="traceCode" label="追溯码" min-width="180" show-overflow-tooltip></el-table-column>',
@@ -2055,7 +2099,7 @@
       money: money
     },
     template: [
-      '<div class="page-card">',
+      '<div class="page-card cd-fill">',
       '  <div class="page-title">药房定价 <span style="font-size:12px;color:var(--yb-ink-2);font-weight:normal;">(按药房维护覆盖零售价 · 未覆盖回落目录价 · 开方计价按此生效价)</span></div>',
       '  <div class="toolbar">',
       '    <el-select v-model="pharmacyId" placeholder="选择药房" filterable style="width:180px" @change="onPharmacyChange">',
@@ -2067,7 +2111,7 @@
       '    <span style="flex:1;"></span>',
       '    <span style="color:var(--yb-ink-2);font-size:13px;">共 {{ total }} 条</span>',
       '  </div>',
-      '  <el-table :data="list" v-loading="loading" border stripe size="small">',
+      '  <el-table :data="list" v-loading="loading" border stripe size="small" height="100%">',
       '    <el-table-column type="index" label="序号" width="60" :index="seqNo"></el-table-column>',
       '    <el-table-column prop="drug_code" label="编码" width="110" show-overflow-tooltip></el-table-column>',
       '    <el-table-column prop="generic_name" label="通用名" min-width="160" show-overflow-tooltip></el-table-column>',

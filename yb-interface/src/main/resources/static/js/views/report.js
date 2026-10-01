@@ -84,7 +84,7 @@
       }
     },
     template: [
-      '<div class="page-card">',
+      '<div class="page-card cd-fill">',
       '  <div class="page-title">结算记录 <span style="font-size:12px;color:var(--yb-ink-2);font-weight:normal;">(门诊收费单 + 住院医保结算留存, 金额单位: 元)</span></div>',
       '  <div class="toolbar">',
       '    <el-select v-model="type" style="width:110px" @change="search">',
@@ -99,7 +99,7 @@
       '    <el-button type="success" plain :loading="exporting" @click="doExport">导出Excel</el-button>',
       '    <span style="color:var(--yb-ink-2);font-size:13px;">共 {{ total }} 笔</span>',
       '  </div>',
-      '  <el-table :data="list" v-loading="loading" border stripe size="small">',
+      '  <el-table :data="list" v-loading="loading" border stripe size="small" height="100%">',
       '    <el-table-column type="index" label="序号" width="60" :index="seqNo"></el-table-column>',
       '    <el-table-column prop="billNo" label="收费单号" min-width="170" show-overflow-tooltip></el-table-column>',
       '    <el-table-column prop="patientName" label="患者姓名" width="90"></el-table-column>',
@@ -273,7 +273,7 @@
       '      <el-button type="primary" @click="search">查询</el-button>',
       '      <span style="color:var(--yb-ink-2);font-size:13px;">共 {{ total }} 条</span>',
       '    </div>',
-      '    <el-table :data="list" v-loading="loading" border stripe size="small">',
+      '    <el-table :data="list" v-loading="loading" border stripe size="small" max-height="calc(100vh - 420px)">',
       '      <el-table-column type="index" label="序号" width="60" :index="seqNo"></el-table-column>',
       '      <el-table-column prop="settleDate" label="日期" width="105"></el-table-column>',
       '      <el-table-column label="收费笔数" prop="totalCount" width="90" align="right" header-align="right"></el-table-column>',

@@ -23,7 +23,9 @@ import com.yb.hi.entity.outpatient.HisPatientInsu;
 import com.yb.hi.entity.outpatient.HisRegistration;
 import com.yb.hi.entity.yb.HisUploadStatus;
 import com.yb.hi.framework.common.BizException;
+import com.yb.hi.framework.tenant.LoginUser;
 import com.yb.hi.framework.tenant.TenantContext;
+import com.yb.hi.framework.tenant.UserContext;
 import com.yb.hi.mapper.doctor.HisOrderMapper;
 import com.yb.hi.mapper.doctor.HisPrescriptionMapper;
 import com.yb.hi.mapper.doctor.HisVisitMapper;
@@ -31,6 +33,8 @@ import com.yb.hi.mapper.outpatient.HisPatientInsuMapper;
 import com.yb.hi.mapper.outpatient.HisRegistrationMapper;
 import com.yb.hi.platform.service.DeptScopeResolver;
 import com.yb.hi.service.OutpatientService;
+import com.yb.hi.service.inpatient.EmrVersionService;
+import com.yb.hi.service.emr.EmrElementService;
 import com.yb.hi.service.yb.UploadStatusService;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.dao.DeadlockLoserDataAccessException;
@@ -73,6 +77,10 @@ public class HisVisitService extends ServiceImpl<HisVisitMapper, HisVisit> {
     private final DeptScopeResolver deptScopeResolver;
     // 上传管线状态机(M5: 2203 结果落库/收费入口守卫/退号撤销)
     private final UploadStatusService uploadStatusService;
+    // Phase B 门诊结构化病历版本快照(仅依赖 JdbcTemplate, 与本服务无环)
+    private final EmrVersionService emrVersionService;
+    // Phase C 门诊结构化病历数据元抽取(仅依赖 Mapper/Guard, 与本服务无环)
+    private final EmrElementService emrElementService;
     // 完成接诊 T1 事务(与 CashierService 同风格; 诊断"先删后插"并发死锁整体重试用)
     private final TransactionTemplate txTemplate;
 
@@ -80,7 +88,9 @@ public class HisVisitService extends ServiceImpl<HisVisitMapper, HisVisit> {
                            HisMedicalRecordService medicalRecordService, HisPrescriptionMapper prescriptionMapper,
                            HisOrderMapper orderMapper, HisPatientInsuMapper patientInsuMapper,
                            HisRegistrationMapper registrationMapper, DeptScopeResolver deptScopeResolver,
-                           UploadStatusService uploadStatusService, PlatformTransactionManager transactionManager) {
+                           UploadStatusService uploadStatusService, EmrVersionService emrVersionService,
+                           EmrElementService emrElementService,
+                           PlatformTransactionManager transactionManager) {
         this.outpatientService = outpatientService;
         this.diagnosisService = diagnosisService;
         this.medicalRecordService = medicalRecordService;
@@ -90,6 +100,8 @@ public class HisVisitService extends ServiceImpl<HisVisitMapper, HisVisit> {
         this.registrationMapper = registrationMapper;
         this.deptScopeResolver = deptScopeResolver;
         this.uploadStatusService = uploadStatusService;
+        this.emrVersionService = emrVersionService;
+        this.emrElementService = emrElementService;
         this.txTemplate = new TransactionTemplate(transactionManager);
         // T1 事务改读已提交: 诊断"先删后插"在默认 RR 下并发完成接诊互相抢 idx_visit 间隙锁,
         // RC 不取间隙锁, 从根上消除该死锁类别(死锁整体重试仍保留作兜底)
@@ -255,17 +267,21 @@ public class HisVisitService extends ServiceImpl<HisVisitMapper, HisVisit> {
             throw new BizException("该就诊已完成或已取消");
         }
 
-        // 回写就诊主表病历字段与医保扩展字段(updateById 忽略 null 字段, 保持原值)
-        v.setChiefComplaint(req.getChiefComplaint());
-        v.setPresentIllness(req.getPresentIllness());
-        v.setPastHistory(req.getPastHistory());
-        v.setAllergyHistory(req.getAllergyHistory());
-        v.setPhysicalExam(req.getPhysicalExam());
-        v.setAuxExam(req.getAuxExam());
-        v.setTreatmentOpinion(req.getTreatmentOpinion());
-        v.setDiseTypeCode(req.getDiseTypeCode());
-        v.setBirctrlType(req.getBirctrlType());
-        v.setBirctrlMatnDate(parseDate(req.getBirctrlMatnDate()));
+        // 回写就诊主表病历字段与医保扩展字段
+        // 方案 B 收敛(B2): 结构化正文为单一真源; SOAP 文本列仅在请求显式携带时回写(历史文本病历),
+        // 结构化完成不写 SOAP 列, 下游(病历S/O/A/P、医保2203、打印、回显)按需用 EmrStructureReader 派生
+        if (req.getChiefComplaint() != null) v.setChiefComplaint(req.getChiefComplaint());
+        if (req.getPresentIllness() != null) v.setPresentIllness(req.getPresentIllness());
+        if (req.getPastHistory() != null) v.setPastHistory(req.getPastHistory());
+        if (req.getAllergyHistory() != null) v.setAllergyHistory(req.getAllergyHistory());
+        if (req.getPhysicalExam() != null) v.setPhysicalExam(req.getPhysicalExam());
+        if (req.getAuxExam() != null) v.setAuxExam(req.getAuxExam());
+        if (req.getTreatmentOpinion() != null) v.setTreatmentOpinion(req.getTreatmentOpinion());
+        if (req.getDiseTypeCode() != null) v.setDiseTypeCode(req.getDiseTypeCode());
+        if (req.getBirctrlType() != null) v.setBirctrlType(req.getBirctrlType());
+        if (req.getBirctrlMatnDate() != null) v.setBirctrlMatnDate(parseDate(req.getBirctrlMatnDate()));
+        if (req.getStructure() != null) v.setStructure(req.getStructure());
+        if (req.getEmrTemplateId() != null) v.setEmrTemplateId(req.getEmrTemplateId());
         v.setVisitStatus(3);
         v.setFinishTime(LocalDateTime.now());
         updateById(v);
@@ -283,22 +299,26 @@ public class HisVisitService extends ServiceImpl<HisVisitMapper, HisVisit> {
         diagnosisService.saveDiagnoses(v.getId(), v.getDeptName(), v.getAtddrNo(), v.getDrName(),
                 req.getDiagnoses());
 
-        // 组装SOAP病历
+        // 组装正式病历(SOAP): 结构化正文优先派生 S/O/A/P(方案 B B2); 无结构化沿用请求 SOAP 文本
         List<HisDiagnosis> savedDiag = diagnosisService.listByVisit(v.getId());
         String assessment = savedDiag.stream().map(HisDiagnosis::getDiagName)
                 .filter(StringUtils::hasText).collect(Collectors.joining(","));
         HisMedicalRecord record = new HisMedicalRecord();
         record.setVisitId(v.getId());
-        record.setSubjective(joinNonEmpty("主诉:", req.getChiefComplaint(), "现病史:", req.getPresentIllness(),
-                "既往史:", req.getPastHistory(), "过敏史:", req.getAllergyHistory()));
-        record.setObjective(joinNonEmpty("体格检查:", req.getPhysicalExam(), "辅助检查:", req.getAuxExam()));
+        // 方案 B(B2): 单一真源—统一从 v(已合并本次请求携带的 SOAP 列或 structure)经派生器组装 S/O/A/P;
+        // 结构化病历按 fieldKey 对齐取值, 历史文本病历自动回退旧 SOAP 列
+        Map<String, String> soapView = EmrStructureReader.read(v);
+        record.setSubjective(EmrStructureReader.subjectiveText(soapView));
+        record.setObjective(EmrStructureReader.objectiveText(soapView));
+        record.setPlan(EmrStructureReader.planText(soapView));
+        record.setAllergyHistory(soapView.getOrDefault("allergyHistory", ""));
+        record.setAuxExam(soapView.getOrDefault("auxExam", ""));
         record.setAssessment(assessment);
-        record.setPlan(req.getTreatmentOpinion());
-        record.setAllergyHistory(req.getAllergyHistory());
-        record.setAuxExam(req.getAuxExam());
         record.setDrName(v.getDrName());
         record.setDrSign(v.getDrName());
         medicalRecordService.saveRecord(record);
+        // Phase C: 完成接诊正式病历后同步数据元(scope=2, 以最新 structure 为准)
+        emrElementService.syncOutpVisit(v.getId());
         return v;
     }
 
@@ -403,7 +423,8 @@ public class HisVisitService extends ServiceImpl<HisVisitMapper, HisVisit> {
         mdtrt.setPsnNo(v.getPsnNo());
         mdtrt.setMedType(v.getMedType() != null ? v.getMedType() : "11");
         mdtrt.setBegntime(v.getVisitTime() == null ? DateUtil.currentDateTime() : DateUtil.format(v.getVisitTime()));
-        mdtrt.setMainCondDscr(v.getChiefComplaint());
+        // 方案 B(B2): 主诉从 structure 派生(无结构化自动回退旧 SOAP 列)
+        mdtrt.setMainCondDscr(EmrStructureReader.read(v).get("chiefComplaint"));
         mdtrt.setDiseTypeCode(v.getDiseTypeCode());
         mdtrt.setBirctrlType(v.getBirctrlType());
         mdtrt.setBirctrlMatnDate(v.getBirctrlMatnDate() == null ? null : v.getBirctrlMatnDate().toString());
@@ -456,20 +477,50 @@ public class HisVisitService extends ServiceImpl<HisVisitMapper, HisVisit> {
         if (v.getVisitStatus() != null && v.getVisitStatus() >= 3) {
             throw new BizException("该就诊已完成或已取消, 不能保存草稿");
         }
-        v.setChiefComplaint(req.getChiefComplaint());
-        v.setPresentIllness(req.getPresentIllness());
-        v.setPastHistory(req.getPastHistory());
-        v.setAllergyHistory(req.getAllergyHistory());
-        v.setPhysicalExam(req.getPhysicalExam());
-        v.setAuxExam(req.getAuxExam());
-        v.setTreatmentOpinion(req.getTreatmentOpinion());
-        v.setDiseTypeCode(req.getDiseTypeCode());
-        v.setBirctrlType(req.getBirctrlType());
-        v.setBirctrlMatnDate(parseDate(req.getBirctrlMatnDate()));
-        v.setFollowupDate(parseDate(req.getFollowupDate()));
-        v.setFollowupNote(req.getFollowupNote());
+        // SOAP 逐列: 仅当请求携带(非 null)才回写, 结构化模式不发 SOAP 时不清空既有文本病历(双模式并存)
+        if (req.getChiefComplaint() != null) v.setChiefComplaint(req.getChiefComplaint());
+        if (req.getPresentIllness() != null) v.setPresentIllness(req.getPresentIllness());
+        if (req.getPastHistory() != null) v.setPastHistory(req.getPastHistory());
+        if (req.getAllergyHistory() != null) v.setAllergyHistory(req.getAllergyHistory());
+        if (req.getPhysicalExam() != null) v.setPhysicalExam(req.getPhysicalExam());
+        if (req.getAuxExam() != null) v.setAuxExam(req.getAuxExam());
+        if (req.getTreatmentOpinion() != null) v.setTreatmentOpinion(req.getTreatmentOpinion());
+        if (req.getDiseTypeCode() != null) v.setDiseTypeCode(req.getDiseTypeCode());
+        if (req.getBirctrlType() != null) v.setBirctrlType(req.getBirctrlType());
+        if (req.getBirctrlMatnDate() != null) v.setBirctrlMatnDate(parseDate(req.getBirctrlMatnDate()));
+        if (req.getFollowupDate() != null) v.setFollowupDate(parseDate(req.getFollowupDate()));
+        if (req.getFollowupNote() != null) v.setFollowupNote(req.getFollowupNote());
+        // 结构化病历: 落库前对旧 structure 做版本快照(scope=2), 再回写新结构
+        boolean structureChanged = req.getStructure() != null && !req.getStructure().equals(v.getStructure());
+        if (structureChanged) {
+            snapshotOutpVersion(v);
+            v.setStructure(req.getStructure());
+        }
+        if (req.getEmrTemplateId() != null) v.setEmrTemplateId(req.getEmrTemplateId());
         updateById(v);
-        log.info("保存病历草稿: visitId={}", v.getId());
+        // Phase C: 结构化病历落库后同步数据元(先删后插幂等; 失败不影响草稿保存)
+        emrElementService.syncOutpVisit(v.getId());
+        log.info("保存病历草稿: visitId={}, structured={}", v.getId(), v.getStructure() != null);
+    }
+
+    /** 门诊结构化病历版本快照(静默): 覆盖旧 structure 前落 his_emr_version(scope=2, refId=visitId) 一行; 失败仅告警 */
+    private void snapshotOutpVersion(HisVisit v) {
+        LoginUser user = UserContext.get();
+        if (user == null || user.getUserId() == null) {
+            return;
+        }
+        try {
+            Map<String, String> soapView = EmrStructureReader.read(v);
+            String content = joinNonEmpty("S:", EmrStructureReader.subjectiveText(soapView),
+                    "O:", EmrStructureReader.objectiveText(soapView),
+                    "P:", EmrStructureReader.planText(soapView));
+            emrVersionService.saveVersionByScope(2, v.getId(), content, v.getStructure(),
+                    user.getUserId(),
+                    StringUtils.hasText(user.getRealName()) ? user.getRealName() : user.getUsername(),
+                    "save");
+        } catch (Exception e) {
+            log.warn("门诊病历版本快照失败(不影响主流程): visitId={}, err={}", v.getId(), e.getMessage());
+        }
     }
 
     /**
@@ -494,8 +545,9 @@ public class HisVisitService extends ServiceImpl<HisVisitMapper, HisVisit> {
             row.put("workDate", v.getWorkDate());
             row.put("deptName", v.getDeptName());
             row.put("drName", v.getDrName());
-            row.put("chiefComplaint", v.getChiefComplaint());
-            row.put("treatmentOpinion", v.getTreatmentOpinion());
+            Map<String, String> soapView = EmrStructureReader.read(v);
+            row.put("chiefComplaint", soapView.get("chiefComplaint"));
+            row.put("treatmentOpinion", soapView.get("treatmentOpinion"));
             row.put("mainDiagName", mainDiagName(v.getId()));
             result.add(row);
         }

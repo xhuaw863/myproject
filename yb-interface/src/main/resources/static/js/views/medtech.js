@@ -230,7 +230,7 @@
       }
     },
     template: [
-      '<div class="page-card">',
+      '<div class="page-card cd-fill">',
       '  <div class="page-title">标本管理 <span style="font-size:12px;color:var(--yb-ink-2);font-weight:normal;">(检验标本全流程: 生成 · 采集 · 运送 · 签收/拒收)</span></div>',
       '  <el-tabs v-model="tab" @tab-change="onTab">',
       '    <el-tab-pane label="待采集" name="0"></el-tab-pane>',
@@ -244,7 +244,7 @@
       '    <span style="flex:1;"></span>',
       '    <span style="color:var(--yb-ink-2);font-size:13px;">共 {{ total }} 份标本</span>',
       '  </div>',
-      '  <el-table :data="list" border size="small" v-loading="loading" @selection-change="onSelection">',
+      '  <el-table :data="list" border size="small" v-loading="loading" height="100%" @selection-change="onSelection">',
       '    <el-table-column v-if="tab===\'0\'" type="selection" width="42"></el-table-column>',
       '    <el-table-column type="index" label="序号" width="55" :index="seqNo"></el-table-column>',
       '    <el-table-column prop="barcode" label="条码号" width="150"><template #default="s"><b style="font-family:Consolas,monospace;">{{ s.row.barcode }}</b></template></el-table-column>',
@@ -682,7 +682,7 @@
       openDetail: function (row) { this.detailRow = row; this.detailVisible = true; }
     },
     template: [
-      '<div class="page-card">',
+      '<div class="page-card cd-fill">',
       '  <div class="page-title">危急值闭环管理 <span style="font-size:12px;color:var(--yb-ink-2);font-weight:normal;">(发现 · 复核 · 通知 · 接收 · 处置 全流程留痕, 30秒自动刷新; 橙色行 = 超时预警)</span></div>',
       '  <div class="toolbar">',
       '    <span style="color:var(--yb-ink-2);font-size:13px;">状态</span>',
@@ -694,7 +694,7 @@
       '    <span style="flex:1;"></span>',
       '    <span style="color:var(--yb-ink-2);font-size:13px;">共 {{ total }} 条</span>',
       '  </div>',
-      '  <el-table :data="list" border size="small" v-loading="loading" :row-class-name="rowClass">',
+      '  <el-table :data="list" border size="small" v-loading="loading" height="100%" :row-class-name="rowClass">',
       '    <el-table-column type="index" label="序号" width="55" :index="seqNo"></el-table-column>',
       '    <el-table-column label="患者" min-width="110"><template #default="s">{{ s.row.patientName || \'-\' }}<div style="color:var(--yb-ink-2);font-size:12px;">{{ (s.row.genderName || \'\') + (s.row.age != null ? \' \' + s.row.age + \'岁\' : \'\') }}</div></template></el-table-column>',
       '    <el-table-column label="项目" min-width="130"><template #default="s"><div style="font-weight:600;">{{ s.row.itemName || \'-\' }}</div><div style="color:var(--yb-ink-2);font-size:12px;">{{ s.row.itemCode || \'\' }}</div></template></el-table-column>',
@@ -872,7 +872,7 @@
       }
     },
     template: [
-      '<div class="page-card">',
+      '<div class="page-card cd-fill">',
       '  <div class="page-title">危急值规则配置 <span style="font-size:12px;color:var(--yb-ink-2);font-weight:normal;">(阈值命中即报危急值; 患者类型精确匹配优先, 无则回落通用规则)</span></div>',
       '  <div class="toolbar">',
       '    <el-button type="primary" @click="openCreate">新增规则</el-button>',
@@ -880,7 +880,7 @@
       '    <span style="flex:1;"></span>',
       '    <span style="color:var(--yb-ink-2);font-size:13px;">共 {{ list.length }} 条</span>',
       '  </div>',
-      '  <el-table v-if="list.length || loading" :data="list" border size="small" v-loading="loading">',
+      '  <el-table v-if="list.length || loading" :data="list" border size="small" v-loading="loading" height="100%">',
       '    <el-table-column type="index" label="序号" width="55" :index="seqNo"></el-table-column>',
       '    <el-table-column prop="itemCode" label="项目编码" width="110"></el-table-column>',
       '    <el-table-column prop="itemName" label="项目名称" min-width="140"></el-table-column>',
@@ -966,7 +966,7 @@
       }
     },
     template: [
-      '<div class="page-card">',
+      '<div class="page-card cd-fill">',
       '  <div class="page-title">报告查询 <span style="font-size:12px;color:var(--yb-ink-2);font-weight:normal;">(全状态检索历史报告 · 危急值标注 · 点击行查看详情)</span></div>',
       '  <div class="toolbar">',
       '    <el-input v-model="keyword" placeholder="患者姓名 / 患者ID / 报告单号" clearable style="width:220px" @keyup.enter="search"></el-input>',
@@ -977,7 +977,7 @@
       '    <el-button type="primary" @click="search">查询</el-button>',
       '    <el-button @click="reset">重置</el-button>',
       '  </div>',
-      '  <el-table :data="list" border size="small" v-loading="loading" style="cursor:pointer;" @row-click="openDetail">',
+      '  <el-table :data="list" border size="small" v-loading="loading" height="100%" style="cursor:pointer;" @row-click="openDetail">',
       '    <el-table-column type="index" label="序号" width="55" :index="seqNo"></el-table-column>',
       '    <el-table-column label="报告编号" width="150"><template #default="s"><b style="font-family:Consolas,monospace;">{{ s.row.reportNo }}</b></template></el-table-column>',
       '    <el-table-column label="患者" min-width="130"><template #default="s">{{ s.row.patientName || \'-\' }}<span style="color:var(--yb-ink-2);font-size:12px;" v-if="s.row.genderName || s.row.age"> ({{ s.row.genderName || \'\' }}{{ s.row.age != null ? \' \' + s.row.age + \'岁\' : \'\' }})</span></template></el-table-column>',

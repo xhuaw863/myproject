@@ -3,6 +3,7 @@ package com.yb.hi.dto.inpatient;
 import lombok.Data;
 
 import java.util.List;
+import java.util.Map;
 
 /**
  * 病历结构化模板请求(fields 列表序列化为 his_emr_template.fields JSON 落库)
@@ -20,6 +21,14 @@ public class EmrTemplateDTO {
     private Integer templateCategory;
     /** 字段定义列表 */
     private List<EmrFieldDefDTO> fields;
+    /** 设计器直传完整字段定义(含 dictRef/subFields/section 等新属性, 非空则原样序列化落库, 优先于 fields) */
+    private List<Map<String, Object>> rawFields;
+    /** 布局定义JSON(分节/栅格, 设计器产出) */
+    private String layout;
+    /** 适用范围:1住院 2门诊 */
+    private Integer scope;
+    /** 模板归属层级:personal(个人)/dept(科室)/global(全院), 仅新建时生效 */
+    private String ownerScope;
     /** 科室ID(his_dept.id, 0=全院) */
     private Long deptId;
     /** 版本号 */

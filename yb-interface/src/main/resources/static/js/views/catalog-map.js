@@ -434,7 +434,7 @@
       /* ==== 批量自动对照预览弹窗 ==== */
       '  <el-dialog v-model="autoDlg" :title="\'批量自动对照 - \'+curLabel" width="860px" top="6vh">',
       '    <el-alert type="info" :closable="false" show-icon style="margin-bottom:10px"',
-      '      title="对未对照条目跑匹配器, 仅名称+规格全同(默认阈值0.95)进入预览; 勾选后提交写入, 未达标条目留人工复核。"></el-alert>',
+      '      :title="catalog===\'charge\' ? \'对未对照条目跑匹配器, 医疗服务项目仅按名称全同匹配(不比规格, 默认阈值0.95)进入预览; 勾选后提交写入, 未达标条目留人工复核。\' : \'对未对照条目跑匹配器, 仅名称+规格全同(默认阈值0.95)进入预览; 勾选后提交写入, 未达标条目留人工复核。\'"></el-alert>',
       '    <div class="toolbar">',
       '      <span style="color:var(--yb-ink-2);font-size:13px;">阈值</span>',
       '      <el-input-number v-model="autoThreshold" :min="0.5" :max="0.99" :step="0.05" :precision="2" style="width:120px"></el-input-number>',

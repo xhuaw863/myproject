@@ -30,6 +30,12 @@ public class HisEmrTemplate extends BaseEntity {
     private Integer templateCategory;
     /** 字段定义JSON */
     private String fields;
+    /** 适用范围:1住院 2门诊 */
+    private Integer scope;
+    /** 布局定义JSON(分节/栅格, 设计器产出) */
+    private String layout;
+    /** 个人模板归属职工ID(his_staff.id, null=科室/全院) */
+    private Long staffId;
     /** 科室ID(his_dept.id, 0=全院) */
     private Long deptId;
     /** 版本号 */

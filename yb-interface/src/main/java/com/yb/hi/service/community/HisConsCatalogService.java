@@ -24,7 +24,7 @@ public class HisConsCatalogService extends ServiceImpl<HisConsCatalogMapper, His
     }
 
     /** 分页查询(关键字: 名称/院内码/医保码/注册证号) */
-    public IPage<HisConsCatalog> pageQuery(long page, long size, String keyword, Integer status) {
+    public IPage<HisConsCatalog> pageQuery(long page, long size, String keyword, Integer status, String mapped) {
         LambdaQueryChainWrapper<HisConsCatalog> q = lambdaQuery()
                 .eq(status != null, HisConsCatalog::getStatus, status);
         if (StringUtils.hasText(keyword)) {
@@ -34,6 +34,11 @@ public class HisConsCatalogService extends ServiceImpl<HisConsCatalogMapper, His
                     .or().like(HisConsCatalog::getRegCertNo, keyword)
                     .or().like(HisConsCatalog::getPyCode, keyword)
                     .or().like(HisConsCatalog::getAbbrCode, keyword));
+        }
+        if ("1".equals(mapped)) {
+            q.isNotNull(HisConsCatalog::getYbConsCode).ne(HisConsCatalog::getYbConsCode, "");
+        } else if ("0".equals(mapped)) {
+            q.and(w -> w.isNull(HisConsCatalog::getYbConsCode).or().eq(HisConsCatalog::getYbConsCode, ""));
         }
         return q.orderByDesc(HisConsCatalog::getId).page(new Page<>(page, size));
     }

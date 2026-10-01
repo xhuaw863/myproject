@@ -158,6 +158,7 @@
     var cert = data.cert || data.admission || {};
     var patient = data.patient || {};
     var visit = data.visit || {};
+    var soap = data.soap || visit;
     var certNo = 'ZY' + String(cert.applyTime || dateText(new Date().toISOString())).replace(/[-: T]/g, '').slice(0, 8) + '-' + String(cert.id || '');
     var urgency = Number(cert.urgency) === 3 ? 'Ⅲ级 危急' : (Number(cert.urgency) === 2 ? 'Ⅱ级 急' : 'Ⅳ级 普通');
     var row = function (label, v) {
@@ -171,7 +172,7 @@
     if (!addr) {
       addr = [value(patient, ['presentProvName'], ''), value(patient, ['presentCityName'], ''), value(patient, ['presentCountyName'], ''), value(patient, ['presentTownName'], '')].filter(Boolean).join('');
     }
-    var allergy = value(visit, ['allergyHistory'], '');
+    var allergy = value(soap, ['allergyHistory'], '');
     var html = '<style>' +
       '.ac-table{width:100%;border-collapse:collapse;margin:6px 0 10px}.ac-table td{border:1px solid #333;padding:6px 8px;font-size:12px;line-height:1.5;text-align:left;background:transparent}' +
       '.ac-table .ac-label{background:#f3f4f6;font-weight:bold;white-space:nowrap;width:76px}.ac-table .ac-text{min-height:20px}' +
@@ -190,11 +191,11 @@
       '<tr><td class="ac-label">现住址</td><td colspan="3">' + (esc(addr) || '<span class="ac-empty">—</span>') + '</td></tr></table>' +
       '<div class="ac-title"><b style="font-size:14px">病情摘要</b></div>' +
       '<table class="ac-table">' +
-      row('主诉', value(visit, ['chiefComplaint'], '')) +
-      row('现病史', value(visit, ['presentIllness'], cert.conditionSummary)) +
-      row('既往史', value(visit, ['pastHistory'], '') + (allergy ? '　过敏史：' + allergy : '')) +
-      row('体格检查', value(visit, ['physicalExam'], '')) +
-      row('辅助检查', value(visit, ['auxExam', 'auxiliaryExam'], '')) +
+      row('主诉', value(soap, ['chiefComplaint'], '')) +
+      row('现病史', value(soap, ['presentIllness'], cert.conditionSummary)) +
+      row('既往史', value(soap, ['pastHistory'], '') + (allergy ? '　过敏史：' + allergy : '')) +
+      row('体格检查', value(soap, ['physicalExam'], '')) +
+      row('辅助检查', value(soap, ['auxExam', 'auxiliaryExam'], '')) +
       '</table>' +
       '<div class="ac-title"><b style="font-size:14px">入院决定</b></div>' +
       '<table class="ac-table">' +

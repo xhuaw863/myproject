@@ -173,8 +173,8 @@
       }
     },
     template: [
-      '<div class="doctor-worklog-wrap">',
-      '  <div class="page-card">',
+      '<div class="doctor-worklog-wrap cd-fill">',
+      '  <div class="page-card cd-grow">',
       '    <div class="page-title">医生工作日志 <span style="font-size:12px;color:var(--yb-ink-2);font-weight:normal;">(按医师汇总接诊/完成/处方/检查工作量, 金额单位: 元)</span></div>',
       /* 打印标题(仅打印时显示, 屏显时隐藏) */
       '    <div class="doctor-worklog-print-title">医生工作日志</div>',
@@ -204,7 +204,7 @@
       '      </el-radio-group>',
       '    </div>',
       /* 汇总统计表(带合计行) */
-      '    <el-table v-show="activeTab===\'summary\'" :data="summaryList" v-loading="loading" border stripe size="small"',
+      '    <el-table v-show="activeTab===\'summary\'" :data="summaryList" v-loading="loading" border stripe size="small" height="100%"',
       '      show-summary :summary-method="summaryMethod">',
       '      <el-table-column type="index" label="序号" width="60"></el-table-column>',
       '      <el-table-column prop="drName" label="医生" min-width="90"></el-table-column>',
@@ -222,7 +222,7 @@
       '      </template></el-table-column>',
       '    </el-table>',
       /* 接诊明细表(分页, 序号跨页连续) */
-      '    <el-table v-show="activeTab===\'detail\'" :data="detailList" v-loading="loading" border stripe size="small">',
+      '    <el-table v-show="activeTab===\'detail\'" :data="detailList" v-loading="loading" border stripe size="small" height="100%">',
       '      <el-table-column type="index" label="序号" width="60" :index="(detailPage-1)*detailSize+1"></el-table-column>',
       '      <el-table-column prop="workDate" label="日期" width="100"></el-table-column>',
       '      <el-table-column prop="patientName" label="患者" width="80"></el-table-column>',

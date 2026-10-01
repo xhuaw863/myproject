@@ -141,7 +141,7 @@
       '      </el-select>' +
       '      <el-button size="small" @click="load" :loading="loading">刷新</el-button>' +
       '    </div>' +
-      '    <el-table :data="list" v-loading="loading" size="small" border stripe>' +
+      '    <el-table :data="list" v-loading="loading" size="small" border stripe max-height="calc(100vh - 320px)">' +
       '      <el-table-column prop="id" label="ID" width="70"></el-table-column>' +
       '      <el-table-column label="业务" width="150"><template #default="s">{{ bizText(s.row.bizType) }}</template></el-table-column>' +
       '      <el-table-column prop="bizId" label="业务ID(就诊)" width="110"></el-table-column>' +

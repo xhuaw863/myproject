@@ -37,4 +37,10 @@ public class VisitFinishReq {
     private List<HisDiagnosis> diagnoses;
     /** 是否上传医保就诊信息(2203), 默认true */
     private Boolean uploadYb;
+
+    /* ===== 方案 B 收敛: 结构化病历正文(单一真源), 完成时据此派生 S/O/A/P 与医保主诉 ===== */
+    /** 结构化病历 JSON(fieldKey→值); 非空表示本次以结构化正文完成, 优先于上方 SOAP 文本列 */
+    private String structure;
+    /** 结构化病历模板ID(scope=2) */
+    private Long emrTemplateId;
 }

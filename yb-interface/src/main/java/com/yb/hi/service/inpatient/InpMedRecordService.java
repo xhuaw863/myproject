@@ -19,6 +19,7 @@ import com.yb.hi.mapper.inpatient.HisInpMedicalRecordMapper;
 import com.yb.hi.mapper.inpatient.HisInpVisitMapper;
 import com.yb.hi.mapper.outpatient.HisPatientMapper;
 import com.yb.hi.platform.service.OrgAccessGuard;
+import com.yb.hi.service.emr.EmrElementService;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -67,12 +68,14 @@ public class InpMedRecordService extends ServiceImpl<HisInpMedicalRecordMapper, 
     private final HisStaffMapper staffMapper;
     private final SignatureService signatureService;
     private final SafeJsonTool safeJsonTool;
+    private final EmrElementService emrElementService;
 
     public InpMedRecordService(HisInpVisitMapper visitMapper, OrgAccessGuard guard,
                                HisPatientMapper patientMapper, EmrTemplateService templateService,
                                EmrQualityService qualityService, EmrMacroService macroService,
                                EmrVersionService emrVersionService, HisStaffMapper staffMapper,
-                               SignatureService signatureService, SafeJsonTool safeJsonTool) {
+                               SignatureService signatureService, SafeJsonTool safeJsonTool,
+                               EmrElementService emrElementService) {
         this.visitMapper = visitMapper;
         this.guard = guard;
         this.patientMapper = patientMapper;
@@ -83,6 +86,7 @@ public class InpMedRecordService extends ServiceImpl<HisInpMedicalRecordMapper, 
         this.staffMapper = staffMapper;
         this.signatureService = signatureService;
         this.safeJsonTool = safeJsonTool;
+        this.emrElementService = emrElementService;
     }
 
     /** 病历列表(recordType 可选筛选, 按记录时间倒序) */
@@ -140,6 +144,9 @@ public class InpMedRecordService extends ServiceImpl<HisInpMedicalRecordMapper, 
         r.setRecordType(dto.getRecordType());
         r.setTitle(dto.getTitle().trim());
         r.setContent(sanitizeContent(dto.getContent()));
+        if (StringUtils.hasText(dto.getStructureData())) {
+            r.setStructureData(dto.getStructureData());
+        }
         r.setRecordTime(LocalDateTime.now());
         r.setDoctorId(InpOrderService.currentDoctorId());
         r.setStatus(1);
@@ -147,6 +154,7 @@ public class InpMedRecordService extends ServiceImpl<HisInpMedicalRecordMapper, 
         log.info("新建住院病历: id={}, visitId={}, recordType={}, title={}",
                 r.getId(), visit.getId(), r.getRecordType(), r.getTitle());
         evaluateQuietly(r.getId());
+        emrElementService.syncInpRecord(r.getId());
         return getById(r.getId());
     }
 
@@ -171,6 +179,9 @@ public class InpMedRecordService extends ServiceImpl<HisInpMedicalRecordMapper, 
         if (dto.getContent() != null) {
             r.setContent(sanitizeContent(dto.getContent()));
         }
+        if (StringUtils.hasText(dto.getStructureData())) {
+            r.setStructureData(dto.getStructureData());
+        }
         /* 版本快照(T43): 更新前落旧内容版本, 供版本历史回溯 */
         snapshotVersion(id, "save");
         boolean ok = update(r, new com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper<HisInpMedicalRecord>()
@@ -180,6 +191,7 @@ public class InpMedRecordService extends ServiceImpl<HisInpMedicalRecordMapper, 
             throw new BizException("病历状态已变化, 请刷新后重试");
         }
         evaluateQuietly(id);
+        emrElementService.syncInpRecord(id);
         return getById(id);
     }
 
@@ -207,6 +219,7 @@ public class InpMedRecordService extends ServiceImpl<HisInpMedicalRecordMapper, 
             throw new BizException("病历状态已变化, 请刷新后重试");
         }
         log.info("提交住院病历: id={}, visitId={}", id, exist.getInpVisitId());
+        emrElementService.syncInpRecord(id);
         return getById(id);
     }
 
@@ -570,6 +583,7 @@ public class InpMedRecordService extends ServiceImpl<HisInpMedicalRecordMapper, 
         log.info("按模板建档: id={}, visitId={}, template={}, deadline={}",
                 r.getId(), visit.getId(), tpl.getTemplateCode(), r.getDeadlineTime());
         evaluateQuietly(r.getId());
+        emrElementService.syncInpRecord(r.getId());
         return getById(r.getId());
     }
 

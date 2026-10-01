@@ -328,7 +328,7 @@
       itemTypeLabel: itemTypeLabel, itemTypeTag: itemTypeTag, insuLabel: insuLabel
     },
     template: [
-      '<div class="page-card">',
+      '<div class="page-card cd-fill">',
       '  <div class="page-title">待收费 <span style="font-size:12px;color:var(--yb-ink-2);font-weight:normal;">(已完成接诊未收费的就诊; 收费后进入收费记录)</span></div>',
       '  <div class="toolbar">',
       '    <el-input v-model="keyword" placeholder="患者姓名/就诊号" clearable style="width:220px" @keyup.enter="search"></el-input>',
@@ -337,7 +337,7 @@
       '    <span style="color:var(--yb-ink-2);font-size:13px;">共 {{ total }} 人</span>',
       '    <span style="color:var(--yb-ink-2);font-size:12px;margin-left:auto;">列表每 30 秒自动刷新</span>',
       '  </div>',
-      '  <el-table :data="list" v-loading="loading" border stripe size="small">',
+      '  <el-table :data="list" v-loading="loading" border stripe size="small" height="100%">',
       '    <el-table-column type="index" label="序号" width="60" :index="seqNo"></el-table-column>',
       '    <el-table-column prop="visit_no" label="就诊号" width="130"></el-table-column>',
       '    <el-table-column prop="patient_name" label="患者姓名" width="100"></el-table-column>',
@@ -614,7 +614,7 @@
       }
     },
     template: [
-      '<div class="page-card">',
+      '<div class="page-card cd-fill">',
       '  <div class="page-title">收费结算记录 <span style="font-size:12px;color:var(--yb-ink-2);font-weight:normal;">(含退费单; 已日结的收费单不可退费)</span></div>',
       '  <div class="toolbar">',
       '    <el-select v-model="filterStatus" placeholder="全部状态" clearable style="width:130px">',
@@ -627,7 +627,7 @@
       '    <el-button type="success" plain @click="doExport">导出</el-button>',
       '    <span style="color:var(--yb-ink-2);font-size:13px;">共 {{ total }} 条</span>',
       '  </div>',
-      '  <el-table :data="list" v-loading="loading" border stripe size="small">',
+      '  <el-table :data="list" v-loading="loading" border stripe size="small" height="100%">',
       '    <el-table-column type="index" label="序号" width="60" :index="seqNo"></el-table-column>',
       '    <el-table-column prop="billNo" label="收费单号" width="160"></el-table-column>',
       '    <el-table-column prop="patientName" label="患者姓名" width="100"></el-table-column>',
@@ -745,7 +745,7 @@
       money: money, money4: money4, qtyFmt: qtyFmt, orDash: orDash
     },
     template: [
-      '<div class="page-card">',
+      '<div class="page-card cd-fill">',
       '  <div class="page-title">退费记录 <span style="font-size:12px;color:var(--yb-ink-2);font-weight:normal;">(TF 退费单; 区分全额/部分退费; 原收费单号与原因取自退费备注)</span></div>',
       '  <div class="toolbar">',
       '    <el-date-picker v-model="dateRange" type="daterange" value-format="YYYY-MM-DD" range-separator="至" start-placeholder="开始日期" end-placeholder="结束日期" style="width:250px"></el-date-picker>',
@@ -754,7 +754,7 @@
       '    <el-button @click="load">刷新</el-button>',
       '    <span style="color:var(--yb-ink-2);font-size:13px;">共 {{ total }} 条</span>',
       '  </div>',
-      '  <el-table :data="list" v-loading="loading" border stripe size="small">',
+      '  <el-table :data="list" v-loading="loading" border stripe size="small" height="100%">',
       '    <el-table-column type="index" label="序号" width="60" :index="seqNo"></el-table-column>',
       '    <el-table-column prop="billNo" label="退费单号" width="160"></el-table-column>',
       '    <el-table-column label="退费类型" width="92" align="center"><template #default="s"><el-tag size="small" :type="refundKindTag(s.row)">{{ refundKindLabel(s.row) }}</el-tag></template></el-table-column>',
@@ -921,7 +921,7 @@
       money: money, orDash: orDash, fmtTime: fmtTime, noFmt: noFmt, signedMoney: signedMoney
     },
     template: [
-      '<div class="page-card">',
+      '<div class="page-card cd-fill cd-tabs">',
       '  <div class="page-title">发票管理 <span style="font-size:12px;color:var(--yb-ink-2);font-weight:normal;">(号段配置与发票记录; 收费时按使用中号段自动取号开票)</span></div>',
       '  <el-tabs v-model="activeTab">',
       '    <el-tab-pane label="号段管理" name="pool">',
@@ -931,7 +931,7 @@
       '        <span style="color:var(--yb-ink-2);font-size:13px;">共 {{ poolTotal }} 个号段</span>',
       '        <span style="color:var(--yb-ink-2);font-size:12px;margin-left:auto;">同机构同发票类型仅一个使用中号段; 取号=前缀+8位序号</span>',
       '      </div>',
-      '      <el-table :data="pools" v-loading="poolLoading" border stripe size="small">',
+      '      <el-table :data="pools" v-loading="poolLoading" border stripe size="small" height="100%">',
       '        <el-table-column type="index" label="序号" width="60" :index="poolSeqNo"></el-table-column>',
       '        <el-table-column prop="poolCode" label="号段编码" width="120"></el-table-column>',
       '        <el-table-column label="发票类型" width="106" align="center"><template #default="s"><el-tag size="small" :type="poolTypeTag(s.row.invoiceType)">{{ poolTypeLabel(s.row.invoiceType) }}</el-tag></template></el-table-column>',
@@ -960,7 +960,7 @@
       '        <el-button type="success" plain @click="doExportInvoices">导出</el-button>',
       '        <span style="color:var(--yb-ink-2);font-size:13px;">共 {{ invTotal }} 条</span>',
       '      </div>',
-      '      <el-table :data="invoices" v-loading="invLoading" border stripe size="small">',
+      '      <el-table :data="invoices" v-loading="invLoading" border stripe size="small" height="100%">',
       '        <el-table-column type="index" label="序号" width="60" :index="invSeqNo"></el-table-column>',
       '        <el-table-column prop="invoiceNo" label="发票号" width="150"></el-table-column>',
       '        <el-table-column label="类型" width="80" align="center"><template #default="s"><el-tag size="small" :type="invTypeTag(s.row.invoiceType)">{{ invTypeLabel(s.row.invoiceType) }}</el-tag></template></el-table-column>',

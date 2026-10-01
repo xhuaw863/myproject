@@ -43,6 +43,18 @@
     return 'info';
   }
 
+  /* 购入方式(批次B并入采购入库): 1正常 2挂账(未核价) 3票未到(仅单据不可确认) */
+  var PURCHASE_MODES = [
+    { v: 1, l: '正常', t: 'success' },
+    { v: 2, l: '挂账', t: 'warning' },
+    { v: 3, l: '票未到', t: 'info' }
+  ];
+  function pmLabel(v) { for (var i = 0; i < PURCHASE_MODES.length; i++) { if (PURCHASE_MODES[i].v === v) { return PURCHASE_MODES[i].l; } } return (v === null || v === undefined) ? '-' : v; }
+  function pmTag(v) { for (var i = 0; i < PURCHASE_MODES.length; i++) { if (PURCHASE_MODES[i].v === v) { return PURCHASE_MODES[i].t; } } return 'info'; }
+  /* 财务验收态(批次B): 0未验收 1已验收 */
+  function acceptLabel(v) { return v === 1 ? '已验收' : (v === 0 ? '未验收' : '-'); }
+  function acceptTag(v) { return v === 1 ? 'success' : 'warning'; }
+
   /* 药库类型: WESTERN-西药 / TCM-中药 / MIXED-综合 */
   var WH_TYPES = [
     { v: 'WESTERN', l: '西药' },
@@ -183,7 +195,7 @@
       expDays: expDays
     },
     template: [
-      '<div class="page-card">',
+      '<div class="page-card cd-fill cd-tabs">',
       '  <div class="page-title">库存总览 <span style="font-size:12px;color:var(--yb-ink-2);font-weight:normal;">(批次级库存 · 低库存/效期预警 · 出入库流水)</span></div>',
       '  <div class="toolbar" style="margin-bottom:6px;">',
       '    <span style="font-weight:600;color:var(--yb-ink-1);">当前药库</span>',
@@ -205,7 +217,7 @@
       '        <el-button @click="doExport">导出Excel</el-button>',
       '        <span style="color:var(--yb-ink-2);font-size:13px;">共 {{ total }} 条库存记录</span>',
       '      </div>',
-      '      <el-table :data="list" v-loading="loading" border stripe size="small">',
+      '      <el-table :data="list" v-loading="loading" border stripe size="small" height="100%">',
       '        <el-table-column type="index" label="序号" width="60" :index="seqNo"></el-table-column>',
       '        <el-table-column label="药库" width="110" show-overflow-tooltip><template #default="s">{{ whName(s.row.warehouseId) }}</template></el-table-column>',
       '        <el-table-column prop="drugCode" label="药品编码" width="120" show-overflow-tooltip></el-table-column>',
@@ -233,7 +245,7 @@
       '    <el-tab-pane name="alert">',
       '      <template #label>低库存预警<el-badge v-if="alertList.length" :value="alertList.length" type="danger" style="margin-left:4px;"></el-badge></template>',
       '      <el-alert type="warning" :closable="false" show-icon style="margin-bottom:12px;" title="库存数量 ≤ 预警量 且未停用的批次, 请及时采购补货"></el-alert>',
-      '      <el-table :data="alertList" v-loading="alertLoading" border stripe size="small">',
+      '      <el-table :data="alertList" v-loading="alertLoading" border stripe size="small" height="100%">',
       '        <el-table-column type="index" label="序号" width="60"></el-table-column>',
       '        <el-table-column label="药库" width="110" show-overflow-tooltip><template #default="s">{{ whName(s.row.warehouseId) }}</template></el-table-column>',
       '        <el-table-column prop="drugCode" label="药品编码" width="120" show-overflow-tooltip></el-table-column>',
@@ -256,7 +268,7 @@
       '        <el-button @click="loadFlow">刷新</el-button>',
       '        <span style="color:var(--yb-ink-2);font-size:13px;">已确认单据明细(按确认时间倒序) · 共 {{ flowTotal }} 条</span>',
       '      </div>',
-      '      <el-table :data="flowList" v-loading="flowLoading" border stripe size="small">',
+      '      <el-table :data="flowList" v-loading="flowLoading" border stripe size="small" height="100%">',
       '        <el-table-column type="index" label="序号" width="60" :index="flowSeqNo"></el-table-column>',
       '        <el-table-column label="确认时间" width="140"><template #default="s">{{ fmtTime(s.row.opTime) }}</template></el-table-column>',
       '        <el-table-column label="方向" width="80"><template #default="s"><el-tag size="small" :type="s.row.flowType===\'IN\'?\'success\':\'warning\'">{{ s.row.flowTypeName }}</el-tag></template></el-table-column>',
@@ -289,6 +301,8 @@
         /* 左侧入库单列表 */
         loading: false, inList: [], inTotal: 0, inPage: 1, inSize: 20,
         filterStatus: null, dateRange: [],
+        /* 供应商主数据(批次A his_supplier) */
+        suppliers: [],
         /* 右侧当前单据: current=主表, currentItems=明细; isNew=新建可编辑 */
         current: null, currentItems: [], isNew: false, detailLoading: false,
         saving: false,
@@ -316,7 +330,7 @@
         return '综合库/未选库: 可选本机构开展的全部药品';
       }
     },
-    created: function () { var vm = this; this.loadWarehouseDefs().then(function () { vm.load(); }); },
+    created: function () { var vm = this; this.loadWarehouseDefs().then(function () { vm.load(); }); this.loadSuppliers(); },
     methods: {
       /* ---- 左侧列表 ---- */
       load: function () {
@@ -355,12 +369,22 @@
       },
       /* ---- 新建/编辑 ---- */
       createNew: function () {
-        this.current = { id: null, inNo: '(保存后生成)', warehouseId: this.prePickWarehouse(), inType: 1, supplier: '', supplierContact: '', remark: '', status: 0, totalAmount: 0 };
+        this.current = { id: null, inNo: '(保存后生成)', warehouseId: this.prePickWarehouse(), inType: 1, supplier: '', supplierId: null, supplierContact: '', purchaseMode: 1, invoiceNo: '', invoiceDate: '', targetWarehouseId: null, remark: '', status: 0, totalAmount: 0 };
         this.currentItems = [];
         this.isNew = true;
       },
+      /* 加载供应商主数据供下拉选择(新单同时写 supplier_id) */
+      loadSuppliers: function () {
+        var vm = this;
+        HIS.get('/api/warehouse/purchase/supplier/list').then(function (list) { vm.suppliers = list || []; }).catch(function () { vm.suppliers = []; });
+      },
+      /* 选供应商: 回填 supplierId 并同步 supplier 文本(兼容旧数据口径) */
+      onSupplierPick: function (id) {
+        for (var i = 0; i < this.suppliers.length; i++) { if (this.suppliers[i].id === id) { this.current.supplier = this.suppliers[i].supplierName; return; } }
+        this.current.supplier = '';
+      },
       emptyItem: function () {
-        return { drugCatalogId: null, drugCode: '', drugName: '', spec: '', batchNo: '', manufacturer: '', qty: null, costPrice: null, retailPrice: null, prodDate: '', expDate: '', amount: null };
+        return { drugCatalogId: null, drugCode: '', drugName: '', spec: '', batchNo: '', manufacturer: '', qty: null, costPrice: null, retailPrice: null, prodDate: '', expDate: '', amount: null, packQty: null, packRatio: null, minQty: null, purchasePrice: null };
       },
       addItem: function () {
         this.currentItems.push(this.emptyItem());
@@ -427,19 +451,25 @@
         return true;
       },
       buildPayload: function () {
-        var vm = this;
+        var vm = this; var c = vm.current;
         return {
-          warehouseId: vm.current.warehouseId,
-          inType: vm.current.inType,
-          supplier: vm.current.supplier,
-          supplierContact: vm.current.supplierContact,
-          remark: vm.current.remark,
+          warehouseId: c.warehouseId,
+          inType: c.inType,
+          supplier: c.supplier,
+          supplierId: c.supplierId || null,
+          supplierContact: c.supplierContact,
+          purchaseMode: c.purchaseMode || 1,
+          invoiceNo: c.invoiceNo || null,
+          invoiceDate: c.invoiceDate || null,
+          targetWarehouseId: c.targetWarehouseId || null,
+          remark: c.remark,
           items: vm.currentItems.map(function (it) {
             return {
               drugCatalogId: it.drugCatalogId, drugCode: it.drugCode, drugName: it.drugName,
               spec: it.spec, batchNo: String(it.batchNo || '').trim(), manufacturer: it.manufacturer,
               qty: it.qty, costPrice: it.costPrice, retailPrice: it.retailPrice,
               prodDate: it.prodDate || null, expDate: it.expDate || null,
+              packQty: it.packQty, packRatio: it.packRatio, minQty: it.minQty, purchasePrice: it.purchasePrice,
               amount: (Number(it.qty) || 0) * (Number(it.costPrice) || 0)
             };
           })
@@ -458,6 +488,8 @@
       /* 确认入库: 新建单先落草稿再确认; 已有草稿单直接确认。确认后库存upsert, 不可作废 */
       confirmBill: function () {
         var vm = this;
+        if (vm.isNew && vm.current.purchaseMode === 3) { ElementPlus.ElMessage.warning('票未到(仅单据)不可确认入库, 请先存草稿'); return; }
+        if (!vm.isNew && vm.current.purchaseMode === 3) { ElementPlus.ElMessage.warning('票未到(仅单据)不可确认入库'); return; }
         if (vm.isNew) {
           if (!vm.validate()) { return; }
           ElementPlus.ElMessageBox.confirm('将保存入库单并立即确认入库(写入库存), 该操作不可作废。是否继续？', '确认入库', { type: 'warning' })
@@ -497,15 +529,31 @@
           })
           .catch(function () { });
       },
+      /* 入库冲红(批次B): 对已确认单生成红字反向单并回退库存 */
+      redReverse: function () {
+        var vm = this;
+        ElementPlus.ElMessageBox.confirm('对已确认入库单 ' + vm.current.inNo + ' 生成红字冲账单并回退库存? 若批次已出库导致不足将被拒绝。', '入库冲红', { type: 'warning' })
+          .then(function () {
+            HIS.post('/api/warehouse/accept/stock-in/' + vm.current.id + '/red-reverse').then(function (m) {
+              HIS.notifySuccess('已冲红, 红字单: ' + (m && m.inNo));
+              vm.load();
+            }).catch(HIS.notifyError);
+          })
+          .catch(function () { });
+      },
       inTypeLabel: inTypeLabel,
       statusLabel: statusLabel,
       statusTag: statusTag,
+      pmLabel: pmLabel,
+      pmTag: pmTag,
+      acceptLabel: acceptLabel,
+      acceptTag: acceptTag,
       money2: money2,
       fmtTime: fmtTime
     },
     template: [
       '<div class="page-card">',
-      '  <div class="page-title">采购入库 <span style="font-size:12px;color:var(--yb-ink-2);font-weight:normal;">(草稿→确认入库写库存 → 作废仅草稿态)</span></div>',
+      '  <div class="page-title">采购入库 <span style="font-size:12px;color:var(--yb-ink-2);font-weight:normal;">(购入方式/发票/定向出库/多单位录入 · 草稿→确认入库写库存 → 作废仅草稿 · 已确认单可冲红)</span></div>',
       '  <div class="dept-split">',
       /* ---- 左侧: 入库单列表 ---- */
       '    <div style="width:400px; flex:none; border-right:1px solid var(--yb-border-light); padding-right:16px; display:flex; flex-direction:column; overflow:hidden;">',
@@ -526,13 +574,15 @@
       '        <el-button size="small" @click="load">刷新</el-button>',
       '        <span style="color:var(--yb-ink-2);font-size:12px;">共 {{ inTotal }} 单</span>',
       '      </div>',
-      '      <el-table :data="inList" v-loading="loading" highlight-current-row size="small" border style="width:100%;" @current-change="onSelectIn">',
+      '      <el-table :data="inList" v-loading="loading" highlight-current-row size="small" border style="width:100%;flex:1;min-height:0;" height="100%" @current-change="onSelectIn">',
       '        <el-table-column type="index" label="序号" width="55" :index="inSeqNo"></el-table-column>',
       '        <el-table-column prop="inNo" label="入库单号" width="140" show-overflow-tooltip></el-table-column>',
       '        <el-table-column label="药库" width="95" show-overflow-tooltip><template #default="s">{{ whName(s.row.warehouseId) }}</template></el-table-column>',
       '        <el-table-column label="类型" width="80"><template #default="s">{{ inTypeLabel(s.row.inType) }}</template></el-table-column>',
+      '        <el-table-column label="购入" width="75" align="center"><template #default="s"><el-tag size="small" :type="pmTag(s.row.purchaseMode)">{{ pmLabel(s.row.purchaseMode) }}</el-tag></template></el-table-column>',
+      '        <el-table-column label="验收" width="75" align="center"><template #default="s"><el-tag size="small" :type="acceptTag(s.row.acceptStatus)">{{ acceptLabel(s.row.acceptStatus) }}</el-tag></template></el-table-column>',
       '        <el-table-column label="总金额" width="90" align="right"><template #default="s">{{ money2(s.row.totalAmount) }}</template></el-table-column>',
-      '        <el-table-column label="状态" width="75"><template #default="s"><el-tag size="small" :type="statusTag(s.row.status)">{{ statusLabel(s.row.status) }}</el-tag></template></el-table-column>',
+      '        <el-table-column label="状态" width="75"><template #default="s"><el-tag size="small" :type="statusTag(s.row.status)">{{ statusLabel(s.row.status) }}</el-tag><el-tag v-if="s.row.reversedFlag===1" size="small" type="danger" style="margin-left:2px;">红</el-tag></template></el-table-column>',
       '        <el-table-column label="创建时间" width="110" show-overflow-tooltip><template #default="s">{{ fmtTime(s.row.createTime) }}</template></el-table-column>',
       '      </el-table>',
       '      <el-pagination style="margin-top:10px;justify-content:flex-end;" small background layout="total, prev, pager, next" :total="inTotal" :page-size="inSize" :current-page="inPage" @current-change="onInPage"></el-pagination>',
@@ -545,6 +595,9 @@
       '          <span style="font-size:15px;font-weight:600;color:var(--yb-ink-1);">入库单 {{ current.inNo }}</span>',
       '          <el-tag :type="statusTag(current.status)">{{ statusLabel(current.status) }}</el-tag>',
       '          <el-tag v-if="isNew" type="warning" size="small">新建未保存</el-tag>',
+      '          <el-tag size="small" :type="pmTag(current.purchaseMode)">{{ pmLabel(current.purchaseMode) }}</el-tag>',
+      '          <el-tag size="small" :type="acceptTag(current.acceptStatus)">{{ acceptLabel(current.acceptStatus) }}</el-tag>',
+      '          <el-tag v-if="current.reversedFlag===1" size="small" type="danger">已冲红</el-tag>',
       '          <span style="color:var(--yb-ink-2);font-size:12px;">创建 {{ fmtTime(current.createTime) || \'-\' }}<template v-if="current.confirmBy"> · 确认人 {{ current.confirmBy }} {{ fmtTime(current.confirmTime) }}</template></span>',
       '        </div>',
       '        <el-alert v-if="!isNew && current.status===0" type="info" :closable="false" show-icon style="margin-bottom:12px;" title="草稿单据只读(不支持修改), 如需调整请作废后重新创建"></el-alert>',
@@ -552,10 +605,17 @@
       '          <el-row :gutter="12">',
       '            <el-col :span="6"><el-form-item label="入库类型"><el-select v-model="current.inType" style="width:100%"><el-option v-for="t in inTypes" :key="t.v" :label="t.v + \'-\' + t.l" :value="t.v"></el-option></el-select></el-form-item></el-col>',
       '            <el-col :span="6"><el-form-item label="目标药库" required><el-select v-model="current.warehouseId" style="width:100%" placeholder="必选"><el-option v-for="w in warehouseDefs" :key="w.id" :label="w.name" :value="w.id"></el-option></el-select></el-form-item></el-col>',
-      '            <el-col :span="6"><el-form-item label="供应商"><el-input v-model="current.supplier" placeholder="供应商名称"></el-input></el-form-item></el-col>',
+      '            <el-col :span="6"><el-form-item label="供应商"><el-select v-model="current.supplierId" clearable filterable placeholder="选择供应商" style="width:100%" @change="onSupplierPick"><el-option v-for="sp in suppliers" :key="sp.id" :label="sp.supplierName" :value="sp.id"></el-option></el-select></el-form-item></el-col>',
+      '            <el-col :span="6"><el-form-item label="购入方式"><el-select v-model="current.purchaseMode" style="width:100%"><el-option label="正常" :value="1"></el-option><el-option label="挂账(未核价)" :value="2"></el-option><el-option label="票未到(仅单据)" :value="3"></el-option></el-select></el-form-item></el-col>',
+      '          </el-row>',
+      '          <el-row :gutter="12">',
+      '            <el-col :span="6"><el-form-item label="发票号"><el-input v-model="current.invoiceNo" placeholder="发票号码"></el-input></el-form-item></el-col>',
+      '            <el-col :span="6"><el-form-item label="发票日期"><el-date-picker v-model="current.invoiceDate" type="date" value-format="YYYY-MM-DD" style="width:100%" placeholder="发票日期"></el-date-picker></el-form-item></el-col>',
+      '            <el-col :span="6"><el-form-item label="定向出库库"><el-select v-model="current.targetWarehouseId" clearable placeholder="空=不定向" style="width:100%"><el-option v-for="w in warehouseDefs" :key="w.id" :label="w.name" :value="w.id"></el-option></el-select></el-form-item></el-col>',
       '            <el-col :span="6"><el-form-item label="联系方式"><el-input v-model="current.supplierContact" placeholder="电话/联系人"></el-input></el-form-item></el-col>',
       '            <el-col :span="24"><el-form-item label="备注"><el-input v-model="current.remark" type="textarea" :rows="2"></el-input></el-form-item></el-col>',
       '          </el-row>',
+      '          <div v-if="current.purchaseMode===3" style="color:var(--yb-ink-2);font-size:12px;margin:0 0 6px 100px;">提示: 票未到(仅单据)仅允许存草稿留档, 不可确认入库。</div>',
       '        </el-form>',
       '        <el-divider content-position="left">入库明细({{ currentItems.length }}条)</el-divider>',
       '        <el-table :data="currentItems" border size="small">',
@@ -571,6 +631,9 @@
       '          <el-table-column label="数量" width="120"><template #default="s"><el-input-number v-if="editable" v-model="s.row.qty" :min="0" :precision="2" size="small" controls-position="right" style="width:100px"></el-input-number><span v-else>{{ s.row.qty }}</span></template></el-table-column>',
       '          <el-table-column label="进价" width="130"><template #default="s"><el-input-number v-if="editable" v-model="s.row.costPrice" :min="0" :precision="4" size="small" controls-position="right" style="width:110px"></el-input-number><span v-else>{{ s.row.costPrice }}</span></template></el-table-column>',
       '          <el-table-column label="零售价" width="130"><template #default="s"><el-input-number v-if="editable" v-model="s.row.retailPrice" :min="0" :precision="4" size="small" controls-position="right" style="width:110px"></el-input-number><span v-else>{{ s.row.retailPrice }}</span></template></el-table-column>',
+      '          <el-table-column label="大包装" width="90"><template #default="s"><el-input-number v-if="editable" v-model="s.row.packQty" :min="0" size="small" controls-position="right" style="width:80px"></el-input-number><span v-else>{{ s.row.packQty }}</span></template></el-table-column>',
+      '          <el-table-column label="包装比" width="90"><template #default="s"><el-input-number v-if="editable" v-model="s.row.packRatio" :min="0" size="small" controls-position="right" style="width:80px"></el-input-number><span v-else>{{ s.row.packRatio }}</span></template></el-table-column>',
+      '          <el-table-column label="挂账进价" width="120"><template #default="s"><el-input-number v-if="editable" v-model="s.row.purchasePrice" :min="0" :precision="4" size="small" controls-position="right" style="width:100px"></el-input-number><span v-else>{{ s.row.purchasePrice }}</span></template></el-table-column>',
       '          <el-table-column label="生产日期" width="140"><template #default="s"><el-date-picker v-if="editable" v-model="s.row.prodDate" type="date" value-format="YYYY-MM-DD" size="small" placeholder="选择日期" style="width:120px"></el-date-picker><span v-else>{{ s.row.prodDate }}</span></template></el-table-column>',
       '          <el-table-column label="有效期" width="140"><template #default="s"><el-date-picker v-if="editable" v-model="s.row.expDate" type="date" value-format="YYYY-MM-DD" size="small" placeholder="选择日期" style="width:120px"></el-date-picker><span v-else>{{ s.row.expDate }}</span></template></el-table-column>',
       '          <el-table-column label="小计" width="90" align="right"><template #default="s">{{ lineAmount(s.row) }}</template></el-table-column>',
@@ -583,6 +646,7 @@
       '          <el-button v-if="editable && lead" :loading="saving" @click="saveDraft">保存草稿</el-button>',
       '          <el-button v-if="lead && (editable || current.status===0)" type="primary" :loading="saving" @click="confirmBill">确认入库</el-button>',
       '          <el-button v-if="lead && !editable && current.status===0" type="danger" @click="voidBill">作废</el-button>',
+      '          <el-button v-if="lead && !editable && current.status===1 && current.reversedFlag!==1 && !current.redOfId" type="danger" @click="redReverse">入库冲红</el-button>',
       '        </div>',
       '      </div>',
       '    </div>',
@@ -852,7 +916,7 @@
       '        <el-button size="small" @click="load">刷新</el-button>',
       '        <span style="color:var(--yb-ink-2);font-size:12px;">共 {{ outTotal }} 单</span>',
       '      </div>',
-      '      <el-table :data="outList" v-loading="loading" highlight-current-row size="small" border style="width:100%;" @current-change="onSelectOut">',
+      '      <el-table :data="outList" v-loading="loading" highlight-current-row size="small" border style="width:100%;flex:1;min-height:0;" height="100%" @current-change="onSelectOut">',
       '        <el-table-column type="index" label="序号" width="55" :index="outSeqNo"></el-table-column>',
       '        <el-table-column prop="outNo" label="出库单号" width="140" show-overflow-tooltip></el-table-column>',
       '        <el-table-column label="药库" width="95" show-overflow-tooltip><template #default="s">{{ whName(s.row.warehouseId) }}</template></el-table-column>',
@@ -1006,14 +1070,14 @@
       }
     },
     template: [
-      '<div class="page-card">',
+      '<div class="page-card cd-fill">',
       '  <div class="page-title">药库管理 <span style="font-size:12px;color:var(--yb-ink-2);font-weight:normal;">(机构级多药库: 西药库/中药库/综合库 · 库内库存独立记账)</span></div>',
       '  <div class="toolbar">',
       '    <el-button v-if="lead" type="primary" @click="openCreate">新增药库</el-button>',
       '    <el-button @click="load">刷新</el-button>',
       '    <span style="color:var(--yb-ink-2);font-size:12px;">共 {{ list.length }} 个药库(含停用)</span>',
       '  </div>',
-      '  <el-table :data="list" v-loading="loading" border stripe size="small">',
+      '  <el-table :data="list" v-loading="loading" border stripe size="small" height="100%">',
       '    <el-table-column type="index" label="序号" width="60"></el-table-column>',
       '    <el-table-column prop="code" label="编码" width="140" show-overflow-tooltip></el-table-column>',
       '    <el-table-column prop="name" label="名称" min-width="150" show-overflow-tooltip></el-table-column>',
@@ -1068,7 +1132,7 @@
       money4: money4
     },
     template: [
-      '<div class="page-card">',
+      '<div class="page-card cd-fill">',
       '  <div class="page-title">药品目录 <span style="font-size:12px;color:var(--yb-ink-2);font-weight:normal;">(本机构已开展药品 · 类型过滤: 西药排除中药/中成药)</span></div>',
       '  <div class="toolbar">',
       '    <el-select v-model="type" placeholder="全部类型" clearable style="width:150px" @change="search">',
@@ -1079,7 +1143,7 @@
       '    <el-button @click="load">刷新</el-button>',
       '    <span style="color:var(--yb-ink-2);font-size:13px;">共 {{ total }} 条</span>',
       '  </div>',
-      '  <el-table :data="list" v-loading="loading" border stripe size="small">',
+      '  <el-table :data="list" v-loading="loading" border stripe size="small" height="100%">',
       '    <el-table-column type="index" label="序号" width="60" :index="seqNo"></el-table-column>',
       '    <el-table-column prop="drugCode" label="药品编码" width="120" show-overflow-tooltip></el-table-column>',
       '    <el-table-column prop="genericName" label="通用名" min-width="170" show-overflow-tooltip></el-table-column>',
@@ -1225,7 +1289,7 @@
       }
     },
     template: [
-      '<div class="page-card">',
+      '<div class="page-card cd-fill">',
       '  <div class="page-title">盘点管理 <span style="font-size:12px;color:var(--yb-ink-2);font-weight:normal;">(按药库整库盘点 · 确认后差异生成盘盈入库/盘亏出库)</span></div>',
       '  <div class="toolbar">',
       '    <span style="font-weight:600;color:var(--yb-ink-1);">当前药库</span>',
@@ -1240,7 +1304,7 @@
       '    <el-button @click="load">刷新</el-button>',
       '    <span style="color:var(--yb-ink-2);font-size:13px;">共 {{ total }} 张盘点单</span>',
       '  </div>',
-      '  <el-table :data="list" v-loading="loading" border stripe size="small">',
+      '  <el-table :data="list" v-loading="loading" border stripe size="small" height="100%">',
       '    <el-table-column type="index" label="序号" width="60" :index="seqNo"></el-table-column>',
       '    <el-table-column prop="checkNo" label="盘点单号" width="150" show-overflow-tooltip></el-table-column>',
       '    <el-table-column label="药库" width="120" show-overflow-tooltip><template #default="s">{{ whName(s.row.warehouseId) }}</template></el-table-column>',

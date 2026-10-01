@@ -203,7 +203,16 @@
       if (!data || data.code !== 0) {
         throw new Error((data && data.msg) || '请求失败');
       }
-      return data.data;
+      /* 全局 Long->String 序列化(雪花ID防精度)会把分页计数字段 total/page/size 一并变成字符串,
+       * 而 el-pagination 的 total 需为数字(否则内部就绪判定失败渲染为空)。此处仅归一化顶层计数字段,
+       * 不触碰 records 内的 ID(仍需字符串), 一次性覆盖所有基于 MyBatis-Plus IPage 的分页接口。 */
+      var payload = data.data;
+      if (payload && typeof payload === 'object' && !Array.isArray(payload)) {
+        if (payload.total != null) { payload.total = Number(payload.total); }
+        if (payload.page != null) { payload.page = Number(payload.page); }
+        if (payload.size != null) { payload.size = Number(payload.size); }
+      }
+      return payload;
     });
   };
   HIS.get = function (url) { return HIS.request('GET', url); };
@@ -276,6 +285,16 @@
     if (window.ElementPlus && ElementPlus.ElMessage) { ElementPlus.ElMessage.success(msg || '操作成功'); }
   };
 
+  /* 列表显示模式默认值(全局共享): 优先本地偏好 his.<key>('0'=全量,其余=分页),
+   * 无本地偏好时回落租户参数 system.list_default_paged(默认分页)。各视图 data() 内调用。 */
+  HIS.pagedDefault = function (key) {
+    try {
+      var v = localStorage.getItem('his.' + key);
+      if (v !== null) { return v !== '0'; }
+      return !(window.HIS && HIS.params && HIS.params.listDefaultPaged === 'false');
+    } catch (e) { return true; }
+  };
+
   /* ===== 字典下拉取数(字典化录入: 医共体统一字典优先) =====
    * HIS.stdValues(type, code): type=cv_code|wst364|hbvalue|whvalue, code=分组编码(dict_code/cv_code)
    * 口径(2026-09 字典分层原则): 医疗业务值域一律从医共体统一字典 his_val_dict 取数(
@@ -293,6 +312,14 @@
         if (window.console) { console.warn('[字典分层] 医共体值域字典未导入 ' + key + ', 临时回落标准字典, 请在医共体字典-值域字典页导入'); }
         return HIS.get('/api/std-dict/query/values?type=' + encodeURIComponent(type) + '&code=' + encodeURIComponent(code));
       })
+      .then(function (list) { _dictCache[key] = list || []; return _dictCache[key]; });
+  };
+  /* 按统一字典 dict_type 原样取启用项: 供卫健归一化域名类值域(如 '药品剂型', 无 type:code 结构);
+   * 空集不回落标准字典(无同名 std 域), 直接返回空数组由调用方兜底。 */
+  HIS.valByType = function (dictType) {
+    var key = 'vt:' + dictType;
+    if (_dictCache[key]) { return Promise.resolve(_dictCache[key]); }
+    return HIS.get('/api/community-dict/val-dict/values?dictType=' + encodeURIComponent(dictType))
       .then(function (list) { _dictCache[key] = list || []; return _dictCache[key]; });
   };
   /* 值域转 {code:name} 映射, 供表格显示 */

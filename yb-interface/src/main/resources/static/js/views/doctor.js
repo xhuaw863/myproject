@@ -183,9 +183,9 @@
         if (!vm.canEdit || vm.submitting) { return; }
         if (!vm.diagnoses.length) { ElementPlus.ElMessage.warning('请至少录入一条诊断'); return; }
         var emr = vm.$refs.emrPanel;
-        if (emr && typeof emr.validateRequired === 'function' && !emr.validateRequired()) { return; }
-        var soap = emr && emr.soapData ? emr.soapData : {};
-        var payload = Object.assign({}, soap, {
+        if (emr && typeof emr.validateForFinish === 'function' && !emr.validateForFinish()) { return; }
+        var emrPayload = (emr && typeof emr.buildFinishPayload === 'function') ? emr.buildFinishPayload() : {};
+        var payload = Object.assign({}, emrPayload, {
           visitId: visitIdOf(vm.currentVisit),
           diagnoses: vm.diagnoses,
           uploadYb: true
@@ -279,7 +279,7 @@
         var id = visitId || visitIdOf(vm.currentVisit);
         if (!id) { return; }
         HIS.get('/api/his/visit/detail?id=' + encodeURIComponent(id)).then(function (data) {
-          HIS.printRecord({ visit: data.visit, soap: data.record || data.visit, diagnoses: data.diagnoses || vm.diagnoses, patient: vm.currentPatient });
+          HIS.printRecord({ visit: data.visit, soap: data.soap || data.record || data.visit, diagnoses: data.diagnoses || vm.diagnoses, patient: vm.currentPatient });
         }).catch(HIS.notifyError);
       },
       printCertificate: function (type, id) {

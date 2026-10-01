@@ -58,10 +58,14 @@ public class HisDrugCatalog extends BaseEntity {
     private String dosformSrc;
     /** 规格(如0.25g*24粒) */
     private String spec;
-    /** 生产企业 */
+    /** 生产企业(名称冗余, 供列表/导出直显) */
     private String manufacturer;
-    /** 上市许可持有人 */
+    /** 生产企业编码(std_supplier.sup_code, 字典引用) */
+    private String manufacturerCode;
+    /** 上市许可持有人(名称冗余) */
     private String mktHolder;
+    /** 上市许可持有人编码(std_supplier.sup_code, 字典引用) */
+    private String mktHolderCode;
 
     /** 甲乙丙类编码(cv_code:chrgitm_lv) */
     private String chrgitmLv;

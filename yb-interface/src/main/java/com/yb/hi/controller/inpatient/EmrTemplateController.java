@@ -34,13 +34,15 @@ public class EmrTemplateController {
         this.guard = guard;
     }
 
-    /** 模板列表(recordType/category 可选筛选; deptId 非空时含全院通用模板 dept_id=0) */
+    /** 模板列表(recordType/category/scope 可选; mine=true 仅当前用户可见的启用模板) */
     @GetMapping("/list")
     public R<List<HisEmrTemplate>> list(
             @RequestParam(required = false) Integer recordType,
             @RequestParam(required = false) Integer category,
-            @RequestParam(required = false) Long deptId) {
-        return templateService.listTemplates(recordType, category, deptId);
+            @RequestParam(required = false) Long deptId,
+            @RequestParam(required = false) Integer scope,
+            @RequestParam(required = false, defaultValue = "false") boolean mine) {
+        return templateService.listTemplates(recordType, category, deptId, scope, mine);
     }
 
     /** 模板详情 */
@@ -55,30 +57,33 @@ public class EmrTemplateController {
         return templateService.getTemplateByCode(code);
     }
 
-    /** 模板字段定义(供前端渲染结构化表单) */
+    /** 模板字段定义(供前端渲染结构化表单; 规范化为纯字符串键值) */
     @GetMapping("/{id}/fields")
     public R<List<Map<String, String>>> fields(@PathVariable Long id) {
         return R.ok(templateService.getFieldDefs(id));
     }
 
-    /** 新建模板(仅牵头机构管理员) */
+    /** 模板完整字段定义 JSON(含 dictRef/subFields/section 等新属性, 供设计器/增强渲染器) */
+    @GetMapping("/{id}/defs")
+    public R<Object> defs(@PathVariable Long id) {
+        return templateService.getDefs(id);
+    }
+
+    /** 新建模板(归属层级 personal/dept/global 由服务层鉴权) */
     @PostMapping
     public R<HisEmrTemplate> create(@RequestBody EmrTemplateDTO dto) {
-        guard.requireLeadOrg("仅牵头机构管理员可维护病历模板");
         return templateService.createTemplate(dto);
     }
 
-    /** 更新模板(版本号自增; 仅牵头机构管理员) */
+    /** 更新模板(版本号自增; 按归属层级鉴权) */
     @PutMapping("/{id}")
     public R<Void> update(@PathVariable Long id, @RequestBody EmrTemplateDTO dto) {
-        guard.requireLeadOrg("仅牵头机构管理员可维护病历模板");
         return templateService.updateTemplate(id, dto);
     }
 
-    /** 删除模板(逻辑删除; 仅牵头机构管理员) */
+    /** 删除模板(逻辑删除; 按归属层级鉴权) */
     @DeleteMapping("/{id}")
     public R<Void> remove(@PathVariable Long id) {
-        guard.requireLeadOrg("仅牵头机构管理员可维护病历模板");
         return templateService.removeTemplate(id);
     }
 }

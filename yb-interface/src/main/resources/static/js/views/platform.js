@@ -155,7 +155,7 @@
         /* 选机构时是否级联含下级机构账号(客户端子树过滤; 仅牵头机构生效) */
         withSubOrgs: false,
         /* 显示模式: 默认由租户参数 system.list_default_paged 控制, 用户手动切换后以本地偏好为准 */
-        paged: (function () { try { var v = localStorage.getItem('his.userPaged2'); if (v !== null) return v !== '0'; return (HIS.params && HIS.params.listDefaultPaged) !== 'false'; } catch (e) { return true; } })(),
+        paged: HIS.pagedDefault('userPaged2'),
         /* 列设置: 低频列(可登录机构/关联职工/授权科室)默认隐藏 */
         colDefs: [
           { key: 'role', label: '角色' }, { key: 'homeOrg', label: '归属机构' }, { key: 'loginOrg', label: '可登录机构' },
@@ -464,7 +464,7 @@
         q += '&page=' + vm.page + '&size=' + (vm.paged ? vm.size : 100000);
         HIS.get(q)
           .then(function (d) {
-            vm.list = (d && d.records) || []; vm.total = (d && d.total) || 0;
+            vm.list = (d && d.records) || []; vm.total = Number((d && d.total) || 0);
             /* 兆底提示: 全量模式下作用域切换后行数超阈, 仅警告不拦截(用户已显式确认全量) */
             if (!vm.paged && vm.total > ((HIS.params && HIS.params.listFullThreshold) || 2000)) {
               ElementPlus.ElMessage.info('当前范围共 ' + vm.total + ' 条，全量渲染可能需要数秒');
@@ -789,7 +789,7 @@
       }
     },
     template: [
-      '<div class="page-card" v-loading="loading">',
+      '<div class="page-card cd-fill" v-loading="loading">',
       '  <div class="page-title">医院管理<span style="font-size:12px;color:var(--yb-ink-2);font-weight:normal;margin-left:8px;">平台超级管理员 · 跨租户开通与管理</span></div>',
       '  <el-alert type="info" :closable="false" show-icon style="margin-bottom:12px;" title="新医院由此统一开通: 建租户 + 医保配置 + 默认机构 + 初始管理员账号, 开通即时生效。之后由该医院管理员登录自行维护科室/职工并分配用户权限。"></el-alert>',
       '  <div class="toolbar">',
@@ -797,7 +797,7 @@
       '    <el-button @click="load">刷新</el-button>',
       '    <span style="color:var(--yb-ink-2);font-size:13px;">共 {{ list.length }} 家医院</span>',
       '  </div>',
-      '  <el-table :data="list" border stripe size="small" style="width:100%">',
+      '  <el-table :data="list" border stripe size="small" height="100%" style="width:100%">',
       '    <el-table-column type="index" label="序号" width="60"></el-table-column>',
       '    <el-table-column prop="tenantCode" label="医院码" width="150"></el-table-column>',
       '    <el-table-column prop="tenantName" label="医共体(租户)名称" min-width="180" show-overflow-tooltip></el-table-column>',

@@ -10,6 +10,7 @@ import com.yb.hi.service.doctor.HisMedicalRecordService;
 import com.yb.hi.service.doctor.HisOrderService;
 import com.yb.hi.service.doctor.HisPrescriptionService;
 import com.yb.hi.service.doctor.HisVisitService;
+import com.yb.hi.service.doctor.EmrStructureReader;
 import org.springframework.format.annotation.DateTimeFormat;
 import org.springframework.web.bind.annotation.*;
 
@@ -57,8 +58,11 @@ public class HisVisitController {
     @GetMapping("/detail")
     public R<Map<String, Object>> detail(@RequestParam Long id) {
         Map<String, Object> data = new LinkedHashMap<>();
-        data.put("visit", visitService.getById(id));
+        HisVisit visit = visitService.getById(id);
+        data.put("visit", visit);
         data.put("record", medicalRecordService.getByVisit(id));
+        // 方案 B 收敛(B2): 供打印/回显消费的 SOAP 视图, 有 structure 则派生, 否则回退旧 SOAP 列
+        data.put("soap", EmrStructureReader.read(visit));
         data.put("diagnoses", diagnosisService.listByVisit(id));
         data.put("prescriptions", prescriptionService.listByVisit(id));
         data.put("orders", orderService.listByVisit(id));

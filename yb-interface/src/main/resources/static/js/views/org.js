@@ -224,7 +224,7 @@
       }
     },
     template: [
-      '<div class="page-card">',
+      '<div class="page-card cd-fill">',
       '  <div class="page-title">机构管理 <span style="font-size:12px;color:var(--yb-ink-2);font-weight:normal;">(医共体县/乡/村三级 · 全医共体共享一套)</span></div>',
       '  <el-alert type="info" :closable="false" show-icon style="margin-bottom:12px;"',
       '    title="牵头机构(ADMIN)统一维护全医共体机构树。机构仅作数据归属标注, 患者档案/基础字典在医共体内跨机构共享。"></el-alert>',
@@ -241,7 +241,7 @@
       '    </el-radio-group>',
       '    <span style="color:var(--yb-ink-2);font-size:13px;">共 {{ filteredCount }} 个机构</span>',
       '  </div>',
-      '  <el-table :data="pagedTree" v-loading="loading" border stripe size="small" row-key="id" :tree-props="{ children: \'children\' }" default-expand-all>',
+      '  <el-table :data="pagedTree" v-loading="loading" border stripe size="small" height="100%" row-key="id" :tree-props="{ children: \'children\' }" default-expand-all>',
       '    <el-table-column type="index" :index="seqNo" label="序号" width="60"></el-table-column>',
       '    <el-table-column prop="orgName" label="机构名称" min-width="220"></el-table-column>',
       '    <el-table-column prop="orgCode" label="机构编码" width="150"></el-table-column>',
@@ -260,7 +260,7 @@
       '      <el-button link type="danger" @click="del(s.row)">删除</el-button>',
       '    </template></el-table-column>',
       '  </el-table>',
-      '  <el-pagination v-if="paged" style="margin-top:10px;justify-content:flex-end;" background layout="total, sizes, prev, pager, next" :total="flatRows.length" :page-size="size" :page-sizes="[10,20,50,100]" :current-page="page" @current-change="onPage" @size-change="onSize"></el-pagination>',
+      '  <el-pagination v-if="paged" style="margin-top:12px;justify-content:flex-end;" background layout="total, sizes, prev, pager, next" :total="flatRows.length" :page-size="size" :page-sizes="[10,20,50,100]" :current-page="page" @current-change="onPage" @size-change="onSize"></el-pagination>',
       '  <el-dialog v-model="dlg" :title="editing?\'编辑机构\':\'新增机构\'" width="680px" top="6vh">',
       '    <el-form :model="form" label-width="110px">',
       '      <el-tabs v-model="activeTab">',

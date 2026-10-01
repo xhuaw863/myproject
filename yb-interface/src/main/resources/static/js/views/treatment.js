@@ -463,7 +463,7 @@
       }
     },
     template: [
-      '<div class="page-card">',
+      '<div class="page-card cd-fill">',
       '  <div class="page-title">治疗计划 <span style="font-size:12px;color:var(--yb-ink-2);font-weight:normal;">(疗程管理: 进度跟踪 · 调整总次数 · 终止计划)</span></div>',
       '  <div class="toolbar">',
       '    <el-input v-model="keyword" placeholder="患者姓名/病历号" clearable style="width:220px;" @keyup.enter="search"></el-input>',
@@ -475,7 +475,7 @@
       '    <span style="flex:1;"></span>',
       '    <span style="color:var(--yb-ink-2);font-size:13px;">共 {{ total }} 条</span>',
       '  </div>',
-      '  <el-table :data="list" row-key="id" v-loading="loading" border stripe size="small" @expand-change="onExpand">',
+      '  <el-table :data="list" row-key="id" v-loading="loading" border stripe size="small" height="100%" @expand-change="onExpand">',
       '    <el-table-column type="expand">',
       '      <template #default="s">',
       '        <div style="padding:4px 16px 10px;">',
@@ -643,7 +643,7 @@
       }
     },
     template: [
-      '<div class="page-card">',
+      '<div class="page-card cd-fill">',
       '  <div class="page-title">治疗设备台账 <span style="font-size:12px;color:var(--yb-ink-2);font-weight:normal;">(机构设备维护 · 仅"正常"设备可被治疗单选用)</span></div>',
       '  <div class="toolbar">',
       '    <el-select v-model="deptId" clearable placeholder="全部科室" style="width:170px;" @change="search">',
@@ -655,7 +655,7 @@
       '    <span style="flex:1;"></span>',
       '    <el-button type="primary" @click="openAdd">新增设备</el-button>',
       '  </div>',
-      '  <el-table :data="pagedList" v-loading="loading" border stripe size="small">',
+      '  <el-table :data="pagedList" v-loading="loading" border stripe size="small" height="100%">',
       '    <el-table-column type="index" label="序号" width="60" :index="seqNo"></el-table-column>',
       '    <el-table-column prop="equip_code" label="设备编号" width="130"></el-table-column>',
       '    <el-table-column prop="equip_name" label="设备名称" min-width="170" show-overflow-tooltip></el-table-column>',
@@ -752,7 +752,7 @@
       openDetail: function (row) { this.detail = { visible: true, row: row }; }
     },
     template: [
-      '<div class="page-card">',
+      '<div class="page-card cd-fill">',
       '  <div class="page-title">治疗记录 <span style="font-size:12px;color:var(--yb-ink-2);font-weight:normal;">(执行明细查询 · 含执行中/已完成/已取消)</span></div>',
       '  <div class="toolbar">',
       '    <el-date-picker v-model="dateRange" type="daterange" range-separator="至" start-placeholder="开始日期" end-placeholder="结束日期" value-format="YYYY-MM-DD" style="width:260px;"></el-date-picker>',
@@ -767,7 +767,7 @@
       '    <span style="flex:1;"></span>',
       '    <span style="color:var(--yb-ink-2);font-size:13px;">共 {{ total }} 条</span>',
       '  </div>',
-      '  <el-table :data="list" v-loading="loading" border stripe size="small">',
+      '  <el-table :data="list" v-loading="loading" border stripe size="small" height="100%">',
       '    <el-table-column type="index" label="序号" width="60" :index="seqNo"></el-table-column>',
       '    <el-table-column prop="exec_no" label="执行单号" width="150"></el-table-column>',
       '    <el-table-column prop="patient_name" label="患者" width="90"></el-table-column>',

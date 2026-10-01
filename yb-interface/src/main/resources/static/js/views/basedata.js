@@ -33,7 +33,7 @@
         withSubOrgs: false,
         exporting: false,
         /* 右侧明细显示模式: 默认由租户参数 system.list_default_paged 控制, 用户手动切换后以本地偏好为准 */
-        paged: (function () { try { var v = localStorage.getItem('his.deptPaged2'); if (v !== null) return v !== '0'; return (HIS.params && HIS.params.listDefaultPaged) !== 'false'; } catch (e) { return true; } })(),
+        paged: HIS.pagedDefault('deptPaged2'),
         page: 1, size: 20,
         /* 左栏机构列表收缩态(localStorage 持久化, 与主侧栏收展同策略) */
         orgsCollapsed: (function () { try { return localStorage.getItem('his.deptOrgsCollapsed') === '1'; } catch (e) { return false; } })(),
@@ -523,7 +523,7 @@
         /* 左栏树过滤关键字(按机构/科室名, 命中节点连同其父级链保留显示) */
         treeKw: '',
         /* 右侧明细显示模式: 默认由租户参数 system.list_default_paged 控制, 用户手动切换后以本地偏好为准 */
-        paged: (function () { try { var v = localStorage.getItem('his.staffPaged2'); if (v !== null) return v !== '0'; return (HIS.params && HIS.params.listDefaultPaged) !== 'false'; } catch (e) { return true; } })(),
+        paged: HIS.pagedDefault('staffPaged2'),
         page: 1, size: 20,
         /* 左栏机构/科室树收缩态(localStorage 持久化, 与科室管理同策略) */
         orgsCollapsed: (function () { try { return localStorage.getItem('his.staffOrgsCollapsed') === '1'; } catch (e) { return false; } })(),
@@ -1811,7 +1811,7 @@
       '      <el-button type="warning" size="small" @click="openBatchStop">批量停诊({{ selectedRows.length }}条)</el-button>',
       '      <span style="color:var(--yb-ink-2);font-size:12px;">仅开放状态的排班参与停诊</span>',
       '    </div>',
-      '    <el-table :data="listData" border stripe size="small" v-loading="listLoading" @selection-change="onSelectionChange">',
+      '    <el-table :data="listData" border stripe size="small" v-loading="listLoading" max-height="calc(100vh - 320px)" @selection-change="onSelectionChange">',
       '      <el-table-column v-if="canMaintain" type="selection" width="42" :selectable="canStopRow"></el-table-column>',
       '      <el-table-column type="index" label="序号" width="60" :index="seqNo"></el-table-column>',
       '      <el-table-column prop="work_date" label="出诊日期" width="105"></el-table-column>',

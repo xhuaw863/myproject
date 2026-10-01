@@ -16,4 +16,6 @@ public class InpMedRecordDTO {
     private String title;
     /** 内容(JSON) */
     private String content;
+    /** 结构化病历数据JSON(按模板 fields 取值; 结构化书写时与 content 同值, 供数据元抽取) */
+    private String structureData;
 }

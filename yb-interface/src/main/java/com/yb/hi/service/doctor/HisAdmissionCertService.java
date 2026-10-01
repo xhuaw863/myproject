@@ -132,6 +132,10 @@ public class HisAdmissionCertService extends ServiceImpl<HisAdmissionCertMapper,
         result.put("admission", cert);
         result.put("patient", patient);
         result.put("visit", visit);
+        // 方案 B(B2): 结构化病历时 his_visit SOAP 列为空, 附派生 soap 供住院证病情摘要取数(历史文本病历自动回退旧列)
+        if (visit != null) {
+            result.put("soap", EmrStructureReader.read(visit));
+        }
         return result;
     }
 

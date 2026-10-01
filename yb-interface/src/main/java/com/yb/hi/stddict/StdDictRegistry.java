@@ -24,7 +24,7 @@ public final class StdDictRegistry {
         Map<String, StdDict> map = new LinkedHashMap<>();
         for (StdDict d : new StdDict[]{
                 cvCode(),
-                drug(), consumable(), medService(), tcm(), preparation(), ivd(), consItemRel(),
+                drug(), consumable(), medService(), tcm(), preparation(), ivd(), consItemRel(), supplier(),
                 icd10(), icd9(), icd10Nat(), icd9Nat(), morphology(), tcmDisease(), tcmSyndrome(), tcmMapping(),
                 tcmDiseaseNew(), tcmSyndromeNew(),
                 wst364(),
@@ -90,6 +90,7 @@ public final class StdDictRegistry {
             case "preparation":   return "湖北省医保药品(医疗机构制剂)编码数据库·2024-11-25";
             case "ivd":           return "湖北省医保体外诊断试剂编码数据库·2024-11-26";
             case "cons_item_rel": return "湖北省医用耗材与医疗服务项目对应关系·2024-12-02";
+            case "supplier":      return "供货商(企业)字典·由医保各目录生产企业去重汇总(湖北医保编码数据库2024)";
             case "icd10":         return "医保ICD10疾病诊断分类与代码 v2.0(湖北省医保编码)";
             case "icd9":          return "医保ICD9手术操作分类与代码 v2.0(湖北省医保编码)";
             case "icd10_nat":     return "疾病分类与代码国家临床版2.0(2022汇总版)";
@@ -339,6 +340,22 @@ public final class StdDictRegistry {
         return new StdDict("cons_item_rel", "std_cons_item_rel", "耗材与医疗服务项目对应关系").add(s)
                 .query("cons_code20", "cons_variety", "item_cat_name", "diag_item_code",
                         "cons_code20", "diag_item_code", "cons_variety");
+    }
+
+    /**
+     * 【新·供货商(企业)字典】(标准类型=医保字典)。
+     * 无独立 xlsx 源: 由 tools/extract_supplier.py 从 std_drug(drug_entp/mkt_holder)、
+     * std_consumable(cons_entp)、std_ivd(entp_name)、std_preparation(applicant) 四类目录的
+     * 企业名去重归并为 classpath 种子文件 seed/std_supplier.tsv(首行表头), 走种子分支加载。
+     * 供医共体药品/耗材目录的"生产企业/上市许可持有人"以字典编码引用(取代自由汉字文本)。
+     * 统一查询映射: code=sup_code, name=sup_name(企业名称), spec=sup_type(企业类型), extra=src_catalog(来源目录)。
+     */
+    private static StdDict supplier() {
+        return new StdDict("supplier", "std_supplier", "供货商(企业)字典")
+                .seed("20241202", "医保各目录生产企业去重汇总")
+                // 检索列: 企业名称/编码/简称/统一社会信用代码(拼音简码由维护服务自动附加)
+                .query("sup_code", "sup_name", "sup_type", "src_catalog",
+                        "sup_name", "sup_code", "sup_short_name", "uscc");
     }
 
     /** 【8】医保ICD10疾病诊断(完整分类与代码, sheet序号1) */

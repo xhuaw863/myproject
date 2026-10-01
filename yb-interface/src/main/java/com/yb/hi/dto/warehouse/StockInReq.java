@@ -22,6 +22,19 @@ public class StockInReq {
     private String supplierContact;
     /** 备注 */
     private String remark;
+    /* ---- 采购入库增强(批次B) ---- */
+    /** 购入方式: 1正常 2挂账 3票未到(仅单据); 空按1 */
+    private Integer purchaseMode;
+    /** 来源采购订单ID */
+    private Long purchaseOrderId;
+    /** 发票号 */
+    private String invoiceNo;
+    /** 发票日期(yyyy-MM-dd) */
+    private String invoiceDate;
+    /** 定向出库目标库ID(确认入库后自动调拨至该库) */
+    private Long targetWarehouseId;
+    /** 供应商ID(his_supplier.id) */
+    private Long supplierId;
     /** 入库明细 */
     private List<StockInItemReq> items;
 }

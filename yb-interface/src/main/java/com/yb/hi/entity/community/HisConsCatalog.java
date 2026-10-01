@@ -54,8 +54,10 @@ public class HisConsCatalog extends BaseEntity {
     private String material;
     /** 特征 */
     private String feature;
-    /** 生产企业 */
+    /** 生产企业(名称冗余, 供列表/导出直显) */
     private String manufacturer;
+    /** 生产企业编码(std_supplier.sup_code, 字典引用) */
+    private String manufacturerCode;
 
     /* ---- 单位与包装换算(同药品规则) ---- */
     /** 最小计价单位(个/套) */

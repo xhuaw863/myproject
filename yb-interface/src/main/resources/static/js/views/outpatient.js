@@ -203,11 +203,20 @@
     '</el-dialog>'
   ].join('\n');
 
+  /* 列表分页/全量双模式默认: 本地偏好 his.<key> 优先, 回落租户参数 listDefaultPaged */
+  function listPagedDefault(key) {
+    try {
+      var v = localStorage.getItem('his.' + key);
+      if (v !== null) { return v !== '0'; }
+      return !(window.HIS && HIS.params && HIS.params.listDefaultPaged === 'false');
+    } catch (e) { return true; }
+  }
+
   /* ================= 档案管理(原患者建档/查询, 2026-09 并入医共体管理) ================= */
   HIS.views.PatientManage = {
     data: function () {
       return {
-        loading: false, list: [], total: 0, page: 1, size: 20, keyword: '',
+        loading: false, list: [], total: 0, page: 1, size: 20, keyword: '', paged: listPagedDefault('patientPaged'), _base: 20,
         gendOpts: [], insutypeOpts: [], certTypeOpts: [],
         gendMap: {}, insutypeMap: {}, certTypeMap: {},
         /* A 身份人口学字典(医保 cv_code 优先, 其余湖北采集规范 hbvalue) */
@@ -227,7 +236,7 @@
         insuList: [], insuLoading: false
       };
     },
-    created: function () { this.loadDicts(); this.loadOrgs(); this.load(); },
+    created: function () { this._base = this.size; if (!this.paged) { this.size = 100000; } this.loadDicts(); this.loadOrgs(); this.load(); },
     methods: {
       empty: function () {
         return {
@@ -313,13 +322,24 @@
         var vm = this; vm.loading = true;
         var q = '/api/his/patient/page?page=' + vm.page + '&size=' + vm.size;
         if (vm.keyword) { q += '&keyword=' + encodeURIComponent(vm.keyword); }
-        HIS.get(q).then(function (d) { vm.list = (d && d.records) || []; vm.total = (d && d.total) || 0; })
+        HIS.get(q).then(function (d) { vm.list = (d && d.records) || []; vm.total = Number((d && d.total) || 0); })
           .catch(HIS.notifyError).finally(function () { vm.loading = false; });
       },
       search: function () { this.page = 1; this.load(); },
       onPage: function (p) { this.page = p; this.load(); },
-            onSize: function (s) { this.size = s; this.onPage(1); },
+            onSize: function (s) { this._base = s; this.size = s; this.onPage(1); },
             seqNo: function (i) { return (this.page - 1) * this.size + i + 1; },
+            onPagedToggle: function () {
+              var vm = this;
+              var threshold = (HIS.params && HIS.params.listFullThreshold) || 2000;
+              function persist() { try { localStorage.setItem('his.patientPaged', vm.paged ? '1' : '0'); } catch (e) { } }
+              function apply() { persist(); vm.page = 1; vm.size = vm.paged ? (vm._base || 20) : 100000; vm.load(); }
+              if (!vm.paged && vm.total > threshold) {
+                ElementPlus.ElMessageBox.confirm('当前范围共 ' + vm.total + ' 条，全量显示可能卡顿数秒，是否继续？', '提示',
+                  { confirmButtonText: '继续全量', cancelButtonText: '保持分页', type: 'warning' }
+                ).then(apply).catch(function () { vm.paged = true; persist(); });
+              } else { apply(); }
+            },
       add: function () { this.editing = false; this.form = this.empty(); this.areaOpts = []; this.resetAreaPaths(); this.activeTab = 'basic'; this.insuList = []; this.dlg = true; },
       edit: function (row) {
         this.editing = true; this.form = clean(Object.assign(this.empty(), row));
@@ -419,15 +439,16 @@
       insutypeLabel: insutypeLabel
     },
     template: [
-      '<div class="page-card">',
+      '<div class="page-card cd-fill">',
       '  <div class="page-title">档案管理</div>',
       '  <div class="toolbar">',
       '    <el-input v-model="keyword" placeholder="姓名/患者号/身份证/医保号/电话/拼音简码" clearable style="width:280px" @keyup.enter="search"></el-input>',
       '    <el-button type="primary" @click="search">查询</el-button>',
       '    <el-button @click="add">新增建档</el-button>',
       '    <span style="color:var(--yb-ink-2);font-size:13px;">共 {{ total }} 人</span>',
+      '    <el-radio-group v-model="paged" size="small" style="margin-left:8px" @change="onPagedToggle"><el-radio-button :label="true">分页</el-radio-button><el-radio-button :label="false">全量</el-radio-button></el-radio-group>',
       '  </div>',
-      '  <el-table :data="list" v-loading="loading" border stripe size="small">',
+      '  <el-table :data="list" v-loading="loading" border stripe size="small" height="100%">',
       '    <el-table-column type="index" label="序号" width="60" :index="seqNo"></el-table-column>',
       '    <el-table-column prop="patientNo" label="患者号" width="170"></el-table-column>',
       '    <el-table-column prop="name" label="姓名" width="90"></el-table-column>',
@@ -445,7 +466,7 @@
       '      <el-button link type="info" @click="showLogs(s.row)">修改记录</el-button>',
       '    </template></el-table-column>',
       '  </el-table>',
-      '  <el-pagination style="margin-top:12px;justify-content:flex-end;" background layout="total, sizes, prev, pager, next" :total="total" :page-size="size" :page-sizes="[10, 20, 50, 100]" :current-page="page" @current-change="onPage" @size-change="onSize"></el-pagination>',
+      '  <el-pagination v-if="paged" style="margin-top:12px;justify-content:flex-end;" background layout="total, sizes, prev, pager, next" :total="total" :page-size="size" :page-sizes="[10, 20, 50, 100]" :current-page="page" @current-change="onPage" @size-change="onSize"></el-pagination>',
       '  <el-dialog v-model="dlg" :title="editing?\'编辑患者档案\':\'新增患者建档\'" width="900px" top="6vh">',
       '    <div style="max-height:62vh;overflow-y:auto;padding-right:6px;">',
       '    <el-form :model="form" label-width="110px" size="default">',
@@ -1016,7 +1037,7 @@
         if (vm.regStatus !== '' && vm.regStatus != null) { q += '&status=' + vm.regStatus; }
         if (vm.regKeyword) { q += '&keyword=' + encodeURIComponent(vm.regKeyword); }
         HIS.get(q).then(function (d) {
-          vm.regTotal = (d && d.total) || 0;
+          vm.regTotal = Number((d && d.total) || 0);
           var rows = (d && d.records) || [];
           /* 仅本窗口: 后端暂无 operator 过滤参数, 客户端按当前登录挂号员过滤当前页 */
           if (vm.onlyMyWindow) {
@@ -1556,7 +1577,7 @@
         var vm = this; vm.loading = true;
         HIS.get(vm.buildQuery(vm.page, vm.size)).then(function (d) {
           vm.list = ((d && d.records) || []).map(normReg);
-          vm.total = (d && d.total) || 0;
+          vm.total = Number((d && d.total) || 0);
         }).catch(HIS.notifyError).finally(function () { vm.loading = false; });
       },
       search: function () {
@@ -1723,7 +1744,7 @@
       statusTag: statusTag
     },
     template: [
-      '<div class="page-card">',
+      '<div class="page-card cd-fill">',
       '  <div class="page-title">退号 <span style="font-size:12px;color:var(--yb-ink-2);font-weight:normal;">(跨日/历史退号专用页面; 当天刚挂的号可在挂号工作站“今日挂号记录”中快捷退号)</span></div>',
       '  <div class="toolbar">',
       '    <el-date-picker v-model="dateRange" type="daterange" value-format="YYYY-MM-DD" range-separator="至" start-placeholder="开始日期" end-placeholder="结束日期" style="width:250px"></el-date-picker>',
@@ -1744,7 +1765,7 @@
       '    <el-button :loading="printing" @click="doPrintAll">打印全部</el-button>',
       '    <span style="color:var(--yb-ink-2);font-size:13px;">共 {{ total }} 条</span>',
       '  </div>',
-      '  <el-table :data="list" v-loading="loading" border stripe size="small">',
+      '  <el-table :data="list" v-loading="loading" border stripe size="small" height="100%">',
       '    <el-table-column type="index" label="序号" width="56" :index="seqNo"></el-table-column>',
       '    <el-table-column label="挂号时间" width="140"><template #default="s">{{ fmtDateTime(s.row.regTime) }}</template></el-table-column>',
       '    <el-table-column prop="regNo" label="挂号单号" width="150" show-overflow-tooltip></el-table-column>',
@@ -2068,7 +2089,7 @@
         vm.dLoading = true;
         HIS.get(vm.detailQuery(vm.dPage, vm.dSize)).then(function (d) {
           vm.dList = (d && d.records) || [];
-          vm.dTotal = (d && d.total) || 0;
+          vm.dTotal = Number((d && d.total) || 0);
         }).catch(HIS.notifyError).finally(function () { vm.dLoading = false; });
       },
       onDetailPage: function (p) { this.dPage = p; this.loadDetail(); },
@@ -2381,7 +2402,7 @@
       '          <el-button type="success" plain size="small" :loading="exporting" @click="doExport">导出Excel</el-button>',
       '          <span style="color:var(--yb-ink-2);font-size:12px;">导出与当前筛选条件一致(全量不分页)</span>',
       '        </div>',
-      '        <el-table :data="dList" v-loading="dLoading" border stripe size="small">',
+      '        <el-table :data="dList" v-loading="dLoading" border stripe size="small" max-height="560">',
       '          <el-table-column type="index" label="序号" width="60" :index="dSeqNo"></el-table-column>',
       '          <el-table-column label="挂号时间" width="160"><template #default="s">{{ fmtTime(s.row.reg_time) }}</template></el-table-column>',
       '          <el-table-column prop="reg_no" label="挂号单号" width="170" show-overflow-tooltip></el-table-column>',
@@ -2701,7 +2722,7 @@
       '      <span style="margin-left:auto;"></span>',
       '      <el-button type="success" plain size="small" :loading="exporting" @click="doExport">导出Excel</el-button>',
       '    </div>',
-      '    <el-table :data="list" v-loading="loading" border stripe size="small">',
+      '    <el-table :data="list" v-loading="loading" border stripe size="small" max-height="calc(100vh - 300px)">',
       '      <el-table-column type="index" label="序号" width="56" :index="seqNo"></el-table-column>',
       '      <el-table-column label="挂号时间" width="160" sortable prop="reg_time"><template #default="s">{{ fmtTime(s.row.reg_time) }}</template></el-table-column>',
       '      <el-table-column prop="reg_no" label="挂号单号" width="150" show-overflow-tooltip></el-table-column>',

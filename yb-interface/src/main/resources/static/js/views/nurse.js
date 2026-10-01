@@ -261,7 +261,7 @@
       }
     },
     template: [
-      '<div class="page-card">',
+      '<div class="page-card cd-fill">',
       '  <div class="page-title">待执行医嘱 <span style="font-size:12px;color:var(--yb-ink-2);font-weight:normal;">(已缴费的注射/输液/皮试/换药 · 急诊优先先开先做 · 列表每30秒自动刷新)</span></div>',
       '  <div class="toolbar">',
       '    <span style="font-weight:600;color:var(--yb-ink-1);">科室</span>',
@@ -285,7 +285,7 @@
       '    <el-tab-pane label="注射" name="injection"></el-tab-pane>',
       '    <el-tab-pane label="换药" name="dressing"></el-tab-pane>',
       '  </el-tabs>',
-      '  <el-table :data="list" v-loading="loading" border stripe size="small" :row-class-name="rowClass">',
+      '  <el-table :data="list" v-loading="loading" border stripe size="small" height="100%" :row-class-name="rowClass">',
       '    <el-table-column type="index" label="序号" width="55" align="center" :index="seqNo"></el-table-column>',
       '    <el-table-column label="患者" width="185">',
       '      <template #default="s">',
@@ -518,7 +518,7 @@
       }
     },
     template: [
-      '<div class="page-card">',
+      '<div class="page-card cd-fill">',
       '  <div class="page-title">皮试管理 <span style="font-size:12px;color:var(--yb-ink-2);font-weight:normal;">(皮内注射 · 观察窗20分钟 · 到窗须录入结果)</span></div>',
       '  <el-tabs v-model="tab" @tab-change="onTab">',
       '    <el-tab-pane label="待皮试" name="0"></el-tab-pane>',
@@ -532,7 +532,7 @@
       '  </div>',
 
       /* 待皮试 */
-      '  <el-table v-if="tab === \'0\'" :data="list" v-loading="loading" border stripe size="small">',
+      '  <el-table v-if="tab === \'0\'" :data="list" v-loading="loading" border stripe size="small" height="100%">',
       '    <el-table-column type="index" label="序号" width="55" align="center" :index="seqNo"></el-table-column>',
       '    <el-table-column label="患者" width="185">',
       '      <template #default="s"><span class="ns-strong">{{ s.row.patientName || \'-\' }}</span><span class="ns-soft"> {{ s.row.genderName || \'-\' }}{{ s.row.age != null ? \' \' + s.row.age + \'岁\' : \'\' }}</span></template>',
@@ -552,7 +552,7 @@
       '  </el-table>',
 
       /* 观察中 */
-      '  <el-table v-if="tab === \'1\'" :data="list" v-loading="loading" border stripe size="small">',
+      '  <el-table v-if="tab === \'1\'" :data="list" v-loading="loading" border stripe size="small" height="100%">',
       '    <el-table-column type="index" label="序号" width="55" align="center" :index="seqNo"></el-table-column>',
       '    <el-table-column label="患者" width="165">',
       '      <template #default="s"><span class="ns-strong">{{ s.row.patientName || \'-\' }}</span><span class="ns-soft"> {{ s.row.genderName || \'-\' }}</span></template>',
@@ -578,7 +578,7 @@
       '  </el-table>',
 
       /* 已完成 */
-      '  <el-table v-if="tab === \'2\'" :data="list" v-loading="loading" border stripe size="small">',
+      '  <el-table v-if="tab === \'2\'" :data="list" v-loading="loading" border stripe size="small" height="100%">',
       '    <el-table-column type="index" label="序号" width="55" align="center" :index="seqNo"></el-table-column>',
       '    <el-table-column label="患者" width="145">',
       '      <template #default="s"><span class="ns-strong">{{ s.row.patientName || \'-\' }}</span></template>',
@@ -823,7 +823,7 @@
       }
     },
     template: [
-      '<div class="page-card">',
+      '<div class="page-card cd-fill">',
       '  <div class="page-title">输液管理 <span style="font-size:12px;color:var(--yb-ink-2);font-weight:normal;">(配液 · 穿刺 · 巡视 · 拔针 · 到预计结束自动转"待拔针")</span></div>',
       '  <el-tabs v-model="tab" @tab-change="onTab">',
       '    <el-tab-pane label="待配液" name="prepare"></el-tab-pane>',
@@ -838,7 +838,7 @@
       '  </div>',
 
       /* 待配液 */
-      '  <el-table v-if="tab === \'prepare\'" :data="list" v-loading="loading" border stripe size="small">',
+      '  <el-table v-if="tab === \'prepare\'" :data="list" v-loading="loading" border stripe size="small" height="100%">',
       '    <el-table-column type="index" label="序号" width="55" align="center" :index="seqNo"></el-table-column>',
       '    <el-table-column label="患者" width="185">',
       '      <template #default="s"><span class="ns-strong">{{ s.row.patientName || \'-\' }}</span><span class="ns-soft"> {{ s.row.genderName || \'-\' }}{{ s.row.age != null ? \' \' + s.row.age + \'岁\' : \'\' }}</span></template>',
@@ -861,7 +861,7 @@
       '  </el-table>',
 
       /* 输液中 / 待拔针(同结构, 待拔针突出红色; 巡视超30分钟整行淡红+巡视列红字闪烁) */
-      '  <el-table v-if="tab === \'infusing\' || tab === \'ready_remove\'" :data="list" v-loading="loading" border stripe size="small" :row-class-name="rowClass">',
+      '  <el-table v-if="tab === \'infusing\' || tab === \'ready_remove\'" :data="list" v-loading="loading" border stripe size="small" height="100%" :row-class-name="rowClass">',
       '    <el-table-column type="index" label="序号" width="55" align="center" :index="seqNo"></el-table-column>',
       '    <el-table-column label="患者" width="150">',
       '      <template #default="s"><span class="ns-strong">{{ s.row.patientName || \'-\' }}</span><span class="ns-soft"> {{ s.row.genderName || \'-\' }}</span></template>',
@@ -896,7 +896,7 @@
       '  </el-table>',
 
       /* 已完成(展开看巡视记录) */
-      '  <el-table v-if="tab === \'done\'" :data="list" v-loading="loading" border stripe size="small">',
+      '  <el-table v-if="tab === \'done\'" :data="list" v-loading="loading" border stripe size="small" height="100%">',
       '    <el-table-column type="expand">',
       '      <template #default="s">',
       '        <div style="padding:4px 16px 10px;">',
@@ -1059,7 +1059,7 @@
       }
     },
     template: [
-      '<div class="page-card">',
+      '<div class="page-card cd-fill">',
       '  <div class="page-title">过敏档案 <span style="font-size:12px;color:var(--yb-ink-2);font-weight:normal;">(有效过敏记录 · 皮试阳性自动写入 · 执行前核对警示数据源)</span></div>',
       '  <div class="toolbar">',
       '    <el-input v-model="keyword" placeholder="患者姓名/患者ID/过敏原名称" clearable style="width:240px" @keyup.enter="search"></el-input>',
@@ -1068,7 +1068,7 @@
       '    <span style="flex:1;"></span>',
       '    <el-button type="danger" plain @click="openAdd">新增过敏记录</el-button>',
       '  </div>',
-      '  <el-table :data="list" v-loading="loading" border stripe size="small">',
+      '  <el-table :data="list" v-loading="loading" border stripe size="small" height="100%">',
       '    <el-table-column type="index" label="序号" width="55" align="center" :index="seqNo"></el-table-column>',
       '    <el-table-column label="患者" width="185">',
       '      <template #default="s"><span class="ns-strong">{{ s.row.patientName || \'-\' }}</span><span class="ns-soft"> {{ s.row.patientNo || \'\' }}</span></template>',
@@ -1194,7 +1194,7 @@
       }
     },
     template: [
-      '<div class="page-card">',
+      '<div class="page-card cd-fill">',
       '  <div class="page-title">执行记录 <span style="font-size:12px;color:var(--yb-ink-2);font-weight:normal;">(全状态执行台账 · 点击行首展开完整时间线)</span></div>',
       '  <div class="toolbar">',
       '    <el-date-picker v-model="dateRange" type="daterange" value-format="YYYY-MM-DD" range-separator="至" start-placeholder="开始日期" end-placeholder="结束日期" style="width:260px" @change="search"></el-date-picker>',
@@ -1209,7 +1209,7 @@
       '    <span style="flex:1;"></span>',
       '    <span style="color:var(--yb-ink-2);font-size:13px;">共 {{ total }} 条</span>',
       '  </div>',
-      '  <el-table :data="list" v-loading="loading" border stripe size="small">',
+      '  <el-table :data="list" v-loading="loading" border stripe size="small" height="100%">',
       '    <el-table-column type="expand">',
       '      <template #default="s">',
       '        <div style="padding:6px 24px;">',

@@ -47,4 +47,14 @@ public class HisStockInItem extends BaseEntity {
     private LocalDate expDate;
     /** 小计金额(数量*进价) */
     private BigDecimal amount;
+
+    /* ---- 采购入库增强(批次B) ---- */
+    /** 大包装数(多单位录入) */
+    private BigDecimal packQty;
+    /** 包装换算比快照(大包装→最小单位) */
+    private Integer packRatio;
+    /** 最小单位量=大包装数*包装比 */
+    private BigDecimal minQty;
+    /** 挂账进价(待核) */
+    private BigDecimal purchasePrice;
 }

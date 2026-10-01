@@ -510,7 +510,7 @@
       '    <span style="color:var(--yb-ink-3);font-size:12px;">先开先审 · 共 {{ total }} 条待审核</span>',
       '    <el-button size="small" @click="load">刷新</el-button>',
       '  </div>',
-      '  <el-table ref="auditTable" :data="list" v-loading="loading" border stripe size="small" @selection-change="onSelChange">',
+      '  <el-table ref="auditTable" :data="list" v-loading="loading" border stripe size="small" max-height="calc(100vh - 300px)" @selection-change="onSelChange">',
       '    <el-table-column type="selection" width="42" align="center"></el-table-column>',
       '    <el-table-column type="index" label="序号" width="55" align="center" :index="seqNo"></el-table-column>',
       '    <el-table-column label="床位号" width="80" align="center">',

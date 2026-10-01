@@ -3,6 +3,8 @@
   var HIS = (window.HIS = window.HIS || {});
   HIS.views = HIS.views || {};
 
+  /* 列表显示模式默认值已提升为全局 HIS.pagedDefault(见 api.js), 本文件直接调用 */
+
   var TABS = [
     { name: 'charge', label: '收费项目' },
     { name: 'drug', label: '药品' },
@@ -15,13 +17,15 @@
     data: function () {
       return {
         activeTab: 'charge', tabs: TABS, lead: false,
+        /* 分页/全量双模式: 共享一个本地偏好, 切 tab 不重置; _base 记回切分页时的每页行数 */
+        paged: HIS.pagedDefault('orgcatPaged'), _base: 20,
         loading: false, list: [], total: 0, page: 1, size: 20, keyword: '',
         enabledFilter: '', exporting: false,
         selection: [],
         detDlg: false, detTitle: '', detRows: [], detLoading: false
       };
     },
-    created: function () { this.load(); },
+    created: function () { this._base = this.size; if (!this.paged) { this.size = 100000; } this.load(); },
     methods: {
       load: function () {
         var vm = this; vm.loading = true;
@@ -31,7 +35,7 @@
         if (vm.enabledFilter !== '') { q += '&enabled=' + vm.enabledFilter; }
         HIS.get(q).then(function (d) {
           vm.list = (d && d.records) || [];
-          vm.total = (d && d.total) || 0;
+          vm.total = Number((d && d.total) || 0);
           vm.lead = !!(d && d.lead);
           vm.selection = [];
         }).catch(HIS.notifyError).finally(function () { vm.loading = false; });
@@ -39,7 +43,20 @@
       onTab: function () { this.page = 1; this.keyword = ''; this.load(); },
       search: function () { this.page = 1; this.load(); },
       onPage: function (p) { this.page = p; this.load(); },
-      onSize: function (s) { this.size = s; this.page = 1; this.load(); },
+      onSize: function (s) { this.size = s; this._base = s; this.page = 1; this.load(); },
+      /* 分页/全量切换(本地持久化): 全量仅把请求 size 置大; 总数超阈值时软提示确认, 取消则回分页 */
+      onPagedToggle: function () {
+        var vm = this;
+        var threshold = (HIS.params && HIS.params.listFullThreshold) || 2000;
+        function persist() { try { localStorage.setItem('his.orgcatPaged', vm.paged ? '1' : '0'); } catch (e) { } }
+        function apply() { persist(); vm.page = 1; vm.size = vm.paged ? (vm._base || 20) : 100000; vm.load(); }
+        if (!vm.paged && vm.total > threshold) {
+          ElementPlus.ElMessageBox.confirm(
+            '当前范围共 ' + vm.total + ' 条，全量显示可能卡顿数秒，是否继续？',
+            '提示', { confirmButtonText: '继续全量', cancelButtonText: '保持分页', type: 'warning' }
+          ).then(apply).catch(function () { vm.paged = true; persist(); });
+        } else { apply(); }
+      },
       seqNo: function (i) { return (this.page - 1) * this.size + i + 1; },
       onSelChange: function (rows) { this.selection = rows || []; },
       /* 查看目录项完整内容(L2 全字段): 拉取带中文标签的字段列表 */
@@ -80,7 +97,7 @@
       }
     },
     template: [
-      '<div class="page-card">',
+      '<div class="page-card cd-fill">',
       '  <div class="page-title">机构目录选用 <span style="font-size:12px;color:var(--yb-ink-2);font-weight:normal;">(勾选本院能开展的项目 · 只能启停, 价格由牵头机构统一定义)</span></div>',
       '  <el-alert v-if="lead" type="info" :closable="false" show-icon style="margin-bottom:10px;" title="本机构为牵头机构: 导入目录面向全医共体, 牵头机构同样需勾选本院实际开展的项目, 未勾选项医生站/收费不可用。"></el-alert>',
       '  <el-tabs v-model="activeTab" @tab-change="onTab">',
@@ -94,8 +111,9 @@
       '    <el-button type="info" @click="batch(0)">批量停用</el-button>',
       '    <el-button :loading="exporting" @click="exportRows">导出</el-button>',
       '    <span style="color:var(--yb-ink-2);font-size:13px;">共 {{ total }} 项</span>',
+      '    <el-radio-group v-model="paged" size="small" style="margin-left:8px" @change="onPagedToggle"><el-radio-button :label="true">分页</el-radio-button><el-radio-button :label="false">全量</el-radio-button></el-radio-group>',
       '  </div>',
-      '  <el-table :data="list" v-loading="loading" border stripe size="small" @selection-change="onSelChange">',
+      '  <el-table :data="list" v-loading="loading" border stripe size="small" height="100%" @selection-change="onSelChange">',
       '    <el-table-column type="selection" width="45"></el-table-column>',
       '    <el-table-column type="index" label="序号" width="55" :index="seqNo"></el-table-column>',
       '    <el-table-column prop="code" label="编码" width="150" show-overflow-tooltip></el-table-column>',
@@ -110,7 +128,7 @@
       '      <el-button v-if="s.row.enabled===1" link type="warning" @click="toggle(s.row,0)">停用</el-button>',
       '    </template></el-table-column>',
       '  </el-table>',
-      '  <el-pagination style="margin-top:12px;justify-content:flex-end;" background layout="total, sizes, prev, pager, next" :total="total" :page-size="size" :page-sizes="[10,20,50,100]" :current-page="page" @current-change="onPage" @size-change="onSize"></el-pagination>',
+      '  <el-pagination v-if="paged" style="margin-top:12px;justify-content:flex-end;" background layout="total, sizes, prev, pager, next" :total="total" :page-size="size" :page-sizes="[10,20,50,100]" :current-page="page" @current-change="onPage" @size-change="onSize"></el-pagination>',
 
       /* ==== 目录项详情弹窗 ==== */
       '  <el-dialog v-model="detDlg" :title="\'目录详情 - \'+detTitle" width="720px" top="6vh">',

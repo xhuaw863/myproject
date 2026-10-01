@@ -8,6 +8,7 @@ import lombok.Data;
 import lombok.EqualsAndHashCode;
 
 import java.math.BigDecimal;
+import java.time.LocalDate;
 import java.time.LocalDateTime;
 
 /**
@@ -43,4 +44,29 @@ public class HisStockIn extends BaseEntity {
     private LocalDateTime confirmTime;
     /** 备注 */
     private String remark;
+
+    /* ---- 采购入库增强(批次B) ---- */
+    /** 购入方式: 1正常 2挂账 3票未到(仅单据) */
+    private Integer purchaseMode;
+    /** 来源采购订单ID(his_purchase_order.id) */
+    private Long purchaseOrderId;
+    /** 发票号 */
+    private String invoiceNo;
+    /** 发票日期 */
+    private LocalDate invoiceDate;
+    /** 定向出库目标库ID(确认入库后自动调拨至该库) */
+    private Long targetWarehouseId;
+    /** 财务验收: 0未验收 1已验收 */
+    private Integer acceptStatus;
+    /** 是否已冲红: 1是 0否 */
+    private Integer reversedFlag;
+    /** 红字冲账单指向的原入库单ID */
+    private Long redOfId;
+    /** 供应商ID(his_supplier.id, 新单与 supplier 文本双写) */
+    private Long supplierId;
+    /* ---- 付款回写(批次C) ---- */
+    /** 已付金额 */
+    private BigDecimal paidAmount;
+    /** 付款状态: 0未付 1部分 2已付 */
+    private Integer paidStatus;
 }
