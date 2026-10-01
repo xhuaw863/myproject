@@ -388,6 +388,25 @@ public class ExamReportService {
         return reports;
     }
 
+    /**
+     * OP-D 报告趋势(14.5): 同一患者同一检验项目历史时间序列(仅取已报告/已审核),
+     * 供医生站 ECharts 趋势图 + 参考范围背景带。
+     */
+    public List<Map<String, Object>> reportTrend(Long patientId, String itemCode) {
+        if (patientId == null || !StringUtils.hasText(itemCode)) {
+            throw new BizException(400, "患者ID与项目编码不能为空");
+        }
+        String sql = "SELECT i.id, r.id AS reportId, r.report_no AS reportNo, r.report_type AS reportType,"
+                + " DATE_FORMAT(r.report_time, '%Y-%m-%d %H:%i') AS reportTime,"
+                + " i.item_name AS itemName, i.result_value AS resultValue, i.result_unit AS resultUnit,"
+                + " i.ref_range_low AS refLow, i.ref_range_high AS refHigh, i.abnormal_flag AS abnormalFlag"
+                + " FROM his_exam_result_item i"
+                + " JOIN his_exam_report r ON r.id = i.report_id AND r.deleted = 0 AND r.status IN (1, 2)"
+                + " WHERE i.deleted = 0 AND i.tenant_id = ? AND r.patient_id = ? AND i.item_code = ?"
+                + " ORDER BY r.report_time ASC, r.id ASC LIMIT 100";
+        return jdbcTemplate.queryForList(sql, tenantId(), patientId, itemCode.trim());
+    }
+
     /** 报告详情: 报告字段平铺 + 患者/医嘱信息 + 结果明细子项(检验类) */
     public Map<String, Object> getReportDetail(Long reportId) {
         if (reportId == null) {

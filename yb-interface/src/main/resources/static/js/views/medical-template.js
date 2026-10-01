@@ -94,6 +94,9 @@
         if (vm.keyword.trim()) { q += '&keyword=' + encodeURIComponent(vm.keyword.trim()); }
         HIS.get(q).then(function (d) {
           vm.rows = (Array.isArray(d) ? d : []).slice().sort(function (a, b) {
+            /* OP-D 14.10: 收藏模板置顶, 其后按排序号/名称 */
+            var sf = Number(b.isFav || 0) - Number(a.isFav || 0);
+            if (sf !== 0) { return sf; }
             var sa = Number(a.sortOrder || 0) - Number(b.sortOrder || 0);
             return sa !== 0 ? sa : String(a.name || '').localeCompare(String(b.name || ''), 'zh-Hans-CN');
           });
@@ -179,6 +182,15 @@
         }).then(function () {
           ElementPlus.ElMessage.success('模板已删除'); vm.load();
         }).catch(function (e) { if (e !== 'cancel' && e !== 'close') { HIS.notifyError(e); } });
+      },
+      /* OP-D 14.10: 个人收藏 toggle(收藏维度跟登录人, 后端 listVisible 已按 is_fav 置顶; 任意可见模板均可收藏) */
+      toggleFavRow: function (row) {
+        var vm = this;
+        HIS.put('/api/his/template/' + encodeURIComponent(row.id) + '/fav').then(function (d) {
+          row.isFav = Number(d && d.isFav != null ? d.isFav : (Number(row.isFav || 0) === 1 ? 0 : 1));
+          ElementPlus.ElMessage.success(Number(row.isFav) === 1 ? '已收藏, 常用模板将置顶展示' : '已取消收藏');
+          vm.load();
+        }).catch(HIS.notifyError);
       },
       /* ===== 条目行编辑(处方套/医嘱套) ===== */
       addItem: function () {
@@ -291,6 +303,11 @@
               </template>
             </el-table-column>
             <el-table-column prop="sortOrder" label="排序" width="66" align="center"></el-table-column>
+            <el-table-column label="收藏" width="60" align="center">
+              <template #default="s">
+                <el-button link :type="Number(s.row.isFav)===1 ? 'warning' : 'info'" size="small" :title="Number(s.row.isFav)===1 ? '取消收藏' : '收藏(置顶显示)'" @click="toggleFavRow(s.row)">{{ Number(s.row.isFav)===1 ? '★' : '☆' }}</el-button>
+              </template>
+            </el-table-column>
             <el-table-column label="状态" width="70" align="center">
               <template #default="s"><el-tag size="small" :type="Number(s.row.status)===1 ? 'success' : 'info'">{{ Number(s.row.status)===1 ? '启用' : '停用' }}</el-tag></template>
             </el-table-column>

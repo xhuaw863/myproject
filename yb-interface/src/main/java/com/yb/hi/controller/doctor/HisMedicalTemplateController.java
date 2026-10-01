@@ -49,6 +49,12 @@ public class HisMedicalTemplateController {
         return R.ok(service.update(id, template));
     }
 
+    /** OP-D 收藏切换: 收藏模板列表置顶 */
+    @PutMapping("/{id}/fav")
+    public R<HisMedicalTemplate> toggleFav(@PathVariable Long id) {
+        return R.ok(service.toggleFav(id));
+    }
+
     @DeleteMapping("/{id}")
     public R<Void> delete(@PathVariable Long id) {
         service.delete(id);

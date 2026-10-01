@@ -131,6 +131,12 @@ public class MedTechController {
         return R.ok(examReportService.getReportDetail(id));
     }
 
+    /** OP-D 报告趋势(14.5): 同一患者同一检验项目历史时间序列(ECharts 趋势图) */
+    @GetMapping("/reports/trend")
+    public R<List<Map<String, Object>>> reportTrend(@RequestParam Long patientId, @RequestParam String itemCode) {
+        return R.ok(examReportService.reportTrend(patientId, itemCode));
+    }
+
     /** 创建报告草稿(幂等: 该医嘱已有报告直接返回) */
     @PostMapping("/report/draft")
     public R<HisExamReport> createDraft(@RequestBody Map<String, Object> body) {
@@ -181,6 +187,12 @@ public class MedTechController {
     @PostMapping("/critical/{id}/verify")
     public R<HisCriticalValue> verifyCritical(@PathVariable Long id) {
         return R.ok(criticalValueService.verifyCritical(id, currentStaffId()));
+    }
+
+    /** OP-D 医生站危急值待办(14.6): 开单医生=本人且未接收(已复核/已通知)的记录 */
+    @GetMapping("/critical-values/my-pending")
+    public R<List<Map<String, Object>>> myPendingCriticals() {
+        return R.ok(criticalValueService.myPendingForDoctor(currentStaffId()));
     }
 
     /** 通知临床(1->2) */

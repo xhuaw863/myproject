@@ -23,4 +23,6 @@ public class AdmissionCertReq {
     private String admitPurpose;
     /** 紧急程度: 1-普通 2-急 3-危急 */
     private Integer urgency;
+    /** 预开卡标记: 1-预开卡锁床(无床先开证) 0/空-常规 */
+    private Integer preFlag;
 }

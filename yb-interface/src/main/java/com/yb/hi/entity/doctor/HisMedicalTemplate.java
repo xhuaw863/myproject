@@ -30,6 +30,8 @@ public class HisMedicalTemplate extends BaseEntity {
     private String content;
     /** 排序号 */
     private Integer sortOrder;
+    /** 收藏标记: 1收藏(列表置顶) 0普通(OP-D 模板收藏) */
+    private Integer isFav;
     /** 状态: 1-启用 0-停用 */
     private Integer status;
 }

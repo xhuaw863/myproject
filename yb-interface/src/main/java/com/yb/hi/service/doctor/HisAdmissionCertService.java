@@ -80,6 +80,8 @@ public class HisAdmissionCertService extends ServiceImpl<HisAdmissionCertMapper,
         c.setConditionSummary(req.getConditionSummary());
         c.setAdmitPurpose(req.getAdmitPurpose());
         c.setUrgency(req.getUrgency() == null ? 1 : req.getUrgency());
+        /* OP-D 预开卡: 无床先开证锁床标记, 持证入院核销逻辑不受影响 */
+        c.setPreFlag(req.getPreFlag() == null ? 0 : req.getPreFlag());
         c.setStatus(1);
         c.setApplyDrId(visit.getStaffId());
         c.setApplyDrName(visit.getDrName());

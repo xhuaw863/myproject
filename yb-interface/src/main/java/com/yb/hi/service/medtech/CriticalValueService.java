@@ -303,6 +303,30 @@ public class CriticalValueService {
         return result;
     }
 
+    /**
+     * OP-D 医生站危急值待办: 开单医生=本人的就诊产生且尚未被我站接收的记录
+     * (status 1已复核待通知 / 2已通知待接收, 经 order→visit.staff_id 归属收口)
+     */
+    public List<Map<String, Object>> myPendingForDoctor(Long staffId) {
+        if (staffId == null) {
+            throw new BizException(400, "无法获取当前登录医师");
+        }
+        String joins = " FROM his_critical_value cv"
+                + " JOIN his_order o ON o.id = cv.order_id AND o.deleted = 0"
+                + " JOIN his_visit vs ON vs.id = o.visit_id AND vs.deleted = 0"
+                + " LEFT JOIN his_patient p ON p.id = cv.patient_id AND p.deleted = 0"
+                + " LEFT JOIN his_exam_report r ON r.id = cv.report_id AND r.deleted = 0";
+        String sql = "SELECT cv.id, cv.report_id AS reportId, cv.order_id AS orderId, cv.patient_id AS patientId,"
+                + " vs.id AS visitId, cv.item_code AS itemCode, cv.item_name AS itemName, cv.result_value AS resultValue,"
+                + " DATE_FORMAT(cv.discover_time, '%Y-%m-%d %H:%i:%s') AS discoverTime,"
+                + " DATE_FORMAT(cv.notify_time, '%Y-%m-%d %H:%i:%s') AS notifyTime, cv.notify_target AS notifyTarget,"
+                + " cv.status, p.name AS patientName, p.patient_no AS patientNo, p.gender_name AS genderName, p.age,"
+                + " r.report_no AS reportNo, r.report_type AS reportType, vs.dept_name AS deptName"
+                + joins + " WHERE cv.deleted = 0 AND cv.tenant_id = ? AND vs.staff_id = ? AND cv.status IN (1, 2)"
+                + " ORDER BY cv.status DESC, cv.discover_time DESC, cv.id DESC LIMIT 20";
+        return jdbcTemplate.queryForList(sql, tenantId(), staffId);
+    }
+
     /* ================= 危急值规则维护 ================= */
 
     /** 规则列表(全部含停用, 按项目编码排序; Mapper 查询经租户插件自动过滤) */

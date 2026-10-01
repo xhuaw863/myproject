@@ -433,6 +433,8 @@ public class DictSchemaMigration implements ApplicationRunner {
             ensureOutpWsDiagnosisTables(conn);
             // 门诊医生站对标优化 OP-C(医嘱处方专业化): 拆方规则/自动计费规则/医嘱高频/慢特病备案 4 表 + his_prescription_item草药5列/his_drug_catalog适应症补列(幂等)
             ensureOutpRxOrderTables(conn);
+            // 门诊医生站对标优化 OP-D(诊间业务与集成): 门诊知情同意/代办登记/转诊/绿通信用/犬伤登记 5 表 + 模板收藏/住院证预开卡补列(幂等)
+            ensureOutpWsIntegrationTables(conn);
             // 存量表补列: 药库/药房归属 + 混合支付/发票号/退费关联/部分退费已退数量(幂等, 列已存在则跳过)
             alterExistingTables(conn);
         } catch (Exception e) {
@@ -4306,6 +4308,132 @@ public class DictSchemaMigration implements ApplicationRunner {
                 st.executeUpdate("ALTER TABLE his_recon_diff MODIFY org_id BIGINT DEFAULT NULL COMMENT '机构ID(租户级对账为空)'");
             }
         }
+    }
+
+    /**
+     * 幂等建表: 门诊医生站诊间业务与集成 OP-D(需求 2.2.2.3.14.8/14.11)。
+     * 5 新表 + his_medical_template.is_fav / his_admission_cert.pre_flag 两补列, 全部幂等。
+     */
+    private void ensureOutpWsIntegrationTables(Connection conn) throws Exception {
+        try (Statement st = conn.createStatement()) {
+            /* 门诊知情同意书: 特殊检查/特殊治疗/输血/自费/病危五类, 医师谈话+患者(家属)签字闭环 */
+            st.executeUpdate("CREATE TABLE IF NOT EXISTS his_consent ("
+                    + "id BIGINT NOT NULL AUTO_INCREMENT COMMENT '主键',"
+                    + "tenant_id BIGINT NOT NULL COMMENT '租户ID',"
+                    + "org_id BIGINT NOT NULL COMMENT '机构ID',"
+                    + "visit_id BIGINT NOT NULL COMMENT '门诊就诊ID(his_visit.id)',"
+                    + "patient_id BIGINT DEFAULT NULL COMMENT '患者ID',"
+                    + "patient_name VARCHAR(50) DEFAULT NULL COMMENT '患者姓名',"
+                    + "consent_type INT NOT NULL COMMENT '同意书类型:1特殊检查 2特殊治疗 3输血 4自费 5病危',"
+                    + "title VARCHAR(200) NOT NULL COMMENT '同意书标题',"
+                    + "content TEXT NULL COMMENT '同意书内容(告知事项正文)',"
+                    + "doctor_id BIGINT DEFAULT NULL COMMENT '谈话医师ID(his_staff.id)',"
+                    + "doctor_name VARCHAR(50) DEFAULT NULL COMMENT '谈话医师姓名',"
+                    + "patient_sign_name VARCHAR(50) DEFAULT NULL COMMENT '患者/家属签署姓名',"
+                    + "relation VARCHAR(20) DEFAULT NULL COMMENT '签署人与患者关系(本人/配偶/父母子女等)',"
+                    + "witness_name VARCHAR(50) DEFAULT NULL COMMENT '见证人姓名',"
+                    + "sign_time DATETIME DEFAULT NULL COMMENT '患者签署时间',"
+                    + "doctor_sign_time DATETIME DEFAULT NULL COMMENT '医师签署时间',"
+                    + "status INT DEFAULT 1 COMMENT '状态:1待签 2已签 3已撤销',"
+                    + "create_by VARCHAR(50) DEFAULT NULL, create_time DATETIME DEFAULT NULL,"
+                    + "update_by VARCHAR(50) DEFAULT NULL, update_time DATETIME DEFAULT NULL, deleted TINYINT DEFAULT 0,"
+                    + "PRIMARY KEY (id),"
+                    + "KEY idx_visit (visit_id),"
+                    + "KEY idx_org_status (tenant_id, org_id, status)"
+                    + ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='门诊知情同意书'");
+            /* 代办登记: 家属/监护人代患者问诊留痕(身份+关系+事由) */
+            st.executeUpdate("CREATE TABLE IF NOT EXISTS his_outp_agent ("
+                    + "id BIGINT NOT NULL AUTO_INCREMENT COMMENT '主键',"
+                    + "tenant_id BIGINT NOT NULL COMMENT '租户ID',"
+                    + "org_id BIGINT NOT NULL COMMENT '机构ID',"
+                    + "visit_id BIGINT NOT NULL COMMENT '门诊就诊ID(his_visit.id)',"
+                    + "patient_id BIGINT DEFAULT NULL COMMENT '患者ID',"
+                    + "patient_name VARCHAR(50) DEFAULT NULL COMMENT '患者姓名',"
+                    + "agent_name VARCHAR(50) NOT NULL COMMENT '代办人姓名',"
+                    + "agent_id_card VARCHAR(30) DEFAULT NULL COMMENT '代办人身份证号',"
+                    + "agent_phone VARCHAR(20) DEFAULT NULL COMMENT '代办人联系电话',"
+                    + "relation VARCHAR(20) NOT NULL COMMENT '与患者关系',"
+                    + "reason VARCHAR(200) DEFAULT NULL COMMENT '代办事由',"
+                    + "status INT DEFAULT 1 COMMENT '状态:1有效 0作废',"
+                    + "create_by VARCHAR(50) DEFAULT NULL, create_time DATETIME DEFAULT NULL,"
+                    + "update_by VARCHAR(50) DEFAULT NULL, update_time DATETIME DEFAULT NULL, deleted TINYINT DEFAULT 0,"
+                    + "PRIMARY KEY (id),"
+                    + "KEY idx_visit (visit_id),"
+                    + "KEY idx_patient (tenant_id, patient_id)"
+                    + ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='门诊代办登记'");
+            /* 转诊登记: 上转/下转双向, 申请→接收→完成状态机(医共体转诊业务) */
+            st.executeUpdate("CREATE TABLE IF NOT EXISTS his_referral ("
+                    + "id BIGINT NOT NULL AUTO_INCREMENT COMMENT '主键',"
+                    + "tenant_id BIGINT NOT NULL COMMENT '租户ID',"
+                    + "org_id BIGINT NOT NULL COMMENT '机构ID(转出/接收方归属)',"
+                    + "visit_id BIGINT DEFAULT NULL COMMENT '关联门诊就诊ID(his_visit.id)',"
+                    + "patient_id BIGINT NOT NULL COMMENT '患者ID',"
+                    + "patient_name VARCHAR(50) DEFAULT NULL COMMENT '患者姓名',"
+                    + "direction INT NOT NULL DEFAULT 1 COMMENT '方向:1上转/转出 2下转/接收',"
+                    + "to_hospital VARCHAR(100) NOT NULL COMMENT '目标医院',"
+                    + "to_dept VARCHAR(50) DEFAULT NULL COMMENT '目标科室',"
+                    + "reason VARCHAR(500) DEFAULT NULL COMMENT '转诊原因/病情',"
+                    + "summary TEXT NULL COMMENT '病情摘要(转诊单正文)',"
+                    + "contact_phone VARCHAR(20) DEFAULT NULL COMMENT '联系电话',"
+                    + "status INT DEFAULT 1 COMMENT '状态:1已申请 2已接收 3已完成 4已取消',"
+                    + "create_by VARCHAR(50) DEFAULT NULL, create_time DATETIME DEFAULT NULL,"
+                    + "update_by VARCHAR(50) DEFAULT NULL, update_time DATETIME DEFAULT NULL, deleted TINYINT DEFAULT 0,"
+                    + "PRIMARY KEY (id),"
+                    + "KEY idx_patient (tenant_id, patient_id),"
+                    + "KEY idx_org_status (tenant_id, org_id, status)"
+                    + ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='门诊转诊登记'");
+            /* 绿色通道信用额度: 急危重症先诊疗后付费的信用台账 */
+            st.executeUpdate("CREATE TABLE IF NOT EXISTS his_green_channel_credit ("
+                    + "id BIGINT NOT NULL AUTO_INCREMENT COMMENT '主键',"
+                    + "tenant_id BIGINT NOT NULL COMMENT '租户ID',"
+                    + "org_id BIGINT NOT NULL COMMENT '机构ID',"
+                    + "patient_id BIGINT NOT NULL COMMENT '患者ID',"
+                    + "patient_name VARCHAR(50) DEFAULT NULL COMMENT '患者姓名',"
+                    + "visit_id BIGINT DEFAULT NULL COMMENT '开通时就诊ID(his_visit.id)',"
+                    + "credit_limit DECIMAL(10,2) NOT NULL DEFAULT 0 COMMENT '信用额度(元)',"
+                    + "used_amount DECIMAL(10,2) DEFAULT 0 COMMENT '已使用额度(元)',"
+                    + "reason VARCHAR(200) DEFAULT NULL COMMENT '开通原因(急危重症/证件缺失等)',"
+                    + "status INT DEFAULT 1 COMMENT '状态:1启用 0关闭',"
+                    + "create_by VARCHAR(50) DEFAULT NULL, create_time DATETIME DEFAULT NULL,"
+                    + "update_by VARCHAR(50) DEFAULT NULL, update_time DATETIME DEFAULT NULL, deleted TINYINT DEFAULT 0,"
+                    + "PRIMARY KEY (id),"
+                    + "KEY idx_patient (tenant_id, patient_id, status)"
+                    + ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='绿色通道信用额度(先诊疗后付费)'");
+            /* 犬伤登记: 暴露分级/处置/免疫程序随访计划 */
+            st.executeUpdate("CREATE TABLE IF NOT EXISTS his_dog_bite_register ("
+                    + "id BIGINT NOT NULL AUTO_INCREMENT COMMENT '主键',"
+                    + "tenant_id BIGINT NOT NULL COMMENT '租户ID',"
+                    + "org_id BIGINT NOT NULL COMMENT '机构ID',"
+                    + "visit_id BIGINT NOT NULL COMMENT '门诊就诊ID(his_visit.id)',"
+                    + "patient_id BIGINT DEFAULT NULL COMMENT '患者ID',"
+                    + "patient_name VARCHAR(50) DEFAULT NULL COMMENT '患者姓名',"
+                    + "expose_time DATETIME DEFAULT NULL COMMENT '暴露(咬伤/抓伤)时间',"
+                    + "animal_type VARCHAR(20) DEFAULT NULL COMMENT '致伤动物:犬/猫/其他',"
+                    + "dog_info VARCHAR(200) DEFAULT NULL COMMENT '动物来源与免疫/观察情况',"
+                    + "wound_grade INT DEFAULT NULL COMMENT '伤口分级:1Ⅰ级 2Ⅱ级 3Ⅲ级',"
+                    + "wound_parts VARCHAR(100) DEFAULT NULL COMMENT '暴露部位',"
+                    + "wound_count INT DEFAULT 1 COMMENT '伤口数量',"
+                    + "wound_handling VARCHAR(300) DEFAULT NULL COMMENT '伤口处置(冲洗/消毒等)',"
+                    + "vaccine_plan VARCHAR(50) DEFAULT NULL COMMENT '免疫程序:五针法/四针法(2-1-1)',"
+                    + "vaccine_first_time DATETIME DEFAULT NULL COMMENT '首针时间',"
+                    + "vaccine_next_date DATE DEFAULT NULL COMMENT '下次接种日期',"
+                    + "immunoglobulin TINYINT DEFAULT 0 COMMENT '被动免疫制剂:1已注射 0未注射',"
+                    + "doctor_id BIGINT DEFAULT NULL COMMENT '登记医师ID(his_staff.id)',"
+                    + "doctor_name VARCHAR(50) DEFAULT NULL COMMENT '登记医师姓名',"
+                    + "status INT DEFAULT 1 COMMENT '状态:1已登记 0作废',"
+                    + "create_by VARCHAR(50) DEFAULT NULL, create_time DATETIME DEFAULT NULL,"
+                    + "update_by VARCHAR(50) DEFAULT NULL, update_time DATETIME DEFAULT NULL, deleted TINYINT DEFAULT 0,"
+                    + "PRIMARY KEY (id),"
+                    + "KEY idx_visit (visit_id),"
+                    + "KEY idx_patient (tenant_id, patient_id)"
+                    + ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='犬伤暴露登记'");
+        }
+        /* 医疗模板收藏标记(医生站模板下拉收藏置顶) */
+        addColumnIfNotExists(conn, "his_medical_template", "is_fav",
+                "TINYINT DEFAULT 0 COMMENT '收藏标记:1收藏(列表置顶) 0普通'");
+        /* 住院证预开卡标记(先开证锁床, 持证入院核销逻辑不受影响) */
+        addColumnIfNotExists(conn, "his_admission_cert", "pre_flag",
+                "TINYINT DEFAULT 0 COMMENT '预开卡标记:1预开卡锁床 0常规'");
     }
 
     /** 幂等补列: 表存在且列不存在时 ALTER TABLE ADD COLUMN(与 cols 循环同语义, 供建表后存量表补列使用)。 */

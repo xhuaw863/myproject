@@ -48,7 +48,15 @@ public class HisMedicalTemplateService extends ServiceImpl<HisMedicalTemplateMap
         } else {
             q.isNull("staff_id").isNull("dept_id");
         }
-        return list(q.orderByAsc("sort_order").orderByAsc("id"));
+        return list(q.orderByDesc("is_fav").orderByAsc("sort_order").orderByAsc("id"));
+    }
+
+    /** OP-D 模板收藏切换: 0↔1(收藏项列表置顶) */
+    public HisMedicalTemplate toggleFav(Long id) {
+        HisMedicalTemplate template = detail(id);
+        template.setIsFav(template.getIsFav() != null && template.getIsFav() == 1 ? 0 : 1);
+        updateById(template);
+        return getById(id);
     }
 
     public HisMedicalTemplate create(HisMedicalTemplate template) {
@@ -59,6 +67,9 @@ public class HisMedicalTemplateService extends ServiceImpl<HisMedicalTemplateMap
         }
         if (template.getStatus() == null) {
             template.setStatus(1);
+        }
+        if (template.getIsFav() == null) {
+            template.setIsFav(0);
         }
         save(template);
         return template;

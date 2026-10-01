@@ -39,6 +39,8 @@ public class HisAdmissionCert extends BaseEntity {
     private String admitPurpose;
     /** 紧急程度: 1-普通 2-急 3-危急 */
     private Integer urgency;
+    /** 预开卡标记: 1-预开卡锁床 0-常规(OP-D 诊间业务) */
+    private Integer preFlag;
     /** 状态: 1-已开具 2-已入院 3-已作废 */
     private Integer status;
     /** 开具医师ID */

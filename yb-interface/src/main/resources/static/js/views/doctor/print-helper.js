@@ -64,8 +64,21 @@
   HIS.getHospitalName = getHospitalName;
   HIS.openPrintWindow = openPrintWindow;
 
+  /* OP-D 14.7 集中连打: 多单据聚合到同一打印窗口, 逐张分页(避免连发 window.open 被拦截) */
+  HIS.printSheets = function (sheets, title) {
+    sheets = sheets || [];
+    if (!sheets.length) {
+      if (window.ElementPlus && ElementPlus.ElMessage) { ElementPlus.ElMessage.warning('没有可打印的单据'); }
+      return null;
+    }
+    var html = sheets.map(function (s, i) {
+      return (i ? '<div style="page-break-after:always"></div>' : '') + (s.html || '');
+    }).join('');
+    return openPrintWindow(title || ('集中打印(' + sheets.length + ' 份)'), html);
+  };
+
   /* 处方笺：按 groupNo 分组，呈现前记、正文 Rp 和后记。 */
-  HIS.printRx = function (data) {
+  function rxHtml(data) {
     data = data || {};
     var rx = data.prescription || data.rx || {};
     var patient = data.patient || {};
@@ -97,11 +110,12 @@
       '<tr><td colspan="3">临床诊断：' + esc(diagText(data.diagnoses || [])) + '</td></tr><tr><td colspan="3">费别：' + esc(value(patient, ['insuranceType', 'insutypeName'], '自费')) + '</td></tr></table>' +
       '<div class="print-section"><strong>Rp</strong>' + itemsHtml + '<div class="print-slash">／</div></div>' +
       '<div class="print-footer"><span>金额：￥' + money(value(rx, ['totalAmount'], value(postscript, ['totalAmount'], 0))) + '</span><span>医师签名：' + esc(value(postscript, ['doctorName'], value(rx, ['drName'], '________'))) + '</span><span>审核药师：________</span></div></div>';
-    return openPrintWindow('处方笺', html);
-  };
+    return html;
+  }
+  HIS.printRx = function (data) { return openPrintWindow('处方笺', rxHtml(data || {})); };
 
   /* 检查、检验申请单。结构化字段优先取明细，兼容主表字段。 */
-  HIS.printOrder = function (data) {
+  function orderHtml(data) {
     data = data || {};
     var order = data.order || data;
     var patient = data.patient || {};
@@ -129,11 +143,12 @@
       '<tr><td>门诊号：' + esc(value(patient, ['outpatientNo', 'iptOtpNo', 'regNo'], '')) + '</td><td>科别：' + esc(value(patient, ['deptName'], order.deptName || '')) + '</td><td>单据号：' + esc(order.orderNo || '') + '</td></tr>' +
       '<tr><td colspan="3">临床诊断：' + esc(diagnosis) + '</td></tr></table><div class="print-section">' + rows + detail + '</div>' +
       '<div class="print-footer"><span>申请医师：' + esc(order.drName || '________') + '</span><span>日期：' + esc(dateText(order.createTime) || new Date().toLocaleDateString()) + '</span></div></div>';
-    return openPrintWindow(title, html);
-  };
+    return html;
+  }
+  HIS.printOrder = function (data) { data = data || {}; return openPrintWindow(data.order && data.order.orderType === '检验' ? '检验申请单' : '检查申请单', orderHtml(data)); };
 
   /* 门诊病历：仅打印当前有效病历内容，不展示任何修改痕迹。 */
-  HIS.printRecord = function (data) {
+  function recordHtml(data) {
     data = data || {};
     var visit = data.visit || {};
     var soap = data.soap || data.soapContent || visit;
@@ -149,11 +164,12 @@
       '<tr><td>门诊号：' + esc(value(patient, ['outpatientNo', 'iptOtpNo', 'regNo'], visit.iptOtpNo || visit.regNo || '')) + '</td><td>科别：' + esc(value(patient, ['deptName'], visit.deptName || '')) + '</td><td>就诊时间：' + esc(dateText(value(visit, ['visitTime', 'startTime', 'createTime'], ''))) + '</td></tr>' +
       '<tr><td colspan="3">过敏史：' + esc(value(patient, ['allergyHistory'], soap.allergyHistory || '无')) + '</td></tr></table><div class="print-section">' + rows + '</div>' +
       '<div class="print-footer"><span>医师签名：' + esc(visit.drName || '________') + '</span><span>日期：' + new Date().toLocaleDateString() + '</span></div></div>';
-    return openPrintWindow('门诊病历', html);
-  };
+    return html;
+  }
+  HIS.printRecord = function (data) { return openPrintWindow('门诊病历', recordHtml(data || {})); };
 
   /* 住院证(规范版式): 前记(患者身份/医保/住址) + 病情摘要(就诊SOAP) + 入院决定 + 后记(签名盖章/入院须知) */
-  HIS.printAdmissionCert = function (data) {
+  function admissionHtml(data) {
     data = data || {};
     var cert = data.cert || data.admission || {};
     var patient = data.patient || {};
@@ -210,21 +226,31 @@
       '3. 入院请携带生活必需品及既往检查报告；医保患者请确认参保状态正常；<br>4. 本证由接诊医师填写并签名，涂改无效，加盖医院章后生效。</div>' +
       '<div class="print-note" style="margin-top:8px">' + esc(visit.deptName || '') + ' · ' + esc(cert.applyDrName || '') + '　打印时间：' + esc(dateText(new Date().toISOString())) + '</div>' +
       '</div>';
-    return openPrintWindow('住院证', html);
-  };
+    return html;
+  }
+  HIS.printAdmissionCert = function (data) { return openPrintWindow('住院证', admissionHtml(data || {})); };
 
   /* 住院证、诊断证明等证明类单据。 */
-  HIS.printCert = function (data) {
+  function certHtml(data) {
     data = data || {};
     var cert = data.cert || data.admission || data;
     var patient = data.patient || {};
     var type = data.certTypeName || (cert.admitDiagnosis != null ? '住院证' : ({ 1: '诊断证明书', 2: '病假证明', 3: '转诊证明' }[cert.certType] || data.certType || '诊断证明书'));
+    if (type === '住院证') { return admissionHtml(data); }
     var content = cert.certContent || cert.content || '';
-    if (type === '住院证') { return HIS.printAdmissionCert(data); }
     var html = '<div class="print-sheet"><div class="print-header">' + esc(data.hospitalName || getHospitalName()) + '</div><div class="print-subheader">' + esc(type) + '</div>' +
       '<table class="print-meta"><tr><td>姓名：' + esc(value(patient, ['name', 'patientName'], cert.patientName || '')) + '</td><td>性别：' + esc(gender(patient.gender)) + '</td><td>年龄：' + esc(patient.age || '') + '</td></tr>' +
       '<tr><td colspan="3">诊断：' + esc(cert.diagnosis || cert.admitDiagnosis || '') + '</td></tr></table><div class="print-content">' + nl2br(content) + '</div>' +
       '<div class="print-footer"><span>医师签名：' + esc(cert.issueDrName || cert.applyDrName || '________') + '</span><span>日期：' + esc(dateText(cert.issueTime || cert.applyTime) || new Date().toLocaleDateString()) + '</span><span>（盖章）</span></div></div>';
-    return openPrintWindow(type, html);
+    return html;
+  }
+  HIS.printCert = function (data) {
+    data = data || {};
+    var cert = data.cert || data.admission || data;
+    var type = data.certTypeName || (cert.admitDiagnosis != null ? '住院证' : ({ 1: '诊断证明书', 2: '病假证明', 3: '转诊证明' }[cert.certType] || data.certType || '诊断证明书'));
+    return openPrintWindow(type, certHtml(data));
   };
+
+  /* OP-D 14.7: 单据 HTML 构建器对外暴露, 供打印中心一键全打聚合复用 */
+  HIS.buildDocHtml = { rx: rxHtml, order: orderHtml, record: recordHtml, cert: certHtml, admission: admissionHtml };
 })();

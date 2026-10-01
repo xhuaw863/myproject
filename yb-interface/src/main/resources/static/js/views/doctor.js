@@ -28,7 +28,8 @@
       'dw-documents-panel': HIS.components.DwDocumentsPanel,
       'dw-orders-overview': HIS.components.DwOrdersOverview,
       'dw-vital-panel': HIS.components.DwVitalPanel,
-      'dw-pre-consult-dialog': HIS.components.DwPreConsultDialog
+      'dw-pre-consult-dialog': HIS.components.DwPreConsultDialog,
+      'dw-report-panel': HIS.components.DwReportPanel
     },
     data: function () {
       return {
@@ -51,7 +52,10 @@
         preConsultVisible: false,
         dispositionVisible: false,
         dispositionDepts: [],
-        dispositionForm: { disposition: 1, dispositionDeptId: null, dispositionNote: '' }
+        dispositionForm: { disposition: 1, dispositionDeptId: null, dispositionNote: '' },
+        /* OP-D 危急值轮询待办(14.6) */
+        pendingCriticals: [],
+        critAlertedIds: []
       };
     },
     provide: function () {
@@ -91,10 +95,15 @@
       vm._keyHandler = function (event) { vm.handleShortcut(event); };
       document.addEventListener('keydown', vm._keyHandler);
       vm.updateClock();
+      vm._critTick = 0;
       vm.timerInterval = window.setInterval(function () {
         vm.updateClock();
         if (vm.canEdit) { vm.visitTimer += 1; }
+        /* OP-D 危急值轮询: 每 60s 拉一次本人待接收项 */
+        vm._critTick += 1;
+        if (vm._critTick >= 60) { vm._critTick = 0; vm.checkCriticals(); }
       }, 1000);
+      vm.checkCriticals();
 
       if (HIS.pendingVisitId) {
         var pendingId = HIS.pendingVisitId;
@@ -123,6 +132,7 @@
         if (!editing && event.ctrlKey && event.key === '1') { event.preventDefault(); this.switchTab('clinic'); }
         if (!editing && event.ctrlKey && event.key === '2') { event.preventDefault(); this.switchTab('docs'); }
         if (!editing && event.ctrlKey && event.key === '3') { event.preventDefault(); this.switchTab('overview'); }
+        if (!editing && event.ctrlKey && event.key === '4') { event.preventDefault(); this.switchTab('report'); }
       },
       switchTab: function (tab) {
         this.activeTab = tab;
@@ -441,6 +451,43 @@
         var documents = this.$refs.documentsPanel;
         if (documents && typeof documents.refreshAll === 'function') { documents.refreshAll(); }
       },
+      /* ===== OP-D 危急值弹窗待办(14.6): 开单医生=本人的已复核/已通知未接收记录 ===== */
+      checkCriticals: function () {
+        var vm = this;
+        return HIS.get('/api/medtech/critical-values/my-pending').then(function (rows) {
+          var pending = rows || [];
+          vm.pendingCriticals = pending;
+          var hit = null;
+          for (var i = 0; i < pending.length; i++) {
+            if (vm.critAlertedIds.indexOf(String(pending[i].id)) < 0) { hit = pending[i]; break; }
+          }
+          if (hit) { vm.alertCritical(hit); }
+          return pending;
+        }).catch(function () { /* 静默: 轮询失败不打断接诊 */ });
+      },
+      alertCritical: function (c) {
+        var vm = this;
+        /* 强提醒不自动消退: 仅确认接收/已知晓后记录已弹, 否则下轮轮询继续提醒(危急值必处置) */
+        var statusTip = Number(c.status) === 2 ? '已通知临床, 请确认接收' : '待医技通知, 请先行知晓准备';
+        ElementPlus.ElMessageBox.confirm(
+          '患者 ' + (c.patientName || '-') + '(' + (c.genderName || '') + ' ' + (c.age != null ? c.age + '岁' : '-') + ') 项目「' + (c.itemName || '') + '」结果 ' + (c.resultValue || '') + ' 达危急值(' + (c.discoverTime || '') + ' 发现, ' + statusTip + ')。报告单: ' + (c.reportNo || '-'),
+          '危急值提醒',
+          { type: 'warning', confirmButtonText: Number(c.status) === 2 ? '确认接收' : '已知晓', cancelButtonText: '稍后处理', distinguishCancelAndClose: true }
+        ).then(function () {
+          vm.critAlertedIds.push(String(c.id));
+          if (Number(c.status) !== 2) { return; }
+          return vm.confirmCritical(c);
+        }).catch(function () { /* 稍后/关闭: 不记已弹, 下轮继续提醒 */ });
+      },
+      confirmCritical: function (c) {
+        var vm = this;
+        var user = (typeof HIS.getUser === 'function' && HIS.getUser()) || {};
+        var person = user.staffName || user.realName || user.username || '值班医生';
+        return HIS.post('/api/medtech/critical/' + encodeURIComponent(c.id) + '/confirm', { person: person }).then(function () {
+          ElementPlus.ElMessage.success('危急值已接收, 请及时补录处置措施');
+          return vm.checkCriticals();
+        }).catch(function (e) { HIS.notifyError(e); });
+      },
       focusPanelSearch: function (panelName) {
         var vm = this;
         if (!vm.currentVisit) { ElementPlus.ElMessage.warning('请先选择患者'); return; }
@@ -490,6 +537,7 @@
                 <button class="dw-tabnav-item" :class="{'is-active': activeTab==='clinic'}" role="tab" :aria-selected="activeTab==='clinic'" @click="switchTab('clinic')">诊疗工作台<span class="dw-tab-count" v-if="diagnoses.length || rxCount || orderCount">诊{{ diagnoses.length }} 方{{ rxCount }} 嘱{{ orderCount }}</span></button>
                 <button class="dw-tabnav-item" :class="{'is-active': activeTab==='overview'}" role="tab" :aria-selected="activeTab==='overview'" @click="switchTab('overview')">医嘱总览<span class="dw-tab-count" v-if="rxCount || orderCount">{{ rxCount + orderCount }}</span></button>
                 <button class="dw-tabnav-item" :class="{'is-active': activeTab==='docs'}" role="tab" :aria-selected="activeTab==='docs'" @click="switchTab('docs')">处置与历史</button>
+                <button class="dw-tabnav-item" :class="{'is-active': activeTab==='report'}" role="tab" :aria-selected="activeTab==='report'" @click="switchTab('report')">报告<span class="dw-tab-count" v-if="pendingCriticals.length">⚠{{ pendingCriticals.length }}</span></button>
               </nav>
             </div>
 
@@ -511,11 +559,15 @@
             <div class="dw-tab-body dw-tab-narrow" v-show="activeTab==='docs'">
               <dw-documents-panel ref="documentsPanel" @print="onPrint" @fee-updated="onFeeUpdated"></dw-documents-panel>
             </div>
+
+            <div class="dw-tab-body dw-tab-narrow" v-if="activeTab==='report'">
+              <dw-report-panel @insert-to-record="onInsertToRecord"></dw-report-panel>
+            </div>
           </div>
         </div>
 
         <div class="dw-footer">
-          <span>F2接诊 F3暂存 F4完成 F5药品 F6医嘱 F8刷新 | Ctrl+1诊疗 Ctrl+2处置 Ctrl+3总览</span>
+          <span>F2接诊 F3暂存 F4完成 F5药品 F6医嘱 F8刷新 | Ctrl+1诊疗 Ctrl+2处置 Ctrl+3总览 Ctrl+4报告</span>
           <span class="dw-footer-time" style="margin-left:auto;font-variant-numeric:tabular-nums">{{ currentTime }}</span>
         </div>
 
