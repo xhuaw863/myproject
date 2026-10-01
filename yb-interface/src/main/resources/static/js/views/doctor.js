@@ -291,6 +291,19 @@
       onUpdateDiagnoses: function (diagList) {
         this.diagnoses = Array.isArray(diagList) ? diagList : [];
       },
+      /* OP-B 诊断→模板调入中继: 诊断面板命中关联模板并经确认后, 按类型路由到处方/医嘱面板批量入行 */
+      onApplyDiagTemplate: function (tpl) {
+        tpl = tpl || {};
+        if (tpl.templateType === 'order_set') {
+          var op = this.$refs.orderPanel;
+          if (op && typeof op.applyDiagTemplate === 'function') { op.applyDiagTemplate(tpl); }
+          else { ElementPlus.ElMessage.warning('医嘱面板不可用, 无法调入模板'); }
+        } else {
+          var rp = this.$refs.rxPanel;
+          if (rp && typeof rp.applyDiagTemplate === 'function') { rp.applyDiagTemplate(tpl); }
+          else { ElementPlus.ElMessage.warning('处方面板不可用, 无法调入模板'); }
+        }
+      },
       onRxSaved: function () {
         this.loadFeeSummary(this.currentVisit);
         this.refreshDocuments();
@@ -482,7 +495,7 @@
 
             <div class="dw-tab-body dw-clinic" v-show="activeTab==='clinic'">
               <div class="dw-col dw-col-left">
-                <dw-diagnosis-panel @update-diagnoses="onUpdateDiagnoses"></dw-diagnosis-panel>
+                <dw-diagnosis-panel @update-diagnoses="onUpdateDiagnoses" @apply-template="onApplyDiagTemplate"></dw-diagnosis-panel>
                 <dw-emr-panel ref="emrPanel" @save-draft="onSaveDraft"></dw-emr-panel>
               </div>
               <div class="dw-col dw-col-right">

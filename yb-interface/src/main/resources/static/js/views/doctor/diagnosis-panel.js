@@ -1,4 +1,5 @@
-/* 门诊医生站诊断录入面板: 检索统一字典 his_diag_dict(医共体诊断字典启用项), 诊断类别 diagClass 随就诊落库 */
+/* 门诊医生站诊断录入面板: 检索统一字典 his_diag_dict(医共体诊断字典启用项), 诊断类别 diagClass 随就诊落库
+   OP-B 诊断进阶: 主次诊断/诊断助手(历史+科室高频+个人常用)/疾病报卡/诊断→医嘱模板调入/中医证候配对/口腔牙位图 */
 ;(function () {
   /* 诊断类别(与后端 his_diag_dict.dict_type 白名单一致) */
   const DIAG_CLASSES = [
@@ -8,6 +9,8 @@
     { v: 'oper', l: '手术代码' },
     { v: 'tumor', l: '肿瘤代码' }
   ];
+  /* 报卡类型(与后端 his_disease_report.report_type 对齐) */
+  const REPORT_TYPES = [{ v: 1, l: '法定传染病' }, { v: 2, l: '慢性病' }, { v: 3, l: '其他' }];
   /* 常用诊断(医保版ICD-10码, 与统一字典 west 类同源; ybCode=code 保持"已对照"徽标) */
   const COMMON_DIAGNOSES = [
     { code: 'I10.x00', ybCode: 'I10.x00', name: '原发性高血压', extra: '循环系统疾病' },
@@ -21,11 +24,17 @@
     { code: 'R51.x00', ybCode: 'R51.x00', name: '头痛', extra: '症状与体征' },
     { code: 'R10.400', ybCode: 'R10.400', name: '腹痛', extra: '症状与体征' }
   ];
+  /* 口腔相关关键字(命中则展示牙位图入口) */
+  function isOralDiag(diag) {
+    var nm = (diag && (diag.diagName || diag.name)) || '';
+    return /牙|齿|口|颌|龈/.test(nm);
+  }
 
   const DiagnosisPanel = {
     name: 'DwDiagnosisPanel',
+    components: { 'dw-tooth-chart': window.HIS.components.DwToothChart },
     inject: ['currentVisit'],
-    emits: ['update-diagnoses'],
+    emits: ['update-diagnoses', 'apply-template'],
     provide: function () {
       var vm = this;
       return { diagnoses: Vue.computed(function () { return vm.selectedDiagnoses; }) };
@@ -52,9 +61,38 @@
             <div class="dw-diag-tabs">
               <button class="dw-diag-tab" :class="{'is-active': commonTab==='personal'}" @click="switchCommonTab('personal')">我的常用</button>
               <button class="dw-diag-tab" :class="{'is-active': commonTab==='dept'}" @click="switchCommonTab('dept')">科室诊断</button>
+              <button class="dw-diag-tab" :class="{'is-active': commonTab==='assistant'}" @click="switchCommonTab('assistant')">智能助手</button>
               <span class="dim" style="margin-left:auto;font-size:12px">已选 {{ selectedDiagnoses.length }} 条</span>
             </div>
-            <div class="dw-diag-common" v-if="commonDiagnosisRows.length">
+
+            <!-- 智能助手: 患者历史 / 本科室高频 / 个人常用 三类沉淀, 点击即加入 -->
+            <div class="dw-diag-assistant" v-if="commonTab==='assistant'">
+              <div v-if="assistantLoading" class="dw-slim-empty">正在聚合诊断候选…</div>
+              <template v-else>
+                <div class="dw-asst-group" v-if="assistant.history && assistant.history.length">
+                  <div class="dw-asst-title">患者历史诊断</div>
+                  <div class="dw-diag-common">
+                    <button v-for="a in assistant.history" :key="'h'+a.code" class="dw-tag" :class="isAdded(a) ? 'dw-tag--success' : 'dw-tag--info'" :disabled="readOnly || isAdded(a)" style="cursor:pointer" @click="addFromAssistant(a)">{{ a.name }}</button>
+                  </div>
+                </div>
+                <div class="dw-asst-group" v-if="assistant.deptFrequent && assistant.deptFrequent.length">
+                  <div class="dw-asst-title">本科室高频</div>
+                  <div class="dw-diag-common">
+                    <button v-for="a in assistant.deptFrequent" :key="'d'+a.code" class="dw-tag" :class="isAdded(a) ? 'dw-tag--success' : 'dw-tag--warning'" :disabled="readOnly || isAdded(a)" style="cursor:pointer" @click="addFromAssistant(a)">{{ a.name }}<span class="dim" v-if="a.count">·{{ a.count }}</span></button>
+                  </div>
+                </div>
+                <div class="dw-asst-group" v-if="assistant.personalFrequent && assistant.personalFrequent.length">
+                  <div class="dw-asst-title">我的常用</div>
+                  <div class="dw-diag-common">
+                    <button v-for="a in assistant.personalFrequent" :key="'p'+a.code" class="dw-tag" :class="isAdded(a) ? 'dw-tag--success' : 'dw-tag--info'" :disabled="readOnly || isAdded(a)" style="cursor:pointer" @click="addFromAssistant(a)">{{ a.name }}<span class="dim" v-if="a.count">·{{ a.count }}</span></button>
+                  </div>
+                </div>
+                <div v-if="!(assistant.history||[]).length && !(assistant.deptFrequent||[]).length && !(assistant.personalFrequent||[]).length" class="dw-slim-empty">暂无助手候选, 开具并保存诊断后自动沉淀高频项</div>
+              </template>
+            </div>
+
+            <!-- 常用诊断(个人/科室模板) -->
+            <div class="dw-diag-common" v-else-if="commonDiagnosisRows.length">
               <button v-for="item in commonDiagnosisRows" :key="item.code" class="dw-tag" :class="isAdded(item) ? 'dw-tag--success' : 'dw-tag--info'" :disabled="readOnly || isAdded(item)" style="cursor:pointer" @click="addDiagnosis(item)">{{ item.name }}</button>
             </div>
             <div v-else class="dw-slim-empty">暂无{{ commonTab==='personal' ? '个人常用' : '科室' }}诊断, 可用已选行的「★常用」沉淀, 或 <a href="javascript:void(0)" @click="gotoTemplateManage">去维护</a></div>
@@ -65,18 +103,49 @@
             <div class="dw-diag-row" v-for="(diag, idx) in selectedDiagnoses" :key="diag._key">
               <span class="ord">{{ idx + 1 }}</span>
               <span class="dw-tag" :class="diag.maindiagFlag === '1' ? 'dw-tag--info' : ''">{{ diag.maindiagFlag === '1' ? '★主' : '次' }}</span>
-              <span class="nm" :title="diag.diagName">{{ diag.diagName }}</span>
+              <span class="nm" :title="diag.diagName + (diag.toothPosition ? ' [' + diag.toothPosition + ']' : '')">{{ diag.diagName }}</span>
+              <span class="dw-tag dw-tag--info" v-if="diag.toothPosition" title="牙位">{{ diag.toothPosition }}</span>
               <span class="code">{{ diag.diagCode }}</span>
               <span class="dim" style="font-size:12px">{{ classLabel(diag.diagClass) }}</span>
               <el-select v-model="diag.diagType" size="small" :disabled="readOnly" @change="notifyChange" style="width:96px"><el-option label="初诊" value="1"></el-option><el-option label="复诊" value="2"></el-option><el-option label="疑似" value="3"></el-option></el-select>
               <span class="dw-tag" :class="diag.mapped !== false ? 'dw-tag--success' : 'dw-tag--warning'">{{ diag.mapped !== false ? '✓对照' : '!未对照' }}</span>
               <el-button v-if="diag.maindiagFlag !== '1'" link type="primary" size="small" :disabled="readOnly" @click="setMain(idx)">设主</el-button>
+              <el-button v-if="diag.diagClass === 'tcm'" link type="success" size="small" :disabled="readOnly" title="为其中医病名配对证候" @click="pairSyndrome()">配证候</el-button>
+              <el-button v-if="isOral(diag)" link type="primary" size="small" :disabled="readOnly" title="口腔牙位图" @click="openTooth(idx)">牙位</el-button>
+              <el-button link type="warning" size="small" :disabled="readOnly" title="疾病报卡" @click="openReport(diag)">报卡</el-button>
               <el-button link type="warning" size="small" :disabled="readOnly" title="加入我的常用诊断" @click="markCommon(diag)">★常用</el-button>
               <el-button link type="danger" size="small" :disabled="readOnly" @click="removeDiagnosis(idx)">删</el-button>
             </div>
           </div>
           <div v-else class="dw-collapse-empty">尚未添加诊断</div>
         </div>
+
+        <!-- 口腔牙位图对话框: 选中牙位拼进 tooth_position(FDI 编码), 仅口腔诊断入口触发 -->
+        <el-dialog v-model="toothVisible" title="口腔牙位图 (FDI)" width="380px" append-to-body>
+          <dw-tooth-chart v-model="toothTemp"></dw-tooth-chart>
+          <template #footer>
+            <el-button size="small" @click="toothVisible=false">取消</el-button>
+            <el-button size="small" type="primary" @click="saveTooth">确定</el-button>
+          </template>
+        </el-dialog>
+
+        <!-- 疾病报卡对话框: 与诊断关联留痕, 落 his_disease_report -->
+        <el-dialog v-model="reportVisible" title="疾病报卡" width="460px" append-to-body>
+          <el-form :model="reportForm" label-width="88px" size="small">
+            <el-form-item label="诊断"><el-input :value="reportForm.diagName" disabled/></el-form-item>
+            <el-form-item label="报卡类型">
+              <el-select v-model="reportForm.reportType" style="width:100%">
+                <el-option v-for="t in reportTypes" :key="t.v" :label="t.l" :value="t.v"></el-option>
+              </el-select>
+            </el-form-item>
+            <el-form-item label="报卡内容"><el-input v-model="reportForm.reportContent" type="textarea" :rows="3" placeholder="发病时间/接触史/初步处置等(选填)"/></el-form-item>
+            <div class="dim">提交后生成待报记录并留痕, 上报通道对接由后续批次承接。</div>
+          </el-form>
+          <template #footer>
+            <el-button size="small" @click="reportVisible=false">取消</el-button>
+            <el-button size="small" type="primary" :loading="reportSaving" @click="submitReport">提交报卡</el-button>
+          </template>
+        </el-dialog>
       </section>
     `,
     data: function () {
@@ -84,6 +153,7 @@
         keyword: '',
         diagClass: 'west',
         diagClasses: DIAG_CLASSES,
+        reportTypes: REPORT_TYPES,
         pickDiagCode: null,
         results: [],
         loading: false,
@@ -91,13 +161,28 @@
         commonTab: 'personal',
         personalDiags: [],
         deptDiags: [],
-        requestSerial: 0
+        requestSerial: 0,
+        /* OP-B 诊断助手 */
+        assistant: { history: [], deptFrequent: [], personalFrequent: [] },
+        assistantLoaded: false,
+        assistantLoading: false,
+        /* OP-B 牙位图 */
+        toothVisible: false,
+        toothEditIndex: -1,
+        toothTemp: '',
+        /* OP-B 疾病报卡 */
+        reportVisible: false,
+        reportSaving: false,
+        reportForm: { diagCode: '', diagName: '', reportType: 1, reportContent: '' }
       };
     },
     computed: {
       isExpanded: function () { return true; },
       readOnly: function () { return !this.currentVisit || Number(this.currentVisit.visitStatus) >= 3; },
       visitId: function () { return this.currentVisit && this.currentVisit.id; },
+      patientId: function () { var v = this.currentVisit || {}; return v.patientId || null; },
+      deptId: function () { var v = this.currentVisit || {}; return v.deptId || null; },
+      staffId: function () { var v = this.currentVisit || {}; return v.staffId || v.drId || null; },
       /* 常用页签数据源: 模板有数据用模板; 两类皆空时仅个人页签兜底硬编码常用项(提示去维护) */
       commonDiagnosisRows: function () {
         var list = this.commonTab === 'personal' ? this.personalDiags : this.deptDiags;
@@ -110,11 +195,15 @@
     watch: {
       visitId: {
         immediate: true,
-        handler: function (id) { this.loadExisting(id); this.loadCommonDiags(); }
+        handler: function (id) { this.loadExisting(id); this.loadCommonDiags(); this.assistantLoaded = false; }
       }
     },
     methods: {
-      switchCommonTab: function (tab) { this.commonTab = tab; },
+      isOral: isOralDiag,
+      switchCommonTab: function (tab) {
+        this.commonTab = tab;
+        if (tab === 'assistant' && !this.assistantLoaded) { this.loadAssistant(); }
+      },
       gotoTemplateManage: function () { window.HIS.go('medical-template'); },
       /* 拉取个人/科室常用诊断模板(diag_personal / diag_dept), content=JSON{code,name,category} */
       loadCommonDiags: function () {
@@ -131,6 +220,24 @@
         }
         window.HIS.get('/api/his/template/list?type=diag_personal').then(function (d) { vm.personalDiags = parseRows(d); }).catch(function () { vm.personalDiags = []; });
         window.HIS.get('/api/his/template/list?type=diag_dept').then(function (d) { vm.deptDiags = parseRows(d); }).catch(function () { vm.deptDiags = []; });
+      },
+      /* 诊断助手聚合: 患者历史 / 本科室高频 / 个人常用 */
+      loadAssistant: function () {
+        var vm = this;
+        vm.assistantLoading = true;
+        var q = '/api/his/diagnosis/assistant?limit=15';
+        if (vm.patientId) { q += '&patientId=' + encodeURIComponent(vm.patientId); }
+        if (vm.deptId) { q += '&deptId=' + encodeURIComponent(vm.deptId); }
+        if (vm.staffId) { q += '&staffId=' + encodeURIComponent(vm.staffId); }
+        window.HIS.get(q).then(function (d) {
+          d = d || {};
+          vm.assistant = { history: d.history || [], deptFrequent: d.deptFrequent || [], personalFrequent: d.personalFrequent || [] };
+          vm.assistantLoaded = true;
+        }).catch(function () { vm.assistant = { history: [], deptFrequent: [], personalFrequent: [] }; }).finally(function () { vm.assistantLoading = false; });
+      },
+      /* 助手候选点击加入(统一按 code/name/clazz 规整为诊断行) */
+      addFromAssistant: function (a) {
+        this.addDiagnosis({ code: a.code, ybCode: a.code, name: a.name, diagClass: a.clazz || 'west', mapped: true });
       },
       /* ★常用: 已选诊断存为个人常用诊断模板(显式传 staffId, 口径同处方存模板) */
       markCommon: function (diag) {
@@ -152,6 +259,12 @@
         return o ? o.l : (t || '');
       },
       onDiagClassChange: function () { this.results = []; this.pickDiagCode = null; },
+      /* 中医证候配对: 切换到证候类别并聚焦检索, 由医生续配本次 tcm 病名对应证候 */
+      pairSyndrome: function () {
+        this.diagClass = 'symp';
+        this.results = [];
+        ElementPlus.ElMessage.info('已切换到"中医症候", 检索并添加证候即与上方病名配对(同存 his_diagnosis, 类别 symp)');
+      },
       searchDiagnoses: function (addFirst) {
         var vm = this;
         var serial = ++vm.requestSerial;
@@ -206,10 +319,63 @@
           diagType: item.diagType || '1',
           maindiagFlag: isFirst ? '1' : '0',
           diagSrtNo: this.selectedDiagnoses.length + 1,
+          toothPosition: item.toothPosition || null,
           /* 对照徽标: 统一字典条目医保码(ybCode)非空即可直接作 2203 diseCodg; 常用项/存量回显无 ybCode 但有码也视为可用 */
           mapped: item.mapped !== undefined ? item.mapped : !!(item.ybCode || item.diagCode || item.code)
         });
         this.normalize();
+        this.checkDiagTemplate(this.selectedDiagnoses[this.selectedDiagnoses.length - 1]);
+      },
+      /* OP-B 诊断→医嘱/处方模板提示: 命中映射则询问是否调入, 确认后经主编排中继落到处方/医嘱面板 */
+      checkDiagTemplate: function (diag) {
+        var vm = this;
+        if (!diag || !diag.diagCode) { return; }
+        var q = '/api/his/diag-template-link?diagCode=' + encodeURIComponent(diag.diagCode);
+        if (vm.deptId) { q += '&deptId=' + encodeURIComponent(vm.deptId); }
+        window.HIS.get(q).then(function (links) {
+          links = links || [];
+          if (!links.length) { return; }
+          var names = links.map(function (l) { return l.templateName + '(' + (l.templateType === 'order_set' ? '医嘱' : '处方') + ')'; }).join('、');
+          ElementPlus.ElMessageBox.confirm('诊断「' + diag.diagName + '」关联模板: ' + names + '。是否调入第一个?', '诊断关联模板', { type: 'info', confirmButtonText: '调入', cancelButtonText: '不用了' })
+            .then(function () { vm.$emit('apply-template', links[0]); })
+            .catch(function () {});
+        }).catch(function () {});
+      },
+      /* OP-B 牙位图 */
+      openTooth: function (idx) {
+        var diag = this.selectedDiagnoses[idx];
+        if (!diag) { return; }
+        this.toothEditIndex = idx;
+        this.toothTemp = diag.toothPosition || '';
+        this.toothVisible = true;
+      },
+      saveTooth: function () {
+        var diag = this.selectedDiagnoses[this.toothEditIndex];
+        if (diag) { diag.toothPosition = this.toothTemp || null; this.notifyChange(); }
+        this.toothVisible = false;
+      },
+      /* OP-B 疾病报卡 */
+      openReport: function (diag) {
+        if (!diag) { return; }
+        this.reportForm = { diagCode: diag.diagCode, diagName: diag.diagName, reportType: 1, reportContent: '' };
+        this.reportVisible = true;
+      },
+      submitReport: function () {
+        var vm = this;
+        var visit = vm.currentVisit || {};
+        if (!visit.id) { ElementPlus.ElMessage.warning('请先选择患者'); return; }
+        vm.reportSaving = true;
+        window.HIS.post('/api/his/disease-report', {
+          visitId: visit.id,
+          patientId: vm.patientId,
+          diagCode: vm.reportForm.diagCode,
+          diagName: vm.reportForm.diagName,
+          reportType: vm.reportForm.reportType,
+          reportContent: vm.reportForm.reportContent
+        }).then(function () {
+          ElementPlus.ElMessage.success('报卡已登记(待报)');
+          vm.reportVisible = false;
+        }).catch(function (e) { if (window.HIS.notifyError) { window.HIS.notifyError(e); } }).finally(function () { vm.reportSaving = false; });
       },
       removeDiagnosis: function (index) {
         var removedMain = this.selectedDiagnoses[index] && this.selectedDiagnoses[index].maindiagFlag === '1';
@@ -242,7 +408,7 @@
       },
       cleanDiagnoses: function () {
         return this.selectedDiagnoses.map(function (diag) {
-          return { id: diag.id, visitId: diag.visitId, diagCode: diag.diagCode, diagName: diag.diagName, diagClass: diag.diagClass || null, diagType: diag.diagType || '1', maindiagFlag: diag.maindiagFlag, diagSrtNo: diag.diagSrtNo, valiFlag: diag.valiFlag || '1' };
+          return { id: diag.id, visitId: diag.visitId, diagCode: diag.diagCode, diagName: diag.diagName, diagClass: diag.diagClass || null, diagType: diag.diagType || '1', maindiagFlag: diag.maindiagFlag, diagSrtNo: diag.diagSrtNo, toothPosition: diag.toothPosition || null, valiFlag: diag.valiFlag || '1' };
         });
       },
       notifyChange: function () { this.$emit('update-diagnoses', this.cleanDiagnoses()); },

@@ -301,7 +301,7 @@ public class HisVisitService extends ServiceImpl<HisVisitMapper, HisVisit> {
 
         // 保存诊断(替换式: 先删后插, 并发下可能死锁, 由外层整体重试收敛)
         diagnosisService.saveDiagnoses(v.getId(), v.getDeptName(), v.getAtddrNo(), v.getDrName(),
-                req.getDiagnoses());
+                req.getDiagnoses(), v.getStaffId(), v.getDeptId());
 
         // 组装正式病历(SOAP): 结构化正文优先派生 S/O/A/P(方案 B B2); 无结构化沿用请求 SOAP 文本
         List<HisDiagnosis> savedDiag = diagnosisService.listByVisit(v.getId());

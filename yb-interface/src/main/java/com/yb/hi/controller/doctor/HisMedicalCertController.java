@@ -39,4 +39,12 @@ public class HisMedicalCertController {
     public R<Map<String, Object>> printData(@RequestParam Long id) {
         return R.ok(service.printData(id));
     }
+
+    /** 审核诊断证明(OP-B): pass=true 通过(audit_status=2), false 驳回(audit_status=3) */
+    @PostMapping("/audit")
+    public R<HisMedicalCert> audit(@RequestParam Long id,
+                                   @RequestParam(defaultValue = "true") boolean pass,
+                                   @RequestParam(required = false) String remark) {
+        return R.ok(service.audit(id, pass, remark));
+    }
 }

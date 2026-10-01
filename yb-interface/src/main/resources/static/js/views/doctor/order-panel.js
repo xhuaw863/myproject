@@ -369,6 +369,17 @@
           ElementPlus.ElMessage[skipped.length ? 'warning' : 'success'](msg);
         }).finally(function () { vm.packageLoading = false; });
       },
+      /* OP-B 诊断→模板调入: 将医嘱组套 content(items 名称) 转为套餐并入行, 复用 addPackage 目录回查链路 */
+      applyDiagTemplate: function (tpl) {
+        var vm = this;
+        if (!tpl) { return; }
+        var content = tpl.content;
+        try { content = typeof content === 'string' ? JSON.parse(content) : content; } catch (e) { ElementPlus.ElMessage.error('模板内容格式错误'); return; }
+        var rawItems = Array.isArray(content) ? content : ((content && content.items) || []);
+        var names = rawItems.map(function (x) { return typeof x === 'string' ? x : (x.itemName || x.name || x.keyword); }).filter(Boolean);
+        if (!names.length) { ElementPlus.ElMessage.warning('该模板没有医嘱项目明细'); return; }
+        vm.addPackage({ name: tpl.templateName || tpl.name || '诊断关联模板', items: names });
+      },
       removeItem: function (index) { this.activeBucket.items.splice(index, 1); },
       lineAmount: function (it) { return money((Number(it.price) || 0) * (Number(it.quantity) || 0)); },
       validateOrder: function () {

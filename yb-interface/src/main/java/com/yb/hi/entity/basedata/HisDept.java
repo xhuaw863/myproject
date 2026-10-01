@@ -59,6 +59,8 @@ public class HisDept extends BaseEntity {
     private Long defPharmacyWest;
     /** 默认发药药房-中药渠道(his_pharmacy_def.id; rxType含"中药"时适用) */
     private Long defPharmacyTcm;
+    /** 诊断证明审核开关: 0直接可打印 1需审核(OP-B 诊断证明审核流按科室配置) */
+    private Integer certAuditRequired;
     /** 备注 */
     private String memo;
 

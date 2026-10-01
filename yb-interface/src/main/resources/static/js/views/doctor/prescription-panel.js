@@ -676,6 +676,22 @@
           ElementPlus.ElMessageBox.confirm('套用模板将替换当前处方草稿，是否继续？', '套用常用处方', { type: 'warning' }).then(apply).catch(function () {});
         } else { apply(); }
       },
+      /* OP-B 诊断→模板调入: 按传入模板 content(items) 追加到当前处方草稿(不替换), 供主编排中继调用 */
+      applyDiagTemplate: function (tpl) {
+        var vm = this;
+        if (!tpl) { return; }
+        var parsed;
+        try { parsed = typeof tpl.content === 'string' ? JSON.parse(tpl.content) : tpl.content; } catch (e) { ElementPlus.ElMessage.error('模板内容格式错误'); return; }
+        var items = Array.isArray(parsed) ? parsed : ((parsed && parsed.items) || []);
+        if (!items.length) { ElementPlus.ElMessage.warning('该模板没有药品明细'); return; }
+        if (parsed && parsed.rxType && RX_TYPES[parsed.rxType]) { vm.rxType = parsed.rxType; }
+        return items.reduce(function (chain, source) {
+          return chain.then(function () { return vm.addDrug(source, source.groupNo); });
+        }, Promise.resolve()).then(function () {
+          vm.resequenceGroups();
+          ElementPlus.ElMessage.success('已调入处方模板：' + (tpl.templateName || tpl.name || ''));
+        }).catch(function (e) { if (window.HIS.notifyError) { window.HIS.notifyError(e); } });
+      },
       /* 插入病历: 按 Rp 组生成处方摘要追加到病历治疗意见(不自动双写, 经主编排中继) */
       insertToRecord: function () {
         var vm = this;

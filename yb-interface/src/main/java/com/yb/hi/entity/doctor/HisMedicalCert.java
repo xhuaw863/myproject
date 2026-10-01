@@ -46,4 +46,15 @@ public class HisMedicalCert extends BaseEntity {
     private LocalDateTime issueTime;
     /** 机构ID(开具科室归属机构) */
     private Long orgId;
+    /** 审核状态: 0无须审核 1待审 2通过 3驳回 */
+    private Integer auditStatus;
+    /** 审核人ID */
+    private Long auditorId;
+    /** 审核人姓名 */
+    private String auditorName;
+    /** 审核时间 */
+    @JsonFormat(pattern = "yyyy-MM-dd HH:mm:ss")
+    private LocalDateTime auditTime;
+    /** 审核意见/驳回原因 */
+    private String auditRemark;
 }

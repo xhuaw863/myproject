@@ -46,4 +46,6 @@ public class HisDiagnosis extends BaseEntity {
     private String admCond;
     /** 有效标志: 1-有效 0-无效 */
     private String valiFlag;
+    /** 牙位编码(FDI/Palmer, 口腔诊断专用, 多个以逗号拼接) */
+    private String toothPosition;
 }

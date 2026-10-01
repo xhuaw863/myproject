@@ -231,8 +231,9 @@
         var vm = this; var f = vm.certForm;
         if (!f.certContent) { ElementPlus.ElMessage.warning('证明内容必填'); return; }
         vm.certSaving = true;
-        HIS.post('/api/his/medical-cert/create', Object.assign({ visitId: vm.visitId }, f)).then(function () {
-          ElementPlus.ElMessage.success('证明已开具'); vm.certVisible = false; return vm.loadDocuments();
+        HIS.post('/api/his/medical-cert/create', Object.assign({ visitId: vm.visitId }, f)).then(function (cert) {
+          var pending = cert && Number(cert.auditStatus) === 1;
+          ElementPlus.ElMessage.success(pending ? '证明已开具, 已提交科室审核(通过后仍可打印)' : '证明已开具'); vm.certVisible = false; return vm.loadDocuments();
         }).catch(HIS.notifyError).finally(function () { vm.certSaving = false; });
       },
       draftBody: function () {
@@ -261,6 +262,22 @@
         }).catch(HIS.notifyError).finally(function () { vm.followupSaving = false; });
       },
       certTypeLabel: function (v) { var c = CERT_TYPES.find(function (x) { return x.v === Number(v); }); return c ? c.l : '诊断证明'; },
+      /* OP-B 诊断证明审核流: 状态码翻译(0无须 1待审 2通过 3驳回) + 审核动作(通过/驳回带原因) */
+      certAuditText: function (s) { return ({ 1: '待审核', 2: '已通过', 3: '已驳回' })[Number(s)] || '无须'; },
+      certAuditTone: function (s) { return ({ 1: 'warning', 2: 'success', 3: 'danger' })[Number(s)] || 'info'; },
+      auditCert: function (row, pass) {
+        var vm = this;
+        var doAudit = function (remark) {
+          return HIS.post('/api/his/medical-cert/audit?id=' + encodeURIComponent(row.id) + '&pass=' + (pass ? 'true' : 'false') + '&remark=' + encodeURIComponent(remark || '')).then(function () {
+            HIS.notifySuccess(pass ? '证明已审核通过, 可打印' : '证明已驳回');
+            return vm.loadDocuments();
+          });
+        };
+        if (pass) { doAudit('').catch(function (e) { if (HIS.notifyError) { HIS.notifyError(e); } }); return; }
+        ElementPlus.ElMessageBox.prompt('请输入驳回原因', '驳回诊断证明', { inputPlaceholder: '如: 诊断与证明内容不符', closeOnClickModal: false })
+          .then(function (r) { return doAudit(r.value); })
+          .catch(function () {});
+      },
       barWidth: function (amount) { return this.fee.total > 0 ? Math.max(0, Number(amount) * 100 / this.fee.total).toFixed(2) + '%' : '0%'; },
       emitPrint: function (type, id) { this.$emit('print', { type: type, id: id }); },
       openPrintCenter: function () { if (!this.visitId) { ElementPlus.ElMessage.warning('请先选择患者'); return; } this.loadPrintables(); this.printVisible = true; }
@@ -304,7 +321,7 @@
 
         <el-dialog v-model="certVisible" title="诊断证明" width="620px">
           <el-form :model="certForm" label-width="92px"><el-form-item label="证明类型"><el-radio-group v-model="certForm.certType"><el-radio-button v-for="c in certTypes" :key="c.v" :label="c.v">{{ c.l }}</el-radio-button></el-radio-group></el-form-item><el-form-item label="诊断"><el-input v-model="certForm.diagnosis" maxlength="300"></el-input></el-form-item><el-form-item label="证明内容" required><el-input v-model="certForm.certContent" type="textarea" :rows="4" maxlength="500"></el-input></el-form-item><el-form-item label="病假天数"><el-input-number v-model="certForm.sickLeaveDays" :min="1" :max="365"></el-input-number></el-form-item><el-form-item label="备注"><el-input v-model="certForm.remark" maxlength="200"></el-input></el-form-item></el-form>
-          <el-table v-if="certList.length" :data="certList" border size="small" max-height="160"><el-table-column type="index" label="序号" width="50"></el-table-column><el-table-column label="类型" width="90"><template #default="s">{{ certTypeLabel(s.row.certType) }}</template></el-table-column><el-table-column prop="diagnosis" label="诊断" show-overflow-tooltip></el-table-column><el-table-column label="打印" width="60"><template #default="s"><el-button link type="primary" @click="emitPrint('cert',s.row.id)">打印</el-button></template></el-table-column></el-table>
+          <el-table v-if="certList.length" :data="certList" border size="small" max-height="160"><el-table-column type="index" label="序号" width="50"></el-table-column><el-table-column label="类型" width="90"><template #default="s">{{ certTypeLabel(s.row.certType) }}</template></el-table-column><el-table-column prop="diagnosis" label="诊断" show-overflow-tooltip></el-table-column><el-table-column label="审核" width="82" align="center"><template #default="s"><el-tag v-if="Number(s.row.auditStatus)>0" :type="certAuditTone(s.row.auditStatus)" size="small">{{ certAuditText(s.row.auditStatus) }}</el-tag><span v-else class="dim">无须</span></template></el-table-column><el-table-column label="操作" width="110" align="center"><template #default="s"><el-button v-if="Number(s.row.auditStatus)===1" link type="success" size="small" @click="auditCert(s.row, true)">通过</el-button><el-button v-if="Number(s.row.auditStatus)===1" link type="danger" size="small" @click="auditCert(s.row, false)">驳回</el-button><el-button link type="primary" size="small" :disabled="Number(s.row.auditStatus)===1||Number(s.row.auditStatus)===3" @click="emitPrint('cert',s.row.id)">打印</el-button></template></el-table-column></el-table>
           <template #footer><el-button @click="certVisible=false">关闭</el-button><el-button type="primary" :loading="certSaving" @click="submitCert">开具</el-button></template>
         </el-dialog>
 

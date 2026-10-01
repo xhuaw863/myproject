@@ -429,6 +429,8 @@ public class DictSchemaMigration implements ApplicationRunner {
             ensureP1P2Tables(conn);
             // 门诊医生站对标优化 OP-A(接诊增强): 展示偏好/发热登记/诊前预问诊/生命体征 4 表 + his_visit 诊后去向补列(幂等, 新模块非启动关键路径)
             ensureOutpWsEnhancementTables(conn);
+            // 门诊医生站对标优化 OP-B(诊断进阶): 诊断高频/疾病报卡/诊断→模板链接 3 表 + his_diagnosis牙位/his_medical_cert审核/his_dept审核开关补列(幂等)
+            ensureOutpWsDiagnosisTables(conn);
             // 存量表补列: 药库/药房归属 + 混合支付/发票号/退费关联/部分退费已退数量(幂等, 列已存在则跳过)
             alterExistingTables(conn);
         } catch (Exception e) {
@@ -4091,6 +4093,79 @@ public class DictSchemaMigration implements ApplicationRunner {
         addColumnIfNotExists(conn, "his_visit", "disposition", "TINYINT DEFAULT NULL COMMENT '诊后去向:1离院 2转科 3转留观 4转院'");
         addColumnIfNotExists(conn, "his_visit", "disposition_dept_id", "BIGINT DEFAULT NULL COMMENT '转科目标科室ID(his_dept.id)'");
         addColumnIfNotExists(conn, "his_visit", "disposition_note", "VARCHAR(500) DEFAULT NULL COMMENT '去向备注'");
+    }
+
+    /**
+     * 门诊医生站对标优化 OP-B(诊断进阶): 诊断高频沉淀/疾病报卡/诊断→医嘱模板映射 3 新表
+     * + his_diagnosis 牙位补列 + his_medical_cert 审核态列 + his_dept 证明审核开关列(幂等, 新模块非启动关键路径)。
+     */
+    private void ensureOutpWsDiagnosisTables(Connection conn) throws Exception {
+        try (Statement st = conn.createStatement()) {
+            st.executeUpdate("CREATE TABLE IF NOT EXISTS his_diag_freq ("
+                    + "id BIGINT NOT NULL AUTO_INCREMENT COMMENT '主键',"
+                    + "tenant_id BIGINT NOT NULL COMMENT '租户ID',"
+                    + "org_id BIGINT DEFAULT NULL COMMENT '机构ID',"
+                    + "staff_id BIGINT DEFAULT NULL COMMENT '医师ID(his_staff.id, 个人常用维度)',"
+                    + "dept_id BIGINT DEFAULT NULL COMMENT '科室ID(his_dept.id, 科室高频维度)',"
+                    + "diag_code VARCHAR(50) NOT NULL COMMENT '诊断代码',"
+                    + "diag_name VARCHAR(200) DEFAULT NULL COMMENT '诊断名称',"
+                    + "diag_class VARCHAR(20) DEFAULT NULL COMMENT '诊断类别: west/tcm/symp/oper/tumor',"
+                    + "use_count INT NOT NULL DEFAULT 0 COMMENT '累计使用次数',"
+                    + "last_time DATETIME DEFAULT NULL COMMENT '最近使用时间',"
+                    + "create_by VARCHAR(50) DEFAULT NULL, create_time DATETIME DEFAULT NULL,"
+                    + "update_by VARCHAR(50) DEFAULT NULL, update_time DATETIME DEFAULT NULL, deleted TINYINT DEFAULT 0,"
+                    + "PRIMARY KEY (id),"
+                    + "UNIQUE KEY uk_staff_dept_diag (tenant_id, staff_id, dept_id, diag_code),"
+                    + "KEY idx_dept (tenant_id, dept_id, use_count),"
+                    + "KEY idx_staff (tenant_id, staff_id, use_count)"
+                    + ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='诊断高频使用沉淀(诊断助手数据源)'"
+            );
+            st.executeUpdate("CREATE TABLE IF NOT EXISTS his_disease_report ("
+                    + "id BIGINT NOT NULL AUTO_INCREMENT COMMENT '主键',"
+                    + "tenant_id BIGINT NOT NULL COMMENT '租户ID',"
+                    + "org_id BIGINT DEFAULT NULL COMMENT '机构ID',"
+                    + "visit_id BIGINT DEFAULT NULL COMMENT '就诊ID(his_visit.id)',"
+                    + "patient_id BIGINT DEFAULT NULL COMMENT '患者ID',"
+                    + "diag_code VARCHAR(50) DEFAULT NULL COMMENT '诊断代码',"
+                    + "diag_name VARCHAR(200) DEFAULT NULL COMMENT '诊断名称',"
+                    + "report_type TINYINT DEFAULT 1 COMMENT '报卡类型:1法定传染病 2慢性病 3其他',"
+                    + "report_no VARCHAR(50) DEFAULT NULL COMMENT '报卡编号',"
+                    + "report_status TINYINT DEFAULT 0 COMMENT '报卡状态:0待报 1已报 2已审核',"
+                    + "report_content VARCHAR(2000) DEFAULT NULL COMMENT '报卡内容摘要',"
+                    + "report_time DATETIME DEFAULT NULL COMMENT '报告时间',"
+                    + "reporter VARCHAR(50) DEFAULT NULL COMMENT '报告人姓名',"
+                    + "create_by VARCHAR(50) DEFAULT NULL, create_time DATETIME DEFAULT NULL,"
+                    + "update_by VARCHAR(50) DEFAULT NULL, update_time DATETIME DEFAULT NULL, deleted TINYINT DEFAULT 0,"
+                    + "PRIMARY KEY (id),"
+                    + "KEY idx_visit (tenant_id, visit_id)"
+                    + ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='疾病报卡(与诊断关联留痕)'"
+            );
+            st.executeUpdate("CREATE TABLE IF NOT EXISTS his_diag_template_link ("
+                    + "id BIGINT NOT NULL AUTO_INCREMENT COMMENT '主键',"
+                    + "tenant_id BIGINT NOT NULL COMMENT '租户ID',"
+                    + "org_id BIGINT DEFAULT NULL COMMENT '机构ID',"
+                    + "diag_code VARCHAR(50) NOT NULL COMMENT '诊断代码',"
+                    + "diag_name VARCHAR(200) DEFAULT NULL COMMENT '诊断名称',"
+                    + "template_type VARCHAR(20) NOT NULL COMMENT '模板类型: rx_set处方组套/order_set医嘱组套',"
+                    + "template_id BIGINT NOT NULL COMMENT '模板ID(his_medical_template.id)',"
+                    + "dept_id BIGINT DEFAULT NULL COMMENT '适用科室ID(空=通用)',"
+                    + "create_by VARCHAR(50) DEFAULT NULL, create_time DATETIME DEFAULT NULL,"
+                    + "update_by VARCHAR(50) DEFAULT NULL, update_time DATETIME DEFAULT NULL, deleted TINYINT DEFAULT 0,"
+                    + "PRIMARY KEY (id),"
+                    + "KEY idx_diag (tenant_id, diag_code)"
+                    + ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='诊断→医嘱/处方模板关联映射'"
+            );
+        }
+        // his_diagnosis 牙位补列(口腔诊断, FDI/Palmer 编码拼接串)
+        addColumnIfNotExists(conn, "his_diagnosis", "tooth_position", "VARCHAR(200) DEFAULT NULL COMMENT '牙位编码(FDI/Palmer, 口腔诊断专用)'");
+        // his_medical_cert 诊断证明审核流补列
+        addColumnIfNotExists(conn, "his_medical_cert", "audit_status", "TINYINT DEFAULT 0 COMMENT '审核状态:0无须审核 1待审 2通过 3驳回'");
+        addColumnIfNotExists(conn, "his_medical_cert", "auditor_id", "BIGINT DEFAULT NULL COMMENT '审核人ID'");
+        addColumnIfNotExists(conn, "his_medical_cert", "auditor_name", "VARCHAR(50) DEFAULT NULL COMMENT '审核人姓名'");
+        addColumnIfNotExists(conn, "his_medical_cert", "audit_time", "DATETIME DEFAULT NULL COMMENT '审核时间'");
+        addColumnIfNotExists(conn, "his_medical_cert", "audit_remark", "VARCHAR(500) DEFAULT NULL COMMENT '审核意见/驳回原因'");
+        // his_dept 诊断证明审核开关(按科室配置: 0直接可打印 1需审核)
+        addColumnIfNotExists(conn, "his_dept", "cert_audit_required", "TINYINT DEFAULT 0 COMMENT '诊断证明审核开关:0直接可打印 1需审核'");
     }
 
     /**

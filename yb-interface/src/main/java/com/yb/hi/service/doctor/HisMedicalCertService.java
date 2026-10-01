@@ -105,9 +105,45 @@ public class HisMedicalCertService extends ServiceImpl<HisMedicalCertMapper, His
         c.setIssueDrName(visit.getDrName());
         c.setIssueTime(LocalDateTime.now());
         c.setOrgId(resolveOrgId(visit));
+        // OP-B 诊断证明审核流: 按开具科室配置决定初始审核态(开关开启=1待审, 否则=0无须审核直接可打印)
+        c.setAuditStatus(certAuditRequired(visit) ? 1 : 0);
         save(c);
-        log.info("开具诊断证明: id={}, visitId={}, certType={}", c.getId(), visit.getId(), c.getCertType());
+        log.info("开具诊断证明: id={}, visitId={}, certType={}, auditStatus={}", c.getId(), visit.getId(), c.getCertType(), c.getAuditStatus());
         return c;
+    }
+
+    /**
+     * 审核诊断证明(OP-B): 仅待审(1)可审核; 通过置 audit_status=2, 驳回置 3 并记录原因/审核人/时间。
+     */
+    @Transactional(rollbackFor = Exception.class)
+    public HisMedicalCert audit(Long id, boolean pass, String remark) {
+        HisMedicalCert c = getById(id);
+        if (c == null) {
+            throw new BizException(400, "证明不存在");
+        }
+        if (c.getAuditStatus() == null || c.getAuditStatus() != 1) {
+            throw new BizException(409, "仅待审核状态的证明可执行审核");
+        }
+        LoginUser user = UserContext.get();
+        c.setAuditStatus(pass ? 2 : 3);
+        c.setAuditRemark(remark);
+        c.setAuditTime(LocalDateTime.now());
+        if (user != null) {
+            c.setAuditorId(user.getStaffId() != null ? user.getStaffId() : user.getUserId());
+            c.setAuditorName(user.getRealName());
+        }
+        updateById(c);
+        log.info("审核诊断证明: id={}, pass={}, auditStatus={}", id, pass, c.getAuditStatus());
+        return c;
+    }
+
+    /** 判定开具科室是否启用诊断证明审核(his_dept.cert_audit_required=1) */
+    private boolean certAuditRequired(HisVisit visit) {
+        if (visit.getDeptId() == null) {
+            return false;
+        }
+        HisDept dept = deptMapper.selectById(visit.getDeptId());
+        return dept != null && Integer.valueOf(1).equals(dept.getCertAuditRequired());
     }
 
     /** 汇总就诊诊断名称(请求未填诊断时回填) */

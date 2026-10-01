@@ -574,6 +574,12 @@ body { font-family: var(--yb-font-sans); background: var(--yb-canvas); }
 .dw-diag-common { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 4px; }
 .dw-diag-common .dw-tag { padding: 2px 8px; cursor: pointer; }
 .dw-diag-common .dw-tag:disabled { cursor: default; opacity: .55; }
+.dw-diag-assistant { display: flex; flex-direction: column; gap: 6px; }
+.dw-diag-assistant .dw-asst-group { display: flex; flex-direction: column; gap: 3px; }
+.dw-diag-assistant .dw-asst-title { font-size: 11px; color: var(--dw-primary-dark); font-weight: 700; }
+.dw-diag-assistant .dw-diag-common { margin-bottom: 0; }
+.dw-diag-assistant .dw-tag .dim { margin-left: 3px; }
+.dw-diag-row .dw-tag--info { flex: none; }
 .dw-diag-rows { display: flex; flex-direction: column; gap: 4px; }
 .dw-diag-row { display: flex; align-items: center; gap: 8px; padding: 3px 8px; background: var(--dw-card-muted); border: 1px solid var(--dw-border); border-radius: 4px; font-size: 12px; }
 .dw-diag-row .ord { flex: none; width: 16px; color: var(--dw-text-hint); font-weight: 700; text-align: center; }
