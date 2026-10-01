@@ -73,7 +73,12 @@
     { value: 'DOCTOR', label: '医生' },
     { value: 'PHARMACIST', label: '药师' },
     { value: 'CASHIER', label: '收费员' },
-    { value: 'NURSE', label: '护士' }
+    { value: 'NURSE', label: '护士' },
+    { value: 'THERAPIST', label: '治疗师' },
+    { value: 'TECHNICIAN', label: '医技人员' },
+    { value: 'MR_INPUT', label: '病案录入组' },
+    { value: 'MR_CATALOG', label: '病案编目组' },
+    { value: 'MR_REVIEW', label: '病案质控组' }
   ];
   HIS.roleLabel = function (code) {
     for (var i = 0; i < HIS.ROLES.length; i++) {

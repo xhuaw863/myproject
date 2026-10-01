@@ -18,6 +18,7 @@ import com.yb.hi.platform.service.OrgAccessGuard;
 import com.yb.hi.service.pharmacy.PharmacyDefService;
 import com.yb.hi.service.pharmacy.PharmacyPriceService;
 import com.yb.hi.service.pharmacy.PharmacyService;
+import com.yb.hi.service.pharmacy.ScanVerifyService;
 import com.yb.hi.service.warehouse.WarehouseAccessService;
 import org.springframework.web.bind.annotation.*;
 
@@ -26,8 +27,10 @@ import java.io.IOException;
 import java.math.BigDecimal;
 import java.net.URLEncoder;
 import java.time.LocalDate;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 /**
  * 药房接口(药房工作站): 待发药/发药/发药记录/退药申请与审批/退药记录 + 药房定义维护。
@@ -41,15 +44,17 @@ public class PharmacyController {
     private final PharmacyService pharmacyService;
     private final PharmacyDefService pharmacyDefService;
     private final PharmacyPriceService pharmacyPriceService;
+    private final ScanVerifyService scanVerifyService;
     private final OrgAccessGuard guard;
     private final WarehouseAccessService access;
 
     public PharmacyController(PharmacyService pharmacyService, PharmacyDefService pharmacyDefService,
-                              PharmacyPriceService pharmacyPriceService, OrgAccessGuard guard,
-                              WarehouseAccessService access) {
+                              PharmacyPriceService pharmacyPriceService, ScanVerifyService scanVerifyService,
+                              OrgAccessGuard guard, WarehouseAccessService access) {
         this.pharmacyService = pharmacyService;
         this.pharmacyDefService = pharmacyDefService;
         this.pharmacyPriceService = pharmacyPriceService;
+        this.scanVerifyService = scanVerifyService;
         this.guard = guard;
         this.access = access;
     }
@@ -85,6 +90,37 @@ public class PharmacyController {
                                            @RequestParam(required = false) Long pharmacyId) {
         requirePharmacyIfPresent(pharmacyId);
         return R.ok(pharmacyService.shortageInfo(prescriptionId, pharmacyId));
+    }
+
+    /** 发药前多重校验(P2): 汇总硬阻断项与提醒项(审核/收费/皮试/缺药/跨药房), 供发药弹窗展示 */
+    @GetMapping("/pre-dispense-check")
+    public R<Map<String, Object>> preDispenseCheck(@RequestParam Long prescriptionId) {
+        return R.ok(pharmacyService.preDispenseCheck(prescriptionId));
+    }
+
+    /** P3 追溯码需求(供发药扫描框): 逐需追溯行应扫/已扫 + 是否强制; windowId 空时按药房追溯强制窗预判 */
+    @GetMapping("/trace-requirement")
+    public R<Map<String, Object>> traceRequirement(@RequestParam Long prescriptionId,
+                                                   @RequestParam(required = false) Long windowId,
+                                                   @RequestParam(required = false) Long pharmacyId) {
+        return R.ok(scanVerifyService.requirement(prescriptionId, windowId, null, pharmacyId));
+    }
+
+    /** P3 三码校验(实时扫描): 扫商品码/监管码/追溯码归一为可绑定物理追溯码; body {prescriptionId, code, scannedCodes:[...]} */
+    @PostMapping("/trace-scan")
+    public R<Map<String, Object>> traceScan(@RequestBody Map<String, Object> body) {
+        Long prescriptionId = toLong(body.get("prescriptionId"));
+        String code = body.get("code") == null ? null : body.get("code").toString();
+        Set<String> exclude = new HashSet<>();
+        Object sc = body.get("scannedCodes");
+        if (sc instanceof List) {
+            for (Object o : (List<?>) sc) {
+                if (o != null) {
+                    exclude.add(o.toString().trim());
+                }
+            }
+        }
+        return R.ok(scanVerifyService.verifyOne(code, prescriptionId, exclude));
     }
 
     /** 改派可选药房(三期): 本机构启用药房逐房满足状态/缺口/预估实发金额与价差 */

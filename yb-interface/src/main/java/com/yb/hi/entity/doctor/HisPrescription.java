@@ -50,4 +50,14 @@ public class HisPrescription extends BaseEntity {
     private Long pharmacyId;
     /** 改派来源药房ID(库存不足改派留痕, 发药时随转至发药记录) */
     private Long transferFromPharmacyId;
+    /** 处方审核状态(P2门诊药审): 0无需 1待审 2通过 3驳回(与 dispenseStatus 并行的标志位) */
+    private Integer auditStatus;
+    /** 审核来源(P2): manual人工 / auto自动 */
+    private String auditSrc;
+    /** 审核药师姓名(P2) */
+    private String auditBy;
+    /** 审核时间(P2) */
+    private java.time.LocalDateTime auditTime;
+    /** 审核驳回原因(P2) */
+    private String rejectReason;
 }

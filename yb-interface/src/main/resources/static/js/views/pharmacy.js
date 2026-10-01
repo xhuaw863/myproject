@@ -76,12 +76,50 @@
         dispenseVisible: false, detailLoading: false,
         dispenseRx: null, dispenseItems: [], detailOrgId: null,
         checkBy: '', dispenseRemark: '', dispensing: false,
+        /* P2 发药前多重校验: {canDispense, blocks:[{type,message}], warns:[{type,message}]} */
+        preChecks: null,
+        /* P3 追溯码发药闭环: traceReq=需求(逐应扫行); traceScanned=已扫物理码清单; traceInput=当前扫描框 */
+        traceReq: null, traceScanned: [], traceInput: '', traceScanning: false,
+        /* P1 智能分窗: 特殊处方标志(代煎/快递/精麻/毒性), 定向到对应窗口 */
+        specialTypes: [], specialOpts: [
+          { v: 'DECOCT', l: '代煎' }, { v: 'EXPRESS', l: '快递' }, { v: 'NARCOTIC', l: '精麻' }, { v: 'TOXIC', l: '毒性' }
+        ],
         /* 三期: 处方改派对话框 */
         transferVisible: false, transferLoading: false, transferring: false,
         transferRx: null, transferOptions: []
       };
     },
     computed: {
+      /* 任一硬阻断项(处方驳回/皮试阳性等)则禁发 */
+      hasBlock: function () {
+        return !!(this.preChecks && this.preChecks.blocks && this.preChecks.blocks.length);
+      },
+      /* P3 本处方是否强制追溯(窗口级或药品级命中) */
+      traceRequired: function () {
+        return !!(this.traceReq && this.traceReq.traceRequired);
+      },
+      /* P3 逐需追溯行进度: 按已扫物理码的 drugCatalogId 本地归集与应扫数比对 */
+      traceLineProgress: function () {
+        var lines = (this.traceReq && this.traceReq.lines) || [];
+        var byDrug = {};
+        for (var i = 0; i < this.traceScanned.length; i++) {
+          var k = this.traceScanned[i].drugCatalogId;
+          byDrug[k] = (byDrug[k] || 0) + 1;
+        }
+        return lines.map(function (ln) {
+          var scanned = byDrug[ln.drugCatalogId] || 0;
+          var need = Number(ln.needQty) || 0;
+          return { drugCatalogId: ln.drugCatalogId, drugName: ln.drugName, needQty: need, scannedQty: scanned, complete: scanned >= need && need > 0 };
+        });
+      },
+      /* P3 需追溯且逐行均扫齐才算完整 */
+      traceAllComplete: function () {
+        if (!this.traceRequired) { return true; }
+        var p = this.traceLineProgress;
+        if (!p.length) { return false; }
+        for (var i = 0; i < p.length; i++) { if (!p[i].complete) { return false; } }
+        return true;
+      },
       /* 任一明细库存不足则禁发 */
       hasInsufficientStock: function () {
         for (var i = 0; i < this.dispenseItems.length; i++) {
@@ -127,12 +165,37 @@
       onPage: function (p) { this.page = p; this.load(); },
       onSize: function (s) { this.size = s; this.onPage(1); },
       seqNo: function (i) { return (this.page - 1) * this.size + i + 1; },
+      /* ===== P3 追溯码扫描(实时三码校验, 商品/监管码归一为物理追溯码) ===== */
+      scanAdd: function () {
+        var vm = this;
+        var code = (vm.traceInput || '').trim();
+        if (!code) { ElementPlus.ElMessage.warning('请输入或扫描追溯码/商品码/监管码'); return; }
+        var exist = vm.traceScanned.map(function (s) { return s.traceCode; });
+        if (exist.indexOf(code) >= 0) { ElementPlus.ElMessage.warning('该追溯码已扫描, 请勿重复'); return; }
+        vm.traceScanning = true;
+        HIS.post('/api/his/pharmacy/trace-scan', {
+          prescriptionId: (vm.dispenseRx || {}).id, code: code, scannedCodes: exist
+        }).then(function (d) {
+          if (!d || d.ok !== true) { ElementPlus.ElMessage.error((d && d.message) || '追溯码校验失败'); return; }
+          vm.traceScanned.push({ traceCode: d.traceCode, drugCatalogId: d.drugCatalogId, drugName: d.drugName, batchNo: d.batchNo, codeType: d.codeType });
+          vm.traceInput = '';
+          if (d.codeType && d.codeType !== 'trace') {
+            ElementPlus.ElMessage.success('按' + (d.codeType === 'commodity' ? '商品码' : '监管码') + '分配追溯码: ' + d.traceCode);
+          }
+        }).catch(HIS.notifyError).finally(function () { vm.traceScanning = false; });
+      },
+      scanRemove: function (traceCode) {
+        this.traceScanned = this.traceScanned.filter(function (s) { return s.traceCode !== traceCode; });
+      },
       openDispense: function (row) {
         var vm = this;
         vm.dispenseVisible = true;
         vm.detailLoading = true;
         vm.dispenseRx = null; vm.dispenseItems = []; vm.detailOrgId = null;
         vm.checkBy = ''; vm.dispenseRemark = '';
+        vm.specialTypes = [];
+        vm.preChecks = null;
+        vm.traceReq = null; vm.traceScanned = []; vm.traceInput = '';
         HIS.get('/api/his/pharmacy/detail/' + row.prescriptionId).then(function (d) {
           var p = (d && d.prescription) || {};
           vm.dispenseRx = {
@@ -165,6 +228,13 @@
             };
           });
           vm.detailOrgId = (d && d.orgId) || null;
+          /* P2: 载入发药前多重校验(非阻断, 失败仅提示, 后端 doDispense 仍会硬校验) */
+          HIS.get('/api/his/pharmacy/pre-dispense-check?prescriptionId=' + row.prescriptionId)
+            .then(function (c) { vm.preChecks = c || null; }).catch(function () { });
+          /* P3: 载入追溯需求(未分窗前按当前/绑定药房预判是否强制) */
+          var phId = vm.dispenseRx && vm.dispenseRx.pharmacyId ? vm.dispenseRx.pharmacyId : (vm.pharmacyId || null);
+          HIS.get('/api/his/pharmacy/trace-requirement?prescriptionId=' + row.prescriptionId + (phId ? ('&pharmacyId=' + phId) : ''))
+            .then(function (t) { vm.traceReq = t || null; }).catch(function () { });
         }).catch(function (e) {
           HIS.notifyError(e);
           vm.dispenseVisible = false;
@@ -173,7 +243,9 @@
       doDispense: function () {
         var vm = this;
         if (!vm.dispenseRx || !vm.dispenseRx.id) { ElementPlus.ElMessage.warning('处方信息未加载'); return; }
+        if (vm.hasBlock) { ElementPlus.ElMessage.error('存在发药前阻断项(处方未通过审核或皮试阳性), 无法发药'); return; }
         if (vm.hasInsufficientStock) { ElementPlus.ElMessage.warning('存在库存不足的药品, 请点"改派药房"换房发药'); return; }
+        if (vm.traceRequired && !vm.traceAllComplete) { ElementPlus.ElMessage.error('追溯码扫描不完整, 请扫描全部追溯码后再发药'); return; }
         var rx = vm.dispenseRx;
         // 三期: 发药前价差预览(计费 vs 实发批次零售金额, 院内对账不补退)
         HIS.get('/api/his/pharmacy/dispense-preview?prescriptionId=' + rx.id).then(function (pv) {
@@ -189,7 +261,8 @@
           vm.dispensing = true;
           return HIS.post('/api/his/pharmacy/dispense', {
             prescriptionId: rx.id, orgId: vm.detailOrgId, pharmacyId: rx.pharmacyId || vm.pharmacyId || null,
-            checkBy: vm.checkBy, remark: vm.dispenseRemark
+            checkBy: vm.checkBy, remark: vm.dispenseRemark, specialTypes: vm.specialTypes,
+            traceCodes: vm.traceScanned.map(function (s) { return s.traceCode; })
           });
         }).then(function (d) {
           var tip = '发药成功, 发药单号 ' + ((d && d.dispenseNo) || '');
@@ -296,7 +369,25 @@
       '        <el-descriptions-item label="开方时间">{{ dispenseRx.createTime || \'-\' }}</el-descriptions-item>',
       '        <el-descriptions-item label="总金额"><span style="color:var(--yb-danger);font-weight:600;">￥{{ money(dispenseRx.totalAmount) }}</span></el-descriptions-item>',
       '      </el-descriptions>',
+      '      <el-alert v-for="(b,i) in (preChecks ? (preChecks.blocks||[]) : [])" :key="i" type="error" show-icon :closable="false" :title="b.message" style="margin-bottom:6px;"></el-alert>',
+      '      <el-alert v-for="(w,j) in (preChecks ? (preChecks.warns||[]) : [])" :key="j" type="warning" show-icon :closable="false" :title="w.message" style="margin-bottom:6px;"></el-alert>',
       '      <el-alert v-if="hasInsufficientStock" type="warning" show-icon :closable="false" title="绑定药房库存不足, 请点下方\'改派药房\'换房发药, 或联系药库补货" style="margin-bottom:10px;"></el-alert>',
+      /* ---- P3 追溯码扫描区(仅本处方需追溯时展示) ---- */
+      '      <div v-if="traceRequired" style="margin-bottom:10px;padding:10px;border:1px solid #dcdfe6;border-radius:6px;">',
+      '        <div style="font-weight:600;margin-bottom:6px;">追溯码扫描 <span style="font-size:12px;color:#909399;font-weight:normal;">(窗口级/药品级强制 · 支持商品码/监管码/追溯码 · 可删除重扫)</span></div>',
+      '        <div style="margin-bottom:6px;display:flex;align-items:center;flex-wrap:wrap;gap:8px;">',
+      '          <el-input v-model="traceInput" placeholder="扫描/输入追溯码后回车" style="width:280px" @keyup.enter="scanAdd"></el-input>',
+      '          <el-button type="primary" :loading="traceScanning" @click="scanAdd">扫描添加</el-button>',
+      '          <el-tag :type="traceAllComplete?\'success\':\'warning\'">{{ traceAllComplete?\'已扫齐\':\'未完成\' }}</el-tag>',
+      '        </div>',
+      '        <div style="margin-bottom:6px;">',
+      '          <el-tag v-for="(ln,i) in traceLineProgress" :key="\'p\'+i" :type="ln.complete?\'success\':\'danger\'" size="small" style="margin:2px 6px 2px 0;">{{ ln.drugName }} {{ ln.scannedQty }}/{{ ln.needQty }}</el-tag>',
+      '        </div>',
+      '        <div>',
+      '          <el-tag v-for="s in traceScanned" :key="s.traceCode" closable type="info" size="small" style="margin:2px 6px 2px 0;" @close="scanRemove(s.traceCode)">{{ s.drugName }} · {{ s.traceCode }}</el-tag>',
+      '          <span v-if="!traceScanned.length" style="font-size:12px;color:#909399;">尚未扫描追溯码</span>',
+      '        </div>',
+      '      </div>',
       '      <el-table :data="dispenseItems" border size="small" max-height="360">',
       '        <el-table-column type="index" label="序号" width="55"></el-table-column>',
       '        <el-table-column prop="itemName" label="药品名称" width="170" show-overflow-tooltip></el-table-column>',
@@ -316,15 +407,19 @@
       '      </el-table>',
       '    </div>',
       '    <template #footer>',
-      '      <div style="display:flex;align-items:center;gap:10px;">',
+      '      <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">',
+      '        <el-checkbox-group v-model="specialTypes" style="margin-right:8px;">',
+      '          <span style="font-size:12px;color:var(--yb-ink-2);margin-right:4px;">特殊定向:</span>',
+      '          <el-checkbox v-for="o in specialOpts" :key="o.v" :label="o.v">{{ o.l }}</el-checkbox>',
+      '        </el-checkbox-group>',
       '        <el-input v-model="checkBy" placeholder="核对药师(双签)" style="width:180px;"></el-input>',
       '        <el-input v-model="dispenseRemark" placeholder="备注(可选)" style="width:220px;"></el-input>',
       '        <span style="flex:1;"></span>',
       '        <el-button v-if="hasInsufficientStock" @click="openTransfer(transferFromDetail())">改派药房</el-button>',
       '        <el-button @click="dispenseVisible=false">取 消</el-button>',
-      '        <el-tooltip content="库存不足, 无法发药" placement="top" :disabled="!hasInsufficientStock">',
+      '        <el-tooltip :content="hasBlock?\'存在发药前阻断项, 无法发药\':(hasInsufficientStock?\'库存不足, 无法发药\':(traceRequired&&!traceAllComplete?\'追溯码扫描不完整, 无法发药\':\'\'))" placement="top" :disabled="!hasBlock && !hasInsufficientStock && !(traceRequired && !traceAllComplete)">',
       '          <span style="display:inline-block;">',
-      '            <el-button type="primary" :loading="dispensing" :disabled="hasInsufficientStock || detailLoading || !dispenseItems.length" @click="doDispense">确认发药</el-button>',
+      '            <el-button type="primary" :loading="dispensing" :disabled="hasBlock || hasInsufficientStock || (traceRequired && !traceAllComplete) || detailLoading || !dispenseItems.length" @click="doDispense">确认发药</el-button>',
       '          </span>',
       '        </el-tooltip>',
       '      </div>',

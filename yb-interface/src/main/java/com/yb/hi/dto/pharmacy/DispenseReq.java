@@ -2,6 +2,8 @@ package com.yb.hi.dto.pharmacy;
 
 import lombok.Data;
 
+import java.util.List;
+
 /**
  * 执行发药请求
  */
@@ -16,6 +18,10 @@ public class DispenseReq {
     private Long pharmacyId;
     /** 核对人(双签, 空则未核对) */
     private String checkBy;
+    /** 处方特殊标志(P1 智能分窗定向): DECOCT代煎/EXPRESS快递/NARCOTIC精麻/TOXIC毒性, 可空 */
+    private List<String> specialTypes;
+    /** P3 发药扫描的追溯码清单(商品码/监管码已在扫描校验时归一为物理追溯码), 需追溯时必填 */
+    private List<String> traceCodes;
     /** 备注 */
     private String remark;
 }

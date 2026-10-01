@@ -141,6 +141,14 @@ public class HisDrugCatalog extends BaseEntity {
     /** 单次处方最大量(最小单位, 管制药品) */
     private BigDecimal maxQtyOnce;
 
+    /* ---- P3 追溯码发药闭环 ---- */
+    /** 商品码/条形码(EAN-13等, 三码校验之一) */
+    private String commodityCode;
+    /** 电子监管码(中国药品电子监管码, 三码校验之一) */
+    private String supervisionCode;
+    /** 药品级追溯码强制开关:1需扫 0否(与窗口级trace_required取或) */
+    private Integer traceFlag;
+
     /* ---- 生命周期与溯源 ---- */
     /** 状态:1启用 0停用 */
     private Integer status;

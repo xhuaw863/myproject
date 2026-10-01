@@ -2920,5 +2920,252 @@
     }
   };
 
-  /* 组件注册完成: InpAdmission / InpPatientList / InpBedManage / InpDeposit / InpChargeList / InpSettle / InpDailySummary */
+  /* ========================================================================
+   * P4 住院发药增强: InpDispenseWork 住院发药工作台 / InpDischargePickup 出院带药取药核发 / InpDispenseHistory 历史发药查询
+   * ====================================================================== */
+  HIS.views.InpDispenseWork = {
+    template: [
+      '<div class="inp-dispense">',
+      '  <div class="toolbar">',
+      '    <el-select v-model="pharmacyId" clearable placeholder="住院药房(默认全院FIFO)" style="width:210px" @change="loadQueue">',
+      '      <el-option v-for="p in pharmDefs" :key="p.id" :label="p.name" :value="p.id"></el-option>',
+      '    </el-select>',
+      '    <el-input v-model="keyword" placeholder="药品/患者/医嘱" style="width:200px" clearable @keyup.enter="search"></el-input>',
+      '    <el-button @click="search">查询</el-button>',
+      '    <el-button @click="loadQueue">刷新</el-button>',
+      '    <el-tag v-if="autoDispense" type="success" size="small">自动发药已开启</el-tag>',
+      '    <el-button type="primary" :disabled="selection.length===0" @click="openBatch">集中发药({{ selection.length }})</el-button>',
+      '  </div>',
+      '  <el-table :data="rows" v-loading="loading" border size="small" @selection-change="onSel">',
+      '    <el-table-column type="selection" width="42"></el-table-column>',
+      '    <el-table-column label="患者" width="90"><template #default="s">{{ orDash(s.row.patientName) }}</template></el-table-column>',
+      '    <el-table-column label="住院号" width="130"><template #default="s">{{ orDash(s.row.inpNo) }}</template></el-table-column>',
+      '    <el-table-column label="病区/床" width="120"><template #default="s">{{ orDash(s.row.wardName) }} {{ orDash(s.row.bedNo) }}</template></el-table-column>',
+      '    <el-table-column label="药品/规格" min-width="200"><template #default="s">{{ orDash(s.row.drugName) }} / {{ orDash(s.row.drugSpec || s.row.orderSpec) }}</template></el-table-column>',
+      '    <el-table-column label="频次/用法" width="110"><template #default="s">{{ orDash(s.row.freqCode) }} {{ orDash(s.row.usageCode) }}</template></el-table-column>',
+      '    <el-table-column label="应发" width="85" align="right"><template #default="s">{{ fmtQty(s.row.shouldQty) }}{{ orDash(s.row.unit) }}</template></el-table-column>',
+      '    <el-table-column label="包装比" width="70" align="center"><template #default="s">{{ s.row.packRatio || 1 }}</template></el-table-column>',
+      '    <el-table-column label="全院库存" width="90" align="right"><template #default="s"><span :style="{color: insufficient(s.row) ? \'var(--yb-danger)\' : \'var(--yb-ink-1)\'}">{{ fmtQty(s.row.availStock) }}</span></template></el-table-column>',
+      '    <el-table-column label="可冲抵" width="80" align="right"><template #default="s">{{ fmtQty(s.row.stagingAvail) }}</template></el-table-column>',
+      '    <el-table-column label="操作" width="90" align="center"><template #default="s"><el-button link type="primary" size="small" @click="openDispense(s.row)">发药</el-button></template></el-table-column>',
+      '  </el-table>',
+      '  <el-pagination style="margin-top:10px;justify-content:flex-end" background layout="total, prev, pager, next" :total="total" :page-size="size" :current-page="page" @current-change="onPage"></el-pagination>',
+      '  <el-dialog v-model="dlg.visible" title="住院发药" width="640px">',
+      '    <div v-if="dlg.order">',
+      '      <div style="margin-bottom:8px">{{ orDash(dlg.order.patientName) }} · {{ orDash(dlg.order.drugName) }} · 应发 {{ fmtQty(dlg.order.shouldQty) }}{{ orDash(dlg.order.unit) }}</div>',
+      '      <el-descriptions v-if="dlg.pv" :column="2" border size="small">',
+      '        <el-descriptions-item label="应发量">{{ fmtQty(dlg.pv.shouldQty) }}</el-descriptions-item>',
+      '        <el-descriptions-item label="冲抵量">{{ fmtQty(dlg.pv.offsetQty) }}</el-descriptions-item>',
+      '        <el-descriptions-item label="实发量">{{ fmtQty(dlg.pv.actualQty) }}</el-descriptions-item>',
+      '        <el-descriptions-item label="多发(取整)">{{ fmtQty(dlg.pv.overQty) }}</el-descriptions-item>',
+      '        <el-descriptions-item label="整包装">×{{ dlg.pv.packRatio }} 共 {{ dlg.pv.packQty }} 包</el-descriptions-item>',
+      '        <el-descriptions-item label="全院库存">{{ fmtQty(dlg.pv.availStock) }} <el-tag v-if="!dlg.pv.sufficient" type="danger" size="small">缺药</el-tag></el-descriptions-item>',
+      '      </el-descriptions>',
+      '      <div v-if="dlg.pv?.sufficient === false" style="margin-top:12px">',
+      '        <div class="inp-section-title">缺药替换候选(同本位码/规格, 异厂家)</div>',
+      '        <el-select v-model="dlg.replaceCatalogId" clearable placeholder="选择替换药品" style="width:100%">',
+      '          <el-option v-for="c in dlg.candidates" :key="c.drugCatalogId" :label="c.drugName + \' /\' + orDash(c.manufacturer) + \' 存\' + fmtQty(c.availStock)" :value="c.drugCatalogId"></el-option>',
+      '        </el-select>',
+      '        <el-radio-group v-if="dlg.replaceCatalogId" v-model="dlg.replaceScope" style="margin-top:6px">',
+      '          <el-radio :label="1">仅本次</el-radio><el-radio :label="2">本次及后续全部</el-radio>',
+      '        </el-radio-group>',
+      '      </div>',
+      '      <el-form label-width="80px" style="margin-top:12px">',
+      '        <el-form-item label="出院带药"><el-switch v-model="dlg.dischargePick"></el-switch></el-form-item>',
+      '        <el-form-item label="核对人"><el-input v-model="dlg.checkBy" placeholder="选填(双签)"></el-input></el-form-item>',
+      '        <el-form-item label="备注"><el-input v-model="dlg.remark"></el-input></el-form-item>',
+      '      </el-form>',
+      '    </div>',
+      '    <template #footer><el-button @click="dlg.visible=false">取消</el-button><el-button type="primary" :loading="dlg.submitting" :disabled="!dlg.pv" @click="submitDispense">确认发药</el-button></template>',
+      '  </el-dialog>',
+      '  <el-dialog v-model="batch.visible" title="集中发药" width="520px">',
+      '    <div>已选 {{ batch.list.length }} 条医嘱, 将按整包装取整并扣减库存发药。</div>',
+      '    <el-form label-width="80px" style="margin-top:10px">',
+      '      <el-form-item label="出院带药"><el-switch v-model="batch.dischargePick"></el-switch></el-form-item>',
+      '      <el-form-item label="核对人"><el-input v-model="batch.checkBy"></el-input></el-form-item>',
+      '    </el-form>',
+      '    <template #footer><el-button @click="batch.visible=false">取消</el-button><el-button type="primary" :loading="batch.submitting" @click="submitBatch">确认发药</el-button></template>',
+      '  </el-dialog>',
+      '</div>'
+    ].join('\n'),
+    data: function () {
+      return {
+        pharmDefs: [], pharmacyId: null, keyword: '', rows: [], total: 0, page: 1, size: 20,
+        loading: false, selection: [], autoDispense: false,
+        dlg: { visible: false, order: null, pv: null, candidates: [], replaceCatalogId: null, replaceScope: 1, dischargePick: false, checkBy: '', remark: '', submitting: false },
+        batch: { visible: false, list: [], dischargePick: false, checkBy: '', submitting: false }
+      };
+    },
+    methods: {
+      orDash: orDash,
+      fmtQty: function (v) { return qtyFmt(v); },
+      insufficient: function (r) { return Number(r.availStock) < Number(r.shouldQty); },
+      loadPharm: function () {
+        var vm = this;
+        HIS.get('/api/his/pharmacy/pharmacy-def').then(function (l) { vm.pharmDefs = l || []; }).catch(function () { });
+      },
+      search: function () { this.page = 1; this.loadQueue(); },
+      onPage: function (p) { this.page = p; this.loadQueue(); },
+      loadQueue: function () {
+        var vm = this; vm.loading = true;
+        var url = '/api/his/inp/dispense/queue?page=' + vm.page + '&size=' + vm.size
+          + (vm.pharmacyId ? ('&pharmacyId=' + HIS.idParam(vm.pharmacyId)) : '')
+          + (vm.keyword ? ('&keyword=' + encodeURIComponent(vm.keyword)) : '');
+        HIS.get(url).then(function (d) {
+          vm.rows = (d && d.rows) || []; vm.total = Number(d && d.total) || 0; vm.autoDispense = !!(d && d.autoDispense);
+        }).catch(HIS.notifyError).finally(function () { vm.loading = false; });
+      },
+      onSel: function (s) { this.selection = s || []; },
+      openDispense: function (row) {
+        var vm = this;
+        vm.dlg.order = row; vm.dlg.pv = null; vm.dlg.candidates = []; vm.dlg.replaceCatalogId = null; vm.dlg.replaceScope = 1;
+        vm.dlg.dischargePick = false; vm.dlg.checkBy = ''; vm.dlg.remark = ''; vm.dlg.visible = true;
+        var u = '/api/his/inp/dispense/preview?orderId=' + HIS.idParam(row.orderId) + (vm.pharmacyId ? ('&pharmacyId=' + HIS.idParam(vm.pharmacyId)) : '');
+        HIS.get(u).then(function (pv) { vm.dlg.pv = pv; if (pv && !pv.sufficient) { vm.loadCandidates(row); } }).catch(HIS.notifyError);
+      },
+      loadCandidates: function (row) {
+        var vm = this;
+        var u = '/api/his/inp/dispense/replace-candidates?orderId=' + HIS.idParam(row.orderId) + (vm.pharmacyId ? ('&pharmacyId=' + HIS.idParam(vm.pharmacyId)) : '');
+        HIS.get(u).then(function (c) { vm.dlg.candidates = c || []; }).catch(function () { });
+      },
+      submitDispense: function () {
+        var vm = this; var o = vm.dlg.order; if (!o) { return; }
+        vm.dlg.submitting = true;
+        var item = { orderId: HIS.id(o.orderId) };
+        if (vm.dlg.replaceCatalogId) { item.replaceDrugCatalogId = HIS.id(vm.dlg.replaceCatalogId); item.replaceScope = vm.dlg.replaceScope; item.replaceReason = '缺药替换'; }
+        HIS.post('/api/his/inp/dispense/dispense', {
+          pharmacyId: vm.pharmacyId ? HIS.id(vm.pharmacyId) : null, dischargePick: vm.dlg.dischargePick,
+          checkBy: vm.dlg.checkBy || null, remark: vm.dlg.remark || null, items: [item]
+        }).then(function () { HIS.notifySuccess('发药成功'); vm.dlg.visible = false; vm.loadQueue(); }).catch(HIS.notifyError).finally(function () { vm.dlg.submitting = false; });
+      },
+      openBatch: function () { this.batch.list = this.selection.slice(); this.batch.visible = true; },
+      submitBatch: function () {
+        var vm = this; vm.batch.submitting = true;
+        var items = vm.batch.list.map(function (r) { return { orderId: HIS.id(r.orderId) }; });
+        HIS.post('/api/his/inp/dispense/dispense', {
+          pharmacyId: vm.pharmacyId ? HIS.id(vm.pharmacyId) : null, dischargePick: vm.batch.dischargePick,
+          checkBy: vm.batch.checkBy || null, items: items
+        }).then(function () { HIS.notifySuccess('集中发药成功'); vm.batch.visible = false; vm.selection = []; vm.loadQueue(); }).catch(HIS.notifyError).finally(function () { vm.batch.submitting = false; });
+      }
+    },
+    mounted: function () { this.loadPharm(); this.loadQueue(); }
+  };
+
+  HIS.views.InpDischargePickup = {
+    template: [
+      '<div class="inp-pickup">',
+      '  <div class="toolbar">',
+      '    <el-select v-model="status" clearable placeholder="状态(全部)" style="width:170px" @change="load">',
+      '      <el-option label="待取药" :value="1"></el-option><el-option label="已取待发药核" :value="2"></el-option><el-option label="已二次核发" :value="3"></el-option>',
+      '    </el-select>',
+      '    <el-input v-model="kw" placeholder="住院号/患者" style="width:180px" clearable @keyup.enter="load"></el-input>',
+      '    <el-button @click="load">查询</el-button><el-button @click="load">刷新</el-button>',
+      '  </div>',
+      '  <el-table :data="rows" v-loading="loading" border size="small">',
+      '    <el-table-column label="患者" width="100"><template #default="s">{{ orDash(s.row.patientName) }}</template></el-table-column>',
+      '    <el-table-column label="就诊ID" width="160"><template #default="s">{{ s.row.inpVisitId }}</template></el-table-column>',
+      '    <el-table-column label="药品/规格" min-width="180"><template #default="s">{{ orDash(s.row.drugName) }} / {{ orDash(s.row.spec) }}</template></el-table-column>',
+      '    <el-table-column label="数量" width="80" align="right"><template #default="s">{{ fmtQty(s.row.qty) }}</template></el-table-column>',
+      '    <el-table-column label="发票号" width="160"><template #default="s">{{ orDash(s.row.invoiceNo) }}</template></el-table-column>',
+      '    <el-table-column label="状态" width="120" align="center"><template #default="s"><el-tag :type="stType(s.row.pickupStatus)" size="small">{{ stText(s.row.pickupStatus) }}</el-tag></template></el-table-column>',
+      '    <el-table-column label="取药/核发" min-width="150"><template #default="s">{{ orDash(s.row.pickupBy) }} / {{ orDash(s.row.verify2By) }}</template></el-table-column>',
+      '    <el-table-column label="操作" width="150" align="center"><template #default="s">',
+      '      <el-button v-if="s.row.pickupStatus===1" link type="primary" size="small" @click="openPickup(s.row)">取药</el-button>',
+      '      <el-button v-if="s.row.pickupStatus===2" link type="warning" size="small" @click="verify2(s.row)">二次核发</el-button>',
+      '    </template></el-table-column>',
+      '  </el-table>',
+      '  <el-dialog v-model="dlg.visible" title="出院带药取药" width="420px">',
+      '    <el-form label-width="90px"><el-form-item label="发票号"><el-input v-model="dlg.invoiceNo" placeholder="留空自动生成"></el-input></el-form-item></el-form>',
+      '    <template #footer><el-button @click="dlg.visible=false">取消</el-button><el-button type="primary" :loading="dlg.submitting" @click="submitPickup">确认取药</el-button></template>',
+      '  </el-dialog>',
+      '</div>'
+    ].join('\n'),
+    data: function () { return { rows: [], loading: false, status: null, kw: '', dlg: { visible: false, row: null, invoiceNo: '', submitting: false } }; },
+    methods: {
+      orDash: orDash, fmtQty: function (v) { return qtyFmt(v); },
+      stText: function (s) { return s === 1 ? '待取药' : s === 2 ? '已取待发药核' : s === 3 ? '已二次核发' : ''; },
+      stType: function (s) { return s === 1 ? 'info' : s === 2 ? 'warning' : 'success'; },
+      load: function () {
+        var vm = this; vm.loading = true;
+        var url = '/api/his/inp/dispense/pickup' + (vm.status ? ('?status=' + vm.status) : '');
+        HIS.get(url).then(function (l) {
+          var rows = l || [];
+          if (vm.kw) { var k = String(vm.kw).trim(); rows = rows.filter(function (r) { return String(r.inpVisitId).indexOf(k) >= 0 || String(r.patientName || '').indexOf(k) >= 0; }); }
+          vm.rows = rows;
+        }).catch(HIS.notifyError).finally(function () { vm.loading = false; });
+      },
+      openPickup: function (row) { this.dlg.row = row; this.dlg.invoiceNo = ''; this.dlg.visible = true; },
+      submitPickup: function () {
+        var vm = this; vm.dlg.submitting = true;
+        HIS.post('/api/his/inp/dispense/pickup/confirm', { pickupId: HIS.id(vm.dlg.row.id), invoiceNo: vm.dlg.invoiceNo || null }).then(function () { HIS.notifySuccess('取药成功'); vm.dlg.visible = false; vm.load(); }).catch(HIS.notifyError).finally(function () { vm.dlg.submitting = false; });
+      },
+      verify2: function (row) {
+        var vm = this;
+        HIS.post('/api/his/inp/dispense/pickup/verify2', { pickupId: HIS.id(row.id) }).then(function () { HIS.notifySuccess('二次核发成功'); vm.load(); }).catch(HIS.notifyError);
+      }
+    },
+    mounted: function () { this.load(); }
+  };
+
+  HIS.views.InpDispenseHistory = {
+    template: [
+      '<div class="inp-dhistory">',
+      '  <div class="toolbar">',
+      '    <el-radio-group v-model="dimension" @change="search"><el-radio-button label="dispense">发药</el-radio-button><el-radio-button label="return">退药</el-radio-button></el-radio-group>',
+      '    <el-input v-model="keyword" placeholder="单号/患者/药品/病区" style="width:200px" clearable @keyup.enter="search"></el-input>',
+      '    <el-date-picker v-model="startDate" type="date" value-format="YYYY-MM-DD" placeholder="开始" style="width:150px"></el-date-picker>',
+      '    <el-date-picker v-model="endDate" type="date" value-format="YYYY-MM-DD" placeholder="结束" style="width:150px"></el-date-picker>',
+      '    <el-button @click="search">查询</el-button>',
+      '  </div>',
+      '  <el-table :data="rows" v-loading="loading" border size="small">',
+      '    <el-table-column v-if="dimension===\'dispense\'" label="发药单号" width="140"><template #default="s">{{ orDash(s.row.dispenseNo) }}</template></el-table-column>',
+      '    <el-table-column v-if="dimension===\'return\'" label="退药单号" width="150"><template #default="s">{{ orDash(s.row.returnNo) }}</template></el-table-column>',
+      '    <el-table-column label="患者" width="90"><template #default="s">{{ orDash(s.row.patientName) }}</template></el-table-column>',
+      '    <el-table-column v-if="dimension===\'dispense\'" label="病区" width="100"><template #default="s">{{ orDash(s.row.wardName) }}</template></el-table-column>',
+      '    <el-table-column v-if="dimension===\'dispense\'" label="药品" min-width="160"><template #default="s">{{ orDash(s.row.drugName) }} / {{ orDash(s.row.spec) }}</template></el-table-column>',
+      '    <el-table-column v-if="dimension===\'dispense\'" label="应/冲/实/多" width="160" align="right"><template #default="s">{{ fmtQty(s.row.shouldQty) }} / {{ fmtQty(s.row.offsetQty) }} / {{ fmtQty(s.row.actualQty) }} / {{ fmtQty(s.row.overQty) }}</template></el-table-column>',
+      '    <el-table-column v-if="dimension===\'dispense\'" label="已退" width="70" align="right"><template #default="s">{{ fmtQty(s.row.returnQty) }}</template></el-table-column>',
+      '    <el-table-column v-if="dimension===\'dispense\'" label="替换" width="70" align="center"><template #default="s"><el-tag v-if="s.row.replaceFlag" type="warning" size="small">替换</el-tag><span v-else>-</span></template></el-table-column>',
+      '    <el-table-column v-if="dimension===\'return\'" label="去向" width="100" align="center"><template #default="s"><el-tag :type="s.row.keepWard?\'warning\':\'info\'" size="small">{{ s.row.keepWard?\'暂存病区\':\'退回药房\' }}</el-tag></template></el-table-column>',
+      '    <el-table-column v-if="dimension===\'return\'" label="金额" width="100" align="right"><template #default="s">{{ money(s.row.returnAmount) }}</template></el-table-column>',
+      '    <el-table-column label="时间" width="150"><template #default="s">{{ dimension===\'dispense\' ? orDash(s.row.dispenseTime) : orDash(s.row.returnTime) }}</template></el-table-column>',
+      '    <el-table-column v-if="dimension===\'dispense\'" label="操作" width="90" align="center"><template #default="s"><el-button link type="danger" size="small" v-if="Number(s.row.actualQty)>Number(s.row.returnQty)" @click="openReturn(s.row)">退药</el-button></template></el-table-column>',
+      '  </el-table>',
+      '  <el-pagination style="margin-top:10px;justify-content:flex-end" background layout="total, prev, pager, next" :total="total" :page-size="size" :current-page="page" @current-change="onPage"></el-pagination>',
+      '  <el-dialog v-model="dlg.visible" title="住院退药" width="440px">',
+      '    <div v-if="dlg.row" style="margin-bottom:8px">{{ orDash(dlg.row.drugName) }} · 实发 {{ fmtQty(dlg.row.actualQty) }} · 已退 {{ fmtQty(dlg.row.returnQty) }}</div>',
+      '    <el-form label-width="100px">',
+      '      <el-form-item label="退药数量"><el-input-number v-model="dlg.qty" :min="0.001" :step="1" style="width:100%"></el-input-number></el-form-item>',
+      '      <el-form-item label="去向"><el-radio-group v-model="dlg.keepWard"><el-radio :label="true">暂存病区(供冲抵)</el-radio><el-radio :label="false" :disabled="dlg.fullOffset">退回药房(回库)</el-radio></el-radio-group></el-form-item>',
+      '      <el-form-item v-if="dlg.fullOffset"><span style="color:#e6a23c;font-size:12px">该发药为全额冲抵（未出库、无批次可回退），仅可暂存病区供下次冲抵。</span></el-form-item>',
+      '      <el-form-item label="原因"><el-input v-model="dlg.reason" type="textarea"></el-input></el-form-item>',
+      '    </el-form>',
+      '    <template #footer><el-button @click="dlg.visible=false">取消</el-button><el-button type="primary" :loading="dlg.submitting" @click="submitReturn">确认退药</el-button></template>',
+      '  </el-dialog>',
+      '</div>'
+    ].join('\n'),
+    data: function () { return { dimension: 'dispense', keyword: '', startDate: '', endDate: '', rows: [], total: 0, page: 1, size: 20, loading: false, dlg: { visible: false, row: null, qty: null, keepWard: false, fullOffset: false, reason: '', submitting: false } }; },
+    methods: {
+      orDash: orDash, money: money, fmtQty: function (v) { return qtyFmt(v); },
+      search: function () { this.page = 1; this.load(); },
+      onPage: function (p) { this.page = p; this.load(); },
+      load: function () {
+        var vm = this; vm.loading = true;
+        var url = '/api/his/inp/dispense/history?dimension=' + vm.dimension + '&page=' + vm.page + '&size=' + vm.size
+          + (vm.keyword ? ('&keyword=' + encodeURIComponent(vm.keyword)) : '')
+          + (vm.startDate ? ('&startDate=' + vm.startDate) : '')
+          + (vm.endDate ? ('&endDate=' + vm.endDate) : '');
+        HIS.get(url).then(function (d) { vm.rows = (d && d.rows) || []; vm.total = Number(d && d.total) || 0; }).catch(HIS.notifyError).finally(function () { vm.loading = false; });
+      },
+      openReturn: function (row) { this.dlg.row = row; this.dlg.qty = Number(row.actualQty) - Number(row.returnQty); this.dlg.fullOffset = (Number(row.actualQty) || 0) === 0; this.dlg.keepWard = this.dlg.fullOffset; this.dlg.reason = ''; this.dlg.visible = true; },
+      submitReturn: function () {
+        var vm = this; if (!vm.dlg.qty || vm.dlg.qty <= 0) { HIS.notifyError(new Error('退药数量须大于0')); return; }
+        vm.dlg.submitting = true;
+        HIS.post('/api/his/inp/dispense/return', { dispenseId: HIS.id(vm.dlg.row.id), qty: vm.dlg.qty, reason: vm.dlg.reason || null, keepWard: vm.dlg.keepWard }).then(function () { HIS.notifySuccess('退药成功'); vm.dlg.visible = false; vm.load(); }).catch(HIS.notifyError).finally(function () { vm.dlg.submitting = false; });
+      }
+    },
+    mounted: function () { this.load(); }
+  };
+
+  /* 组件注册完成: InpAdmission / InpPatientList / InpBedManage / InpDeposit / InpChargeList / InpSettle / InpDailySummary / InpDispenseWork / InpDischargePickup / InpDispenseHistory */
 })();

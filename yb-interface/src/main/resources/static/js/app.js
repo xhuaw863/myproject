@@ -83,6 +83,21 @@
       ]
     },
     {
+      group: '病案统计', children: [
+        { key: 'mr-assign', label: '病案分配', comp: 'MrAssign' },
+        { key: 'mr-catalog', label: '首页编目', comp: 'MrCatalog' },
+        { key: 'mr-review', label: '质量审核', comp: 'MrReview' },
+        { key: 'mr-recall', label: '病案收回', comp: 'MrRecall' },
+        { key: 'mr-borrow', label: '病案借阅', comp: 'MrBorrow' },
+        { key: 'mr-annotation', label: '批注反馈', comp: 'MrAnnotation' },
+        { key: 'mr-search', label: '检索查询', comp: 'MrSearch' },
+        { key: 'mr-workload', label: '工作量统计', comp: 'MrWorkload' },
+        { key: 'mr-maintain', label: '系统维护字典', comp: 'MrMaintain' },
+        { key: 'mr-report', label: '报表统计', comp: 'MrReport' },
+        { key: 'mr-submit', label: '上报闭环', comp: 'MrSubmit' }
+      ]
+    },
+    {
       group: '药房系统', children: [
         { key: 'dispense-todo', label: '待发药', comp: 'DispenseTodo' },
         { key: 'dispense', label: '调剂发药', comp: 'DispenseRecord' },
@@ -91,7 +106,12 @@
         { key: 'pharmacy-rpt', label: '药房统计', comp: 'PharmacyReport' },
         { key: 'req-mgr', label: '药品请领', comp: 'RequisitionManage' },
         { key: 'trace-code', label: '药品追溯码', comp: 'TraceCodeManage' },
-        { key: 'price-mgr', label: '药房定价', comp: 'PharmacyPriceManage' }
+        { key: 'price-mgr', label: '药房定价', comp: 'PharmacyPriceManage' },
+        { key: 'pharmacy-window', label: '发药窗口', comp: 'PharmacyWindowManage' },
+        { key: 'window-workstation', label: '发药工作站', comp: 'WindowWorkstation' },
+        { key: 'window-dept-rule', label: '科室定向窗口', comp: 'WindowDeptRule' },
+        { key: 'pharmacy-cross', label: '跨药房配置', comp: 'PharmacyCrossConfig' },
+        { key: 'rx-audit', label: '处方审核', comp: 'OutpRxAudit' }
       ]
     },
     {
@@ -193,11 +213,14 @@
         { key: 'critical-value', label: '危急值管理', comp: 'critical-value' }
       ]
     },
-    /* 住院药师审核(T35, 与 RbacInitializer 动态菜单同 key 同名):
-     * 药品医嘱审方(pharm-station.js), 护士审核前的强制前置环节 */
+    /* 住院药师站(T35审核 + P4发药增强, 与 RbacInitializer 动态菜单同 key 同名):
+     * 药品医嘱审方(pharm-station.js) + 住院发药工作台/出院带药核发/历史发药查询(inpatient.js) */
     {
       group: '住院药师站', children: [
-        { key: 'pharm-station', label: '药师审核', comp: 'pharm-station' }
+        { key: 'pharm-station', label: '药师审核', comp: 'pharm-station' },
+        { key: 'inp-dispense-work', label: '住院发药工作台', comp: 'InpDispenseWork' },
+        { key: 'inp-discharge-pickup', label: '出院带药核发', comp: 'InpDischargePickup' },
+        { key: 'inp-dispense-history', label: '住院发药历史', comp: 'InpDispenseHistory' }
       ]
     },
     /* 临床路径与手术麻醉(2026-09 集成, 与 RbacInitializer 动态菜单同 key 同名):

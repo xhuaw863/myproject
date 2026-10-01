@@ -71,6 +71,9 @@ public class PharmacyService {
     private final DrugStockService drugStockService;
     private final PharmacyDefService pharmacyDefService;
     private final PharmacyPriceService pharmacyPriceService;
+    private final WindowDispatchService windowDispatchService;
+    private final PharmacyWindowService pharmacyWindowService;
+    private final ScanVerifyService scanVerifyService;
     private final JdbcTemplate jdbcTemplate;
 
     /** 三期: 发药出库单与计费快照口径一致(仅药品行, 金额取 price*quantity) */
@@ -83,12 +86,17 @@ public class PharmacyService {
     public PharmacyService(HisDispenseMapper dispenseMapper, HisDrugReturnMapper returnMapper,
                            DrugStockService drugStockService, PharmacyDefService pharmacyDefService,
                            PharmacyPriceService pharmacyPriceService,
+                           WindowDispatchService windowDispatchService, PharmacyWindowService pharmacyWindowService,
+                           ScanVerifyService scanVerifyService,
                            JdbcTemplate jdbcTemplate) {
         this.dispenseMapper = dispenseMapper;
         this.returnMapper = returnMapper;
         this.drugStockService = drugStockService;
         this.pharmacyDefService = pharmacyDefService;
         this.pharmacyPriceService = pharmacyPriceService;
+        this.windowDispatchService = windowDispatchService;
+        this.pharmacyWindowService = pharmacyWindowService;
+        this.scanVerifyService = scanVerifyService;
         this.jdbcTemplate = jdbcTemplate;
     }
 
@@ -238,8 +246,8 @@ public class PharmacyService {
 
         // 1. 查处方(快照患者/医生/科室/金额), 已作废处方不得发药
         List<Map<String, Object>> rows = jdbcTemplate.queryForList(
-                "SELECT id, visit_id, rx_no, patient_id, patient_name, dr_name AS doctor_name, dept_name,"
-                + " total_amount, dispense_status, status, pharmacy_id, transfer_from_pharmacy_id FROM his_prescription"
+                "SELECT id, visit_id, rx_no, patient_id, patient_name, dr_name AS doctor_name, dept_id, dept_name,"
+                + " rx_type, total_amount, dispense_status, status, pharmacy_id, transfer_from_pharmacy_id, audit_status, reject_reason FROM his_prescription"
                 + " WHERE id = ? AND tenant_id = ? AND deleted = 0", prescriptionId, tenantId());
         if (rows.isEmpty()) {
             throw new BizException(400, "处方不存在");
@@ -278,6 +286,9 @@ public class PharmacyService {
             throw new BizException("该处方无药品明细, 无需发药");
         }
 
+        // 3b. P2 发药前多重校验(硬阻断): 处方被驳回 或 存在皮试阳性药品 -> 拒绝发药(事务回滚复原发药状态)
+        assertDispensable(pres, toLong(pres.get("visit_id")), items);
+
         // 4. 确定发药机构(空则当前登录用户机构)
         Long orgId = req.getOrgId() != null ? req.getOrgId() : currentOrgId();
         if (orgId == null) {
@@ -296,6 +307,43 @@ public class PharmacyService {
             HisPharmacyDef pharmacyDef = pharmacyDefService.requireEnabled(pharmacyId, orgId);
             warehouseId = pharmacyDef.getStockLocationId() != null
                     ? pharmacyDef.getStockLocationId() : pharmacyDef.getWarehouseId();
+        }
+
+        // 4.3 P1 智能分窗: 药房确定后按 特殊标志/科室规则/策略/兜底 分配窗口, 签到型窗口发药前校验已签到
+        //     (无窗口配置则 windowId=null, 不影响既有发药; 分配异常不阻断发药仅记日志)
+        Long windowId = null;
+        if (pharmacyId != null) {
+            try {
+                java.util.Set<String> specials = new java.util.HashSet<>();
+                if (req.getSpecialTypes() != null) {
+                    for (String s : req.getSpecialTypes()) {
+                        if (StringUtils.hasText(s)) {
+                            specials.add(s.trim().toUpperCase());
+                        }
+                    }
+                }
+                windowId = windowDispatchService.assignWindow(pharmacyId, toLong(pres.get("dept_id")),
+                        str(pres.get("rx_type")), specials.isEmpty() ? null : specials);
+                if (windowId != null && windowDispatchService.isSigninRequired(windowId)
+                        && !pharmacyWindowService.isSignedIn(windowId, toLong(pres.get("patient_id")))) {
+                    throw new BizException("该窗口要求患者先签到后方可发药, 请引导患者扫码/刷卡签到");
+                }
+            } catch (BizException be) {
+                throw be;
+            } catch (Exception e) {
+                log.warn("智能分窗分配异常(不阻断发药): prescriptionId={}, err={}", prescriptionId, e.getMessage());
+                windowId = null;
+            }
+        }
+
+        // 4.4 P3 追溯码发药闭环: 窗口级 trace_required 或 药品级 trace_flag 命中时, 发药前校验扫描完整性
+        //     (不足/不匹配/重复则抛错, 事务回滚复原 dispense_status), 通过后于发药落库后绑定物理追溯码
+        boolean traceRequired = false;
+        List<String> traceBound = new ArrayList<>();
+        Map<String, Object> traceReq = scanVerifyService.requirement(prescriptionId, windowId, req.getTraceCodes(), pharmacyId);
+        if (Boolean.TRUE.equals(traceReq.get("traceRequired"))) {
+            traceRequired = true;
+            traceBound = scanVerifyService.assertComplete(prescriptionId, windowId, req.getTraceCodes());
         }
 
         // 5. 创建处方发药出库单并确认: 确认时按有效期 FIFO 乐观扣减库存并回填批次, 单次扣减可追溯
@@ -348,6 +396,9 @@ public class PharmacyService {
         HisDispense dispense = new HisDispense();
         dispense.setOrgId(orgId);
         dispense.setPharmacyId(pharmacyId);
+        dispense.setWindowId(windowId);
+        // P1 签到型窗口发药即已签到(前置守卫已校验), 其余窗口置未签到
+        dispense.setSigninStatus(windowId != null && windowDispatchService.isSigninRequired(windowId) ? 1 : 0);
         dispense.setDispenseNo(generateNo("FY"));
         dispense.setVisitId(toLong(pres.get("visit_id")));
         dispense.setPrescriptionId(prescriptionId);
@@ -370,8 +421,19 @@ public class PharmacyService {
             dispense.setPriceDiff(stockAmount.subtract(dispense.getTotalAmount()).setScale(2, RoundingMode.HALF_UP));
         }
         dispense.setTransferFromPharmacyId(toLong(pres.get("transfer_from_pharmacy_id")));
+        // P3: 本单追溯强制标志落账(发药后绑定成功再回写已绑数)
+        dispense.setTraceRequired(traceRequired ? 1 : 0);
+        dispense.setTraceScanned(0);
         dispense.setRemark(req.getRemark());
         dispenseMapper.insert(dispense);
+
+        // P3 发药后绑定: 将已校验在库物理追溯码置已发药并绑定本次发药(患者/就诊/发药记录), 回写已绑数
+        if (traceRequired && !traceBound.isEmpty()) {
+            int bound = scanVerifyService.bindForDispense(dispense.getId(), toLong(pres.get("patient_id")),
+                    toLong(pres.get("visit_id")), traceBound);
+            dispense.setTraceScanned(bound);
+            dispenseMapper.updateById(dispense);
+        }
 
         log.info("发药完成: dispenseNo={}, prescriptionId={}, patient={}, items={}, total={}, stockAmount={}, priceDiff={}, pharmacyId={}, warehouseId={}",
                 dispense.getDispenseNo(), prescriptionId, dispense.getPatientName(),
@@ -432,6 +494,174 @@ public class PharmacyService {
         out.put("allSufficient", allEnough);
         out.put("lines", lines);
         return out;
+    }
+
+    /* ================= P2: 发药前多重校验 ================= */
+
+    /**
+     * 发药前多重校验(供发药工作站展示): 汇总硬阻断项(blocks)与提醒项(warns)。
+     * blocks: 处方被药师驳回 / 已发药或已作废 / 就诊未收费 / 存在皮试阳性药品;
+     * warns : 处方尚未审核通过(待审) / 需皮试药品未见阴性记录(疑未做) / 库存缺口 / 同就诊存在他药房未发药处方。
+     * 返回 {prescriptionId, canDispense, blocks:[{type,message}], warns:[{type,message}]}。doDispense 仅对 blocks 抛错。
+     */
+    public Map<String, Object> preDispenseCheck(Long prescriptionId) {
+        if (prescriptionId == null) {
+            throw new BizException(400, "处方ID不能为空");
+        }
+        List<Map<String, Object>> rows = jdbcTemplate.queryForList(
+                "SELECT p.id, p.visit_id, p.dispense_status, p.status, p.audit_status, p.reject_reason, p.pharmacy_id,"
+                        + " v.charge_status FROM his_prescription p LEFT JOIN his_visit v ON p.visit_id = v.id AND v.deleted = 0"
+                        + " WHERE p.id = ? AND p.tenant_id = ? AND p.deleted = 0", prescriptionId, tenantId());
+        if (rows.isEmpty()) {
+            throw new BizException(400, "处方不存在");
+        }
+        Map<String, Object> pres = rows.get(0);
+        Long visitId = toLong(pres.get("visit_id"));
+        List<Map<String, Object>> blocks = new ArrayList<>();
+        List<Map<String, Object>> warns = new ArrayList<>();
+
+        Number rxStatus = (Number) pres.get("status");
+        Number ds = (Number) pres.get("dispense_status");
+        if (rxStatus != null && rxStatus.intValue() < 0) {
+            blocks.add(checkItem("cancelled", "该处方已作废, 不可发药"));
+        } else if (ds != null && ds.intValue() != 0) {
+            blocks.add(checkItem("dispensed", "该处方已发药或已退药, 请勿重复发药"));
+        }
+        Number cs = (Number) pres.get("charge_status");
+        if (cs == null || cs.intValue() != 1) {
+            blocks.add(checkItem("uncharged", "该处方所属就诊未收费, 不可发药"));
+        }
+        Number as = (Number) pres.get("audit_status");
+        int auditStatus = as == null ? 0 : as.intValue();
+        if (auditStatus == 3) {
+            blocks.add(checkItem("rx_rejected", "该处方已被药师驳回, 不可发药: " + nvlStr(pres.get("reject_reason"))));
+        } else if (auditStatus == 1) {
+            warns.add(checkItem("rx_pending", "提醒: 该处方尚未审核通过(待审), 建议先完成审方再发药"));
+        }
+
+        // 皮试校验: 目录需皮试药品×就诊执行皮试结果
+        List<Map<String, Object>> items = jdbcTemplate.queryForList(
+                "SELECT drug_id, item_name FROM his_prescription_item"
+                        + " WHERE prescription_id = ? AND tenant_id = ? AND drug_id IS NOT NULL AND deleted = 0 ORDER BY id",
+                prescriptionId, tenantId());
+        List<String> skinPos = new ArrayList<>();
+        List<String> skinPending = new ArrayList<>();
+        collectSkinTestStatus(visitId, items, skinPos, skinPending);
+        if (!skinPos.isEmpty()) {
+            blocks.add(checkItem("skin_positive", "存在皮试阳性药品, 不可发药: " + String.join("、", skinPos)));
+        }
+        if (!skinPending.isEmpty()) {
+            warns.add(checkItem("skin_pending", "提醒: 以下药品需皮试但未见阴性记录: " + String.join("、", skinPending)));
+        }
+
+        // 缺药软校验(复用 shortageInfo)
+        try {
+            Map<String, Object> shortInfo = shortageInfo(prescriptionId, toLong(pres.get("pharmacy_id")));
+            if (!Boolean.TRUE.equals(shortInfo.get("allSufficient"))) {
+                warns.add(checkItem("shortage", "提醒: 当前药房存在库存缺口, 请核对或改派药房"));
+            }
+        } catch (Exception e) {
+            log.warn("发药前缺药校验异常(忽略): prescriptionId={}, err={}", prescriptionId, e.getMessage());
+        }
+
+        // 同就诊跨药房未发药提醒
+        if (visitId != null) {
+            Long otherUndispensed = jdbcTemplate.queryForObject(
+                    "SELECT COUNT(*) FROM his_prescription WHERE visit_id = ? AND tenant_id = ? AND deleted = 0"
+                            + " AND dispense_status = 0 AND status > 0 AND (pharmacy_id IS NULL OR pharmacy_id <> ?)",
+                    Long.class, visitId, tenantId(), pres.get("pharmacy_id"));
+            if (otherUndispensed != null && otherUndispensed > 0) {
+                warns.add(checkItem("other_pharmacy", "提醒: 同一就诊另有 " + otherUndispensed + " 张未发药处方归属其他/未绑定药房"));
+            }
+        }
+
+        Map<String, Object> out = new LinkedHashMap<>();
+        out.put("prescriptionId", prescriptionId);
+        out.put("canDispense", blocks.isEmpty());
+        out.put("blocks", blocks);
+        out.put("warns", warns);
+        return out;
+    }
+
+    /** doDispense 前置硬阻断断言: 驳回处方与皮试阳性拒绝发药(其余为提醒, 交由前端展示, 不在此拦截)。 */
+    private void assertDispensable(Map<String, Object> pres, Long visitId, List<Map<String, Object>> items) {
+        Number as = (Number) pres.get("audit_status");
+        if (as != null && as.intValue() == 3) {
+            throw new BizException("该处方已被药师驳回, 不可发药: " + nvlStr(pres.get("reject_reason")));
+        }
+        List<String> skinPos = new ArrayList<>();
+        collectSkinTestStatus(visitId, items, skinPos, new ArrayList<>());
+        if (!skinPos.isEmpty()) {
+            throw new BizException("存在皮试阳性药品, 不可发药: " + String.join("、", skinPos));
+        }
+    }
+
+    /** 皮试状态归集: 对目录 skin_test_flag=1 的药品, 按就诊执行记录判定阳性(result=2)/疑未做(无阴性 result=1)。 */
+    private void collectSkinTestStatus(Long visitId, List<Map<String, Object>> items,
+                                       List<String> positiveOut, List<String> pendingOut) {
+        if (items == null || items.isEmpty()) {
+            return;
+        }
+        // 1. 筛出需皮试药品(drugId→name)
+        Map<Long, String> needSkin = new LinkedHashMap<>();
+        for (Map<String, Object> it : items) {
+            Long drugId = toLong(it.get("drug_id"));
+            if (drugId == null) {
+                continue;
+            }
+            Integer flag = jdbcTemplate.queryForObject(
+                    "SELECT skin_test_flag FROM his_drug_catalog WHERE id = ? AND deleted = 0",
+                    Integer.class, drugId);
+            if (flag != null && flag == 1) {
+                needSkin.put(drugId, nvlStr(it.get("item_name")));
+            }
+        }
+        if (needSkin.isEmpty() || visitId == null) {
+            // 需皮试但无就诊上下文: 全部按疑未做提醒(阳性无从判定)
+            if (visitId == null) {
+                pendingOut.addAll(needSkin.values());
+            }
+            return;
+        }
+        // 2. 就诊执行皮试记录(his_skin_test JOIN his_nurse_exec.visit_id)按药品归集最高优先级结果
+        List<Map<String, Object>> tests = jdbcTemplate.queryForList(
+                "SELECT st.drug_id AS drugId, st.result AS result FROM his_skin_test st"
+                        + " JOIN his_nurse_exec ne ON st.exec_id = ne.id AND ne.deleted = 0"
+                        + " WHERE ne.visit_id = ? AND st.tenant_id = ? AND st.deleted = 0", visitId, tenantId());
+        Map<Long, Integer> best = new HashMap<>();
+        for (Map<String, Object> t : tests) {
+            Long did = toLong(t.get("drugId"));
+            Number rn = (Number) t.get("result");
+            if (did == null || rn == null) {
+                continue;
+            }
+            // 优先级: 阳性(2) > 观察中(0)/未做(3) > 阴性(1): 只要出现阳性即判阳性
+            int r = rn.intValue();
+            Integer cur = best.get(did);
+            if (cur == null || (r == 2) || (cur == 1 && r != 1)) {
+                best.put(did, r);
+            }
+        }
+        for (Map.Entry<Long, String> e : needSkin.entrySet()) {
+            Integer r = best.get(e.getKey());
+            if (r != null && r == 2) {
+                positiveOut.add(e.getValue());
+            } else if (r == null || r != 1) {
+                // 无记录 或 观察中/未做 → 疑未做提醒
+                pendingOut.add(e.getValue());
+            }
+        }
+    }
+
+    private static Map<String, Object> checkItem(String type, String message) {
+        Map<String, Object> m = new LinkedHashMap<>();
+        m.put("type", type);
+        m.put("message", message);
+        return m;
+    }
+
+    private static String nvlStr(Object v) {
+        return v == null ? "" : String.valueOf(v);
     }
 
     /**
@@ -577,6 +807,12 @@ public class PharmacyService {
         HisPharmacyDef to = pharmacyDefService.requireEnabled(req.getToPharmacyId(), orgId);
         if (to.getId().equals(toLong(pres.get("pharmacy_id")))) {
             throw new BizException("目标药房与当前绑定药房相同, 无需改派");
+        }
+        // P1 跨药房配置: 源药房已建立跨药房白名单(受控)时, 改派目标必须在启用的白名单内; 未配置则保持旧行为不受限
+        Long fromPharmacyId = toLong(pres.get("pharmacy_id"));
+        if (fromPharmacyId != null && pharmacyWindowService.isCrossControlled(fromPharmacyId)
+                && !pharmacyWindowService.isCrossAllowed(fromPharmacyId, to.getId())) {
+            throw new BizException("源药房未配置到目标药房[" + to.getName() + "]的跨药房发药白名单, 不允许改派");
         }
         long tenantId = tenantId();
         int affected = jdbcTemplate.update(

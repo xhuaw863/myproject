@@ -489,7 +489,9 @@
           doseUnit: '', unitDose: null, minUnit: '', packUnit: '', packRatio: null, roundRule: 1,
           purchasePrice: null, retailPrice: null, zeroMargin: 1,
           drugClass: '', abxGrade: '', otcFlag: 0, essentialFlag: 0, pregClass: '', skinTestFlag: 0,
-          storageCond: '', maxQtyOnce: null, status: 1, effDate: '', endDate: '', memo: ''
+          storageCond: '', maxQtyOnce: null, status: 1, effDate: '', endDate: '', memo: '',
+          /* P3 追溯码发药闭环: 三码校验字段 + 药品级追溯强制开关 */
+          commodityCode: '', supervisionCode: '', traceFlag: 0
         };
       },
       loadDrug: function () {
@@ -1391,6 +1393,9 @@
       '        <el-col :span="6"><el-form-item label="需皮试"><el-switch v-model="drugForm.skinTestFlag" :active-value="1" :inactive-value="0"></el-switch></el-form-item></el-col>',
       '        <el-col :span="6"><el-form-item label="妊娠分级"><el-select v-model="drugForm.pregClass" clearable style="width:100%"><el-option v-for="o in pregOpts" :key="o.code" :label="o.name" :value="o.code"></el-option></el-select></el-form-item></el-col>',
       '        <el-col :span="8"><el-form-item label="单次最大量"><el-input v-model.number="drugForm.maxQtyOnce" type="number"></el-input></el-form-item></el-col>',
+      '        <el-col :span="8"><el-form-item label="商品码/条形码"><el-input v-model="drugForm.commodityCode" placeholder="EAN-13等, 三码校验之一"></el-input></el-form-item></el-col>',
+      '        <el-col :span="8"><el-form-item label="电子监管码"><el-input v-model="drugForm.supervisionCode" placeholder="中国药品电子监管码"></el-input></el-form-item></el-col>',
+      '        <el-col :span="6"><el-form-item label="强制追溯"><el-switch v-model="drugForm.traceFlag" :active-value="1" :inactive-value="0"></el-switch></el-form-item></el-col>',
       '        <el-col :span="8"><el-form-item label="生效日期"><el-date-picker v-model="drugForm.effDate" type="date" value-format="YYYY-MM-DD" style="width:100%"></el-date-picker></el-form-item></el-col>',
       '        <el-col :span="8"><el-form-item label="状态"><el-switch v-model="drugForm.status" :active-value="1" :inactive-value="0" active-text="启用" inactive-text="停用"></el-switch></el-form-item></el-col>',
       '        <el-col :span="24"><el-form-item label="备注"><el-input v-model="drugForm.memo"></el-input></el-form-item></el-col>',

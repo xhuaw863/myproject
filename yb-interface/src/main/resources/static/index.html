@@ -23,7 +23,7 @@
   <script src="/vendor/echarts.min.js"></script>
 
   <!-- 应用脚本 -->
-  <script src="/js/api.js?v=20261001a"></script>
+  <script src="/js/api.js?v=20261101a"></script>
   <!-- 图表色源(canvas 不识别 CSS 变量, 图表必须从字面量主题取色) -->
   <script src="/js/theme.js?v=20260928b"></script>
   <!-- 全局交互层: 右键上下文菜单 + 快捷键注册表(纯DOM/原生事件, 须在 app.js 之前加载) -->
@@ -69,18 +69,34 @@
   <script src="/js/views/emr/emr-quality-rule.js?v=20261001e"></script>
   <script src="/js/views/emr/emr-element-search.js?v=20261001e"></script>
   <script src="/js/views/emr/emr-quality-board.js?v=20261001e"></script>
+  <!-- 病案统计科(P0): 病案分配/首页编目/质量审核(须在 app.js 之前加载) -->
+  <script src="/js/views/mr/mr-assign.js?v=20261101a"></script>
+  <script src="/js/views/mr/mr-catalog.js?v=20261101d"></script>
+  <script src="/js/views/mr/mr-review.js?v=20261101a"></script>
+  <script src="/js/views/mr/mr-recall.js?v=20261101a"></script>
+  <script src="/js/views/mr/mr-borrow.js?v=20261101a"></script>
+  <script src="/js/views/mr/mr-annotation.js?v=20261101a"></script>
+  <script src="/js/views/mr/mr-search.js?v=20261101b"></script>
+    <!-- 病案统计科(P2 收尾): 工作量/字典/报表/上报闭环(须在 app.js 之前加载) -->
+    <script src="/js/views/mr/mr-workload.js?v=20261102a"></script>
+    <script src="/js/views/mr/mr-maintain.js?v=20261102a"></script>
+    <script src="/js/views/mr/mr-report.js?v=20261102a"></script>
+    <script src="/js/views/mr/mr-submit.js?v=20261102a"></script>
   <script src="/js/views/org.js?v=20260930a"></script>
   <script src="/js/views/rbac.js?v=20260930t"></script>
   <!-- 系统参数(四级作用域参数配置, 须在 app.js 之前加载) -->
   <script src="/js/views/system-param.js?v=20260930u"></script>
-  <script src="/js/views/community-dict.js?v=20261001j"></script>
+  <script src="/js/views/community-dict.js?v=20261001k"></script>
   <script src="/js/views/org-catalog.js?v=20260930r"></script>
   <script src="/js/views/report.js?v=20260930v"></script>
   <script src="/js/views/warehouse.js?v=20261001c"></script>
   <script src="/js/views/warehouse-purchase.js?v=20261001c"></script>
   <script src="/js/views/warehouse-payment.js?v=20261001a"></script>
   <script src="/js/views/warehouse-ops.js?v=20261001c"></script>
-  <script src="/js/views/pharmacy.js?v=20261001c"></script>
+  <script src="/js/views/pharmacy.js?v=20261001f"></script>
+  <script src="/js/views/pharmacy-window.js?v=20261001d"></script>
+  <!-- 门诊处方审核工作台(P2: 待审队列/批量通过/驳回留因/自动审核), 须在 app.js 之前加载 -->
+  <script src="/js/views/pharmacy-rx-audit.js?v=20261001e"></script>
   <script src="/js/views/cashier.js?v=20260930v"></script>
   <script src="/js/views/charge-workstation.js?v=20260928b"></script>
   <script src="/js/views/treatment.js?v=20260930v"></script>
@@ -93,7 +109,7 @@
   <!-- 医保上报中心(M5 上传管线状态监控台, 须在 app.js 之前加载) -->
   <script src="/js/views/upload-center.js?v=20260930v"></script>
   <!-- 住院模块(登记结算/医生站/护士站, 须在 app.js 之前加载; 医生站子组件须在 inp-doctor.js 之前) -->
-  <script src="/js/views/inpatient.js?v=20260930v"></script>
+  <script src="/js/views/inpatient.js?v=20261001b"></script>
   <script src="/js/views/inp-doctor/inp-patient-overview.js?v=20260928b"></script>
   <script src="/js/views/inp-doctor/inp-order-panel.js?v=20260930"></script>
   <script src="/js/views/inp-doctor/inp-diag-panel.js?v=20260928b"></script>
@@ -123,6 +139,6 @@
   <script src="/js/views/notification-bell.js?v=20260929b"></script>
   <!-- PDA扫码工作台(T48 P3: 扫腕带识别患者/Code128条码预览/待执行医嘱床旁执行, 须在 app.js 之前加载) -->
   <script src="/js/views/pda-simulation.js?v=20260929"></script>
-  <script src="/js/app.js?v=20261001c"></script>
+  <script src="/js/app.js?v=20261001a"></script>
 </body>
 </html>

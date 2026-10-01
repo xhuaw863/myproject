@@ -172,6 +172,9 @@ public class HisPrescriptionService extends ServiceImpl<HisPrescriptionMapper, H
         p.setRxType(rxType);
         p.setDiagName(buildDiagName(visit.getId()));
         p.setStatus(1);
+        // P2 门诊药审: 含药品明细的处方开立即进入待审队列(audit_status=1), 纯非药品处方无需审方(0)
+        boolean hasDrugItem = req.getItems().stream().anyMatch(i -> i.getDrugId() != null);
+        p.setAuditStatus(hasDrugItem ? 1 : 0);
 
         // 发药药房(三期): 医生手选优先并校验归属/启停; 未手选按科室×中西药渠道默认回落; 均无则不绑(发药全院FIFO兼容存量)
         Long pharmacyId = req.getPharmacyId();

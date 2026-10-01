@@ -885,6 +885,14 @@ body { font-family: var(--yb-font-sans); background: var(--yb-canvas); }
 .cw-ticket .tk-cats td { border: 1px solid #b4cbe2; padding: 3px 6px; font-size: 11px; }
 .cw-ticket .tk-cats .cname { width: 21%; background: #f6f9fc; }
 .cw-ticket .tk-cats .camt { width: 12%; text-align: right; font-family: Consolas, monospace; }
+
+/* ===== 病案统计(MR) 编目页: 质控错误项与定位高亮 ===== */
+.mr-err { padding: 7px 8px; border-bottom: 1px solid var(--yb-border); cursor: pointer; font-size: 13px; line-height: 1.5; }
+.mr-err:hover { background: var(--yb-fill-2, #f5f7fa); }
+.mr-err-force { background: rgba(245, 108, 108, 0.06); }
+.mr-err-force:hover { background: rgba(245, 108, 108, 0.12); }
+@keyframes mr-flash { 0% { background: rgba(250, 173, 20, 0.45); } 100% { background: transparent; } }
+.mr-flash { animation: mr-flash 1.6s ease-out 1; border-radius: 4px; }
 .cw-ticket .tk-foot { display: flex; justify-content: space-between; border: 1px solid var(--yb-brand); border-top: none; margin-top: -1px; padding: 6px 8px; font-size: 11px; }
 
 

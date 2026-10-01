@@ -26,6 +26,10 @@ public class HisDispense extends BaseEntity {
     private Long orgId;
     /** 药房ID(his_pharmacy_def.id) */
     private Long pharmacyId;
+    /** 发药窗口ID(his_pharmacy_window.id): P1 智能分窗分配结果 */
+    private Long windowId;
+    /** 窗口签到状态: 0未签到 1已签到(仅签到型窗口有意义) */
+    private Integer signinStatus;
     /** 发药单号(FY+yyyyMMdd+4位序号) */
     private String dispenseNo;
     /** 就诊ID */
@@ -58,6 +62,10 @@ public class HisDispense extends BaseEntity {
     private BigDecimal priceDiff;
     /** 改派来源药房ID(库存不足改派后发药时自处方转入, 未改派为空) */
     private Long transferFromPharmacyId;
+    /** P3 本单追溯码强制:0否 1是(窗口级 trace_required 或药品级 trace_flag 命中) */
+    private Integer traceRequired;
+    /** P3 本单发药已绑定追溯码数 */
+    private Integer traceScanned;
     /** 备注 */
     private String remark;
 }

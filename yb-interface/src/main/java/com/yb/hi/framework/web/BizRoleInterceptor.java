@@ -36,6 +36,8 @@ public class BizRoleInterceptor implements HandlerInterceptor {
         WRITE_ROLES.put("/api/his/price-adjust/", new String[]{Roles.PHARMACIST});
         WRITE_ROLES.put("/api/his/trace/", new String[]{Roles.PHARMACIST});
         WRITE_ROLES.put("/api/his/transfer/", new String[]{Roles.PHARMACIST});
+        // 住院发药(P4: 发药/退药/出院带药取药与二次核发写操作) 限药师; 前缀精确到 dispense, 不影响同 /api/his/inp/ 下的医生站/护士站写端点
+        WRITE_ROLES.put("/api/his/inp/dispense/", new String[]{Roles.PHARMACIST});
         // 挂号站(挂号/退号/换号) + 患者建档(挂号员/医生)
         WRITE_ROLES.put("/api/his/registration/", new String[]{Roles.REGISTRAR});
         WRITE_ROLES.put("/api/his/patient/", new String[]{Roles.REGISTRAR, Roles.DOCTOR});
