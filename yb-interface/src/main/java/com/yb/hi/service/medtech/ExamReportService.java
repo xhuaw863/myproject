@@ -287,6 +287,46 @@ public class ExamReportService {
         return report;
     }
 
+    /**
+     * 撤回报告(作废): 乐观锁 status 1/2 -> 3(已作废), 留痕撤回人/时间/原因。
+     * 供医技端撤回已发布报告; 医生站通过 listReportsByPatient 仍可见(status=3 附 revoked)。
+     */
+    @Transactional(rollbackFor = Exception.class)
+    public HisExamReport voidReport(Long reportId, String reason) {
+        if (reportId == null) {
+            throw new BizException(400, "报告ID不能为空");
+        }
+        HisExamReport report = reportMapper.selectById(reportId);
+        if (report == null) {
+            throw new BizException(400, "报告不存在");
+        }
+        if (report.getStatus() != null && report.getStatus() == 3) {
+            throw new BizException("该报告已作废, 无需重复撤回");
+        }
+        long tid = tenantId();
+        Long revokeBy = currentStaffId();
+        String rsn = StringUtils.hasText(reason) ? reason.trim() : null;
+        int affected = jdbcTemplate.update(
+                "UPDATE his_exam_report SET status = 3, revoke_by = ?, revoke_time = NOW(), revoke_reason = ?,"
+                        + " update_by = ?, update_time = NOW()"
+                        + " WHERE id = ? AND status IN (1, 2) AND tenant_id = ? AND deleted = 0",
+                revokeBy, rsn, currentUserName(), reportId, tid);
+        if (affected == 0) {
+            throw new BizException("报告不存在或状态不可撤回(仅已报告/已审核可作废)");
+        }
+        report.setStatus(3);
+        report.setRevokeBy(revokeBy);
+        report.setRevokeTime(java.time.LocalDateTime.now());
+        report.setRevokeReason(rsn);
+        log.info("报告撤回作废: reportId={}, revokeBy={}, reason={}", reportId, revokeBy, rsn);
+        return report;
+    }
+
+    private Long currentStaffId() {
+        LoginUser lu = UserContext.get();
+        return lu == null ? null : lu.getStaffId();
+    }
+
     /* ================= 查询 ================= */
 
     /**
@@ -295,15 +335,37 @@ public class ExamReportService {
      */
     public IPage<Map<String, Object>> listReports(Long orgId, String reportType, Integer status,
                                                   String keyword, String from, String to, long page, long size) {
-        if (orgId == null) {
-            throw new BizException(400, "机构ID不能为空");
+        return listReports(orgId == null ? null : java.util.Collections.singletonList(orgId),
+                reportType, status, keyword, from, to, page, size);
+    }
+
+    /**
+     * 报告分页(机构集合级; T2 阶段4 跨机构查看): orgIds 为该登录医生可访问的机构白名单(单机构=现状零回归,
+     * 多机构=医共体成员范围放宽)。仍强制 r.tenant_id 过滤(不放行跨租户)。keyword 匹配患者姓名/报告单号/患者ID。
+     */
+    public IPage<Map<String, Object>> listReports(java.util.Collection<Long> orgIds, String reportType, Integer status,
+                                                  String keyword, String from, String to, long page, long size) {
+        if (orgIds == null || orgIds.isEmpty()) {
+            throw new BizException(400, "机构范围不能为空");
         }
         long p = safePage(page);
         long s = safeSize(size);
-        StringBuilder where = new StringBuilder(" WHERE r.deleted = 0 AND r.tenant_id = ? AND r.org_id = ?");
+        StringBuilder where = new StringBuilder(" WHERE r.deleted = 0 AND r.tenant_id = ?");
         List<Object> args = new ArrayList<>();
         args.add(tenantId());
-        args.add(orgId);
+        List<Long> scope = new ArrayList<>();
+        for (Long oid : orgIds) {
+            if (oid != null) { scope.add(oid); }
+        }
+        if (scope.isEmpty()) {
+            throw new BizException(400, "机构范围不能为空");
+        }
+        where.append(" AND r.org_id IN (");
+        for (int i = 0; i < scope.size(); i++) {
+            where.append(i == 0 ? "?" : ",?");
+            args.add(scope.get(i));
+        }
+        where.append(")");
         if (StringUtils.hasText(reportType)) {
             where.append(" AND r.report_type = ?");
             args.add(reportType.trim());
@@ -356,10 +418,11 @@ public class ExamReportService {
                 + " DATE_FORMAT(r.create_time, '%Y-%m-%d %H:%i:%s') AS createTime,"
                 + " p.name AS patientName, p.patient_no AS patientNo, p.gender_name AS genderName, p.age,"
                 + " rd.staff_name AS reportDoctorName, rv.staff_name AS reviewDoctorName,"
-                + " o.order_no AS orderNo, o.order_type AS orderType, o.diag_name AS diagName";
+                + " o.order_no AS orderNo, o.order_type AS orderType, o.diag_name AS diagName,"
+                + " DATE_FORMAT(r.revoke_time, '%Y-%m-%d %H:%i:%s') AS revokeTime, r.revoke_reason AS revokeReason";
     }
 
-    /** 按患者查询历史报告(排除已作废; 供医生站查看, 每条附结果明细子项) */
+    /** 按患者查询历史报告(含已撤回/作废 status=3, 附 revoked 标识供医生站"看见被撤回"; 每条附结果明细子项) */
     public List<Map<String, Object>> listReportsByPatient(Long patientId, String reportType) {
         if (patientId == null) {
             throw new BizException(400, "患者ID不能为空");
@@ -370,7 +433,7 @@ public class ExamReportService {
                 + " LEFT JOIN his_staff rd ON rd.id = r.report_doctor_id AND rd.deleted = 0"
                 + " LEFT JOIN his_staff rv ON rv.id = r.review_doctor_id AND rv.deleted = 0"
                 + " LEFT JOIN his_order o ON o.id = r.order_id AND o.deleted = 0"
-                + " WHERE r.deleted = 0 AND r.tenant_id = ? AND r.patient_id = ? AND r.status <> 3");
+                + " WHERE r.deleted = 0 AND r.tenant_id = ? AND r.patient_id = ? AND r.status IN (1, 2, 3)");
         List<Object> args = new ArrayList<>();
         args.add(tenantId());
         args.add(patientId);
@@ -381,6 +444,8 @@ public class ExamReportService {
         sql.append(" ORDER BY r.id DESC LIMIT 200");
         List<Map<String, Object>> reports = jdbcTemplate.queryForList(sql.toString(), args.toArray());
         for (Map<String, Object> r : reports) {
+            Object st = r.get("status");
+            r.put("revoked", st instanceof Number && ((Number) st).intValue() == 3);
             r.put("resultItems", resultItemMapper.selectList(Wrappers.<HisExamResultItem>lambdaQuery()
                     .eq(HisExamResultItem::getReportId, toLong(r.get("id")))
                     .orderByAsc(HisExamResultItem::getId)));

@@ -30,6 +30,12 @@
     return Math.max(1, Math.floor((Date.now() - ts) / 86400000) + 1);
   }
 
+  /* 内联 SVG 图标(项目未引入图标库, 统一 24 视框 / currentColor 染色), 供页签 #label v-html 使用 */
+  const WS_ICONS = {
+    report: '<svg class="iw-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 19V5a1 1 0 0 1 1-1h14a1 1 0 0 1 1 1v14a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1z"/><path d="M8 15l2.5-3 2 2L15 10"/></svg>',
+    emr: '<svg class="iw-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3M11 8v6M8 11h6"/></svg>'
+  };
+
   /* ============================================================
    * 样式(注入一次): 复用 theme.css 的 --yb-* 令牌, 不改动既有 CSS 文件
    * ============================================================ */
@@ -287,6 +293,57 @@
 .iw-icobtn[disabled]:hover { background:transparent; color:var(--yb-ink-3); }
 .iw-ico { width:15px; height:15px; display:block; }
 .iw-ico-more { width:16px; height:16px; display:block; }
+
+/* ===== 批次A: 患者三形态视图 / 检索筛选 / 图形化标识 (私有前缀 idp-) ===== */
+.idp-view-seg { display:flex; gap:0; width:100%; margin-bottom:8px; border:1px solid var(--yb-border); border-radius:var(--yb-r-sm); overflow:hidden; }
+.idp-view-seg button { flex:1; padding:4px 0; border:none; border-right:1px solid var(--yb-border); background:var(--yb-surface); color:var(--yb-ink-3); font-size:var(--yb-fs-sm); cursor:pointer; transition:background var(--yb-dur) var(--yb-ease),color var(--yb-dur) var(--yb-ease); }
+.idp-view-seg button:last-child { border-right:none; }
+.idp-view-seg button:hover { background:var(--yb-surface-3); color:var(--yb-brand); }
+.idp-view-seg button.is-on { background:var(--yb-brand); color:#fff; font-weight:600; }
+.idp-filters { display:flex; gap:6px; margin-bottom:8px; }
+.idp-filters .el-select { flex:1; min-width:0; }
+.idp-mark { background:var(--yb-gold-bg, #fff3d6); color:var(--yb-gold, #b8860b); border-radius:2px; padding:0 1px; font-weight:600; }
+.idp-flags { display:inline-flex; align-items:center; gap:4px; flex-wrap:wrap; }
+.idp-badge { display:inline-flex; align-items:center; height:16px; padding:0 6px; border-radius:var(--yb-r-pill); font-size:11px; line-height:1; font-weight:600; white-space:nowrap; }
+.idp-badge--allergy { background:var(--yb-danger); color:#fff; }
+.idp-badge--owed { background:var(--yb-warning); color:#fff; }
+.idp-badge--critical { background:var(--yb-danger-bg); color:var(--yb-danger); border:1px solid var(--yb-danger-border); animation:iwpBreath 1.3s ease-in-out infinite; }
+.idp-badge--nurse1 { background:var(--yb-danger); color:#fff; }
+.idp-badge--nurse2 { background:var(--yb-warning); color:#fff; }
+.idp-badge--nurse3 { background:var(--yb-gold); color:#fff; }
+.idp-badge--nurse4 { background:var(--yb-success); color:#fff; }
+.idp-badge--pathway { background:var(--yb-info-light); color:var(--yb-info); }
+.idp-badge--surgery { background:var(--yb-brand-subtle); color:var(--yb-brand); }
+.idp-badge--key { background:var(--yb-surface-3); color:var(--yb-ink-2); border:1px solid var(--yb-border-strong); }
+.idp-badge--insur { background:var(--yb-info-light); color:var(--yb-info); }
+@keyframes iwpBreath { 0%,100% { opacity:1; } 50% { opacity:.4; } }
+/* 细卡(card): 富信息行 */
+.idp-card { display:flex; gap:10px; align-items:flex-start; padding:10px 12px; border-bottom:1px solid var(--yb-divider); cursor:pointer; transition:background var(--yb-dur) var(--yb-ease); }
+.idp-card:hover { background:var(--yb-surface-3); }
+.idp-card.is-active { background:var(--yb-brand-subtle); box-shadow:inset 3px 0 0 var(--yb-brand); }
+.idp-card .idp-diag { margin-top:4px; font-size:var(--yb-fs-sm); color:var(--yb-ink-2); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.idp-card .idp-dept { margin-top:3px; font-size:var(--yb-fs-cap); color:var(--yb-ink-4); }
+/* 简卡(slim): 单行紧凑 */
+.idp-slim { display:flex; align-items:center; gap:8px; padding:7px 12px; border-bottom:1px solid var(--yb-divider); cursor:pointer; font-size:var(--yb-fs-base); transition:background var(--yb-dur) var(--yb-ease); }
+.idp-slim:hover { background:var(--yb-surface-3); }
+.idp-slim.is-active { background:var(--yb-brand-subtle); box-shadow:inset 3px 0 0 var(--yb-brand); }
+.idp-slim .bed { flex:none; min-width:30px; text-align:center; font-family:var(--yb-font-mono); font-weight:700; color:var(--yb-ink-1); }
+.idp-slim .nm { flex:none; font-weight:600; color:var(--yb-ink-1); }
+.idp-slim .dg { flex:1; min-width:0; color:var(--yb-ink-3); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+
+/* ===== 批次B: 工作台流转处理聚合条 (私有前缀 idash-) ===== */
+.idash-flow { margin-top:12px; }
+.idash-flow-row { display:flex; flex-wrap:wrap; gap:10px; }
+.idash-chip { flex:1; min-width:150px; display:flex; align-items:center; gap:8px; padding:10px 14px; border:1px solid var(--yb-border); border-radius:var(--yb-r-md); background:var(--yb-surface); cursor:pointer; transition:box-shadow var(--yb-dur) var(--yb-ease),transform var(--yb-dur) var(--yb-ease); }
+.idash-chip:hover { box-shadow:var(--yb-sh-2); transform:translateY(-1px); }
+.idash-chip .k { font-size:var(--yb-fs-sm); color:var(--yb-ink-3); }
+.idash-chip .n { margin-left:auto; font-size:20px; font-weight:700; line-height:1; font-variant-numeric:tabular-nums; color:var(--yb-ink-1); }
+.idash-chip.is-alert { border-color:var(--yb-danger-border); background:var(--yb-danger-bg); }
+.idash-chip.is-alert .n { color:var(--yb-danger); }
+.idash-chip.is-warn .n { color:var(--yb-warning); }
+.idash-chip .dot { width:8px; height:8px; border-radius:50%; background:var(--yb-brand); flex:none; }
+.idash-empty-tip { padding:24px; text-align:center; color:var(--yb-ink-4); font-size:var(--yb-fs-base); }
+.idash-sub { font-size:12px; color:var(--yb-ink-4); }
 `;
 
   function ensureStyle() {
@@ -383,7 +440,7 @@
     name: 'InpDoctorDashboard',
     emits: ['go-tab'],
     data() {
-      return { loading: false, data: null, nowTs: Date.now(), timer: null, chart: null, resizeTimer: null, criticalCount: 0 };
+      return { loading: false, data: null, nowTs: Date.now(), timer: null, chart: null, resizeTimer: null, criticalCount: 0, transferPending: 0, myCritical: 0, abxAlerts: [], abxAlertVisible: false };
     },
     computed: {
       ds() { return this.data || {}; },
@@ -456,6 +513,17 @@
         HIS.get('/api/his/inp/critical-value/unhandled-count').then(function (n) {
           vm.criticalCount = Number(n) || 0;
         }).catch(function () { /* 静默 */ });
+        /* 批次B 流转处理聚合: 待审批转科(status=1) + 本人待办危急值(my-pending), 并行静默 */
+        HIS.get('/api/his/inp/transfer/list?status=1&page=1&size=1').then(function (d) {
+          vm.transferPending = Number(d && d.total) || 0;
+        }).catch(function () { /* 静默 */ });
+        HIS.get('/api/medtech/critical-values/my-pending').then(function (list) {
+          vm.myCritical = (list || []).length;
+        }).catch(function () { /* 静默 */ });
+        /* 阶段2b: 本人长期抗菌医嘱处方权到期/越级告警扫描(只读), 并行静默 */
+        HIS.get('/api/his/inp/order/abx-expiry-alerts').then(function (list) {
+          vm.abxAlerts = list || [];
+        }).catch(function () { vm.abxAlerts = []; });
         return HIS.get(url)
           .then(function (data) {
             vm.data = data || {};
@@ -496,6 +564,14 @@
       goTodo(row) { this.$emit('go-tab', 'record', row); },
       /* 危急值待办卡片点击: 跳转危急值管理页(T37, HIS.go 由 AppLayout 提供) */
       goCritical() { if (typeof HIS.go === 'function') { HIS.go('critical-value'); } },
+      /* 批次B: 待审批转科 → 在院患者管理页(转科审批中心) */
+      goTransferApproval() { if (typeof HIS.go === 'function') { HIS.go('inp-patient-list'); } },
+      /* 阶段2b: 抗菌到期/越级告警 → 展开待办清单弹窗 */
+      goAbxAlerts() { this.abxAlertVisible = true; },
+      abxAlertText(t) {
+        return t === 'expired' ? '处方权已过期' : (t === 'soon' ? '处方权将到期'
+          : (t === 'no-auth' ? '无抗菌处方权' : (t === 'under-level' ? '抗菌级别越级' : (t || '提醒'))));
+      },
       rowClass({ row }) { return row && row.over ? 'iw-todo--over' : ''; }
     },
     mounted() {
@@ -545,6 +621,42 @@
             </div>
           </el-col>
         </el-row>
+
+        <div class="iw-dash-panel idash-flow">
+          <div class="iw-dash-card-hd">今日病人 · 流转处理</div>
+          <div class="idash-flow-row">
+            <div class="idash-chip" @click="goCard({ tab: 'consult' })">
+              <span class="dot"></span><span class="k">待处理会诊</span><span class="n">{{ Number(todoStats.pendingConsults) || 0 }}</span>
+            </div>
+            <div class="idash-chip" :class="{'is-warn': transferPending>0}" @click="goTransferApproval">
+              <span class="dot"></span><span class="k">待审批转科</span><span class="n">{{ transferPending }}</span>
+            </div>
+            <div class="idash-chip" @click="goCard({ tab: 'overview' })">
+              <span class="dot"></span><span class="k">今日手术</span><span class="n">{{ surgeries.length }}</span>
+            </div>
+            <div class="idash-chip" :class="{'is-alert': myCritical>0}" @click="goCritical">
+              <span class="dot"></span><span class="k">危急值待办</span><span class="n">{{ myCritical }}</span>
+            </div>
+            <div class="idash-chip" @click="goCard({ tab: 'overview' })">
+              <span class="dot"></span><span class="k">今日入 / 出 / 检</span><span class="n">{{ Number(patientStats.todayAdmit)||0 }} / {{ Number(patientStats.todayDischarge)||0 }} / {{ Number(patientStats.todayExam)||0 }}</span>
+            </div>
+            <div class="idash-chip" :class="{'is-alert': abxAlerts.length>0}" @click="goAbxAlerts">
+              <span class="dot"></span><span class="k">抗菌到期/越级提醒</span><span class="n">{{ abxAlerts.length }}</span>
+            </div>
+          </div>
+        </div>
+
+        <el-dialog v-model="abxAlertVisible" title="抗菌药物处方权到期 / 越级提醒" width="760px" append-to-body>
+          <div v-if="!abxAlerts.length" class="idash-empty-tip">本人长期抗菌医嘱未发现处方权到期或越级风险</div>
+          <el-table v-else :data="abxAlerts" border size="small" max-height="420">
+            <el-table-column label="患者" width="120"><template #default="s">{{ s.row.patientName }}<div class="idash-sub">就诊ID {{ s.row.inpVisitId }}</div></template></el-table-column>
+            <el-table-column label="医嘱/药品" min-width="180"><template #default="s">{{ s.row.drugName || s.row.orderContent }}<div class="idash-sub">{{ s.row.abxGradeName || ('分级'+s.row.abxGrade) }}</div></template></el-table-column>
+            <el-table-column label="开嘱医生" width="140"><template #default="s">{{ s.row.doctorName || ('医生'+s.row.doctorId) }}<div class="idash-sub">抗菌级别 {{ s.row.antibioticLevelName || s.row.antibioticLevel || '无' }}</div></template></el-table-column>
+            <el-table-column label="处方权有效期" width="130"><template #default="s">{{ s.row.rxValidUntil || '-' }}</template></el-table-column>
+            <el-table-column label="提醒" width="130"><template #default="s"><el-tag :type="s.row.alertType==='soon' ? 'warning' : 'danger'" size="small" disable-transitions>{{ abxAlertText(s.row.alertType) }}</el-tag></template></el-table-column>
+          </el-table>
+          <template #footer><el-button size="small" @click="abxAlertVisible=false">关闭</el-button></template>
+        </el-dialog>
 
         <div class="iw-dash-panel iw-dash-todo">
           <div class="iw-dash-card-hd">待办事项 <span class="iw-count" v-if="todoList.length">{{ todoList.length }}</span></div>
@@ -598,7 +710,10 @@
       'inp-pathway-panel': HIS.components.InpPathwayPanel,
       'inp-consult-panel': HIS.components.InpConsultPanel,
       'inp-consent-panel': HIS.components.InpConsentPanel,
-      'inp-casepage-panel': HIS.components.InpCasePagePanel
+      'inp-report': HIS.components.InpReportPanel,
+      'inp-emrquery': HIS.components.InpEmrqueryPanel,
+      'inp-casepage-panel': HIS.components.InpCasePagePanel,
+      'inp-rxreview-panel': HIS.components.InpRxReviewPanel
     },
     data() {
       return {
@@ -616,6 +731,10 @@
         currentVisit: null,
         activeTab: 'dashboard',
         deptMap: {},
+        /* 批次A: 左患者栏三形态视图(list=列表 / card=细卡 / slim=简卡) + 前端检索筛选 */
+        viewMode: 'list',
+        filterDeptId: null,
+        filterDoctor: null,
         bannerPatient: null,
         bannerSeq: 0,
         ctx: { visible: false, x: 0, y: 0, patient: null },
@@ -642,6 +761,37 @@
         const v = this.currentVisit;
         const vs = v && v.visitStatus != null ? Number(v.visitStatus) : NaN;
         return !isNaN(vs) && vs >= 3 && vs !== 5;
+      },
+      /* 批次A: 前端筛选(科室/诊疗组)在当前结果集上收窄; 关键字交服务端, 床号命中亦在此补过 */
+      viewPatients() {
+        let list = this.patients || [];
+        const kw = String(this.keyword || '').trim();
+        if (this.filterDeptId != null && this.filterDeptId !== '') {
+          list = list.filter((p) => String(p.deptId) === String(this.filterDeptId));
+        }
+        if (this.filterDoctor) {
+          list = list.filter((p) => String(p.doctorName || '') === String(this.filterDoctor));
+        }
+        if (kw) {
+          const k = kw.toLowerCase();
+          list = list.filter(function (p) {
+            return String(p.bedNo || '').toLowerCase().indexOf(k) >= 0
+              || String(p.patientName || '').toLowerCase().indexOf(k) >= 0
+              || String(p.inpNo || '').toLowerCase().indexOf(k) >= 0;
+          });
+        }
+        return list;
+      },
+      /* 科室/诊疗组下拉项: 取当前患者行内已存在的 deptId/doctorName 去重 */
+      deptOptions() {
+        const map = {};
+        (this.patients || []).forEach((p) => { if (p.deptId != null) { map[String(p.deptId)] = this.deptMap[p.deptId] || ('科室' + p.deptId); } });
+        return Object.keys(map).map((id) => ({ id: id, name: map[id] }));
+      },
+      doctorOptions() {
+        const set = [];
+        (this.patients || []).forEach(function (p) { const d = p.doctorName; if (d && set.indexOf(d) < 0) { set.push(d); } });
+        return set.map(function (d) { return { name: d }; });
       }
     },
     methods: {
@@ -652,6 +802,38 @@
       visitStatusTag(v) { return VISIT_STATUS_TAG[v] || ''; },
       deptName(id) { return this.deptMap[id] || '-'; },
       isCurrent(p) { return String(this.currentVisitId) === String(p.id); },
+      /* ---- 批次A: 三形态视图 / 高亮 / 图形化标识 ---- */
+      tabIcon(k) { return WS_ICONS[k] || ''; },
+      setView(m) { this.viewMode = m; },
+      resetFilters() { this.filterDeptId = null; this.filterDoctor = null; },
+      /* 命中高亮: 先转义 HTML 再包裹关键词(大小写不敏感), 无命中原样返回转义文本 */
+      hl(value) {
+        const s = value == null ? '' : String(value);
+        const esc = s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+        const kw = String(this.keyword || '').trim();
+        if (!kw) { return esc; }
+        const ekw = kw.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        try {
+          return esc.replace(new RegExp('(' + ekw + ')', 'gi'), '<mark class="idp-mark">$1</mark>');
+        } catch (e) { return esc; }
+      },
+      diagOf(p) { return p.diagnosisName || p.admitDiag || ''; },
+      /* 标识徽标: 仅据行内已有字段渲染, 数据缺失项不显示(不臆造)。 */
+      patientBadges(p) {
+        const out = [];
+        if (p.depositBalance != null && p.depositBalance !== '' && Number(p.depositBalance) < 0) { out.push({ cls: 'idp-badge--owed', text: '欠费' }); }
+        if (p.criticalFlag === 1 || p.criticalFlag === true || Number(p.criticalFlag) === 1) { out.push({ cls: 'idp-badge--critical', text: '危重' }); }
+        const allergy = p.allergyInfo;
+        if (typeof allergy === 'string' && allergy.trim()) { out.push({ cls: 'idp-badge--allergy', text: '过敏' }); }
+        else if (Array.isArray(allergy) && allergy.length) { out.push({ cls: 'idp-badge--allergy', text: '过敏' }); }
+        if (p.nursingLevel != null && NURSING_LEVELS[Number(p.nursingLevel)]) { out.push({ cls: 'idp-badge--nurse' + Number(p.nursingLevel), text: NURSING_LEVELS[Number(p.nursingLevel)] }); }
+        if (p.pathwayFlag === 1 || p.pathwayFlag === true || Number(p.pathwayFlag) === 1) { out.push({ cls: 'idp-badge--pathway', text: '路径' }); }
+        if (p.surgeryFlag === 1 || p.surgeryFlag === true || Number(p.surgeryFlag) === 1) { out.push({ cls: 'idp-badge--surgery', text: '手术' }); }
+        if (p.keyPatientFlag === 1 || p.keyPatientFlag === true || Number(p.keyPatientFlag) === 1) { out.push({ cls: 'idp-badge--key', text: '重点' }); }
+        const ins = INSUR_TYPES[String(p.insutype || '')];
+        if (ins) { out.push({ cls: 'idp-badge--insur', text: ins }); }
+        return out;
+      },
       loadWards() {
         const vm = this;
         const orgId = HIS.currentOrgId ? HIS.currentOrgId() : null;
@@ -851,30 +1033,84 @@
                        @change="loadPatients(true)">
               <el-option v-for="w in wards" :key="w.id" :label="w.wardName" :value="w.id"></el-option>
             </el-select>
-            <el-input v-model="keyword" placeholder="姓名 / 住院号" size="small" clearable @input="loadPatients(false)"></el-input>
+            <el-input v-model="keyword" placeholder="床号 / 姓名 / 住院号" size="small" clearable @input="loadPatients(false)"></el-input>
+            <div class="idp-view-seg" style="margin-top:8px">
+              <button :class="{'is-on': viewMode==='list'}" @click="setView('list')">列表</button>
+              <button :class="{'is-on': viewMode==='card'}" @click="setView('card')">细卡</button>
+              <button :class="{'is-on': viewMode==='slim'}" @click="setView('slim')">简卡</button>
+            </div>
+            <div class="idp-filters">
+              <el-select v-model="filterDeptId" placeholder="全部科室" clearable size="small">
+                <el-option v-for="d in deptOptions" :key="d.id" :label="d.name" :value="d.id"></el-option>
+              </el-select>
+              <el-select v-model="filterDoctor" placeholder="全部诊疗组" clearable size="small">
+                <el-option v-for="doc in doctorOptions" :key="doc.name" :label="doc.name" :value="doc.name"></el-option>
+              </el-select>
+            </div>
           </div>
           <el-scrollbar class="iw-side-body" v-loading="loadingPatients">
-            <div class="iw-patient" v-for="p in patients" :key="p.id"
+            <!-- 列表(list): 保留原有卡片形态 -->
+            <div v-if="viewMode==='list'" class="iw-patient" v-for="p in viewPatients" :key="p.id"
                  :class="{'iw-patient--active': isCurrent(p)}" @click="selectPatient(p)"
                  @contextmenu.prevent.stop="openPatientCtx($event, p)">
               <div class="iw-patient-bed">
-                <b>{{ p.bedNo || '—' }}</b>
+                <b v-html="hl(p.bedNo || '—')"></b>
                 <span>床</span>
               </div>
               <div class="iw-patient-main">
                 <div class="r1">
-                  <b class="nm">{{ p.patientName }}</b>
+                  <b class="nm" v-html="hl(p.patientName)"></b>
                   <span class="meta">{{ genderText(p.gender) }}{{ p.age != null ? ' · ' + p.age + '岁' : '' }}</span>
                 </div>
                 <div class="r2">
-                  <span class="num">{{ p.inpNo }}</span>
+                  <span class="num" v-html="hl(p.inpNo)"></span>
                   <span>入院{{ admitDays(p.admitDate) }}天</span>
                   <span v-if="scope!=='mine' && p.doctorName" style="color:var(--yb-ink-3)">· {{ p.doctorName }}</span>
+                </div>
+                <div class="idp-flags" v-if="patientBadges(p).length" style="margin-top:4px">
+                  <span v-for="(b,bi) in patientBadges(p)" :key="bi" class="idp-badge" :class="b.cls">{{ b.text }}</span>
                 </div>
               </div>
               <el-tag size="small" :type="visitStatusTag(p.visitStatus)" disable-transitions>{{ visitStatusText(p.visitStatus) }}</el-tag>
             </div>
-            <div v-if="!patients.length && !loadingPatients" class="iw-empty-line">
+            <!-- 细卡(card): 含标识行的富卡 -->
+            <div v-else-if="viewMode==='card'" class="idp-card" v-for="p in viewPatients" :key="p.id"
+                 :class="{'is-active': isCurrent(p)}" @click="selectPatient(p)"
+                 @contextmenu.prevent.stop="openPatientCtx($event, p)">
+              <div class="iw-patient-bed">
+                <b v-html="hl(p.bedNo || '—')"></b>
+                <span>床</span>
+              </div>
+              <div class="iw-patient-main">
+                <div class="r1">
+                  <b class="nm" v-html="hl(p.patientName)"></b>
+                  <span class="meta">{{ genderText(p.gender) }}{{ p.age != null ? ' · ' + p.age + '岁' : '' }}</span>
+                  <el-tag size="small" :type="visitStatusTag(p.visitStatus)" disable-transitions style="margin-left:auto">{{ visitStatusText(p.visitStatus) }}</el-tag>
+                </div>
+                <div class="r2">
+                  <span class="num" v-html="hl(p.inpNo)"></span>
+                  <span>入院{{ admitDays(p.admitDate) }}天</span>
+                  <span v-if="p.doctorName" style="color:var(--yb-ink-3)">· {{ p.doctorName }}</span>
+                </div>
+                <div class="idp-diag" :title="diagOf(p)">{{ diagOf(p) || '暂无诊断' }}</div>
+                <div class="idp-dept" v-if="p.deptId">{{ deptName(p.deptId) }}</div>
+                <div class="idp-flags" v-if="patientBadges(p).length" style="margin-top:5px">
+                  <span v-for="(b,bi) in patientBadges(p)" :key="bi" class="idp-badge" :class="b.cls">{{ b.text }}</span>
+                </div>
+              </div>
+            </div>
+            <!-- 简卡(slim): 单行紧凑 床号+姓名+诊断+标识图标 -->
+            <div v-else class="idp-slim" v-for="p in viewPatients" :key="p.id"
+                 :class="{'is-active': isCurrent(p)}" @click="selectPatient(p)"
+                 @contextmenu.prevent.stop="openPatientCtx($event, p)">
+              <span class="bed" v-html="hl(p.bedNo || '—')"></span>
+              <span class="nm" v-html="hl(p.patientName)"></span>
+              <span class="dg">{{ diagOf(p) }}</span>
+              <span class="idp-flags">
+                <span v-for="(b,bi) in patientBadges(p)" :key="bi" class="idp-badge" :class="b.cls" :title="b.text">{{ b.text }}</span>
+              </span>
+            </div>
+            <div v-if="!viewPatients.length && !loadingPatients" class="iw-empty-line">
               暂无患者{{ wardId ? '(当前病区)' : '' }}, {{ scope==='mine' ? '仅显示本人管床的在院患者' : (scope==='dept' ? '本科室暂无在院患者' : '本机构暂无在院患者') }}
             </div>
           </el-scrollbar>
@@ -917,6 +1153,17 @@
             </el-tab-pane>
             <el-tab-pane label="知情同意" name="consent" :disabled="!currentVisitId">
               <inp-consent-panel v-if="activeTab === 'consent'" :visit-id="currentVisitId" :key="'ct-' + currentVisitId"></inp-consent-panel>
+            </el-tab-pane>
+            <el-tab-pane name="report" lazy :disabled="!currentVisitId">
+              <template #label><span style="display:inline-flex;align-items:center;gap:4px"><i v-html="tabIcon('report')"></i>报告</span></template>
+              <inp-report v-if="activeTab === 'report' && currentVisitId" :patient-id="currentVisit ? currentVisit.patientId : null" :visit-id="currentVisitId" :key="'rp-' + currentVisitId"></inp-report>
+            </el-tab-pane>
+            <el-tab-pane name="emrquery" lazy>
+              <template #label><span style="display:inline-flex;align-items:center;gap:4px"><i v-html="tabIcon('emr')"></i>病历查询</span></template>
+              <inp-emrquery v-if="activeTab === 'emrquery'" :visit-id="currentVisitId" :key="'eq-' + (currentVisitId || 'none')"></inp-emrquery>
+            </el-tab-pane>
+            <el-tab-pane label="处方点评" name="rxreview" lazy :disabled="!currentVisitId">
+              <inp-rxreview-panel v-if="activeTab === 'rxreview' && currentVisitId" :patient-id="currentVisit ? currentVisit.patientId : null" :visit-id="currentVisitId" :key="'rr-' + currentVisitId"></inp-rxreview-panel>
             </el-tab-pane>
             <el-tab-pane v-if="showCasePage" label="病案首页" name="casepage">
               <inp-casepage-panel v-if="activeTab === 'casepage'" :visit-id="currentVisitId" :visit-status="currentVisit ? currentVisit.visitStatus : null" :key="'cp-' + currentVisitId"></inp-casepage-panel>
@@ -982,6 +1229,8 @@
       InpPathwayPanel: '临床路径页签',
       InpConsultPanel: '会诊页签',
       InpConsentPanel: '知情同意页签',
+      InpReportPanel: '报告页签',
+      InpEmrqueryPanel: '病历查询页签',
       InpCasePagePanel: '病案首页页签'
     };
     const missing = Object.keys(required).filter(k => !HIS.components || !HIS.components[k]);

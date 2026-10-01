@@ -138,6 +138,17 @@
             if (vm.picked) { vm.viewThread(vm.picked.visitId); }
             vm.loadTodo();
           }).catch(function (e) { if (e !== 'cancel' && e) { HIS.notifyError(e); } });
+      },
+      /* P3-C 推送至临床 */
+      doPush: function (node) {
+        var vm = this;
+        if (!node.toStaffId) { ElementPlus.ElMessage.warning('该批注无接收人, 无法推送'); return; }
+        ElementPlus.ElMessageBox.confirm('确认推送该批注至临床医生站通知中心?', '推送确认', { type: 'info' })
+          .then(function () {
+            return HIS.post('/api/his/mr/annotation/' + HIS.id(node.id) + '/push', {});
+          }).then(function (d) {
+            HIS.notifySuccess('已推送, 通知ID: ' + (d && d.notificationId || ''));
+          }).catch(function (e) { if (e !== 'cancel' && e) { HIS.notifyError(e); } });
       }
     },
     template: [
@@ -197,6 +208,7 @@
       '                    <el-button link size="small" @click="openReply(t.node)">回复</el-button>',
       '                    <el-button v-if="t.node.resolved!==1" link size="small" type="success" @click="doResolve(t.node,1)">标记处理</el-button>',
       '                    <el-button v-else link size="small" @click="doResolve(t.node,0)">取消处理</el-button>',
+      '                    <el-button v-if="t.node.toStaffId && canWrite" link size="small" type="warning" @click="doPush(t.node)">推送临床</el-button>',
       '                    <el-button link size="small" type="danger" @click="doDelete(t.node)">删除</el-button>',
       '                  </template>',
       '                </div>',

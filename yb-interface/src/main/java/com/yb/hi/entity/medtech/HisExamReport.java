@@ -51,4 +51,15 @@ public class HisExamReport extends BaseEntity {
     private Integer status;
     /** 危急值标志: 1有 0无 */
     private Integer criticalFlag;
+    /** 撤回人ID(his_staff.id, 作废时记录) */
+    private Long revokeBy;
+    /** 撤回时间 */
+    @JsonFormat(pattern = "yyyy-MM-dd HH:mm:ss")
+    private LocalDateTime revokeTime;
+    /** 撤回原因 */
+    private String revokeReason;
+    /** DICOM StudyInstanceUID(外部PACS影像挂接键, T2阶段5-1) */
+    private String pacsStudyUid;
+    /** PACS服务标识/来源(区分多PACS实例, T2阶段5-1) */
+    private String pacsServer;
 }

@@ -9,11 +9,15 @@ import com.yb.hi.framework.tenant.TenantContext;
 import com.yb.hi.framework.tenant.UserContext;
 import com.yb.hi.mapper.mr.HisMrAnnotationMapper;
 import com.yb.hi.platform.service.OrgAccessGuard;
+import com.yb.hi.service.inpatient.InpNotificationService;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.StringUtils;
 
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -28,11 +32,17 @@ public class MrAnnotationService {
     private final HisMrAnnotationMapper annMapper;
     private final MrCatalogService catalogService;
     private final OrgAccessGuard guard;
+    private final InpNotificationService notificationService;
+    private final JdbcTemplate jdbcTemplate;
 
-    public MrAnnotationService(HisMrAnnotationMapper annMapper, MrCatalogService catalogService, OrgAccessGuard guard) {
+    public MrAnnotationService(HisMrAnnotationMapper annMapper, MrCatalogService catalogService,
+                               OrgAccessGuard guard, InpNotificationService notificationService,
+                               JdbcTemplate jdbcTemplate) {
         this.annMapper = annMapper;
         this.catalogService = catalogService;
         this.guard = guard;
+        this.notificationService = notificationService;
+        this.jdbcTemplate = jdbcTemplate;
     }
 
     /** 某病案全部批注(顶层+回复), 按时间升序; 前端按 parentId 组装线程。 */
@@ -124,5 +134,62 @@ public class MrAnnotationService {
         }
         annMapper.delete(new QueryWrapper<HisMrAnnotation>().eq("parent_id", id));
         annMapper.deleteById(id);
+    }
+
+    /* ==================== P3-C 推送至临床 ==================== */
+
+    /**
+     * 推送批注/反馈至临床医生站通知中心(his_inp_notification)。
+     * 将接收人 staff_id 映射为 sys_user.id, 创建病历类通知(type=3), refType='mr_feedback'。
+     */
+    @Transactional(rollbackFor = Exception.class)
+    public Map<String, Object> pushToClinical(Long annotationId) {
+        guard.requireSelfOrgWrite();
+        HisMrAnnotation a = annMapper.selectById(annotationId);
+        if (a == null) {
+            throw new BizException(404, "批注不存在");
+        }
+        if (a.getToStaffId() == null) {
+            throw new BizException(400, "批注无接收人, 无法推送");
+        }
+        Long tid = TenantContext.require();
+        // staff_id → sys_user.id
+        List<Long> userIds = jdbcTemplate.query(
+                "SELECT id FROM sys_user WHERE staff_id = ? AND tenant_id = ? AND deleted = 0 LIMIT 1",
+                (rs, i) -> rs.getLong(1), a.getToStaffId(), tid);
+        if (userIds.isEmpty()) {
+            throw new BizException(400, "接收人职工未关联用户账号, 无法推送");
+        }
+        Long userId = userIds.get(0);
+        String title = "病案反馈: " + (a.getFromStaffName() != null ? a.getFromStaffName() : "编目员");
+        String content = a.getContent() != null && a.getContent().length() > 100
+                ? a.getContent().substring(0, 100) + "..." : a.getContent();
+        Long notifId = notificationService.createNotification(
+                userId, InpNotificationService.TYPE_RECORD, title, content, "mr_feedback", a.getId());
+        Map<String, Object> out = new LinkedHashMap<>();
+        out.put("annotationId", a.getId());
+        out.put("notificationId", notifId);
+        out.put("toStaffId", a.getToStaffId());
+        out.put("toStaffName", a.getToStaffName());
+        out.put("userId", userId);
+        log.info("病案反馈推送: annotationId={}, notificationId={}, toStaff={}",
+                annotationId, notifId, a.getToStaffName());
+        return out;
+    }
+
+    /** 已推送列表(refType='mr_feedback' 的通知) JOIN 批注信息, 供病案侧查看推送记录。 */
+    public List<Map<String, Object>> pushList() {
+        TenantContext.require();
+        Long tid = TenantContext.require();
+        return jdbcTemplate.queryForList(
+                "SELECT n.id AS notificationId, n.user_id AS userId, n.title, n.content,"
+                        + " n.create_time AS pushTime, n.is_read AS isRead,"
+                        + " a.id AS annotationId, a.visit_id AS visitId, a.from_staff_name AS fromStaffName,"
+                        + " a.to_staff_name AS toStaffName, a.ann_type AS annType"
+                        + " FROM his_inp_notification n"
+                        + " INNER JOIN his_mr_annotation a ON a.id = n.ref_id AND a.deleted = 0"
+                        + " WHERE n.ref_type = 'mr_feedback' AND n.deleted = 0 AND n.tenant_id = ?"
+                        + " ORDER BY n.create_time DESC LIMIT 200",
+                tid);
     }
 }

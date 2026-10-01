@@ -4,7 +4,9 @@ import com.baomidou.mybatisplus.core.metadata.IPage;
 import com.yb.hi.dto.inpatient.InpOrderDTO;
 import com.yb.hi.entity.inpatient.HisInpOrder;
 import com.yb.hi.framework.common.R;
+import com.yb.hi.service.inpatient.InpAbxReviewService;
 import com.yb.hi.service.inpatient.InpOrderService;
+import com.yb.hi.service.inpatient.SurgeryOrderService;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -27,20 +29,51 @@ import java.util.Map;
 public class InpOrderController {
 
     private final InpOrderService inpOrderService;
+    private final InpAbxReviewService abxReviewService;
+    private final SurgeryOrderService surgeryOrderService;
 
-    public InpOrderController(InpOrderService inpOrderService) {
+    public InpOrderController(InpOrderService inpOrderService, InpAbxReviewService abxReviewService,
+                             SurgeryOrderService surgeryOrderService) {
         this.inpOrderService = inpOrderService;
+        this.abxReviewService = abxReviewService;
+        this.surgeryOrderService = surgeryOrderService;
     }
 
-    /** 医嘱列表(inpVisitId必传, orderType/orderStatus可选筛选, 分页) */
+    /** 手术药品医嘱发送药房(仅手术关联医嘱, 0/2->1): 置后方进入住院发药队列 */
+    @PostMapping("/{id}/send-pharmacy")
+    public R<Integer> sendPharmacy(@PathVariable Long id) {
+        return R.ok(surgeryOrderService.sendPharmacy(id));
+    }
+
+    /** 手术药品医嘱撤回发送(1->2, 仅未发药可撤, 已发药拒绝) */
+    @PostMapping("/{id}/recall-pharmacy")
+    public R<Integer> recallPharmacy(@PathVariable Long id) {
+        return R.ok(surgeryOrderService.recallPharmacy(id));
+    }
+
+    /**
+     * 抗菌到期/越级告警扫描(只读, 医生站工作台待办): staffId 缺省回落登录医生本人; all=true 则不限医生, 查本租户全部医生。
+     */
+    @GetMapping("/abx-expiry-alerts")
+    public R<java.util.List<Map<String, Object>>> abxEpiryAlerts(
+            @RequestParam(required = false) Long staffId,
+            @RequestParam(required = false) Long inpVisitId,
+            @RequestParam(required = false, defaultValue = "false") boolean all,
+            @RequestParam(required = false) Integer soonDays) {
+        Long sid = all ? null : (staffId != null ? staffId : InpAbxReviewService.currentStaffId());
+        return R.ok(abxReviewService.abxEpiryAlerts(sid, inpVisitId, soonDays));
+    }
+
+    /** 医嘱列表(inpVisitId必传, orderType/orderStatus/deptId 可选筛选, 分页) */
     @GetMapping("/list")
     public R<IPage<HisInpOrder>> list(
             @RequestParam Long inpVisitId,
             @RequestParam(required = false) Integer orderType,
             @RequestParam(required = false) Integer orderStatus,
+            @RequestParam(required = false) Long deptId,
             @RequestParam(defaultValue = "1") int page,
             @RequestParam(defaultValue = "20") int size) {
-        return R.ok(inpOrderService.listOrders(inpVisitId, orderType, orderStatus, page, size));
+        return R.ok(inpOrderService.listOrders(inpVisitId, orderType, orderStatus, deptId, page, size));
     }
 
     /** 开立医嘱(服务端自动查价格填入unit_price; 临时医嘱开立即记账) */

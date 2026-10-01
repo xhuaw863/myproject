@@ -36,13 +36,15 @@
       diagType: 1,
       diagCode: '',
       diagName: '',
-      isMain: 0
+      isMain: 0,
+      toothPosition: ''
     };
   }
 
   const InpDiagPanel = {
     name: 'InpDiagPanel',
     props: { visitId: { type: [String, Number], default: null } },
+    components: { 'dw-tooth-chart': HIS.components.DwToothChart },
     data() {
       return {
         loading: false,
@@ -55,7 +57,10 @@
         searching: false,
         /* ICD校验(失焦触发, 不阻断保存): 警告文本 + 相近标准编码建议 */
         icdWarning: '',
-        icdSuggestions: []
+        icdSuggestions: [],
+        /* 口腔牙位图对话框(复用 HIS.components.DwToothChart) */
+        toothVisible: false,
+        toothTemp: ''
       };
     },
     computed: {
@@ -99,7 +104,8 @@
           diagType: Number(row.diagType || type) || 1,
           diagCode: row.diagCode || '',
           diagName: row.diagName || '',
-          isMain: Number(row.isMain) === 1 ? 1 : 0
+          isMain: Number(row.isMain) === 1 ? 1 : 0,
+          toothPosition: row.toothPosition || ''
         };
         this.pickCode = row.diagCode || null;
         this.options = [];
@@ -152,6 +158,15 @@
         this.pickCode = s.code || null;
         this.clearIcdHint();
       },
+      /* 口腔牙位图: 打开对话框暂存, 确写回表单 */
+      openTooth() {
+        this.toothTemp = this.form.toothPosition || '';
+        this.toothVisible = true;
+      },
+      applyTooth() {
+        this.form.toothPosition = this.toothTemp || '';
+        this.toothVisible = false;
+      },
       save() {
         const vm = this;
         if (vm.saving) { return; }
@@ -163,7 +178,8 @@
           diagType: Number(vm.form.diagType) || 1,
           diagCode: String(vm.form.diagCode || '').trim() || null,
           diagName: name,
-          isMain: Number(vm.form.isMain) === 1 ? 1 : 0
+          isMain: Number(vm.form.isMain) === 1 ? 1 : 0,
+          toothPosition: String(vm.form.toothPosition || '').trim() || null
         };
         vm.saving = true;
         const req = edit
@@ -212,6 +228,7 @@
                 <span class="code" :title="d.diagCode">{{ d.diagCode || '—' }}</span>
                 <span class="name" :title="d.diagName">{{ d.diagName }}</span>
                 <span class="iw-tag iw-tag--danger" v-if="Number(d.isMain) === 1">主诊断</span>
+                <span class="iw-tag iw-tag--plain" v-if="d.toothPosition" :title="'牙位 ' + d.toothPosition">牙 {{ d.toothPosition }}</span>
                 <span class="iw-tag iw-tag--plain" v-if="d.ybCode" :title="'医保编码 ' + d.ybCode">医保</span>
                 <span class="ops">
                   <el-button link type="primary" size="small" @click="openEdit(d, g.type)">编辑</el-button>
@@ -269,10 +286,23 @@
               <el-switch v-model="form.isMain" :active-value="1" :inactive-value="0"></el-switch>
               <span class="iw-dim">标记为主诊断后, 同类型下其他诊断将被置为非主诊断</span>
             </div>
+            <div class="iw-form-row">
+              <span class="lb">牙位</span>
+              <el-input v-model="form.toothPosition" class="iw-grow" size="small" placeholder="口腔诊断选填, 如 16,26 (FDI 编码)"></el-input>
+              <el-button size="small" @click="openTooth">选择牙位</el-button>
+            </div>
           </div>
           <template #footer>
             <el-button @click="dialogVisible = false">取消</el-button>
             <el-button type="primary" :loading="saving" @click="save">保存</el-button>
+          </template>
+        </el-dialog>
+
+        <el-dialog v-model="toothVisible" title="选择牙位(FDI 编码)" width="560px" append-to-body :close-on-click-modal="false">
+          <dw-tooth-chart v-model="toothTemp"></dw-tooth-chart>
+          <template #footer>
+            <el-button @click="toothVisible = false">取消</el-button>
+            <el-button type="primary" @click="applyTooth">确定</el-button>
           </template>
         </el-dialog>
       </div>

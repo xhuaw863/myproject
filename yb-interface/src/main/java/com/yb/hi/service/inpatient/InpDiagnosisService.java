@@ -89,6 +89,7 @@ public class InpDiagnosisService extends ServiceImpl<HisInpDiagnosisMapper, HisI
         // 入院病情(1危急 2严重 3一般 4不适用)与并发症标志(1是 0否)
         d.setAdmitCondition(dto.getAdmitCondition());
         d.setComplicationFlag(dto.getComplicationFlag() == null ? 0 : dto.getComplicationFlag());
+        d.setToothPosition(StringUtils.hasText(dto.getToothPosition()) ? dto.getToothPosition().trim() : null);
         d.setDiagDeptId(visit.getDeptId());
         d.setDiagDoctorId(InpOrderService.currentDoctorId());
         d.setDiagTime(LocalDateTime.now());
@@ -137,6 +138,10 @@ public class InpDiagnosisService extends ServiceImpl<HisInpDiagnosisMapper, HisI
         }
         if (dto.getComplicationFlag() != null) {
             d.setComplicationFlag(dto.getComplicationFlag());
+        }
+        // 牙位编码: 非空更新(传空串视为清除); 口腔诊断专用
+        if (dto.getToothPosition() != null) {
+            d.setToothPosition(StringUtils.hasText(dto.getToothPosition()) ? dto.getToothPosition().trim() : "");
         }
         updateById(d);
         Integer finalType = dto.getDiagType() != null ? dto.getDiagType() : exist.getDiagType();

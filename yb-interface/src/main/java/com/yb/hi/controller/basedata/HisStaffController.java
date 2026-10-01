@@ -2,8 +2,10 @@ package com.yb.hi.controller.basedata;
 
 import com.alibaba.excel.EasyExcel;
 import com.yb.hi.entity.basedata.HisStaff;
+import com.yb.hi.entity.basedata.HisStaffRxAuth;
 import com.yb.hi.framework.common.R;
 import com.yb.hi.platform.service.OrgAccessGuard;
+import com.yb.hi.service.basedata.HisStaffRxAuthService;
 import com.yb.hi.service.basedata.HisStaffService;
 import org.springframework.web.bind.annotation.*;
 
@@ -23,10 +25,12 @@ import java.util.Map;
 public class HisStaffController {
 
     private final HisStaffService service;
+    private final HisStaffRxAuthService rxAuthService;
     private final OrgAccessGuard guard;
 
-    public HisStaffController(HisStaffService service, OrgAccessGuard guard) {
+    public HisStaffController(HisStaffService service, HisStaffRxAuthService rxAuthService, OrgAccessGuard guard) {
         this.service = service;
+        this.rxAuthService = rxAuthService;
         this.guard = guard;
     }
 
@@ -90,6 +94,29 @@ public class HisStaffController {
     public R<Void> delete(@PathVariable Long id) {
         guard.requireLeadWrite();
         service.removeById(id);
+        return R.ok();
+    }
+
+    /* ================= 处方权限·按级授权明细(T2 阶段5-3) =================
+     * 读: 列出某职工的按级授权(抗菌分级/麻醉/精一/精二, 各自有效期);
+     * 写: 仅牵头机构管理员(requireLeadWrite), 与职工维护同档位; staffId 以路径为准防越权。
+     */
+    @GetMapping("/{id}/rx-auth")
+    public R<List<HisStaffRxAuth>> rxAuthList(@PathVariable Long id) {
+        return R.ok(rxAuthService.listByStaff(id));
+    }
+
+    @PostMapping("/{id}/rx-auth")
+    public R<HisStaffRxAuth> rxAuthSave(@PathVariable Long id, @RequestBody HisStaffRxAuth e) {
+        guard.requireLeadWrite();
+        e.setStaffId(id);
+        return R.ok(rxAuthService.saveAuth(e));
+    }
+
+    @DeleteMapping("/rx-auth/{authId}")
+    public R<Void> rxAuthDelete(@PathVariable Long authId) {
+        guard.requireLeadWrite();
+        rxAuthService.removeAuth(authId);
         return R.ok();
     }
 }

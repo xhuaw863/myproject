@@ -542,6 +542,8 @@
         /* 任职与授权(编辑态懒加载): 任职行 [{orgId,deptId,isPrimary}], 临调授权行 [StaffDeptGrant] */
         empRows: [], grantRows: [], empLoaded: false, empSaving: false,
         grantForm: { orgId: null, deptId: null, validFrom: null, validTo: null, remark: '' },
+        /* 处方权限·按级授权明细(T2阶段5-3, 编辑态懒加载) */
+        rxAuthRows: [], rxAuthLoaded: false, rxAuthSaving: false, rxAuthForm: this.emptyRxAuth(),
         dlg: false, editing: false, form: this.empty()
       };
     },
@@ -852,12 +854,13 @@
       add: function () {
         this.editing = false; this.form = this.empty(); this.activeTab = 'basic';
         this.empRows = []; this.grantRows = []; this.empLoaded = false;
+        this.rxAuthRows = []; this.rxAuthLoaded = false;
         /* 左栏已选中机构/科室时默认带入 */
         if (this.filterOrg) { this.form.orgId = this.filterOrg; }
         if (this.filterDept) { this.form.deptId = this.filterDept; }
         this.dlg = true;
       },
-      edit: function (row) { this.editing = true; this.form = clean(Object.assign(this.empty(), row)); this.activeTab = 'basic'; this.empRows = []; this.grantRows = []; this.empLoaded = false; this.dlg = true; },
+      edit: function (row) { this.editing = true; this.form = clean(Object.assign(this.empty(), row)); this.activeTab = 'basic'; this.empRows = []; this.grantRows = []; this.empLoaded = false; this.rxAuthRows = []; this.rxAuthLoaded = false; this.dlg = true; },
       /* 保存前基础格式校验: 仅拦截明确的格式错误, 对选填/历史宽松值不误伤 */
       validateForm: function () {
         var f = this.form;
@@ -879,10 +882,37 @@
         p.then(function () { HIS.notifySuccess('保存成功'); vm.dlg = false; vm.load(); vm.loadCounts(); }).catch(HIS.notifyError);
       },
       del: function (row) { var vm = this; HIS.del('/api/his/staff/' + row.id).then(function () { HIS.notifySuccess('已删除'); vm.load(); vm.loadCounts(); }).catch(HIS.notifyError); },
+      /* ===== 处方权限·按级授权明细(T2阶段5-3): 抗菌各分级/麻醉/精一/精二 分别授权与独立有效期 ===== */
+      emptyRxAuth: function () { return { authKind: 'abx', authCode: '', validFrom: null, validUntil: null, authOrg: '', authNo: '', memo: '' }; },
+      onRxKindChange: function () { this.rxAuthForm.authCode = (this.rxAuthForm.authKind === 'abx') ? '' : '1'; },
+      loadRxAuth: function () {
+        var vm = this;
+        HIS.get('/api/his/staff/' + vm.form.id + '/rx-auth').then(function (d) { vm.rxAuthRows = d || []; }).catch(HIS.notifyError);
+        vm.rxAuthLoaded = true;
+      },
+      addRxAuth: function () {
+        var vm = this, f = vm.rxAuthForm;
+        if (!f.authCode) { ElementPlus.ElMessage.warning('请选择权限级别/填写编码'); return; }
+        if (!f.validUntil) { ElementPlus.ElMessage.warning('请填写有效期至'); return; }
+        vm.rxAuthSaving = true;
+        HIS.post('/api/his/staff/' + vm.form.id + '/rx-auth', { authKind: f.authKind, authCode: f.authCode, validFrom: f.validFrom, validUntil: f.validUntil, authOrg: f.authOrg, authNo: f.authNo, memo: f.memo })
+          .then(function () { HIS.notifySuccess('已保存按级授权'); vm.rxAuthForm = vm.emptyRxAuth(); vm.loadRxAuth(); })
+          .catch(HIS.notifyError).finally(function () { vm.rxAuthSaving = false; });
+      },
+      removeRxAuth: function (row) {
+        var vm = this;
+        HIS.del('/api/his/staff/rx-auth/' + row.id).then(function () { HIS.notifySuccess('已撤销'); vm.loadRxAuth(); }).catch(HIS.notifyError);
+      },
+      rxAuthKindText: function (row) { var m = { abx: '抗菌分级', narcotic: '麻醉药品', psych1: '第一类精神', psych2: '第二类精神' }; return m[row.authKind] || row.authKind; },
+      rxAuthLevelText: function (row) { return row.authName || row.authCode; },
+      rxAuthFromText: function (row) { return row.validFrom || '立即'; },
+      rxAuthUntilText: function (row) { return row.validUntil || '长期'; },
+      rxAuthStatusText: function (row) { return row.status === 1 ? '有效' : '注销'; },
       /* ===== 任职与授权(仅编辑现有职工时可维护) ===== */
       /* 切换到"任职与授权"Tab 时懒加载一次 */
       onTabChange: function (name) {
         if (name === 'employ' && this.editing && this.form.id && !this.empLoaded) { this.loadEmploy(); }
+        if (name === 'rxauth' && this.editing && this.form.id && !this.rxAuthLoaded) { this.loadRxAuth(); }
       },
       loadEmploy: function () {
         var vm = this;
@@ -1140,6 +1170,26 @@
       '        <el-col :span="12"><el-form-item label="医护资格证号"><el-input v-model="form.drQualCertNo" placeholder="医师/护士资格证号"></el-input></el-form-item></el-col>',
       '        <el-col :span="12"><el-form-item label="执业证书编码"><el-input v-model="form.pracCertNo" placeholder="医师执业证书编码"></el-input></el-form-item></el-col>',
       '      </el-row>',
+      '        </el-form>',
+      '      </el-tab-pane>',
+      '      <el-tab-pane v-if="editing" label="按级授权" name="rxauth">',
+      '        <el-alert type="info" :closable="false" show-icon style="margin-bottom:8px;" title="抗菌各分级/麻醉/精一/精二 可分别授权并各自设定有效期; 到期扫描优先取本明细, 无明细时回落医疗权限Tab的有效期至。"></el-alert>',
+      '        <el-table :data="rxAuthRows" border size="small" style="margin-bottom:8px;">',
+      '          <el-table-column label="类别" width="110"><template #default="s">{{ rxAuthKindText(s.row) }}</template></el-table-column>',
+      '          <el-table-column label="级别/名称" min-width="120"><template #default="s">{{ rxAuthLevelText(s.row) }}</template></el-table-column>',
+      '          <el-table-column label="生效" width="110"><template #default="s">{{ rxAuthFromText(s.row) }}</template></el-table-column>',
+      '          <el-table-column label="有效期至" width="120"><template #default="s">{{ rxAuthUntilText(s.row) }}</template></el-table-column>',
+      '          <el-table-column label="状态" width="70"><template #default="s"><el-tag size="small" :type="s.row.status===1?\'success\':\'info\'">{{ rxAuthStatusText(s.row) }}</el-tag></template></el-table-column>',
+      '          <el-table-column prop="authNo" label="文号" min-width="90" show-overflow-tooltip><template #default="s">{{ s.row.authNo || \'—\' }}</template></el-table-column>',
+      '          <el-table-column label="操作" width="80" align="center"><template #default="s"><el-popconfirm title="确认撤销该授权？" @confirm="removeRxAuth(s.row)"><template #reference><el-button link type="danger" size="small">撤销</el-button></template></el-popconfirm></template></el-table-column>',
+      '        </el-table>',
+      '        <el-form :inline="true" size="small">',
+      '          <el-form-item label="类别"><el-select v-model="rxAuthForm.authKind" style="width:130px;" @change="onRxKindChange"><el-option label="抗菌分级" value="abx"></el-option><el-option label="麻醉药品" value="narcotic"></el-option><el-option label="第一类精神" value="psych1"></el-option><el-option label="第二类精神" value="psych2"></el-option></el-select></el-form-item>',
+      '          <el-form-item label="级别"><el-select v-if="rxAuthForm.authKind === \'abx\'" v-model="rxAuthForm.authCode" style="width:150px;" placeholder="分级授权"><el-option v-for="o in abxOpts" :key="o.code" :label="o.name" :value="o.code"></el-option></el-select><el-input v-else v-model="rxAuthForm.authCode" style="width:120px;" placeholder="专项编码"></el-input></el-form-item>',
+      '          <el-form-item label="生效"><el-date-picker v-model="rxAuthForm.validFrom" type="date" value-format="YYYY-MM-DD" style="width:130px;" placeholder="默认立即"></el-date-picker></el-form-item>',
+      '          <el-form-item label="有效期至"><el-date-picker v-model="rxAuthForm.validUntil" type="date" value-format="YYYY-MM-DD" style="width:140px;" placeholder="必填"></el-date-picker></el-form-item>',
+      '          <el-form-item label="文号"><el-input v-model="rxAuthForm.authNo" style="width:120px;" placeholder="选填"></el-input></el-form-item>',
+      '          <el-form-item><el-button type="primary" :loading="rxAuthSaving" @click="addRxAuth">新增授权</el-button></el-form-item>',
       '        </el-form>',
       '      </el-tab-pane>',
       '      <el-tab-pane v-if="editing" label="任职与授权" name="employ">',

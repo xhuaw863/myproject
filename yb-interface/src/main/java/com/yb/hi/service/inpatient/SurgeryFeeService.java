@@ -3,6 +3,8 @@ package com.yb.hi.service.inpatient;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import com.yb.hi.dto.inpatient.SurgeryFeeDTO;
+import com.yb.hi.entity.doctor.HisOrder;
+import com.yb.hi.entity.doctor.HisOrderItem;
 import com.yb.hi.entity.inpatient.HisInpChargeDetail;
 import com.yb.hi.entity.inpatient.HisInpVisit;
 import com.yb.hi.entity.inpatient.HisSurgery;
@@ -11,6 +13,8 @@ import com.yb.hi.framework.common.BizException;
 import com.yb.hi.framework.tenant.LoginUser;
 import com.yb.hi.framework.tenant.TenantContext;
 import com.yb.hi.framework.tenant.UserContext;
+import com.yb.hi.mapper.doctor.HisOrderItemMapper;
+import com.yb.hi.mapper.doctor.HisOrderMapper;
 import com.yb.hi.mapper.inpatient.HisInpChargeDetailMapper;
 import com.yb.hi.mapper.inpatient.HisInpVisitMapper;
 import com.yb.hi.mapper.inpatient.HisSurgeryFeeMapper;
@@ -33,8 +37,10 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * 手术费用服务(核心): 费用记账双写(his_surgery_fee + his_inp_charge_detail 回写 surgery_id)、
- * 批量记账、退费冲销(明细置退费态 + 就诊总费用回减)、按类别汇总、自动计时计费(麻醉费按30分钟/单位)。
+ * 手术费用服务(核心): 费用记账双写(住院: his_surgery_fee + his_inp_charge_detail 回写 surgery_id;
+ * 门诊/日间 visit_type=2/3: 双写 his_order/his_order_item 自动进入门诊收费处待缴费),
+ * 批量记账、退费冲销(住院: 明细置退费态+回减总费用; 门诊: 明细逻辑删+回减单据金额)、
+ * 按类别汇总、自动计时计费(麻醉费按30分钟/单位)。
  * 费用分类映射: 1手术费/2麻醉费/3监测费 -> 5治疗, 4耗材费 -> 7材料, 5药品费 -> 1西药, 6其他 -> 9其他。
  */
 @Slf4j
@@ -62,16 +68,21 @@ public class SurgeryFeeService {
     private final HisSurgeryMapper surgeryMapper;
     private final HisInpChargeDetailMapper chargeDetailMapper;
     private final HisInpVisitMapper visitMapper;
+    private final HisOrderMapper orderMapper;
+    private final HisOrderItemMapper orderItemMapper;
     private final OrgAccessGuard guard;
     private final JdbcTemplate jdbcTemplate;
 
     public SurgeryFeeService(HisSurgeryFeeMapper feeMapper, HisSurgeryMapper surgeryMapper,
                              HisInpChargeDetailMapper chargeDetailMapper, HisInpVisitMapper visitMapper,
+                             HisOrderMapper orderMapper, HisOrderItemMapper orderItemMapper,
                              OrgAccessGuard guard, JdbcTemplate jdbcTemplate) {
         this.feeMapper = feeMapper;
         this.surgeryMapper = surgeryMapper;
         this.chargeDetailMapper = chargeDetailMapper;
         this.visitMapper = visitMapper;
+        this.orderMapper = orderMapper;
+        this.orderItemMapper = orderItemMapper;
         this.guard = guard;
         this.jdbcTemplate = jdbcTemplate;
     }
@@ -158,7 +169,10 @@ public class SurgeryFeeService {
         HisSurgeryFee fee = new HisSurgeryFee();
         fee.setOrgId(surgery.getOrgId() != null ? surgery.getOrgId() : orgId);
         fee.setSurgeryId(surgery.getId());
-        fee.setInpVisitId(dto.getInpVisitId() != null ? dto.getInpVisitId() : surgery.getInpVisitId());
+        int vt = surgery.getVisitType() == null ? 1 : surgery.getVisitType();
+        fee.setVisitType(vt);
+        fee.setVisitId(vt == 1 ? null : surgery.getVisitId());
+        fee.setInpVisitId(vt == 1 ? (dto.getInpVisitId() != null ? dto.getInpVisitId() : surgery.getInpVisitId()) : null);
         fee.setChargeItemId(dto.getChargeItemId());
         fee.setItemName(dto.getItemName().trim());
         fee.setItemCode(StringUtils.hasText(dto.getItemCode()) ? dto.getItemCode().trim() : null);
@@ -173,9 +187,13 @@ public class SurgeryFeeService {
         fee.setStatus(1);
         feeMapper.insert(fee);
 
-        writeChargeDetail(fee);
-        log.info("手术记账: feeId={}, surgeryId={}, item={}, qty={}, amount={}",
-                fee.getId(), fee.getSurgeryId(), fee.getItemName(), qty, amount);
+        if (vt != 1) {
+            writeOutpOrderDetail(fee);
+        } else {
+            writeChargeDetail(fee);
+        }
+        log.info("手术记账: feeId={}, surgeryId={}, visitType={}, item={}, qty={}, amount={}",
+                fee.getId(), fee.getSurgeryId(), vt, fee.getItemName(), qty, amount);
         return fee;
     }
 
@@ -208,6 +226,13 @@ public class SurgeryFeeService {
     @Transactional(rollbackFor = Exception.class)
     public void deleteFee(Long id) {
         HisSurgeryFee fee = requireFee(id);
+        // 手麻P1: 手术已完成(5)的费项不可直接退, 须先"取消完成"回退至术后(4)再补退费(执行后不可退守卫)
+        if (fee.getSurgeryId() != null) {
+            HisSurgery surg = requireSurgery(fee.getSurgeryId());
+            if (surg != null && Integer.valueOf(5).equals(surg.getStatus())) {
+                throw new BizException("手术已完成, 费用不可直接退回, 请先取消完成(回退至术后)再补退费");
+            }
+        }
         int affected = feeMapper.update(null, new LambdaUpdateWrapper<HisSurgeryFee>()
                 .set(HisSurgeryFee::getStatus, 2)
                 .set(HisSurgeryFee::getDeleted, 1)
@@ -217,8 +242,124 @@ public class SurgeryFeeService {
         if (affected == 0) {
             throw new BizException("费用项已退费或状态已变化, 请刷新后重试");
         }
+        if (fee.getVisitType() != null && fee.getVisitType() != 1) {
+            refundOutpOrderDetail(fee);
+            return;
+        }
         refundChargeDetail(fee);
         log.info("手术费用退费: feeId={}, surgeryId={}, amount={}", id, fee.getSurgeryId(), fee.getAmount());
+    }
+
+    /* ==================== 门诊/日间双写(规范2.2.2.3.7.5) ==================== */
+
+    /** 门诊双写: 同一手术复用同一 his_order(治疗单), 逐笔写 his_order_item, 收费处现有取数口径自动进入待缴费 */
+    private void writeOutpOrderDetail(HisSurgeryFee fee) {
+        if (fee.getVisitId() == null) {
+            throw new BizException("门诊/日间手术缺少门诊就诊ID, 无法双写门诊费用单据");
+        }
+        List<Map<String, Object>> vs = jdbcTemplate.queryForList(
+                "SELECT patient_id, patient_name, dept_id, dept_name FROM his_visit"
+                        + " WHERE id = ? AND deleted = 0 AND tenant_id = ?",
+                fee.getVisitId(), tenantId());
+        if (vs.isEmpty()) {
+            throw new BizException("门诊就诊记录不存在, 无法双写门诊费用单据");
+        }
+        Map<String, Object> v = vs.get(0);
+        Long orderId = findSurgeryOrderId(fee.getSurgeryId());
+        if (orderId == null) {
+            HisOrder order = new HisOrder();
+            order.setVisitId(fee.getVisitId());
+            order.setOrderNo("SZ" + fee.getId());
+            order.setPatientId(toLong(v.get("patient_id")));
+            order.setPatientName(str(v.get("patient_name")));
+            order.setDeptId(toLong(v.get("dept_id")));
+            order.setDeptName(str(v.get("dept_name")));
+            order.setDrId(fee.getOperatorId());
+            order.setDrName(operatorName(fee.getOperatorId()));
+            order.setOrderType("治疗");
+            order.setDiagName("手术麻醉记费");
+            order.setTotalAmount(fee.getAmount());
+            order.setStatus(1);
+            order.setExecStatus(0);
+            order.setPaidFlag(0);
+            orderMapper.insert(order);
+            orderId = order.getId();
+        } else {
+            orderMapper.update(null, new LambdaUpdateWrapper<HisOrder>()
+                    .setSql("total_amount = IFNULL(total_amount, 0) + "
+                            + fee.getAmount().setScale(2, BigDecimal.ROUND_HALF_UP).toPlainString())
+                    .eq(HisOrder::getId, orderId));
+        }
+        HisOrderItem item = new HisOrderItem();
+        item.setOrderId(orderId);
+        item.setItemId(fee.getChargeItemId());
+        item.setItemCode(fee.getItemCode());
+        item.setItemName(fee.getItemName());
+        item.setUnit("次");
+        item.setPrice(fee.getUnitPrice());
+        item.setQuantity(fee.getQuantity());
+        item.setAmount(fee.getAmount());
+        orderItemMapper.insert(item);
+        fee.setOrderId(orderId);
+        fee.setOrderItemId(item.getId());
+        feeMapper.update(null, new LambdaUpdateWrapper<HisSurgeryFee>()
+                .set(HisSurgeryFee::getOrderId, orderId)
+                .set(HisSurgeryFee::getOrderItemId, item.getId())
+                .set(HisSurgeryFee::getUpdateTime, LocalDateTime.now())
+                .eq(HisSurgeryFee::getId, fee.getId()));
+        log.info("门诊手术费双写: feeId={}, orderId={}, orderItemId={}, amount={}",
+                fee.getId(), orderId, item.getId(), fee.getAmount());
+    }
+
+    /** 同一手术已有门诊单据则复用(按早期未退记账行的 order_id 归组) */
+    private Long findSurgeryOrderId(Long surgeryId) {
+        List<Map<String, Object>> rows = jdbcTemplate.queryForList(
+                "SELECT order_id FROM his_surgery_fee"
+                        + " WHERE surgery_id = ? AND order_id IS NOT NULL AND deleted = 0 AND tenant_id = ?"
+                        + " ORDER BY id LIMIT 1",
+                surgeryId, tenantId());
+        return rows.isEmpty() ? null : toLong(rows.get(0).get("order_id"));
+    }
+
+    /** 门诊退费冲销: 已收费拦截; 明细逻辑删(收费口径 oi.deleted=0) + 回减单据金额, 无剩余明细置单据已退 */
+    private void refundOutpOrderDetail(HisSurgeryFee fee) {
+        if (fee.getOrderId() == null) {
+            log.warn("门诊手术费退费未找到双写单据(可能未双写): feeId={}", fee.getId());
+            return;
+        }
+        List<Map<String, Object>> ors = jdbcTemplate.queryForList(
+                "SELECT paid_flag FROM his_order WHERE id = ? AND deleted = 0 AND tenant_id = ?",
+                fee.getOrderId(), tenantId());
+        if (!ors.isEmpty() && Integer.valueOf(1).equals(toInt(ors.get(0).get("paid_flag")))) {
+            throw new BizException("该门诊手术费用单据已收费, 请先到收费站冲销后再退费");
+        }
+        Long itemId = fee.getOrderItemId();
+        if (itemId == null) {
+            List<Map<String, Object>> rows = jdbcTemplate.queryForList(
+                    "SELECT id FROM his_order_item WHERE order_id = ? AND item_name = ? AND amount = ?"
+                            + " AND deleted = 0 AND tenant_id = ? ORDER BY id LIMIT 1",
+                    fee.getOrderId(), fee.getItemName(), fee.getAmount(), tenantId());
+            if (rows.isEmpty()) {
+                log.warn("门诊手术费退费未定位到双写明细: feeId={}", fee.getId());
+                return;
+            }
+            itemId = toLong(rows.get(0).get("id"));
+        }
+        orderItemMapper.deleteById(itemId); // @TableLogic 逻辑删, 收费待缴口径自动排除
+        BigDecimal amt = fee.getAmount() == null ? BigDecimal.ZERO : fee.getAmount();
+        orderMapper.update(null, new LambdaUpdateWrapper<HisOrder>()
+                .setSql("total_amount = GREATEST(IFNULL(total_amount, 0) - "
+                        + amt.setScale(2, BigDecimal.ROUND_HALF_UP).toPlainString() + ", 0)")
+                .eq(HisOrder::getId, fee.getOrderId()));
+        Long remain = orderItemMapper.selectCount(new LambdaQueryWrapper<HisOrderItem>()
+                .eq(HisOrderItem::getOrderId, fee.getOrderId()));
+        if (remain == null || remain == 0) {
+            orderMapper.update(null, new LambdaUpdateWrapper<HisOrder>()
+                    .set(HisOrder::getStatus, 3)
+                    .set(HisOrder::getUpdateTime, LocalDateTime.now())
+                    .eq(HisOrder::getId, fee.getOrderId()));
+        }
+        log.info("门诊手术费退费冲销: feeId={}, orderId={}, itemId={}", fee.getId(), fee.getOrderId(), itemId);
     }
 
     /** 联带费用明细退费: 按 手术+项目名+金额 定位未退明细(多笔时先退最早一笔), 冲减就诊总费用 */
@@ -436,6 +577,28 @@ public class SurgeryFeeService {
 
     private static String str(Object v) {
         return v == null ? null : v.toString();
+    }
+
+    private static Long toLong(Object v) {
+        return v instanceof Number ? ((Number) v).longValue() : null;
+    }
+
+    private static Integer toInt(Object v) {
+        return v instanceof Number ? ((Number) v).intValue() : null;
+    }
+
+    /** 操作员姓名(门诊单据医师栏留痕, 无职工档案回退登录名) */
+    private String operatorName(Long staffId) {
+        if (staffId != null) {
+            List<Map<String, Object>> rows = jdbcTemplate.queryForList(
+                    "SELECT staff_name FROM his_staff WHERE id = ? AND deleted = 0 AND tenant_id = ?",
+                    staffId, tenantId());
+            if (!rows.isEmpty()) {
+                return str(rows.get(0).get("staff_name"));
+            }
+        }
+        LoginUser lu = UserContext.get();
+        return lu == null ? null : (StringUtils.hasText(lu.getRealName()) ? lu.getRealName() : lu.getUsername());
     }
 
     private static BigDecimal toBd(Object v) {

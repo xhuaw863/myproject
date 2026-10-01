@@ -238,7 +238,88 @@
       '.inp-stat.is-danger .v { color:var(--yb-danger); }',
       '.inp-io-form { display:flex; align-items:flex-end; gap:12px; flex-wrap:wrap; }',
       '.inp-io-form .fld { display:flex; flex-direction:column; gap:4px; }',
-      '.inp-io-form .fld .cap { font-size:var(--yb-fs-sm); font-weight:600; color:var(--yb-ink-1); }'
+      '.inp-io-form .fld .cap { font-size:var(--yb-fs-sm); font-weight:600; color:var(--yb-ink-1); }',
+      /* ================= 一体化升级私有样式: 页签分组带/入出转/费用/病人360/床卡右键与拖拽 ================= */
+      /* 左侧患者视图 segment(在区/待入区/转出待办) */
+      '.inp-seg { display:flex; gap:0; margin-top:8px; border:1px solid var(--yb-border-light); border-radius:var(--yb-r-sm); overflow:hidden; }',
+      '.inp-seg-item { flex:1; text-align:center; padding:5px 2px; font-size:12px; color:var(--yb-ink-2); cursor:pointer; background:var(--yb-surface); border-right:1px solid var(--yb-border-light); transition:background var(--yb-dur) var(--yb-ease); position:relative; }',
+      '.inp-seg-item:last-child { border-right:none; }',
+      '.inp-seg-item:hover { background:var(--yb-surface-2); }',
+      '.inp-seg-item.is-active { background:var(--yb-brand); color:#fff; font-weight:600; }',
+      '.inp-seg-item .dot { position:absolute; top:3px; right:5px; min-width:14px; height:14px; line-height:14px; padding:0 3px; border-radius:7px; background:var(--yb-danger); color:#fff; font-size:10px; font-weight:700; }',
+      '.inp-seg-item.is-active .dot { background:#fff; color:var(--yb-brand); }',
+      /* 页签分组小票(同一 group 归一色点) */
+      '.inp-grp-dot { display:inline-block; width:6px; height:6px; border-radius:50%; margin-right:5px; vertical-align:2px; }',
+      /* ---- 入出转工作台(.nfw-) ---- */
+      '.nfw { display:flex; gap:12px; align-items:stretch; min-height:0; }',
+      '.nfw-main { flex:1; min-width:0; display:flex; flex-direction:column; }',
+      '.nfw-side { width:320px; flex:none; border-left:1px solid var(--yb-border-light); padding-left:12px; display:flex; flex-direction:column; gap:10px; }',
+      '.nfw-toolbar { display:flex; align-items:center; gap:8px; flex-wrap:wrap; margin-bottom:8px; }',
+      '.nfw-tl { display:flex; flex-direction:column; gap:0; }',
+      '.nfw-tl-item { display:flex; gap:10px; padding:8px 0; border-bottom:1px dashed var(--yb-divider); }',
+      '.nfw-tl-item:last-child { border-bottom:none; }',
+      '.nfw-tl-item .dot { flex:none; width:10px; height:10px; margin-top:4px; border-radius:50%; background:var(--yb-border); }',
+      '.nfw-tl-item.is-done .dot { background:var(--yb-success); }',
+      '.nfw-tl-item .body { flex:1; min-width:0; }',
+      '.nfw-tl-item .lb { font-weight:600; color:var(--yb-ink-1); font-size:var(--yb-fs-base); }',
+      '.nfw-tl-item .nt { color:var(--yb-ink-3); font-size:12px; margin-top:2px; }',
+      '.nfw-tl-item .tm { color:var(--yb-ink-4); font-size:11px; margin-top:2px; font-variant-numeric:tabular-nums; }',
+      '.nfw-badge { display:inline-block; font-size:11px; line-height:16px; padding:0 6px; border-radius:3px; color:#fff; }',
+      '.nfw-bedpick-empty { color:var(--yb-ink-4); font-size:12px; padding:8px 0; }',
+      /* ---- 费用管理(.nfee-) ---- */
+      '.nfee { display:flex; gap:12px; align-items:stretch; min-height:0; }',
+      '.nfee-left { width:280px; flex:none; display:flex; flex-direction:column; gap:10px; }',
+      '.nfee-main { flex:1; min-width:0; }',
+      '.nfee-acct { border:1px solid var(--yb-border-light); border-radius:var(--yb-r-md); padding:12px 14px; background:var(--yb-surface); }',
+      '.nfee-acct .bal { font-size:30px; font-weight:700; color:var(--yb-brand-strong); font-variant-numeric:tabular-nums; letter-spacing:var(--yb-tracking-tight); line-height:1.1; }',
+      '.nfee-acct .bal.is-neg { color:var(--yb-danger); }',
+      '.nfee-acct .lbl { color:var(--yb-ink-3); font-size:12px; }',
+      '.nfee-kpis { display:flex; flex-wrap:wrap; gap:6px; margin-top:8px; }',
+      '.nfee-kpi { font-size:12px; color:var(--yb-ink-2); background:var(--yb-surface-2); border:1px solid var(--yb-border-light); border-radius:var(--yb-r-sm); padding:3px 8px; }',
+      '.nfee-kpi b { color:var(--yb-brand-strong); font-variant-numeric:tabular-nums; }',
+      '.nfee-sec { margin-top:10px; }',
+      '.nfee-sec-h { display:flex; align-items:center; gap:8px; margin:0 0 8px; padding-bottom:5px; border-bottom:1px solid var(--yb-divider); }',
+      '.nfee-sec-h .t { font-weight:700; color:var(--yb-ink-1); font-size:var(--yb-fs-md); }',
+      '.nfee-money { font-variant-numeric:tabular-nums; color:var(--yb-brand-strong); font-weight:600; }',
+      '.nfee-money.is-neg { color:var(--yb-danger); }',
+      /* ---- 病人信息360(.np360-) ---- */
+      '.np360 { display:flex; flex-direction:column; gap:10px; }',
+      '.np360-hd { display:flex; align-items:center; gap:12px; padding:10px 14px; border:1px solid var(--yb-border-light); border-radius:var(--yb-r-md); background:var(--yb-brand-subtle); }',
+      '.np360-hd .bed { width:40px; height:40px; flex:none; display:flex; align-items:center; justify-content:center; border-radius:8px; background:var(--yb-brand); color:#fff; font-weight:700; }',
+      '.np360-hd .nm { font-weight:700; color:var(--yb-ink-1); font-size:18px; }',
+      '.np360-hd .meta { color:var(--yb-ink-3); font-size:12px; }',
+      '.np360-cards { display:grid; grid-template-columns:repeat(auto-fill,minmax(360px,1fr)); gap:10px; }',
+      '.np360-card { border:1px solid var(--yb-border-light); border-radius:var(--yb-r-md); background:var(--yb-surface); overflow:hidden; }',
+      '.np360-card.is-danger { border-left:4px solid var(--yb-danger); }',
+      '.np360-card-h { display:flex; align-items:center; gap:8px; padding:9px 12px; cursor:pointer; background:var(--yb-surface-2); font-weight:600; color:var(--yb-ink-1); }',
+      '.np360-card-h .cnt { margin-left:auto; color:var(--yb-ink-3); font-size:12px; font-weight:400; }',
+      '.np360-card-b { padding:10px 12px; }',
+      '.np360-kv { display:flex; justify-content:space-between; gap:10px; padding:3px 0; border-bottom:1px dashed var(--yb-divider); font-size:13px; }',
+      '.np360-kv:last-child { border-bottom:none; }',
+      '.np360-kv .k { color:var(--yb-ink-3); flex:none; }',
+      '.np360-kv .v { color:var(--yb-ink-1); text-align:right; min-width:0; overflow:hidden; text-overflow:ellipsis; }',
+      /* ---- 床位一览: 右键菜单/拖拽高亮/图例抽屉 ---- */
+      '.bctx { position:fixed; z-index:3000; min-width:168px; background:var(--yb-surface); border:1px solid var(--yb-border); border-radius:var(--yb-r-sm); box-shadow:var(--yb-sh-2); padding:4px 0; }',
+      '.bctx-item { display:flex; align-items:center; gap:8px; padding:6px 14px; font-size:13px; color:var(--yb-ink-1); cursor:pointer; }',
+      '.bctx-item:hover { background:var(--yb-brand-subtle); color:var(--yb-brand-strong); }',
+      '.bctx-item.is-danger { color:var(--yb-danger); }',
+      '.bctx-sep { height:1px; margin:4px 0; background:var(--yb-divider); }',
+      '.bdo-card.is-drag-over { border-color:var(--yb-brand); box-shadow:0 0 0 3px var(--yb-brand-subtle); }',
+      '.bdo-card.is-dragging { opacity:.5; }',
+      '.bdo-legend { display:flex; flex-direction:column; gap:8px; }',
+      '.bdo-legend-row { display:flex; align-items:center; gap:10px; font-size:13px; color:var(--yb-ink-2); }',
+      '.bdo-legend-sw { width:22px; height:14px; border-radius:3px; flex:none; }',
+      '.bdo-view-seg { display:inline-flex; gap:0; border:1px solid var(--yb-border-light); border-radius:var(--yb-r-sm); overflow:hidden; }',
+      '.bdo-view-seg span { padding:4px 10px; font-size:12px; cursor:pointer; color:var(--yb-ink-2); border-right:1px solid var(--yb-border-light); }',
+      '.bdo-view-seg span:last-child { border-right:none; }',
+      '.bdo-view-seg span.is-active { background:var(--yb-brand); color:#fff; font-weight:600; }',
+      '.bdo-slim { display:flex; align-items:center; gap:10px; padding:6px 10px; border:1px solid var(--yb-border-light); border-left-width:5px; border-radius:var(--yb-r-sm); background:var(--yb-surface); margin-bottom:6px; cursor:pointer; }',
+      '.bdo-slim.is-active { border-color:var(--yb-brand); }',
+      '.bdo-slim .no { font-weight:700; width:52px; flex:none; font-variant-numeric:tabular-nums; }',
+      '.bdo-slim .who { font-weight:600; width:88px; flex:none; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }',
+      '.bdo-slim .diag { flex:1; min-width:0; color:var(--yb-ink-3); font-size:12px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }',
+      '.bdo-slim .tags { flex:none; display:flex; gap:3px; }',
+      '.bdo-search-hit { box-shadow:0 0 0 3px var(--yb-warning) !important; }'
     ].join('\n');
     document.head.appendChild(st);
   })();
@@ -259,6 +340,39 @@
   var CONDITION_LEVEL = { 1: '病危', 2: '病重', 3: '一般' };
   var NURSING_LEVELS = { 1: '特级护理', 2: '一级护理', 3: '二级护理', 4: '三级护理' };
   var ALLERGY_TYPE = { 1: '药物', 2: '食物', 3: '环境', 4: '其他' };
+  /* ===== 入出转/费用/360 常量(与后端 his_inp_transfer / deposit / settle / daily-bill / fee-alert / diagnosis 枚举一致) ===== */
+  /* 转科转床申请状态机: 1申请 2批准 3拒绝 4已执行 5取消 */
+  var TRANSFER_STATUS = { 1: '待审批', 2: '已批准', 3: '已退回', 4: '已执行', 5: '已取消' };
+  var TRANSFER_STATUS_TAG = { 1: 'warning', 2: 'primary', 3: 'danger', 4: 'success', 5: 'info' };
+  /* 流转类型: 1转科 2转床 3加床 */
+  var TRANSFER_TYPE = { 1: '转科', 2: '转床', 3: '加床' };
+  /* 退回常见原因(护士可直选或自录) */
+  var TRANSFER_REJECT_REASONS = ['床位已满', '诊断不符', '转科资料不全', '需先处理未完成业务', '目标科室拒收', '其他'];
+  var FEE_TYPE_MAP = { 1: '西药费', 2: '中药费', 3: '检查费', 4: '检验费', 5: '治疗费', 6: '护理费', 7: '材料费', 8: '床位费', 9: '其他' };
+  var FEE_TYPE_OPTIONS = [{ v: 1, l: '西药费' }, { v: 2, l: '中药费' }, { v: 3, l: '检查费' }, { v: 4, l: '检验费' }, { v: 5, l: '治疗费' }, { v: 6, l: '护理费' }, { v: 7, l: '材料费' }, { v: 8, l: '床位费' }, { v: 9, l: '其他' }];
+  var PAY_TYPES = [{ v: 1, l: '现金' }, { v: 2, l: '微信' }, { v: 3, l: '支付宝' }, { v: 4, l: '银行卡' }];
+  var DIRECTIONS = [{ v: 1, l: '缴纳' }, { v: 2, l: '退还' }];
+  var SETTLE_TYPES = { 1: '出院结算', 2: '中途结算', 3: '退费' };
+  var DIAG_TYPES = { 1: '入院诊断', 2: '补充诊断', 3: '术后诊断', 4: '出院诊断' };
+  var BED_STATUS = { 0: '空床', 1: '占用', 2: '停用' };
+  var BED_TYPES = { 1: '普通', 2: '抢救', 3: '监护', 4: '隔离' };
+  /* 欠费预警处理结果: 1已催缴 2已减免 3已结清 4忽略 */
+  var FEE_ALERT_HANDLE = { 1: '已催缴', 2: '已减免', 3: '已结清', 4: '暂不处理' };
+  /* 一体化主页页签配置(顺序可自定义, localStorage 持久化): group 归组、iconKey 无则纯文字 */
+  var HOME_TABS = [
+    { key: 'flow', label: '入出转', group: '流转' },
+    { key: 'audit', label: '医嘱审核', group: '医嘱' },
+    { key: 'exec', label: '医嘱执行', group: '医嘱' },
+    { key: 'fee', label: '费用管理', group: '费用' },
+    { key: 'patient', label: '病人信息', group: '总览' },
+    { key: 'nursing', label: '护理记录', group: '护理' },
+    { key: 'io', label: '出入量', group: '护理' },
+    { key: 'med', label: '给药记录', group: '护理' },
+    { key: 'assess', label: '护理评估', group: '护理' },
+    { key: 'plan', label: '护理计划', group: '护理' },
+    { key: 'shift', label: '交接班', group: '病区' },
+    { key: 'bed', label: '床位一览', group: '病区' }
+  ];
 
   /* ===== 图标组件: 无构建环境未引入图标包, 内联 element-plus 官方 SVG path 自绘 ===== */
   var NS_ICON_PATHS = {
@@ -1930,14 +2044,24 @@
   HIS.views.InpBedOverview = {
     name: 'InpBedOverview',
     props: { wardId: { type: [String, Number], default: null } },
-    emits: ['pick', 'open'],
+    emits: ['pick', 'open', 'flow'],
     data: function () {
       return {
         loading: false, wards: [], innerWardId: null, beds: [], patients: [],
         activeVisitId: null,
         colorMode: 'nurse',      /* 左侧色条口径: nurse=护理等级 / condition=病情 */
         groupByRoom: true,
-        filter: 'all'
+        filter: 'all',
+        /* 13.15.3 床位管理增强: 三态视图 / 精确定位 / 图例 / 右键菜单 / 拖拽转床 */
+        viewMode: 'card',          /* card=细卡 / slim=简卡 / list=病人列表 */
+        searchKey: '',
+        legendOpen: false,
+        ctx: { show: false, x: 0, y: 0, bed: null },
+        dragFrom: null,            /* {visitId, bedId, bedNo, name} 拖拽源 */
+        overBedId: null,           /* 当前拖拽悬停目标床位 */
+        quickBedMap: {},           /* 简卡视图: 床位idKey → 待转空床选择(非响应式新增键经 Vue3 proxy 仍可响) */
+        /* 图例抽屉字典(文件级常量模板不可见, 经 data 暴露) */
+        dictBedType: BED_TYPES, dictBedStatus: BED_STATUS
       };
     },
     computed: {
@@ -1983,20 +2107,37 @@
         var vm = this;
         var rows = (vm.beds || []).slice();
         rows.sort(byBedNo);
+        var q = (vm.searchKey || '').trim();
+        if (q) {
+          rows = rows.filter(function (b) {
+            var p = vm.bedPatient(b);
+            var hay = [b.bedNo, p ? p.patientName : '', p ? p.inpNo : ''].join(' ');
+            return hay && hay.indexOf(q) >= 0;
+          });
+        }
         var f = vm.filter;
         if (f === 'all') { return rows; }
         if (f === 'empty') { return rows.filter(function (b) { return b.status === 0; }); }
         return rows.filter(function (b) {
           if (b.status !== 1) { return false; }
           var p = vm.bedPatient(b);
-          if (!p) { return f !== 'critical' && f !== 'pendAudit' && f !== 'pendExec' && f !== 'newToday' && f !== 'preDischarge'; }
+          if (!p) { return f !== 'critical' && f !== 'pendAudit' && f !== 'pendExec' && f !== 'newToday' && f !== 'preDischarge' && f !== 'allergy' && f !== 'discharge'; }
           if (f === 'critical') { return p.conditionLevel === 1 || p.conditionLevel === 2; }
           if (f === 'pendAudit') { return (Number(p.pendingAudit) || 0) > 0; }
           if (f === 'pendExec') { return (Number(p.pendingExec) || 0) > 0; }
           if (f === 'newToday') { return daysSince(p.admitDate) === 0; }
           if (f === 'preDischarge') { return vm.isPreDischarge(p); }
+          if (f === 'allergy') { return !!p.allergyFlag; }
+          if (f === 'discharge') { return vm.isPreDischarge(p); }
           if (f === 'isolation') { return p.isQuarantine === 1 || b.bedType === 4; }
           return true;
+        });
+      },
+      /* 病人列表视图数据: 仅占用且命中搜索的床位对应患者 */
+      listPatients: function () {
+        var vm = this;
+        return (vm.filteredBeds || []).filter(function (b) { return b.status === 1 && vm.bedPatient(b); }).map(function (b) {
+          var p = vm.bedPatient(b); return p;
         });
       },
       /* 房间分组: 每组=一个病区房间(含其全部床位); 不分组时整体作为单一扁平组(无标题)。 */
@@ -2010,6 +2151,16 @@
           map[k].beds.push(b);
         });
         return out;
+      },
+      /* 本病区空闲床(简卡/列表视图"转空床"下拉) */
+      emptyBeds: function () {
+        return (this.beds || []).filter(function (b) { return b.status === 0; });
+      },
+      /* 图例字典随色条口径切换 */
+      legendDicts: function () {
+        return this.colorMode === 'condition'
+          ? { lvName: '病情', lv: CONDITION_LEVEL }
+          : { lvName: '护理等级', lv: NURSING_LEVELS };
       }
     },
     watch: {
@@ -2019,6 +2170,8 @@
       if (this.wardId) { this.load(); } else { this.loadWards(); }
     },
     methods: {
+      /* 模板内键归一(HIS 对模板不可见) */
+      idKey: function (v) { return HIS.idKey(v); },
       /* 占用床匹配在院患者(先 inpVisitId 后 patientId) */
       bedPatient: function (b) {
         if (b.status !== 1) { return null; }
@@ -2152,6 +2305,99 @@
           vm.beds = rs[0] || [];
           vm.patients = (rs[1] && rs[1].records) || [];
         }).catch(HIS.notifyError).finally(function () { vm.loading = false; });
+      },
+      /* ---- 13.15.3 增强: 搜索命中高亮 ---- */
+      isHit: function (b) {
+        var q = (this.searchKey || '').trim();
+        if (!q) { return false; }
+        var p = this.bedPatient(b);
+        var hay = [b.bedNo, p ? p.patientName : '', p ? p.inpNo : ''].join(' ');
+        return hay.indexOf(q) >= 0;
+      },
+      /* ---- 床卡右键菜单 ---- */
+      openCtx: function (b, e) {
+        this.ctx = { show: true, x: Math.min(e.clientX, window.innerWidth - 180), y: Math.min(e.clientY, window.innerHeight - 220), bed: b };
+      },
+      closeCtx: function () { this.ctx.show = false; },
+      ctxPick: function () {
+        if (this.ctx.bed) { this.onCard(this.ctx.bed); }
+        this.ctx.show = false;
+      },
+      ctxOpenOrders: function () {
+        var b = this.ctx.bed, p = b ? this.bedPatient(b) : null;
+        this.ctx.show = false;
+        if (p) { this.$emit('open', HIS.id(p.id)); }
+      },
+      /* 发起转科: 交给主组件切到入出转页签(病区选择/审批在 flow 面板完成) */
+      ctxFlow: function (seg) {
+        var b = this.ctx.bed, p = b ? this.bedPatient(b) : null;
+        this.ctx.show = false;
+        if (p) { this.$emit('pick', HIS.id(p.id)); }
+        this.$emit('flow', seg || 'approval');
+      },
+      ctxWristband: function () {
+        var b = this.ctx.bed, p = b ? this.bedPatient(b) : null;
+        this.ctx.show = false;
+        if (!p) { HIS.notifyError('该床位无在区患者'); return; }
+        HIS.get('/api/his/inp/print/render/wristband?visitId=' + HIS.idParam(p.id)).then(function (html) {
+          if (typeof HIS.printHtmlFrame === 'function' && html) { HIS.printHtmlFrame(html, '患者腕带'); }
+          else { HIS.notifyError('打印组件未就绪'); }
+        }).catch(HIS.notifyError);
+      },
+      /* ---- 拖拽转床/换床(HTML5 draggable) ---- */
+      dragStart: function (b, e) {
+        var p = this.bedPatient(b);
+        if (b.status !== 1 || !p) { e.dataTransfer.effectAllowed = 'none'; return; }
+        this.dragFrom = { visitId: HIS.id(p.id), bedId: HIS.idKey(b.id), bedNo: b.bedNo, name: p.patientName };
+        e.dataTransfer.effectAllowed = 'move';
+        try { e.dataTransfer.setData('text/plain', String(b.bedNo)); } catch (err) { /* IE 兜底忽略 */ }
+      },
+      dragEnd: function () { this.dragFrom = null; this.overBedId = null; },
+      dragOver: function (b, e) {
+        if (!this.dragFrom || HIS.idKey(b.id) === this.dragFrom.bedId) { return; }
+        if (b.status === 0 || b.status === 1) { this.overBedId = HIS.idKey(b.id); e.dataTransfer.dropEffect = 'move'; }
+      },
+      dragLeave: function (b) { if (HIS.idKey(b.id) === this.overBedId) { this.overBedId = null; } },
+      onDrop: function (b) {
+        var vm = this;
+        var from = vm.dragFrom;
+        vm.dragFrom = null; vm.overBedId = null;
+        if (!from || HIS.idKey(b.id) === from.bedId) { return; }
+        if (b.status === 0) { vm.doDirectTransfer(from, b); }
+        else if (b.status === 1) { vm.doSwapApply(from, b); }
+      },
+      /* 占用床 → 空床: 直接转床(PUT /visit/{id}/transfer, 乐观锁原子换床) */
+      doDirectTransfer: function (from, toBed) {
+        var vm = this;
+        confirmBox('确认转床？', from.name + '(' + from.bedNo + '床) 直接转至 ' + (toBed.bedNo || '-') + '床, 立即生效(乐观锁抢占新床并释放旧床)。').then(function () {
+          HIS.put('/api/his/inp/visit/' + HIS.idParam(from.visitId) + '/transfer', { targetBedId: HIS.id(toBed.id), reason: '护士站拖拽转床' }).then(function () {
+            HIS.notifySuccess('转床完成'); vm.load();
+          }).catch(HIS.notifyError);
+        }).catch(function () {});
+      },
+      /* 占用床 → 占用床: 换床=生成两条转床申请, 至入出转审批中心批准执行 */
+      doSwapApply: function (from, toBed) {
+        var vm = this;
+        var tp = vm.bedPatient(toBed);
+        if (!tp) { return; }
+        confirmBox('发起换床申请？', from.name + '(' + from.bedNo + '床) ⇄ ' + (toBed.bedNo || '-') + '床(' + (tp.patientName || '-') + '), 将生成两条转床申请, 请到「入出转 · 申请审批」批准并执行。').then(function () {
+          Promise.all([
+            HIS.post('/api/his/inp/transfer', { inpVisitId: HIS.id(from.visitId), transferType: 2, toWardId: toBed.wardId, toBedId: HIS.id(toBed.id), reason: '护士站拖拽换床' }),
+            HIS.post('/api/his/inp/transfer', { inpVisitId: HIS.id(tp.id), transferType: 2, toWardId: toBed.wardId, toBedId: HIS.id(from.bedId), reason: '护士站拖拽换床(对调)' })
+          ]).then(function () {
+            HIS.notifySuccess('两条换床申请已提交, 待审批执行'); vm.$emit('flow', 'approval');
+          }).catch(HIS.notifyError);
+        }).catch(function () {});
+      },
+      /* 列表视图写操作: 单击选中 / 右键菜单(原生事件在第二参) */
+      rowClick: function (row) { this.onCard(row); },
+      rowCtx: function (row, column, e) { if (e && e.preventDefault) { e.preventDefault(); } this.openCtx(row, e); },
+      /* 简卡/列表视图: 患者直接转至所选空床 */
+      quickTransfer: function (b, targetBedId) {
+        if (!targetBedId) { return; }
+        var p = this.bedPatient(b);
+        var tb = (this.beds || []).filter(function (x) { return HIS.idKey(x.id) === HIS.idKey(targetBedId); })[0];
+        if (p && tb) { this.doDirectTransfer({ visitId: HIS.id(p.id), bedNo: b.bedNo, name: p.patientName }, tb); }
       }
     },
     template: [
@@ -2165,6 +2411,11 @@
       '    </template>',
       '    <span style="color:var(--yb-ink-2);">占用率 <b style="color:var(--yb-brand-strong);">{{ stats.occRate }}%</b> <span style="color:var(--yb-ink-4);">|</span> 总 <b>{{ stats.total }}</b> 空床 <b style="color:var(--yb-success-strong);">{{ stats.empty }}</b> 占用 <b style="color:var(--yb-link);">{{ stats.occupied }}</b> 停用 <b style="color:var(--yb-ink-3);">{{ stats.disabled }}</b></span>',
       '    <span style="flex:1;"></span>',
+      '    <div class="bdo-view-seg">',
+      '      <span v-for="vm2 in [[\'card\',\'\u7ec6\u5361\'],[\'slim\',\'\u7b80\u5361\'],[\'list\',\'\u5217\u8868\']]" :key="vm2[0]" :class="{ \'is-active\': viewMode === vm2[0] }" @click="viewMode = vm2[0]">{{ vm2[1] }}</span>',
+      '    </div>',
+      '    <el-input v-model="searchKey" size="small" placeholder="床号/病案号/姓名 定位" clearable style="width:170px;"></el-input>',
+      '    <el-button size="small" @click="legendOpen = true">图例</el-button>',
       '    <el-button size="small" @click="load">刷新</el-button>',
       '  </div>',
       '  <div class="bdo-kpis">',
@@ -2185,6 +2436,8 @@
       '      <el-radio-button label="pendExec">待执行</el-radio-button>',
       '      <el-radio-button label="newToday">新入</el-radio-button>',
       '      <el-radio-button label="preDischarge">预出院</el-radio-button>',
+      '      <el-radio-button label="allergy">过敏</el-radio-button>',
+      '      <el-radio-button label="discharge">出院办理</el-radio-button>',
       '      <el-radio-button label="isolation">隔离</el-radio-button>',
       '      <el-radio-button label="empty">空床</el-radio-button>',
       '    </el-radio-group>',
@@ -2200,12 +2453,15 @@
       '      <el-radio-button :label="false">平铺显示</el-radio-button>',
       '    </el-radio-group>',
       '  </div>',
+      '  <template v-if="viewMode === \'card\'">',
       '  <div class="bdo-bands">',
       '    <section v-for="(g, gi) in roomGroups" :key="gi" class="bdo-band">',
       '      <div v-if="g.roomNo" class="bdo-band-h"><span class="bdo-band-room">{{ g.roomNo }}</span><span class="bdo-band-cnt">{{ g.beds.length }} 床</span></div>',
       '      <div class="bdo-grid">',
       '        <el-tooltip v-for="(b, bi) in g.beds" :key="bi" :content="cardTip(b)" placement="top" :show-after="300">',
-      '          <div class="bdo-card" :class="[bedStateClass(b), { \'is-active\': isActive(b) }]" @click="onCard(b)" @dblclick="onCardDbl(b)">',
+      '          <div class="bdo-card" :class="[bedStateClass(b), { \'is-active\': isActive(b), \'bdo-search-hit\': isHit(b), \'is-dragging\': dragFrom && dragFrom.bedId === idKey(b.id), \'is-drag-over\': overBedId === idKey(b.id) }]"',
+      '               :draggable="b.status === 1" @click="onCard(b)" @dblclick="onCardDbl(b)" @contextmenu.prevent="openCtx(b, $event)"',
+      '               @dragstart="dragStart(b, $event)" @dragend="dragEnd" @dragover="dragOver(b, $event)" @dragleave="dragLeave(b)" @drop.prevent="onDrop(b)">',
       '            <div class="bdo-bar" :style="{ background: barColor(b) }"></div>',
       '            <div class="bdo-body">',
       '              <div class="bdo-head">',
@@ -2235,7 +2491,77 @@
       '      </div>',
       '    </section>',
       '  </div>',
+      '  </template>',
+      '  <div v-else-if="viewMode === \'slim\'" class="bdo-slims">',
+      '    <div v-for="(b, si) in filteredBeds" :key="si" class="bdo-slim" :class="{ \'is-active\': isActive(b), \'bdo-search-hit\': isHit(b) }"',
+      '         :style="{ borderLeftColor: barColor(b) }" :draggable="b.status === 1"',
+      '         @click="onCard(b)" @dblclick="onCardDbl(b)" @contextmenu.prevent="openCtx(b, $event)"',
+      '         @dragstart="dragStart(b, $event)" @dragend="dragEnd" @dragover.prevent="dragOver(b, $event)" @dragleave="dragLeave(b)" @drop.prevent="onDrop(b)">',
+      '      <span class="no">{{ b.bedNo || \'-\' }}</span>',
+      '      <span class="who">{{ bedPatient(b) ? bedPatient(b).patientName : dictBedStatus[b.status] }}</span>',
+      '      <span style="width:120px;flex:none;font-size:12px;color:var(--yb-ink-3);">{{ bedPatient(b) ? genderText(bedPatient(b)) + (bedPatient(b).age != null ? \' · \' + bedPatient(b).age + \'岁\' : \'\') : (b.roomNo ? b.roomNo + \'房\' : \'\') }}</span>',
+      '      <span class="diag">{{ bedPatient(b) ? (bedPatient(b).admitDiag || \'-\') : blankSub(b) }}</span>',
+      '      <span v-if="bedPatient(b)" class="tags"><span v-for="(tg, i) in tags(b)" :key="i" class="bdo-tag" :class="tg.c">{{ tg.t }}</span></span>',
+      '      <el-select v-if="bedPatient(b) && emptyBeds.length" v-model="quickBedMap[idKey(b.id)]" size="small" placeholder="转至空床" clearable filterable style="width:110px;flex:none;" @change="quickTransfer(b, $event)">',
+      '        <el-option v-for="eb in emptyBeds" :key="eb.id" :label="(eb.bedNo || \'-\') + \'床\'" :value="idKey(eb.id)"></el-option>',
+      '      </el-select>',
+      '    </div>',
+      '  </div>',
+      '  <el-table v-else :data="filteredBeds" size="small" border stripe max-height="560" @row-click="rowClick" @row-contextmenu="rowCtx">',
+      '    <el-table-column label="床号" width="70" align="center"><template #default="s">{{ s.row.bedNo || \'-\' }}</template></el-table-column>',
+      '    <el-table-column label="房间" width="80" align="center"><template #default="s">{{ s.row.roomNo || \'-\' }}</template></el-table-column>',
+      '    <el-table-column label="状态" width="70" align="center"><template #default="s"><el-tag size="small" :type="s.row.status === 0 ? \'success\' : (s.row.status === 1 ? \'primary\' : \'info\')">{{ dictBedStatus[s.row.status] }}</el-tag></template></el-table-column>',
+      '    <el-table-column label="类型" width="60" align="center"><template #default="s">{{ dictBedType[s.row.bedType] || \'-\' }}</template></el-table-column>',
+      '    <el-table-column label="患者" width="90"><template #default="s">{{ bedPatient(s.row) ? bedPatient(s.row).patientName : \'-\' }}</template></el-table-column>',
+      '    <el-table-column label="住院号" width="120"><template #default="s">{{ bedPatient(s.row) ? (bedPatient(s.row).inpNo || \'-\') : \'-\' }}</template></el-table-column>',
+      '    <el-table-column label="诊断" min-width="150" show-overflow-tooltip><template #default="s">{{ bedPatient(s.row) ? (bedPatient(s.row).admitDiag || \'-\') : blankSub(s.row) }}</template></el-table-column>',
+      '    <el-table-column label="护理等级" width="90" align="center"><template #default="s">{{ bedPatient(s.row) ? legendDicts.lv[bedPatient(s.row).nursingLevel] || \'-\' : \'-\' }}</template></el-table-column>',
+      '    <el-table-column label="病情" width="70" align="center"><template #default="s">{{ bedPatient(s.row) ? (s.row.status === 1 ? (legendDicts.lv[bedPatient(s.row).conditionLevel] || \'-\') : \'-\') : \'-\' }}</template></el-table-column>',
+      '    <el-table-column label="主管医护" width="130"><template #default="s">{{ bedPatient(s.row) ? ((bedPatient(s.row).doctorName || \'待分配\') + \' / \' + (bedPatient(s.row).nurseName || \'待指派\')) : \'-\' }}</template></el-table-column>',
+      '  </el-table>',
       '  <el-empty v-if="!loading && !filteredBeds.length" description="本病区暂无床位(可在床位管理中维护)" :image-size="60"></el-empty>',
+      '  <!-- 床卡右键菜单 -->',
+      '  <div v-if="ctx.show" class="bctx" :style="{ left: ctx.x + \'px\', top: ctx.y + \'px\' }" @click.stop>',
+      '    <template v-if="ctx.bed && bedPatient(ctx.bed)">',
+      '      <div class="bctx-item" @click="ctxPick">选中患者</div>',
+      '      <div class="bctx-item" @click="ctxOpenOrders">直达医嘱审核</div>',
+      '      <div class="bctx-sep"></div>',
+      '      <div class="bctx-item" @click="ctxFlow(\'onward\')">发起转科/流转申请</div>',
+      '      <div class="bctx-item" @click="ctxFlow(\'approval\')">流转审批中心</div>',
+      '      <div class="bctx-sep"></div>',
+      '      <div class="bctx-item" @click="ctxWristband">打印腕带</div>',
+      '    </template>',
+      '    <div v-else class="bctx-item" @click="ctxFlow(\'preadmit\')">查看待入区</div>',
+      '  </div>',
+      '  <!-- 图例抽屉 -->',
+      '  <el-drawer v-model="legendOpen" title="图例说明" size="320px" :append-to-body="true">',
+      '    <div class="bdo-legend">',
+      '      <div class="bdo-legend-row"><span class="bdo-legend-sw" style="background:var(--yb-success);"></span>空床</div>',
+      '      <div class="bdo-legend-row"><span class="bdo-legend-sw" style="background:var(--yb-link);"></span>占用(无患者匹配/色条兜底)</div>',
+      '      <div class="bdo-legend-row"><span class="bdo-legend-sw" style="background:var(--yb-ink-disabled);"></span>停用床位</div>',
+      '      <div class="bdo-legend-h" style="margin-top:8px;font-weight:700;">{{ legendDicts.lvName }}色条</div>',
+      '      <div v-for="(t, i) in [1,2,3,4]" :key="\'lv\'+i" class="bdo-legend-row" v-show="legendDicts.lv[t]">',
+      '        <span class="bdo-legend-sw" :style="{ background: [\'var(--yb-danger)\',\'#E6A23C\',\'#d4a017\',\'var(--yb-success)\'][t-1] }"></span>{{ legendDicts.lv[t] }}',
+      '      </div>',
+      '      <div class="bdo-legend-h" style="margin-top:8px;font-weight:700;">床位类型徽标</div>',
+      '      <div class="bdo-legend-row"><span class="bdo-badge bdo-b-red">抢救</span>{{ dictBedType[2] }}床位</div>',
+      '      <div class="bdo-legend-row"><span class="bdo-badge bdo-b-blu">监护</span>{{ dictBedType[3] }}床位</div>',
+      '      <div class="bdo-legend-row"><span class="bdo-badge bdo-b-grn">隔离</span>{{ dictBedType[4] }}床位</div>',
+      '      <div class="bdo-legend-row"><span class="bdo-badge bdo-b-org">加床</span>临时加床</div>',
+      '      <div class="bdo-legend-h" style="margin-top:8px;font-weight:700;">患者标签</div>',
+      '      <div class="bdo-legend-row"><span class="bdo-tag bdo-t-blu">新入</span>今日入院</div>',
+      '      <div class="bdo-legend-row"><span class="bdo-tag bdo-t-red">过敏</span>有过敏史</div>',
+      '      <div class="bdo-legend-row"><span class="bdo-tag bdo-t-red">隔离</span>隔离患者/隔离床</div>',
+      '      <div class="bdo-legend-row"><span class="bdo-tag bdo-t-pur">术后N天</span>近期手术</div>',
+      '      <div class="bdo-legend-row"><span class="bdo-tag bdo-t-org">T38.5</span>发热(末次体温)</div>',
+      '      <div class="bdo-legend-row"><span class="bdo-tag bdo-t-org">压疮高危</span>Braden ≤ 14</div>',
+      '      <div class="bdo-legend-row"><span class="bdo-tag bdo-t-org">跌倒高危</span>Morse ≥ 25</div>',
+      '      <div class="bdo-legend-row"><span class="bdo-tag bdo-t-grn">预出院</span>预计出院日不晚于今日</div>',
+      '      <div class="bdo-legend-row"><span class="bdo-tag bdo-t-org">审N</span>待审核医嘱 N 条</div>',
+      '      <div class="bdo-legend-row"><span class="bdo-tag bdo-t-blu">执N</span>待执行医嘱 N 条</div>',
+      '      <div style="color:var(--yb-ink-4);font-size:12px;margin-top:10px;">操作: 单击选中 · 双击直达医嘱 · 右键更多 · 拖占用床到空床=转床(立即), 到占用床=换床(两条申请待审批)</div>',
+      '    </div>',
+      '  </el-drawer>',
       '</div>'
     ].join('\n')
   };
@@ -2958,7 +3284,736 @@
     ].join('\n')
   };
 
-  /* ================= 1. 护士站主页(病区患者名单 + 待办概览 + 七个工作页签) ================= */
+  /* ================= 1. 护士站主页(病区患者名单 + 待办概览 + 工作页签) ================= */
+
+  /* 当前登录用户 staffId(用于转科取消仅本人可见, 与后端 currentStaffId 同源自 sys_user.staff_id) */
+  function currentStaffId() {
+    try {
+      var u = JSON.parse(localStorage.getItem('yb_his_user') || '{}');
+      return u && u.staffId != null ? String(u.staffId) : null;
+    } catch (e) { return null; }
+  }
+
+  /* 危险操作二次确认(项目无 HIS.confirmDanger, 统一走 ElementPlus.ElMessageBox): title 为标题, message 为正文 */
+  function confirmBox(title, message) {
+    return ElementPlus.ElMessageBox.confirm(message, title, { type: 'warning', confirmButtonText: '确认', cancelButtonText: '取消' });
+  }
+
+  /* ================= 入出转管理 InpFlowPanel(13.15.2: 待入区/申请审批/在区流转) ================= */
+  var InpFlowPanel = {
+    name: 'InpFlowPanel',
+    props: {
+      wardId: { type: [String, Number], default: null },
+      wards: { type: Array, default: function () { return []; } },
+      patients: { type: Array, default: function () { return []; } },
+      visitId: { type: [String, Number], default: null },
+      patient: { type: Object, default: null },
+      initialSeg: { type: String, default: 'preadmit' }
+    },
+    emits: ['changed', 'pick'],
+    data: function () {
+      return {
+        seg: this.initialSeg || 'preadmit',
+        loadingPA: false, preAdmits: [],
+        loadingAP: false, apps: [], apStatus: 1, apPage: 1, apSize: 20, apTotal: 0,
+        bedDlgVisible: false, bedDlgRow: null, bedDlgWardId: null, bedDlgBeds: [], bedDlgLoading: false, pickedBedId: null,
+        /* 发起流转申请对话框 */
+        applyDlg: false, applying: false,
+        applyForm: { transferType: 1, toWardId: null, toBedId: null, reason: '' },
+        applyBeds: [], applyBedLoading: false,
+        /* 退回对话框 */
+        rejectDlg: false, rejectRow: null, rejectReason: '',
+        staffId: currentStaffId()
+      };
+    },
+    computed: {
+      /* visitId → 在区患者姓名映射(申请单展示用, 优先本地 patients, 回落空) */
+      nameOf: function () {
+        var m = {};
+        (this.patients || []).forEach(function (p) { m[HIS.idKey(p.id)] = p.patientName || p.name || '-'; });
+        return m;
+      },
+      wardMap: function () {
+        var m = {};
+        (this.wards || []).forEach(function (w) { m[HIS.idKey(w.id)] = w; });
+        return m;
+      }
+    },
+    watch: {
+      seg: function (v) { if (v === 'preadmit') { this.loadPreAdmits(); } else if (v === 'approval') { this.loadApps(); } },
+      wardId: function () { if (this.seg === 'preadmit') { this.loadPreAdmits(); } },
+      initialSeg: function (v) { if (v) { this.seg = v; } }
+    },
+    created: function () {
+      if (this.seg === 'preadmit') { this.loadPreAdmits(); } else if (this.seg === 'approval') { this.loadApps(); }
+    },
+    methods: {
+      fmtTime: fmtTime, datePart: datePart,
+      bedNoOf: function (visitId) {
+        var p = (this.patients || []).filter(function (x) { return HIS.sameId(x.id, visitId); })[0];
+        return p ? (p.bedNo || '-') : '—';
+      },
+      ptName: function (visitId) { return this.nameOf[HIS.idKey(visitId)] || ('就诊' + (visitId == null ? '' : visitId)); },
+      wardName: function (wid) { var w = this.wardMap[HIS.idKey(wid)]; return w ? w.wardName : '—'; },
+      /* ---------- 待入区 ---------- */
+      loadPreAdmits: function () {
+        var vm = this; vm.loadingPA = true;
+        HIS.get('/api/his/inp/pre-admissions').then(function (rows) {
+          var list = rows || [];
+          /* 若已选病区, 优先展示拟入本病区的预入院(无 ward_id 的置后, 不过滤掉以便统一受理) */
+          if (vm.wardId) {
+            list.sort(function (a, b) {
+              var am = HIS.sameId(a.ward_id, vm.wardId) ? 0 : 1;
+              var bm = HIS.sameId(b.ward_id, vm.wardId) ? 0 : 1;
+              return am - bm;
+            });
+          }
+          vm.preAdmits = list;
+        }).catch(HIS.notifyError).finally(function () { vm.loadingPA = false; });
+      },
+      openBedPick: function (row) {
+        var vm = this;
+        vm.bedDlgRow = row; vm.pickedBedId = null;
+        vm.bedDlgWardId = row.ward_id ? HIS.id(row.ward_id) : (vm.wardId ? HIS.id(vm.wardId) : null);
+        vm.bedDlgVisible = true; vm.loadBedDlgBeds();
+      },
+      loadBedDlgBeds: function () {
+        var vm = this;
+        if (!vm.bedDlgWardId) { vm.bedDlgBeds = []; return; }
+        vm.bedDlgLoading = true;
+        HIS.get('/api/his/inp/bed/list?wardId=' + HIS.idParam(vm.bedDlgWardId)).then(function (list) {
+          vm.bedDlgBeds = (list || []).filter(function (b) { return b.status === 0; }).sort(byBedNo);
+        }).catch(HIS.notifyError).finally(function () { vm.bedDlgLoading = false; });
+      },
+      onBedDlgWardChange: function () { this.pickedBedId = null; this.loadBedDlgBeds(); },
+      confirmAdmit: function () {
+        var vm = this;
+        if (!vm.pickedBedId) { HIS.notifyError('请选择入区床位'); return; }
+        HIS.post('/api/his/inp/pre-admit/' + HIS.idParam(vm.bedDlgRow.id) + '/confirm?bedId=' + HIS.idParam(vm.pickedBedId)).then(function () {
+          HIS.notifySuccess('入区登记完成'); vm.bedDlgVisible = false; vm.loadPreAdmits(); vm.$emit('changed');
+        }).catch(HIS.notifyError);
+      },
+      cancelPreAdmit: function (row) {
+        var vm = this;
+        confirmBox('确认取消该患者入院？', '取消后将释放预入院占位。').then(function () {
+          HIS.post('/api/his/inp/pre-admit/' + HIS.idParam(row.id) + '/cancel').then(function () {
+            HIS.notifySuccess('已取消入院'); vm.loadPreAdmits(); vm.$emit('changed');
+          }).catch(HIS.notifyError);
+        }).catch(function () {});
+      },
+      /* ---------- 申请审批中心 ---------- */
+      loadApps: function () {
+        var vm = this; vm.loadingAP = true;
+        var p = new URLSearchParams({ page: vm.apPage, size: vm.apSize });
+        if (vm.apStatus) { p.append('status', vm.apStatus); }
+        HIS.get('/api/his/inp/transfer/list?' + p.toString()).then(function (d) {
+          vm.apps = (d && d.records) || []; vm.apTotal = (d && d.total) || 0;
+        }).catch(HIS.notifyError).finally(function () { vm.loadingAP = false; });
+      },
+      onApStatusChange: function () { this.apPage = 1; this.loadApps(); },
+      doApprove: function (row) {
+        var vm = this;
+        HIS.put('/api/his/inp/transfer/' + HIS.idParam(row.id) + '/approve').then(function () {
+          HIS.notifySuccess('已批准'); vm.loadApps(); vm.$emit('changed');
+        }).catch(HIS.notifyError);
+      },
+      openReject: function (row) { this.rejectRow = row; this.rejectReason = ''; this.rejectDlg = true; },
+      doReject: function () {
+        var vm = this;
+        if (!vm.rejectReason) { HIS.notifyError('请填写退回原因'); return; }
+        HIS.put('/api/his/inp/transfer/' + HIS.idParam(vm.rejectRow.id) + '/reject', { reason: vm.rejectReason }).then(function () {
+          HIS.notifySuccess('已退回'); vm.rejectDlg = false; vm.loadApps(); vm.$emit('changed');
+        }).catch(HIS.notifyError);
+      },
+      doExecute: function (row) {
+        var vm = this;
+        confirmBox('确认执行该流转申请？', '执行后新床占用、旧床释放并回写在院信息, 不可撤销。').then(function () {
+          HIS.put('/api/his/inp/transfer/' + HIS.idParam(row.id) + '/execute').then(function () {
+            HIS.notifySuccess('已执行流转'); vm.loadApps(); vm.$emit('changed');
+          }).catch(HIS.notifyError);
+        }).catch(function () {});
+      },
+      doCancel: function (row) {
+        var vm = this;
+        HIS.put('/api/his/inp/transfer/' + HIS.idParam(row.id) + '/cancel').then(function () {
+          HIS.notifySuccess('已取消申请'); vm.loadApps();
+        }).catch(HIS.notifyError);
+      },
+      canCancel: function (row) { return row.status === 1 && this.staffId != null && HIS.sameId(row.applyDoctorId, this.staffId); },
+      /* ---------- 在区流转: 发起申请 / 出院 / 取消入院 ---------- */
+      openApply: function () {
+        if (!this.visitId) { HIS.notifyError('请先在左侧选择在区患者'); return; }
+        this.applyForm = { transferType: 1, toWardId: null, toBedId: null, reason: '' };
+        this.applyBeds = [];
+        this.applyDlg = true;
+      },
+      onApplyWardChange: function () {
+        var vm = this; vm.applyForm.toBedId = null; vm.applyBeds = [];
+        if (!vm.applyForm.toWardId) { return; }
+        vm.applyBedLoading = true;
+        HIS.get('/api/his/inp/bed/list?wardId=' + HIS.idParam(vm.applyForm.toWardId)).then(function (list) {
+          vm.applyBeds = (list || []).filter(function (b) { return b.status === 0; }).sort(byBedNo);
+        }).catch(HIS.notifyError).finally(function () { vm.applyBedLoading = false; });
+      },
+      submitApply: function () {
+        var vm = this;
+        var f = vm.applyForm;
+        var ward = vm.wardMap[HIS.idKey(f.toWardId)];
+        var body = { inpVisitId: HIS.id(vm.visitId), transferType: f.transferType, toWardId: f.toWardId, toBedId: f.toBedId, reason: f.reason };
+        if (f.transferType === 1) { body.toDeptId = ward ? ward.deptId : null; }
+        vm.applying = true;
+        HIS.post('/api/his/inp/transfer', body).then(function () {
+          HIS.notifySuccess('流转申请已提交, 待审批'); vm.applyDlg = false; vm.$emit('changed');
+        }).catch(HIS.notifyError).finally(function () { vm.applying = false; });
+      },
+      doDischarge: function () {
+        var vm = this;
+        if (!vm.visitId) { HIS.notifyError('请先选择在区患者'); return; }
+        confirmBox('确认办理出院？', '出院前请确认医嘱已停/已执行、费用已结算(后端将二次校验)。').then(function () {
+          HIS.put('/api/his/inp/visit/' + HIS.idParam(vm.visitId) + '/discharge-apply').then(function () {
+            HIS.notifySuccess('已提交出院申请'); vm.$emit('changed');
+          }).catch(HIS.notifyError);
+        }).catch(function () {});
+      },
+      doCancelAdmit: function () {
+        var vm = this;
+        if (!vm.visitId) { HIS.notifyError('请先选择在区患者'); return; }
+        confirmBox('确认取消入院？', '取消后患者离院并释放床位, 不可撤销。').then(function () {
+          HIS.put('/api/his/inp/visit/' + HIS.idParam(vm.visitId) + '/cancel').then(function () {
+            HIS.notifySuccess('已取消入院'); vm.$emit('changed');
+          }).catch(HIS.notifyError);
+        }).catch(function () {});
+      }
+    },
+    template: [
+      '<div class="nfw" v-loading="loadingPA || loadingAP">',
+      '  <div class="nfw-main">',
+      '    <el-radio-group v-model="seg" size="small" style="margin-bottom:10px;">',
+      '      <el-radio-button label="preadmit">待入区 ({{ preAdmits.length }})</el-radio-button>',
+      '      <el-radio-button label="approval">申请审批 ({{ apTotal }})</el-radio-button>',
+      '      <el-radio-button label="onward">在区流转</el-radio-button>',
+      '    </el-radio-group>',
+      /* 待入区 */
+      '    <div v-show="seg===\'preadmit\'">',
+      '      <el-table :data="preAdmits" border size="small" max-height="calc(100vh - 320px)">',
+      '        <el-table-column type="index" label="序号" width="55" align="center"></el-table-column>',
+      '        <el-table-column label="住院号" width="150" prop="inp_no"></el-table-column>',
+      '        <el-table-column label="姓名" width="90"><template #default="s">{{ s.row.patient_name }}</template></el-table-column>',
+      '        <el-table-column label="性别" width="60" align="center"><template #default="s">{{ s.row.gender_name || s.row.gender || \'-\' }}</template></el-table-column>',
+      '        <el-table-column label="年龄" width="60" align="center"><template #default="s">{{ s.row.age != null ? s.row.age : \'-\' }}</template></el-table-column>',
+      '        <el-table-column label="入院诊断" min-width="180" show-overflow-tooltip><template #default="s">{{ s.row.admit_diag || \'-\' }}</template></el-table-column>',
+      '        <el-table-column label="拟入病区" width="120"><template #default="s">{{ wardName(s.row.ward_id) }}</template></el-table-column>',
+      '        <el-table-column label="预入院时间" width="150" align="center"><template #default="s">{{ fmtTime(s.row.pre_admit_time) }}</template></el-table-column>',
+      '        <el-table-column label="操作" width="150" align="center" fixed="right">',
+      '          <template #default="s">',
+      '            <el-button size="small" type="primary" link @click="openBedPick(s.row)">入区登记</el-button>',
+      '            <el-button size="small" type="danger" link @click="cancelPreAdmit(s.row)">取消入院</el-button>',
+      '          </template>',
+      '        </el-table-column>',
+      '        <template #empty><el-empty description="暂无待入区患者" :image-size="54"></el-empty></template>',
+      '      </el-table>',
+      '    </div>',
+      /* 申请审批 */
+      '    <div v-show="seg===\'approval\'">',
+      '      <div class="nfw-toolbar">',
+      '        <span style="font-size:13px;color:var(--yb-ink-3);">状态</span>',
+      '        <el-select v-model="apStatus" size="small" style="width:130px;" @change="onApStatusChange">',
+      '          <el-option :value="0" label="全部"></el-option>',
+      '          <el-option v-for="(lbl,k) in {1:1,2:1,3:1,4:1,5:1}" :key="k" :value="Number(k)" :label="({1:\'待审批\',2:\'已批准\',3:\'已退回\',4:\'已执行\',5:\'已取消\'})[k]"></el-option>',
+      '        </el-select>',
+      '        <el-button size="small" @click="loadApps">刷新</el-button>',
+      '      </div>',
+      '      <el-table :data="apps" border size="small" max-height="calc(100vh - 360px)">',
+      '        <el-table-column label="床号" width="70" align="center"><template #default="s">{{ bedNoOf(s.row.inpVisitId) }}</template></el-table-column>',
+      '        <el-table-column label="患者" width="90"><template #default="s">{{ ptName(s.row.inpVisitId) }}</template></el-table-column>',
+      '        <el-table-column label="类型" width="70" align="center"><template #default="s">{{ ({1:\'转科\',2:\'转床\',3:\'加床\'})[s.row.transferType] || \'-\' }}</template></el-table-column>',
+      '        <el-table-column label="原病区→目标" min-width="180"><template #default="s">{{ wardName(s.row.fromWardId) }} → {{ wardName(s.row.toWardId) }}</template></el-table-column>',
+      '        <el-table-column label="原因" min-width="140" show-overflow-tooltip><template #default="s">{{ s.row.reason || \'-\' }}</template></el-table-column>',
+      '        <el-table-column label="状态" width="90" align="center"><template #default="s"><el-tag size="small" :type="({1:\'warning\',2:\'primary\',3:\'danger\',4:\'success\',5:\'info\'})[s.row.status]">{{ ({1:\'待审批\',2:\'已批准\',3:\'已退回\',4:\'已执行\',5:\'已取消\'})[s.row.status] }}</el-tag></template></el-table-column>',
+      '        <el-table-column label="申请时间" width="150" align="center"><template #default="s">{{ fmtTime(s.row.applyTime) }}</template></el-table-column>',
+      '        <el-table-column label="操作" width="200" align="center" fixed="right">',
+      '          <template #default="s">',
+      '            <el-button v-if="s.row.status===1" size="small" type="success" link @click="doApprove(s.row)">批准</el-button>',
+      '            <el-button v-if="s.row.status===1" size="small" type="warning" link @click="openReject(s.row)">退回</el-button>',
+      '            <el-button v-if="s.row.status===2" size="small" type="primary" link @click="doExecute(s.row)">执行</el-button>',
+      '            <el-button v-if="canCancel(s.row)" size="small" type="danger" link @click="doCancel(s.row)">取消</el-button>',
+      '            <span v-if="s.row.status>=3 && !canCancel(s.row)" style="color:var(--yb-ink-4);">—</span>',
+      '          </template>',
+      '        </el-table-column>',
+      '        <template #empty><el-empty description="暂无流转申请" :image-size="54"></el-empty></template>',
+      '      </el-table>',
+      '      <el-pagination style="margin-top:8px;justify-content:flex-end;" layout="total,prev,pager,next" :total="apTotal" :page-size="apSize" :current-page="apPage" @current-change="(v)=>{ apPage=v; loadApps(); }"></el-pagination>',
+      '    </div>',
+      /* 在区流转 */
+      '    <div v-show="seg===\'onward\'">',
+      '      <template v-if="patient">',
+      '        <div class="nfw-toolbar" style="padding:10px 12px;border:1px solid var(--yb-border-light);border-radius:var(--yb-r-md);background:var(--yb-surface);">',
+      '          <span class="nfw-badge" style="background:var(--yb-brand);">{{ patient.bedNo || "—" }}</span>',
+      '          <b style="color:var(--yb-ink-1);">{{ patient.patientName }}</b>',
+      '          <span style="color:var(--yb-ink-3);font-size:12px;">住院号 {{ patient.inpNo || "-" }} · {{ patient.admitDiag || "诊断待补" }}</span>',
+      '          <span style="flex:1;"></span>',
+      '          <el-button size="small" type="primary" @click="openApply">发起转科/转床申请</el-button>',
+      '          <el-button size="small" type="success" @click="doDischarge">办理出院</el-button>',
+      '          <el-button size="small" type="danger" plain @click="doCancelAdmit">取消入院</el-button>',
+      '        </div>',
+      '        <div style="margin-top:6px;color:var(--yb-ink-4);font-size:12px;">提示: 转科/转床申请提交后至上方「申请审批」由医生/护士长批准并执行; 出院须先停嘱并结清费用, 后端二次校验。</div>',
+      '      </template>',
+      '      <el-empty v-else description="请先在左侧选择一位在区患者" :image-size="54"></el-empty>',
+      '    </div>',
+      '  </div>',
+      /* 入区选床对话框 */
+      '  <el-dialog v-model="bedDlgVisible" :title="\'入区登记 · \' + (bedDlgRow ? bedDlgRow.patient_name : \'\')" width="460px">',
+      '    <div style="display:flex;gap:8px;align-items:center;margin-bottom:10px;">',
+      '      <span style="font-size:13px;">病区</span>',
+      '      <el-select v-model="bedDlgWardId" size="small" style="flex:1;" @change="onBedDlgWardChange">',
+      '        <el-option v-for="w in wards" :key="w.id" :label="w.wardName" :value="w.id"></el-option>',
+      '      </el-select>',
+      '    </div>',
+      '    <div v-loading="bedDlgLoading" style="max-height:280px;overflow:auto;">',
+      '      <el-radio-group v-model="pickedBedId" style="display:flex;flex-wrap:wrap;gap:8px;">',
+      '        <el-radio v-for="b in bedDlgBeds" :key="b.id" :label="b.id" :value="b.id" border size="small">{{ b.bedNo }}<template v-if="b.roomNo">·{{ b.roomNo }}</template></el-radio>',
+      '      </el-radio-group>',
+      '      <div v-if="!bedDlgLoading && !bedDlgBeds.length" class="nfw-bedpick-empty">本病区暂无空床, 请切换病区或在床位管理中加床。</div>',
+      '    </div>',
+      '    <template #footer><el-button @click="bedDlgVisible=false">取消</el-button><el-button type="primary" :disabled="!pickedBedId" @click="confirmAdmit">确认入区</el-button></template>',
+      '  </el-dialog>',
+      /* 发起流转申请对话框 */
+      '  <el-dialog v-model="applyDlg" title="发起转科/转床/加床申请" width="480px">',
+      '    <el-form label-width="88px">',
+      '      <el-form-item label="类型"><el-radio-group v-model="applyForm.transferType"><el-radio :label="1" :value="1">转科</el-radio><el-radio :label="2" :value="2">转床</el-radio><el-radio :label="3" :value="3">加床</el-radio></el-radio-group></el-form-item>',
+      '      <el-form-item label="目标病区"><el-select v-model="applyForm.toWardId" style="width:100%;" @change="onApplyWardChange"><el-option v-for="w in wards" :key="w.id" :label="w.wardName" :value="w.id"></el-option></el-select></el-form-item>',
+      '      <el-form-item label="目标床位"><el-select v-model="applyForm.toBedId" :loading="applyBedLoading" style="width:100%;" placeholder="选择空床"><el-option v-for="b in applyBeds" :key="b.id" :label="b.bedNo + (b.roomNo ? (\' · \'+b.roomNo+\'房\') : \'\')" :value="b.id"></el-option></el-select></el-form-item>',
+      '      <el-form-item label="原因"><el-input v-model="applyForm.reason" type="textarea" :rows="2" placeholder="如: 转专科治疗 / 床位调整"></el-input></el-form-item>',
+      '    </el-form>',
+      '    <div style="color:var(--yb-ink-4);font-size:12px;">转科须选目标病区(科室随病区带出)与目标床位; 提交后进入「申请审批」待批准执行。</div>',
+      '    <template #footer><el-button @click="applyDlg=false">取消</el-button><el-button type="primary" :loading="applying" :disabled="!applyForm.toWardId || !applyForm.toBedId" @click="submitApply">提交申请</el-button></template>',
+      '  </el-dialog>',
+      /* 退回对话框 */
+      '  <el-dialog v-model="rejectDlg" title="退回流转申请" width="440px">',
+      '    <div style="margin-bottom:8px;">',
+      '      <el-tag v-for="r in [\'床位已满\',\'诊断不符\',\'转科资料不全\',\'需先处理未完成业务\',\'目标科室拒收\']" :key="r" size="small" style="cursor:pointer;margin:0 6px 6px 0;" @click="rejectReason=r">{{ r }}</el-tag>',
+      '    </div>',
+      '    <el-input v-model="rejectReason" type="textarea" :rows="3" placeholder="选择常见原因或直接录入退回原因"></el-input>',
+      '    <template #footer><el-button @click="rejectDlg=false">取消</el-button><el-button type="danger" :disabled="!rejectReason" @click="doReject">确认退回</el-button></template>',
+      '  </el-dialog>',
+      '</div>'
+    ].join('\n')
+  };
+
+  /* ================= 费用管理 InpFeePanel(13.15.5: 账户/明细/补费/结算/日清单/欠费预警) ================= */
+  var InpFeePanel = {
+    name: 'InpFeePanel',
+    props: {
+      wardId: { type: [String, Number], default: null },
+      patients: { type: Array, default: function () { return []; } },
+      visitId: { type: [String, Number], default: null },
+      patient: { type: Object, default: null }
+    },
+    emits: ['changed'],
+    data: function () {
+      return {
+        PAY_TYPES: PAY_TYPES, FEE_TYPE_OPTIONS: FEE_TYPE_OPTIONS,
+        loading: false,
+        balance: null, summary: null,
+        details: [], dPage: 1, dSize: 20, dTotal: 0, dFeeType: null,
+        deposits: [], settlements: [],
+        billDate: todayStr(), bill: null,
+        alerts: [],
+        depositDlg: false, depForm: { amount: null, payType: 1, direction: 1, remark: '' }, submitting: false,
+        chargeDlg: false, chgForm: { itemName: '', feeType: 1, quantity: 1, unitPrice: null, remark: '' },
+        preResult: null, preLoading: false
+      };
+    },
+    computed: {
+      totalFee: function () {
+        var d = this.summary || {};
+        var v = d.chargeTotalAmount != null ? d.chargeTotalAmount : d.totalAmount;
+        return v == null ? null : Number(v);
+      },
+      needPay: function () {
+        if (this.totalFee == null) { return null; }
+        var b = this.balance == null ? 0 : Number(this.balance);
+        return Math.max(0, this.totalFee - b);
+      },
+      amtPreview: function () {
+        var q = Number(this.chgForm.quantity) || 0, p = Number(this.chgForm.unitPrice) || 0;
+        return (q * p).toFixed(2);
+      }
+    },
+    watch: {
+      visitId: function () { this.reload(); }
+    },
+    created: function () { this.reload(); },
+    methods: {
+      fmtTime: fmtTime, datePart: datePart,
+      money: function (v) { return v == null || v === '' ? '-' : Number(v).toFixed(2); },
+      payTypeLabel: function (v) { var o = PAY_TYPES.filter(function (x) { return x.v === Number(v); })[0]; return o ? o.l : (v == null ? '-' : v); },
+      directionLabel: function (v) { var o = DIRECTIONS.filter(function (x) { return x.v === Number(v); })[0]; return o ? o.l : (v == null ? '-' : v); },
+      feeTypeLabel: function (v) { return FEE_TYPE_MAP[v] || (v == null ? '-' : v); },
+      alertHandleLabel: function (v) { return v == null ? '待处理' : (FEE_ALERT_HANDLE[v] || '已处理'); },
+      ptName: function (vid) { var p = (this.patients || []).filter(function (x) { return HIS.sameId(x.id, vid); })[0]; return p ? p.patientName : '—'; },
+      bedNoOf: function (vid) { var p = (this.patients || []).filter(function (x) { return HIS.sameId(x.id, vid); })[0]; return p ? (p.bedNo || '—') : '—'; },
+      reload: function () {
+        if (!this.visitId) { this.balance = null; this.summary = null; this.details = []; this.deposits = []; this.settlements = []; this.alerts = []; this.bill = null; this.preResult = null; return; }
+        this.loadBalance(); this.loadSummary(); this.loadDetails(); this.loadDeposits(); this.loadSettlements(); this.loadAlerts(); this.loadBill();
+      },
+      loadBalance: function () {
+        var vm = this;
+        HIS.get('/api/his/inp/deposit/balance/' + HIS.idParam(vm.visitId)).then(function (b) { vm.balance = b; }).catch(function () { vm.balance = null; });
+      },
+      loadSummary: function () {
+        var vm = this;
+        HIS.get('/api/his/inp/settle/charge/summary/' + HIS.idParam(vm.visitId)).then(function (d) { vm.summary = d || null; }).catch(function () { vm.summary = null; });
+      },
+      loadDetails: function () {
+        var vm = this;
+        var p = new URLSearchParams({ inpVisitId: HIS.id(vm.visitId), page: vm.dPage, size: vm.dSize });
+        if (vm.dFeeType) { p.append('feeType', vm.dFeeType); }
+        HIS.get('/api/his/inp/settle/charge/list?' + p.toString()).then(function (d) {
+          vm.details = (d && d.records) || []; vm.dTotal = (d && d.total) || 0;
+        }).catch(HIS.notifyError);
+      },
+      onFeeFilter: function () { this.dPage = 1; this.loadDetails(); },
+      loadDeposits: function () {
+        var vm = this;
+        HIS.get('/api/his/inp/deposit/list?inpVisitId=' + HIS.idParam(vm.visitId)).then(function (rows) { vm.deposits = rows || []; }).catch(function () { vm.deposits = []; });
+      },
+      loadSettlements: function () {
+        var vm = this;
+        HIS.get('/api/his/inp/settle/settlements/' + HIS.idParam(vm.visitId)).then(function (rows) { vm.settlements = rows || []; }).catch(function () { vm.settlements = []; });
+      },
+      loadAlerts: function () {
+        var vm = this;
+        HIS.get('/api/his/inp/fee-alert/list?visitId=' + HIS.idParam(vm.visitId) + '&page=1&size=50').then(function (d) { vm.alerts = (d && d.records) || []; }).catch(function () { vm.alerts = []; });
+      },
+      loadBill: function () {
+        var vm = this;
+        HIS.get('/api/his/inp/daily-bill?visitId=' + HIS.idParam(vm.visitId) + '&date=' + vm.billDate).then(function (d) { vm.bill = d || null; }).catch(function () { vm.bill = null; });
+      },
+      /* 预交金缴纳/退还 */
+      openDeposit: function (dir) { this.depForm = { amount: null, payType: 1, direction: dir, remark: '' }; this.depositDlg = true; },
+      submitDeposit: function () {
+        var vm = this;
+        if (!vm.depForm.amount) { HIS.notifyError('请输入金额'); return; }
+        vm.submitting = true;
+        HIS.post('/api/his/inp/deposit', { inpVisitId: HIS.id(vm.visitId), amount: Number(vm.depForm.amount), payType: vm.depForm.payType, direction: vm.depForm.direction, remark: vm.depForm.remark }).then(function () {
+          HIS.notifySuccess(vm.depForm.direction === 1 ? '缴纳成功' : '退还成功'); vm.depositDlg = false; vm.loadBalance(); vm.loadDeposits(); vm.$emit('changed');
+        }).catch(HIS.notifyError).finally(function () { vm.submitting = false; });
+      },
+      /* 手动记费/补费 */
+      openAddCharge: function () { this.chgForm = { itemName: '', feeType: 1, quantity: 1, unitPrice: null, remark: '' }; this.chargeDlg = true; },
+      submitAddCharge: function () {
+        var vm = this;
+        if (!vm.chgForm.itemName) { HIS.notifyError('请输入费用项目名称'); return; }
+        var q = Number(vm.chgForm.quantity) || 0, p = Number(vm.chgForm.unitPrice) || 0;
+        vm.submitting = true;
+        HIS.post('/api/his/inp/settle/charge', { inpVisitId: HIS.id(vm.visitId), itemName: vm.chgForm.itemName, feeType: vm.chgForm.feeType, quantity: q, unitPrice: p, amount: q * p, chargeDate: todayStr() }).then(function () {
+          HIS.notifySuccess('补费已记入'); vm.chargeDlg = false; vm.loadSummary(); vm.loadDetails(); vm.loadBalance(); vm.$emit('changed');
+        }).catch(HIS.notifyError).finally(function () { vm.submitting = false; });
+      },
+      /* 结算 */
+      doPreSettle: function () {
+        var vm = this; vm.preLoading = true; vm.preResult = null;
+        HIS.post('/api/his/inp/settle/pre?visitId=' + HIS.idParam(vm.visitId)).then(function (d) { vm.preResult = d || {}; }).catch(HIS.notifyError).finally(function () { vm.preLoading = false; });
+      },
+      doSettle: function (type) {
+        var vm = this;
+        confirmBox('确认' + (type === 1 ? '出院结算' : '中途结算') + '？', '结算将汇总费用并扣减预交金, 可后续作废冲正。').then(function () {
+          HIS.post('/api/his/inp/settle', { inpVisitId: HIS.id(vm.visitId), settleType: type }).then(function (d) {
+            HIS.notifySuccess('结算完成' + (d && d.settle ? (' 结算单号 ' + (d.settle.settleNo || '')) : '')); vm.loadBalance(); vm.loadSettlements(); vm.loadSummary(); vm.$emit('changed');
+          }).catch(HIS.notifyError);
+        }).catch(function () {});
+      },
+      cancelSettle: function (row) {
+        var vm = this;
+        confirmBox('确认作废该结算单？', '作废后费用与预交金将回滚, 可重新结算。').then(function () {
+          HIS.post('/api/his/inp/settle/' + HIS.idParam(row.id) + '/cancel').then(function () {
+            HIS.notifySuccess('已作废'); vm.loadBalance(); vm.loadSettlements(); vm.loadSummary(); vm.$emit('changed');
+          }).catch(HIS.notifyError);
+        }).catch(function () {});
+      },
+      /* 日清单 */
+      onBillDate: function () { this.loadBill(); },
+      genBill: function () {
+        var vm = this;
+        HIS.post('/api/his/inp/daily-bill/generate?visitId=' + HIS.idParam(vm.visitId) + '&date=' + vm.billDate).then(function () {
+          HIS.notifySuccess('日清单已生成'); vm.loadBill();
+        }).catch(HIS.notifyError);
+      },
+      printBill: function () {
+        var vm = this;
+        HIS.get('/api/his/inp/print/render/daily-bill?visitId=' + HIS.idParam(vm.visitId) + '&date=' + vm.billDate).then(function (html) {
+          if (typeof HIS.printHtmlFrame === 'function') { HIS.printHtmlFrame(html, '每日清单'); } else { HIS.notifyError('打印组件未就绪'); }
+          if (vm.bill && vm.bill.id) { HIS.put('/api/his/inp/daily-bill/' + HIS.idParam(vm.bill.id) + '/printed').catch(function () {}); }
+        }).catch(HIS.notifyError);
+      },
+      /* 欠费预警处理 */
+      handleAlert: function (row) {
+        var vm = this;
+        confirmBox('标记该预警为已催缴？', '将记录处理人与处理时间。').then(function () {
+          HIS.put('/api/his/inp/fee-alert/' + HIS.idParam(row.id) + '/handle', { result: 1, reason: '护士站催缴' }).then(function () {
+            HIS.notifySuccess('已处理'); vm.loadAlerts();
+          }).catch(HIS.notifyError);
+        }).catch(function () {});
+      }
+    },
+    template: [
+      '<div class="nfee">',
+      '  <div class="nfee-left">',
+      '    <div class="nfee-acct" v-if="visitId">',
+      '      <div class="lbl">预交金余额</div>',
+      '      <div class="bal" :class="{ \'is-neg\': Number(balance) < 0 }">¥{{ money(balance) }}</div>',
+      '      <div class="lbl" style="margin-top:6px;">总费用 ¥{{ money(totalFee) }} · 应补缴 ¥{{ money(needPay) }}</div>',
+      '      <div class="nfee-kpis"><span class="nfee-kpi">{{ patient ? patient.patientName : \'\' }}<template v-if="patient"> · 床{{ patient.bedNo }}</template></span></div>',
+      '      <div style="display:flex;gap:6px;margin-top:10px;flex-wrap:wrap;">',
+      '        <el-button size="small" type="primary" @click="openDeposit(1)">缴纳</el-button>',
+      '        <el-button size="small" @click="openDeposit(2)">退还</el-button>',
+      '        <el-button size="small" type="warning" plain @click="openAddCharge">手动补费</el-button>',
+      '      </div>',
+      '    </div>',
+      '    <el-empty v-else description="请先在左侧选择在院患者" :image-size="50"></el-empty>',
+      '    <div class="inp-panel" v-if="visitId" style="margin-bottom:0;">',
+      '      <h4>结算</h4>',
+      '      <div style="display:flex;gap:6px;flex-wrap:wrap;">',
+      '        <el-button size="small" :loading="preLoading" @click="doPreSettle">预结算试算</el-button>',
+      '        <el-button size="small" type="success" @click="doSettle(2)">中途结算</el-button>',
+      '        <el-button size="small" type="primary" @click="doSettle(1)">出院结算</el-button>',
+      '      </div>',
+      '      <div v-if="preResult" style="margin-top:8px;font-size:12px;color:var(--yb-ink-2);line-height:1.7;">',
+      '        <div>模式: {{ preResult.settleMode === \'MID\' ? \'中途\' : \'出院\' }} · 医保: {{ preResult.ybFlag ? \'已试算\' : \'未接入\' }}</div>',
+      '        <div>费用合计 <b class="nfee-money">¥{{ money(preResult.totalAmount) }}</b> · 预交金 ¥{{ money(preResult.depositBalance) }} · 应纳 <b class="nfee-money">¥{{ money(preResult.needPay) }}</b></div>',
+      '      </div>',
+      '    </div>',
+      '  </div>',
+      '  <div class="nfee-main" v-loading="loading">',
+      '    <el-tabs model-value="detail">',
+      '      <el-tab-pane label="费用明细" name="detail">',
+      '        <div class="nfee-sec-h"><span class="t">费用明细</span><span style="flex:1;"></span>',
+      '          <el-select v-model="dFeeType" size="small" clearable placeholder="全部费别" style="width:120px;" @change="onFeeFilter"><el-option v-for="o in [1,2,3,4,5,6,7,8,9]" :key="o" :value="o" :label="({1:\'西药\',2:\'中药\',3:\'检查\',4:\'检验\',5:\'治疗\',6:\'护理\',7:\'材料\',8:\'床位\',9:\'其他\'})[o]"></el-option></el-select>',
+      '        </div>',
+      '        <el-table :data="details" border size="small" max-height="calc(100vh - 360px)">',
+      '          <el-table-column label="日期" width="110" align="center"><template #default="s">{{ datePart(s.row.chargeDate) }}</template></el-table-column>',
+      '          <el-table-column label="费别" width="80" align="center"><template #default="s">{{ feeTypeLabel(s.row.feeType) }}</template></el-table-column>',
+      '          <el-table-column label="项目" min-width="180" show-overflow-tooltip><template #default="s">{{ s.row.itemName || s.row.itemCode || \'-\' }}</template></el-table-column>',
+      '          <el-table-column label="数量" width="80" align="center"><template #default="s">{{ s.row.quantity }}</template></el-table-column>',
+      '          <el-table-column label="单价" width="90" align="right"><template #default="s">{{ money(s.row.unitPrice) }}</template></el-table-column>',
+      '          <el-table-column label="金额" width="100" align="right"><template #default="s"><span class="nfee-money">{{ money(s.row.amount) }}</span></template></el-table-column>',
+      '          <template #empty><el-empty description="暂无费用明细" :image-size="50"></el-empty></template>',
+      '        </el-table>',
+      '        <el-pagination style="margin-top:6px;justify-content:flex-end;" layout="total,prev,pager,next" :total="dTotal" :page-size="dSize" :current-page="dPage" @current-change="(v)=>{ dPage=v; loadDetails(); }"></el-pagination>',
+      '      </el-tab-pane>',
+      '      <el-tab-pane label="缴款流水" name="dep">',
+      '        <el-table :data="deposits" border size="small" max-height="calc(100vh - 360px)">',
+      '          <el-table-column label="时间" width="150" align="center"><template #default="s">{{ fmtTime(s.row.createTime) }}</template></el-table-column>',
+      '          <el-table-column label="方向" width="70" align="center"><template #default="s"><el-tag size="small" :type="s.row.direction===1?\'success\':\'info\'">{{ directionLabel(s.row.direction) }}</el-tag></template></el-table-column>',
+      '          <el-table-column label="金额" width="110" align="right"><template #default="s"><span class="nfee-money">¥{{ money(s.row.amount) }}</span></template></el-table-column>',
+      '          <el-table-column label="缴费后余额" width="120" align="right"><template #default="s">{{ money(s.row.balanceAfter) }}</template></el-table-column>',
+      '          <el-table-column label="方式" width="80" align="center"><template #default="s">{{ payTypeLabel(s.row.payType) }}</template></el-table-column>',
+      '          <el-table-column label="票号" width="120"><template #default="s">{{ s.row.receiptNo || \'-\' }}</template></el-table-column>',
+      '          <el-table-column label="备注" min-width="120" show-overflow-tooltip><template #default="s">{{ s.row.remark || \'-\' }}</template></el-table-column>',
+      '          <template #empty><el-empty description="暂无缴款流水" :image-size="50"></el-empty></template>',
+      '        </el-table>',
+      '      </el-tab-pane>',
+      '      <el-tab-pane label="结算单" name="stl">',
+      '        <el-table :data="settlements" border size="small" max-height="calc(100vh - 360px)">',
+      '          <el-table-column label="结算单号" width="160"><template #default="s">{{ s.row.settleNo || \'-\' }}</template></el-table-column>',
+      '          <el-table-column label="类型" width="90" align="center"><template #default="s">{{ ({1:\'出院\',2:\'中途\',3:\'退费\'})[s.row.settleType] || \'-\' }}</template></el-table-column>',
+      '          <el-table-column label="总额" width="110" align="right"><template #default="s"><span class="nfee-money">¥{{ money(s.row.totalAmount) }}</span></template></el-table-column>',
+      '          <el-table-column label="自付" width="100" align="right"><template #default="s">{{ money(s.row.selfPay) }}</template></el-table-column>',
+      '          <el-table-column label="基金" width="100" align="right"><template #default="s">{{ money(s.row.fundPay) }}</template></el-table-column>',
+      '          <el-table-column label="时间" width="150" align="center"><template #default="s">{{ fmtTime(s.row.settleTime) }}</template></el-table-column>',
+      '          <el-table-column label="操作" width="90" align="center" fixed="right"><template #default="s"><el-button size="small" type="danger" link @click="cancelSettle(s.row)">作废</el-button></template></el-table-column>',
+      '          <template #empty><el-empty description="暂无结算单" :image-size="50"></el-empty></template>',
+      '        </el-table>',
+      '      </el-tab-pane>',
+      '      <el-tab-pane label="每日清单" name="bill">',
+      '        <div class="nfee-sec-h"><span class="t">每日清单</span>',
+      '          <el-date-picker v-model="billDate" type="date" size="small" value-format="YYYY-MM-DD" style="width:150px;margin-left:8px;" @change="onBillDate"></el-date-picker>',
+      '          <el-button size="small" style="margin-left:8px;" @click="genBill">生成</el-button>',
+      '          <el-button size="small" type="primary" plain :disabled="!bill" @click="printBill">打印/预览</el-button>',
+      '        </div>',
+      '        <div v-if="bill" class="nfee-kpis">',
+      '          <span class="nfee-kpi">当日合计 <b>¥{{ money(bill.totalAmount) }}</b></span>',
+      '          <span class="nfee-kpi">累计 <b>¥{{ money(bill.cumulativeAmount) }}</b></span>',
+      '          <span class="nfee-kpi">预交金余额 <b>¥{{ money(bill.depositBalance) }}</b></span>',
+      '          <span class="nfee-kpi">{{ bill.printedFlag ? \'已打印\' : \'未打印\' }}</span>',
+      '        </div>',
+      '        <el-empty v-else description="该日尚无清单, 可点生成" :image-size="50"></el-empty>',
+      '      </el-tab-pane>',
+      '      <el-tab-pane label="欠费预警" name="alert">',
+      '        <el-table :data="alerts" border size="small" max-height="calc(100vh - 360px)">',
+      '          <el-table-column label="预警金额" width="110" align="right"><template #default="s"><span class="nfee-money is-neg">¥{{ money(s.row.alertAmount) }}</span></template></el-table-column>',
+      '          <el-table-column label="阈值" width="100" align="right"><template #default="s">{{ money(s.row.thresholdAmount) }}</template></el-table-column>',
+      '          <el-table-column label="处理" width="110" align="center"><template #default="s"><el-tag size="small" :type="s.row.handleResult?\'success\':\'warning\'">{{ s.row.handleResult ? alertHandleLabel(s.row.handleResult) : \'待处理\' }}</el-tag></template></el-table-column>',
+      '          <el-table-column label="时间" width="150" align="center"><template #default="s">{{ fmtTime(s.row.handleTime || s.row.createTime) }}</template></el-table-column>',
+      '          <el-table-column label="操作" width="90" align="center" fixed="right"><template #default="s"><el-button v-if="!s.row.handleResult" size="small" type="primary" link @click="handleAlert(s.row)">催缴</el-button><span v-else style="color:var(--yb-ink-4);">—</span></template></el-table-column>',
+      '          <template #empty><el-empty description="暂无欠费预警" :image-size="50"></el-empty></template>',
+      '        </el-table>',
+      '      </el-tab-pane>',
+      '    </el-tabs>',
+      '  </div>',
+      /* 缴纳/退还对话框 */
+      '  <el-dialog v-model="depositDlg" :title="depForm.direction===1?\'缴纳预交金\':\'退还预交金\'" width="380px">',
+      '    <el-form label-width="70px">',
+      '      <el-form-item label="金额"><el-input-number v-model="depForm.amount" :min="0.01" :precision="2" :step="100" style="width:100%;"></el-input-number></el-form-item>',
+      '      <el-form-item label="方式"><el-select v-model="depForm.payType" style="width:100%;"><el-option v-for="o in PAY_TYPES" :key="o.v" :value="o.v" :label="o.l"></el-option></el-select></el-form-item>',
+      '      <el-form-item label="备注"><el-input v-model="depForm.remark" placeholder="选填"></el-input></el-form-item>',
+      '    </el-form>',
+      '    <template #footer><el-button @click="depositDlg=false">取消</el-button><el-button type="primary" :loading="submitting" @click="submitDeposit">确认</el-button></template>',
+      '  </el-dialog>',
+      /* 手动补费对话框 */
+      '  <el-dialog v-model="chargeDlg" title="手动记费/补费" width="420px">',
+      '    <el-form label-width="80px">',
+      '      <el-form-item label="项目"><el-input v-model="chgForm.itemName" placeholder="费用项目名称"></el-input></el-form-item>',
+      '      <el-form-item label="费别"><el-select v-model="chgForm.feeType" style="width:100%;"><el-option v-for="o in FEE_TYPE_OPTIONS" :key="o.v" :value="o.v" :label="o.l"></el-option></el-select></el-form-item>',
+      '      <el-form-item label="数量"><el-input-number v-model="chgForm.quantity" :min="0" :precision="2" :step="1" style="width:100%;"></el-input-number></el-form-item>',
+      '      <el-form-item label="单价"><el-input-number v-model="chgForm.unitPrice" :min="0" :precision="2" :step="1" style="width:100%;"></el-input-number></el-form-item>',
+      '      <el-form-item label="金额"><span class="nfee-money">¥{{ amtPreview }}</span><span style="color:var(--yb-ink-4);font-size:12px;margin-left:8px;">(数量×单价自动计算)</span></el-form-item>',
+      '    </el-form>',
+      '    <template #footer><el-button @click="chargeDlg=false">取消</el-button><el-button type="primary" :loading="submitting" @click="submitAddCharge">记入</el-button></template>',
+      '  </el-dialog>',
+      '</div>'
+    ].join('\n')
+  };
+
+  /* ================= 病人信息360 InpPatient360(13.15.4: 就诊/诊断/过敏/费用/流转集中查看) ================= */
+  var InpPatient360 = {
+    name: 'InpPatient360',
+    props: {
+      visitId: { type: [String, Number], default: null },
+      patient: { type: Object, default: null }
+    },
+    emits: ['goto-fee'],
+    data: function () {
+      return {
+        loading: false, detail: null, visits: null,
+        allergies: [], summary: null, balance: null, transfers: [],
+        open: { visit: true, diag: true, allergy: true, fee: true, flow: true }
+      };
+    },
+    computed: {
+      diagGroups: function () {
+        var rows = (this.detail && this.detail.diagnoses) || [];
+        var g = { 1: [], 2: [], 3: [], 4: [] };
+        rows.forEach(function (d) { (g[d.diagType] = g[d.diagType] || []).push(d); });
+        return Object.keys(g).filter(function (k) { return g[k] && g[k].length; }).map(function (k) { return { type: Number(k), name: DIAG_TYPES[k], rows: g[k] }; });
+      }
+    },
+    watch: {
+      visitId: function () { this.reload(); }
+    },
+    created: function () { this.reload(); },
+    methods: {
+      fmtTime: fmtTime, datePart: datePart,
+      money: function (v) { return v == null || v === '' ? '-' : Number(v).toFixed(2); },
+      toggle: function (k) { this.open[k] = !this.open[k]; },
+      allergyTypeLabel: function (v) { return ALLERGY_TYPE[v] || '其他'; },
+      severityLabel: function (v) { return { 1: '轻度', 2: '中度', 3: '重度' }[v] || (v == null ? '-' : v); },
+      nurseLv: function (v) { return v == null ? '-' : (NURSING_LEVELS[v] || '-'); },
+      condLv: function (v) { return v == null ? '-' : (CONDITION_LEVEL[v] || '-'); },
+      reload: function () {
+        var vm = this;
+        if (!vm.visitId) { vm.detail = null; vm.allergies = []; vm.summary = null; vm.balance = null; vm.transfers = []; return; }
+        vm.loading = true;
+        Promise.all([
+          HIS.get('/api/his/inp/visit/' + HIS.idParam(vm.visitId)).catch(function () { return null; }),
+          HIS.get('/api/his/inp/allergy/list?visitId=' + HIS.idParam(vm.visitId)).catch(function () { return []; }),
+          HIS.get('/api/his/inp/settle/charge/summary/' + HIS.idParam(vm.visitId)).catch(function () { return null; }),
+          HIS.get('/api/his/inp/deposit/balance/' + HIS.idParam(vm.visitId)).catch(function () { return null; }),
+          HIS.get('/api/his/inp/transfer/list?visitId=' + HIS.idParam(vm.visitId) + '&page=1&size=50').catch(function () { return { records: [] }; })
+        ]).then(function (rs) {
+          vm.detail = rs[0]; vm.allergies = (rs[1] || []).filter(function (a) { return a && a.status !== 0; });
+          vm.summary = rs[2]; vm.balance = rs[3]; vm.transfers = (rs[4] && rs[4].records) || [];
+        }).finally(function () { vm.loading = false; });
+      },
+      transferLabel: function (t) { return ({1:'转科',2:'转床',3:'加床'})[t.transferType] || '流转'; },
+      transferStatus: function (s) { return ({1:'待审批',2:'已批准',3:'已退回',4:'已执行',5:'已取消'})[s] || '-'; }
+    },
+    template: [
+      '<div class="np360" v-loading="loading">',
+      '  <el-empty v-if="!visitId" description="请先在左侧选择一位患者" :image-size="60"></el-empty>',
+      '  <template v-else>',
+      '    <div class="np360-hd">',
+      '      <div class="bed">{{ patient ? (patient.bedNo || "—") : "—" }}</div>',
+      '      <div><div class="nm">{{ patient ? patient.patientName : "" }}</div>',
+      '        <div class="meta">住院号 {{ patient ? (patient.inpNo||"-") : "-" }} · {{ patient ? (patient.gender||"") : "" }}{{ patient && patient.age!=null ? patient.age+"岁" : "" }}</div></div>',
+      '      <span style="flex:1;"></span>',
+      '      <el-tag v-if="patient && patient.allergyFlag" type="danger" effect="dark">过敏史</el-tag>',
+      '      <el-button size="small" @click="$emit(\'goto-fee\')">前往费用管理</el-button>',
+      '    </div>',
+      '    <div class="np360-cards">',
+      /* 就诊/住院信息 */
+      '      <div class="np360-card">',
+      '        <div class="np360-card-h" @click="toggle(\'visit\')">住院/就诊信息<span class="cnt">{{ open.visit ? "收起" : "展开" }}</span></div>',
+      '        <div class="np360-card-b" v-show="open.visit">',
+      '          <div class="np360-kv"><span class="k">入院日期</span><span class="v">{{ patient ? datePart(patient.admitDate) : "-" }}</span></div>',
+      '          <div class="np360-kv"><span class="k">病区/床位</span><span class="v">{{ (detail && detail.ward ? detail.ward.wardName : "-") }} · {{ patient ? (patient.bedNo||"-") : "-" }}床</span></div>',
+      '          <div class="np360-kv"><span class="k">主诊医生</span><span class="v">{{ patient ? (patient.doctorName||"待分配") : "-" }}</span></div>',
+      '          <div class="np360-kv"><span class="k">责任护士</span><span class="v">{{ patient ? (patient.nurseName||"待指派") : "-" }}</span></div>',
+      '          <div class="np360-kv"><span class="k">护理等级</span><span class="v">{{ patient ? nurseLv(patient.nursingLevel) : "-" }}</span></div>',
+      '          <div class="np360-kv"><span class="k">病情</span><span class="v">{{ patient ? condLv(patient.conditionLevel) : "-" }}</span></div>',
+      '          <div class="np360-kv"><span class="k">预计出院</span><span class="v">{{ patient && patient.expectedDischargeDate ? datePart(patient.expectedDischargeDate) : "-" }}</span></div>',
+      '          <div class="np360-kv"><span class="k">入院诊断</span><span class="v">{{ patient ? (patient.admitDiag||"-") : "-" }}</span></div>',
+      '        </div>',
+      '      </div>',
+      /* 诊断 */
+      '      <div class="np360-card">',
+      '        <div class="np360-card-h" @click="toggle(\'diag\')">诊断信息<span class="cnt">{{ (detail && detail.diagnoses ? detail.diagnoses.length : 0) }} 条</span></div>',
+      '        <div class="np360-card-b" v-show="open.diag">',
+      '          <template v-if="diagGroups.length">',
+      '            <div v-for="g in diagGroups" :key="g.type" style="margin-bottom:8px;">',
+      '              <div style="font-weight:600;color:var(--yb-ink-2);font-size:12px;margin-bottom:3px;">{{ g.name }}</div>',
+      '              <div v-for="d in g.rows" :key="d.id" class="np360-kv"><span class="k">{{ d.diagCode || "" }}<template v-if="d.isMain===1"> ★主</template></span><span class="v">{{ d.diagName }}</span></div>',
+      '            </div>',
+      '          </template>',
+      '          <div v-else style="color:var(--yb-ink-4);font-size:13px;">暂无诊断记录</div>',
+      '        </div>',
+      '      </div>',
+      /* 过敏 */
+      '      <div class="np360-card is-danger">',
+      '        <div class="np360-card-h" @click="toggle(\'allergy\')">过敏信息<span class="cnt">{{ allergies.length }} 条</span></div>',
+      '        <div class="np360-card-b" v-show="open.allergy">',
+      '          <template v-if="allergies.length">',
+      '            <div v-for="a in allergies" :key="a.id" class="np360-kv">',
+      '              <span class="k">{{ allergyTypeLabel(a.allergyType) }} · {{ a.allergenName }}</span>',
+      '              <span class="v">{{ severityLabel(a.severity) }}<template v-if="a.reactionDesc"> · {{ a.reactionDesc }}</template></span>',
+      '            </div>',
+      '          </template>',
+      '          <div v-else style="color:var(--yb-success-strong);font-size:13px;">无已知过敏史</div>',
+      '        </div>',
+      '      </div>',
+      /* 费用摘要 */
+      '      <div class="np360-card">',
+      '        <div class="np360-card-h" @click="toggle(\'fee\')">费用概览<span class="cnt">{{ open.fee ? "收起" : "展开" }}</span></div>',
+      '        <div class="np360-card-b" v-show="open.fee">',
+      '          <div class="np360-kv"><span class="k">总费用</span><span class="v nfee-money">¥{{ money(summary ? (summary.chargeTotalAmount!=null?summary.chargeTotalAmount:summary.totalAmount) : null) }}</span></div>',
+      '          <div class="np360-kv"><span class="k">预交金余额</span><span class="v" :class="{ \'is-neg\': Number(balance)<0 }">¥{{ money(balance) }}</span></div>',
+      '          <template v-if="summary && summary.feeItems && summary.feeItems.length">',
+      '            <div v-for="f in summary.feeItems" :key="f.feeType" class="np360-kv"><span class="k">{{ f.feeTypeName }}</span><span class="v">¥{{ money(f.totalAmount) }}</span></div>',
+      '          </template>',
+      '        </div>',
+      '      </div>',
+      /* 流转记录 */
+      '      <div class="np360-card">',
+      '        <div class="np360-card-h" @click="toggle(\'flow\')">患者流转记录<span class="cnt">{{ transfers.length }} 条</span></div>',
+      '        <div class="np360-card-b" v-show="open.flow">',
+      '          <div v-if="transfers.length" class="nfw-tl">',
+      '            <div v-for="t in transfers" :key="t.id" class="nfw-tl-item" :class="{ \'is-done\': t.status===4 }">',
+      '              <span class="dot"></span>',
+      '              <div class="body"><div class="lb">{{ transferLabel(t) }} · {{ transferStatus(t.status) }}</div>',
+      '                <div class="nt">{{ t.reason || "" }}</div>',
+      '                <div class="tm">{{ fmtTime(t.applyTime) }}</div></div>',
+      '            </div>',
+      '          </div>',
+      '          <div v-else style="color:var(--yb-ink-4);font-size:13px;">暂无流转记录</div>',
+      '        </div>',
+      '      </div>',
+      '    </div>',
+      '  </template>',
+      '</div>'
+    ].join('\n')
+  };
+
   HIS.views.InpNurseStation = {
     name: 'InpNurseStation',
     data: function () {
@@ -2968,7 +4023,11 @@
         sideCollapsed: false,
         wardId: null, wards: [],
         keyword: '', patients: [], currentVisitId: null,
-        activeTab: 'audit',
+        /* 13.15.1 一体化主页: 默认落在「入出转」工作台; homeOrder 为用户自定义页签顺序(localStorage yb_nurse_home) */
+        activeTab: 'flow',
+        homeOrder: null,
+        flowSeg: 'preadmit',
+        preAdmitTotal: 0, pendingTransferTotal: 0,
         todo: { pendingAudit: 0, pendingExec: 0, pendingAssess: 0, pendingShift: 0, pendingVitals: 0 },
         criticalTodo: 0,
         criticalPatients: [], nursingAlerts: [], critOpen: false,
@@ -3022,6 +4081,18 @@
         return (this.patExtra.allergies || []).map(function (a) {
           return (ALLERGY_TYPE[a.allergyType] || '其他') + '·' + (a.allergenName || '');
         }).join('，');
+      },
+      /* 可见页签: HOME_TABS 基准, 按 homeOrder(localStorage) 重排(未知 key 追加在后) */
+      visibleTabs: function () {
+        var base = HOME_TABS.slice();
+        var order = this.homeOrder;
+        if (!order || !order.length) { return base; }
+        var byKey = {};
+        base.forEach(function (t) { byKey[t.key] = t; });
+        var out = [], used = {};
+        order.forEach(function (k) { if (byKey[k] && !used[k]) { out.push(byKey[k]); used[k] = 1; } });
+        base.forEach(function (t) { if (!used[t.key]) { out.push(t); } });
+        return out;
       }
     },
     watch: {
@@ -3039,16 +4110,33 @@
       'inp-nursing-assessment': InpNursingAssessment,
       'inp-nursing-plan': InpNursingPlan,
       'inp-io-record': InpIoRecord,
-      'inp-med-admin': InpMedAdmin
+      'inp-med-admin': InpMedAdmin,
+      /* 13.15 一体化升级页签(局部注册, 不挂 HIS.views): 入出转 / 费用 / 病人360 */
+      'inp-flow': InpFlowPanel,
+      'inp-fee': InpFeePanel,
+      'inp-patient360': InpPatient360
     },
     created: function () {
       var vm = this;
+      /* 右键菜单点击任意处关闭(床位一览内多个同名监听由菜单自身 stop 兜底) */
+      vm.ctxCloser = function () {
+        var ov = vm.$refs.bedOv;
+        if (Array.isArray(ov)) { ov = ov[0]; }
+        if (ov && ov.ctx && ov.ctx.show) { ov.closeCtx(); }
+      };
+      document.addEventListener('click', vm.ctxCloser);
+      /* 主页页签顺序持久化(localStorage yb_nurse_home): 非法/缺失回落默认顺序 */
+      try {
+        var ho = JSON.parse(localStorage.getItem('yb_nurse_home') || 'null');
+        if (Array.isArray(ho) && ho.length) { vm.homeOrder = ho; }
+      } catch (e) { /* 忽略脏数据 */ }
       vm.loadWards();
       /* 待办数 30s 轮询(静默失败不打扰), 页面卸载时清理 */
       vm.todoTimer = setInterval(function () { vm.loadTodo(); }, 30000);
     },
     beforeUnmount: function () {
       if (this.todoTimer) { clearInterval(this.todoTimer); this.todoTimer = null; }
+      if (this.ctxCloser) { document.removeEventListener('click', this.ctxCloser); this.ctxCloser = null; }
     },
     methods: {
       datePart: datePart,
@@ -3113,6 +4201,20 @@
         HIS.get('/api/his/inp/critical-value/unhandled-count?wardId=' + HIS.idParam(vm.wardId)).then(function (n) {
           vm.criticalTodo = Number(n) || 0;
         }).catch(function () { /* 静默 */ });
+        /* 13.15.1 入出转待办聚合: 待入区(mid 病区级前端过滤蛇形键 ward_id) + 待审转科(status=1), 静默失败 */
+        HIS.get('/api/his/inp/pre-admissions').then(function (rows) {
+          var wid = String(vm.wardId);
+          vm.preAdmitTotal = (rows || []).filter(function (r) {
+            return r && (r.ward_id == null || String(r.ward_id) === wid);
+          }).length;
+        }).catch(function () { /* 静默 */ });
+        HIS.get('/api/his/inp/transfer/list?status=1&page=1&size=200').then(function (d) {
+          var recs = (d && d.records) || [];
+          var wid = String(vm.wardId);
+          vm.pendingTransferTotal = recs.filter(function (t) {
+            return t && (t.fromWardId == null || String(t.fromWardId) === wid);
+          }).length;
+        }).catch(function () { /* 静默 */ });
         HIS.get('/api/his/inp/dashboard/nurse?wardId=' + HIS.idParam(vm.wardId)).then(function (d) {
           var o = d || {}, t = o.todoStats || {};
           vm.todo = {
@@ -3155,6 +4257,38 @@
       /* 床位一览联动: 单击选中患者, 双击直达医嘱审核页签 */
       bedPick: function (vid) { this.currentVisitId = vid; },
       bedOpen: function (vid) { this.currentVisitId = vid; this.activeTab = 'audit'; },
+      /* 床位一览拖拽换床/右键菜单 → 直达入出转页签对应列表 */
+      bedFlow: function (seg) { this.flowSeg = seg || 'approval'; this.activeTab = 'flow'; },
+      /* 左侧 segment: 在区(onward) / 待入区(preadmit) / 转出待办(approval) → 切入出转页签对应列表 */
+      segGo: function (seg) {
+        this.flowSeg = seg;
+        this.activeTab = 'flow';
+      },
+      /* 入出转面板数据变更(入区/审批/执行/出院): 刷新患者列表与待办聚合 */
+      onFlowChanged: function () { this.loadPatients(); this.loadTodo(); },
+      /* 页签分组色点(同组归一色) */
+      grpColor: function (g) {
+        return { '流转': 'var(--yb-brand)', '医嘱': '#E6A23C', '费用': 'var(--yb-success)', '总览': 'var(--yb-link)', '护理': '#7C3AED', '病区': 'var(--yb-ink-3)' }[g] || 'var(--yb-border)';
+      },
+      /* 页签角标(0/空不显) */
+      tabBadge: function (key) {
+        if (key === 'audit') { return this.todo.pendingAudit || 0; }
+        if (key === 'exec') { return this.todo.pendingExec || 0; }
+        if (key === 'assess') { return this.todo.pendingAssess || 0; }
+        if (key === 'shift') { return this.todo.pendingShift || 0; }
+        if (key === 'flow') { return (this.preAdmitTotal || 0) + (this.pendingTransferTotal || 0); }
+        return 0;
+      },
+      /* 无图表/纯表格页签用 lazy 首次才挂载; 其余页签用 v-if+当前患者: 一激活即重挂载 */
+      lazyTab: function (key) {
+        return key === 'audit' || key === 'exec' || key === 'nursing' || key === 'shift' || key === 'bed';
+      },
+      /* 重置主页(清掉自定义页签顺序) */
+      resetHome: function () {
+        this.homeOrder = null;
+        try { localStorage.removeItem('yb_nurse_home'); } catch (e) { /* 忽略 */ }
+        HIS.notifySuccess('主页已重置为默认页签顺序');
+      },
       /* 危急值待处理卡片点击: 跳转危急值管理页(T37, HIS.go 由 AppLayout 提供) */
       goCriticalValues: function () { if (typeof HIS.go === 'function') { HIS.go('critical-value'); } }
     },
@@ -3176,6 +4310,11 @@
       '      <el-input v-model="keyword" placeholder="姓名 / 住院号" clearable style="margin-top:8px;" @keyup.enter="loadPatients" @clear="loadPatients">',
       '        <template #append><el-button @click="loadPatients">查询</el-button></template>',
       '      </el-input>',
+      '      <div class="inp-seg">',
+      '        <span class="inp-seg-item" :class="{ \'is-active\': activeTab===\'flow\' && flowSeg===\'onward\' }" @click="segGo(\'onward\')">在区</span>',
+      '        <span class="inp-seg-item" :class="{ \'is-active\': activeTab===\'flow\' && flowSeg===\'preadmit\' }" @click="segGo(\'preadmit\')">待入区<span v-if="preAdmitTotal" class="dot">{{ preAdmitTotal }}</span></span>',
+      '        <span class="inp-seg-item" :class="{ \'is-active\': activeTab===\'flow\' && flowSeg===\'approval\' }" @click="segGo(\'approval\')">转出待办<span v-if="pendingTransferTotal" class="dot">{{ pendingTransferTotal }}</span></span>',
+      '      </div>',
       '    </div>',
       '    <el-scrollbar style="flex:1;min-height:0;">',
       '      <div v-for="p in sortedPatients" :key="p.id" class="inp-patient" :class="{ \'is-active\': sameId(p.id, currentVisitId) }" @click="selectPatient(p)">',
@@ -3188,11 +4327,21 @@
       '      </div>',
       '      <el-empty v-if="!loadingPat && !sortedPatients.length" :description="wardId ? \'本病区暂无在院患者\' : \'请先选择病区\'" :image-size="56"></el-empty>',
       '    </el-scrollbar>',
-      '    <div style="padding:6px 12px;border-top:1px solid var(--yb-divider);color:var(--yb-ink-4);font-size:12px;">在院患者 {{ sortedPatients.length }} 人</div>',
+      '    <div style="padding:6px 12px;border-top:1px solid var(--yb-divider);color:var(--yb-ink-4);font-size:12px;display:flex;align-items:center;justify-content:space-between;">在院患者 {{ sortedPatients.length }} 人<a style="color:var(--yb-link);cursor:pointer;" @click="resetHome">重置主页</a></div>',
       '  </div>',
       '  <div style="flex:1;min-width:0;display:flex;flex-direction:column;overflow:hidden;">',
       /* 待办6卡: 品牌蓝(审核)/绿(执行)/橙(评估)/紫(交班)/红(危重)/红(危急值T37) */
       '    <div class="inp-todo is-6" style="padding:10px 14px 0;">',
+      '      <div class="inp-todo-card is-brand" @click="segGo(\'preadmit\')">',
+      '        <span class="num">{{ preAdmitTotal }}</span>',
+      '        <span class="lbl">待入区</span>',
+      '        <span class="hint">点击直达 →</span>',
+      '      </div>',
+      '      <div class="inp-todo-card is-warn" @click="segGo(\'approval\')">',
+      '        <span class="num">{{ pendingTransferTotal }}</span>',
+      '        <span class="lbl">待审转科</span>',
+      '        <span class="hint">点击直达 →</span>',
+      '      </div>',
       '      <div class="inp-todo-card is-brand" @click="activeTab = \'audit\'">',
       '        <span class="num">{{ todo.pendingAudit || 0 }}</span>',
       '        <span class="lbl">待审核医嘱</span>',
@@ -3274,43 +4423,56 @@
       '      <span class="meta">入院 {{ admitDaysText(currentPatient && currentPatient.admitDate) }}</span>',
       '    </div>',
       '    <el-tabs v-model="activeTab" class="inp-tabs">',
+      /* 页签顺序与 HOME_TABS 一致(流转→医嘱→费用→总览→护理→病区); 分组色点经 grpColor 统一起义 */
+      '      <el-tab-pane name="flow">',
+      '        <template #label><span><i class="inp-grp-dot" :style="{ background: grpColor(\'流转\') }"></i>入出转<span v-if="tabBadge(\'flow\')" class="inp-tab-num">{{ tabBadge(\'flow\') }}</span></span></template>',
+      '        <inp-flow v-if="activeTab===\'flow\'" :key="\'flow-\'+flowSeg" :ward-id="wardId" :wards="wards" :patients="patients" :visit-id="currentVisitId" :patient="currentPatient" :initial-seg="flowSeg" @changed="onFlowChanged" @pick="bedPick"></inp-flow>',
+      '      </el-tab-pane>',
       '      <el-tab-pane name="audit" lazy>',
-      '        <template #label><span>医嘱审核<span v-if="todo.pendingAudit" class="inp-tab-num">{{ todo.pendingAudit }}</span></span></template>',
+      '        <template #label><span><i class="inp-grp-dot" :style="{ background: grpColor(\'医嘱\') }"></i>医嘱审核<span v-if="todo.pendingAudit" class="inp-tab-num">{{ todo.pendingAudit }}</span></span></template>',
       '        <inp-order-audit :ward-id="wardId" @changed="loadTodo"></inp-order-audit>',
       '      </el-tab-pane>',
       '      <el-tab-pane name="exec" lazy>',
-      '        <template #label><span>医嘱执行<span v-if="todo.pendingExec" class="inp-tab-num">{{ todo.pendingExec }}</span></span></template>',
+      '        <template #label><span><i class="inp-grp-dot" :style="{ background: grpColor(\'医嘱\') }"></i>医嘱执行<span v-if="todo.pendingExec" class="inp-tab-num">{{ todo.pendingExec }}</span></span></template>',
       '        <inp-order-exec :ward-id="wardId" @changed="loadTodo"></inp-order-exec>',
       '      </el-tab-pane>',
+      '      <el-tab-pane name="fee">',
+      '        <template #label><span><i class="inp-grp-dot" :style="{ background: grpColor(\'费用\') }"></i>费用管理</span></template>',
+      '        <inp-fee v-if="activeTab===\'fee\'" :key="\'fee-\'+(currentVisitId||0)" :ward-id="wardId" :patients="patients" :visit-id="currentVisitId" :patient="currentPatient" @changed="loadPatients"></inp-fee>',
+      '      </el-tab-pane>',
+      '      <el-tab-pane name="patient">',
+      '        <template #label><span><i class="inp-grp-dot" :style="{ background: grpColor(\'总览\') }"></i>病人信息</span></template>',
+      '        <inp-patient360 v-if="activeTab===\'patient\'" :key="\'p360-\'+(currentVisitId||0)" :visit-id="currentVisitId" :patient="currentPatient" @goto-fee="activeTab=\'fee\'"></inp-patient360>',
+      '      </el-tab-pane>',
       '      <el-tab-pane name="nursing" lazy>',
-      '        <template #label><span>护理记录</span></template>',
+      '        <template #label><span><i class="inp-grp-dot" :style="{ background: grpColor(\'护理\') }"></i>护理记录</span></template>',
       '        <inp-nursing-record :visit-id="currentVisitId" :patient="currentPatient" @go-assess="activeTab = \'assess\'"></inp-nursing-record>',
       '      </el-tab-pane>',
-      /* 出入量/给药记录(T45): v-if + :key 模式携带就诊ID, 切患者重挂载不串台 */
+      /* 出入量/给药记录(T45): v-if + :key 携带就诊ID, 切患者重挂载不串台 */
       '      <el-tab-pane name="io">',
-      '        <template #label><span>出入量</span></template>',
+      '        <template #label><span><i class="inp-grp-dot" :style="{ background: grpColor(\'护理\') }"></i>出入量</span></template>',
       '        <inp-io-record v-if="activeTab === \'io\'" :key="\'io-\' + (currentVisitId || 0)" :ward-id="wardId" :visit-id="currentVisitId"></inp-io-record>',
       '      </el-tab-pane>',
       '      <el-tab-pane name="med">',
-      '        <template #label><span>给药记录</span></template>',
+      '        <template #label><span><i class="inp-grp-dot" :style="{ background: grpColor(\'护理\') }"></i>给药记录</span></template>',
       '        <inp-med-admin v-if="activeTab === \'med\'" :key="\'med-\' + (currentVisitId || 0)" :ward-id="wardId" :visit-id="currentVisitId"></inp-med-admin>',
       '      </el-tab-pane>',
-      /* 护理评估/护理计划: 无 lazy 而用 v-if + :key 模式(仅激活时挂载, 避免隐藏态 ECharts 零尺寸), :key 携带就诊ID保证切患者重挂载不串台 */
+      /* 护理评估/护理计划: v-if + :key 模式(仅激活时挂载, 避免隐藏态 ECharts 零尺寸) */
       '      <el-tab-pane name="assess">',
-      '        <template #label><span>护理评估<span v-if="todo.pendingAssess" class="inp-tab-num">{{ todo.pendingAssess }}</span></span></template>',
+      '        <template #label><span><i class="inp-grp-dot" :style="{ background: grpColor(\'护理\') }"></i>护理评估<span v-if="todo.pendingAssess" class="inp-tab-num">{{ todo.pendingAssess }}</span></span></template>',
       '        <inp-nursing-assessment v-if="activeTab === \'assess\'" :key="\'nsa-\' + (currentVisitId || 0)" :visit-id="currentVisitId"></inp-nursing-assessment>',
       '      </el-tab-pane>',
       '      <el-tab-pane name="plan">',
-      '        <template #label><span>护理计划</span></template>',
+      '        <template #label><span><i class="inp-grp-dot" :style="{ background: grpColor(\'护理\') }"></i>护理计划</span></template>',
       '        <inp-nursing-plan v-if="activeTab === \'plan\'" :key="\'nsp-\' + (currentVisitId || 0)" :visit-id="currentVisitId" :patient="currentPatient"></inp-nursing-plan>',
       '      </el-tab-pane>',
       '      <el-tab-pane name="shift" lazy>',
-      '        <template #label><span>交接班<span v-if="todo.pendingShift" class="inp-tab-num">{{ todo.pendingShift }}</span></span></template>',
+      '        <template #label><span><i class="inp-grp-dot" :style="{ background: grpColor(\'病区\') }"></i>交接班<span v-if="todo.pendingShift" class="inp-tab-num">{{ todo.pendingShift }}</span></span></template>',
       '        <inp-shift-handover :ward-id="wardId"></inp-shift-handover>',
       '      </el-tab-pane>',
       '      <el-tab-pane name="bed" lazy>',
-      '        <template #label><span>床位一览</span></template>',
-      '        <inp-bed-overview :ward-id="wardId" @pick="bedPick" @open="bedOpen"></inp-bed-overview>',
+      '        <template #label><span><i class="inp-grp-dot" :style="{ background: grpColor(\'病区\') }"></i>床位一览</span></template>',
+      '        <inp-bed-overview ref="bedOv" :ward-id="wardId" @pick="bedPick" @open="bedOpen" @flow="bedFlow"></inp-bed-overview>',
       '      </el-tab-pane>',
       '    </el-tabs>',
       '  </div>',

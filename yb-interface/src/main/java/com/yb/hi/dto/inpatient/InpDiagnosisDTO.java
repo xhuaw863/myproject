@@ -22,4 +22,6 @@ public class InpDiagnosisDTO {
     private Integer admitCondition;
     /** 是否并发症/合并症: 1是 0否(病案首页) */
     private Integer complicationFlag;
+    /** 牙位编码(FDI/Palmer, 口腔诊断专用, 逗号分隔) */
+    private String toothPosition;
 }

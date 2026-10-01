@@ -19,6 +19,8 @@ public class HisSupplier extends BaseEntity {
     @TableId(type = IdType.AUTO)
     private Long id;
 
+    /** 引用全局企业字典(std_supplier.sup_code), 新建时可从字典导入基本信息 */
+    private String stdSupCode;
     /** 供应商编码(租户内唯一) */
     private String supplierCode;
     /** 供应商名称 */

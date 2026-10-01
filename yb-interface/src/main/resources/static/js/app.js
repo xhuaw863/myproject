@@ -25,7 +25,7 @@
             { key: 'catalog-map', label: '医保目录对照', comp: 'CatalogMap' },
             { key: 'diag-map', label: '医保疾病对照', comp: 'DiagMap' },
             { key: 'community-dict', label: '医共体字典', comp: 'CommunityDict' },
-            { key: 'supplier-dict', label: '供货商维护', comp: 'SupplierDict' }
+            { key: 'supplier-dict', label: '企业字典', comp: 'SupplierDict' }
           ]
         },
         {
@@ -94,7 +94,10 @@
         { key: 'mr-workload', label: '工作量统计', comp: 'MrWorkload' },
         { key: 'mr-maintain', label: '系统维护字典', comp: 'MrMaintain' },
         { key: 'mr-report', label: '报表统计', comp: 'MrReport' },
-        { key: 'mr-submit', label: '上报闭环', comp: 'MrSubmit' }
+        { key: 'mr-submit', label: '上报闭环', comp: 'MrSubmit' },
+                /* P3 集成 */
+                { key: 'mr-drg', label: 'DRG分组对比', comp: 'MrDrg' },
+                { key: 'mr-quality-diff', label: '质控前后对比', comp: 'MrQualityDiff' }
       ]
     },
     {
@@ -224,7 +227,8 @@
       ]
     },
     /* 临床路径与手术麻醉(2026-09 集成, 与 RbacInitializer 动态菜单同 key 同名):
-     * 路径模板管理(clinical-pathway.js)/手术管理·麻醉记录·手麻记费(surgery-manage.js) */
+     * 路径模板管理(clinical-pathway.js)/手术管理·麻醉记录·手麻记费(surgery-manage.js);
+     * 手麻P0: 手术申请管理含通知管理(surgery-apply.js) */
     {
       group: '临床路径', children: [
         { key: 'pathway-template', label: '路径模板管理', comp: 'ClinicalPathwayManage' }
@@ -233,6 +237,7 @@
     {
       group: '手术麻醉', children: [
         { key: 'surgery-manage', label: '手术管理', comp: 'SurgeryManage' },
+        { key: 'surgery-apply', label: '手术申请管理', comp: 'SurgeryApply' },
         { key: 'anesthesia-record', label: '麻醉记录', comp: 'AnesthesiaRecord' },
         { key: 'surgery-fee', label: '手麻记费', comp: 'SurgeryFee' }
       ]

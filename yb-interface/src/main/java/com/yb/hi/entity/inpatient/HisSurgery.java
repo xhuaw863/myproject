@@ -63,7 +63,7 @@ public class HisSurgery extends BaseEntity {
     private Integer asaGrade;
     /** 切口类型: 1清洁 2清洁污染 3污染 4感染 */
     private Integer incisionType;
-    /** 状态: 1申请 2排程 3术中 4术后 5完成 6取消 */
+    /** 状态: 1申请 2排程 3术中 4术后 5完成 6取消 7已报到 */
     private Integer status;
     /** 手术科室ID(his_dept.id) */
     private Long deptId;
@@ -74,4 +74,17 @@ public class HisSurgery extends BaseEntity {
     private Long approvalDoctorId;
     /** WHO手术安全核查JSON */
     private String safetyChecklist;
+    /* ---------- 手麻P0升级扩展列(ensureSurgeryApplyTables 幂等补列) ---------- */
+    /** 来源手术申请单ID(his_surgery_apply.id) */
+    private Long applyId;
+    /** 就诊类型: 1住院 2门诊 3日间 */
+    private Integer visitType;
+    /** 门诊就诊ID(his_visit.id, visit_type=2/3) */
+    private Long visitId;
+    /** 手术室报到登记时间 */
+    private LocalDateTime registerTime;
+    /** 手术时限: 1择期 2限期 3急诊 */
+    private Integer deadlineType;
+    /** 一体化模块(预留): 1手术室 2DSA 3产科分娩 4内镜 5麻醉治疗 */
+    private Integer moduleType;
 }

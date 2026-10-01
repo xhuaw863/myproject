@@ -8,11 +8,11 @@ server:
 spring:
   application:
     name: yb-interface
-  # 文件上传(头像/签名图片)大小限制
+  # 文件上传(头像/签名图片/企业资质PDF)大小限制
   servlet:
     multipart:
-      max-file-size: 5MB
-      max-request-size: 10MB
+      max-file-size: 20MB
+      max-request-size: 30MB
   # 静态资源(前端 JS/CSS/HTML)不缓存, 每次加载都向服务器重新校验,
   # 避免浏览器启发式缓存导致前端改动(如新增菜单/视图)不生效
   web:

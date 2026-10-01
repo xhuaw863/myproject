@@ -55,6 +55,18 @@ public class MrAnnotationController {
         return R.ok();
     }
 
+    /** P3-C 推送批注至临床通知中心。 */
+    @PostMapping("/{id}/push")
+    public R<Map<String, Object>> push(@PathVariable Long id) {
+        return R.ok(annotationService.pushToClinical(id));
+    }
+
+    /** P3-C 已推送列表。 */
+    @GetMapping("/push-list")
+    public R<List<Map<String, Object>>> pushList() {
+        return R.ok(annotationService.pushList());
+    }
+
     /** 宽松 int 解析: 兼容 Number 与被序列化为字符串的布尔/数字。 */
     private static int toInt(Object o, int def) {
         if (o == null) {

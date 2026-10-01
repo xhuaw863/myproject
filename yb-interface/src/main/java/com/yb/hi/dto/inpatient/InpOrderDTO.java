@@ -38,4 +38,15 @@ public class InpOrderDTO {
     private BigDecimal unitPrice;
     /** 成组医嘱号 */
     private String groupNo;
+    /* ---------- 手麻P1扩展字段 ---------- */
+    /** 手术ID(his_surgery.id, 术中/术后医嘱) */
+    private Long surgeryId;
+    /** 手术申请单ID(his_surgery_apply.id, 申请阶段术前医嘱) */
+    private Long surgeryApplyId;
+    /** 手术医嘱阶段: 1术前 2术中 3术后 */
+    private Integer orderPhase;
+    /** 代开目标医生ID(his_staff.id; 权限按其口径校验, 非代开时为空) */
+    private Long proxyDoctorId;
+    /** 代开原因 */
+    private String proxyReason;
 }

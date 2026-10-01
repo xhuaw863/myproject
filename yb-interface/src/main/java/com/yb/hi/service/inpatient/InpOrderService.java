@@ -9,6 +9,7 @@ import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
 import com.yb.hi.dto.inpatient.InpOrderDTO;
 import com.yb.hi.dto.inpatient.OrderTemplateItemDTO;
 import com.yb.hi.entity.basedata.HisChargeItem;
+import com.yb.hi.entity.basedata.HisStaff;
 import com.yb.hi.entity.community.HisDrugCatalog;
 import com.yb.hi.entity.community.HisOrgCatalog;
 import com.yb.hi.entity.inpatient.HisInpChargeDetail;
@@ -17,9 +18,11 @@ import com.yb.hi.entity.inpatient.HisInpVisit;
 import com.yb.hi.entity.inpatient.HisOrderTemplate;
 import com.yb.hi.framework.common.BizException;
 import com.yb.hi.framework.common.R;
+import com.yb.hi.framework.common.Roles;
 import com.yb.hi.framework.tenant.LoginUser;
 import com.yb.hi.framework.tenant.UserContext;
 import com.yb.hi.mapper.basedata.HisChargeItemMapper;
+import com.yb.hi.mapper.basedata.HisStaffMapper;
 import com.yb.hi.mapper.community.HisDrugCatalogMapper;
 import com.yb.hi.mapper.community.HisOrgCatalogMapper;
 import com.yb.hi.mapper.inpatient.HisInpChargeDetailMapper;
@@ -56,19 +59,21 @@ public class InpOrderService extends ServiceImpl<HisInpOrderMapper, HisInpOrder>
     private final HisDrugCatalogMapper drugCatalogMapper;
     private final HisChargeItemMapper chargeItemMapper;
     private final HisOrgCatalogMapper orgCatalogMapper;
+    private final HisStaffMapper staffMapper;
     private final OrgAccessGuard guard;
     private final InpAllergyService allergyService;
     private final OrderTemplateService orderTemplateService;
 
     public InpOrderService(HisInpVisitMapper visitMapper, HisInpChargeDetailMapper chargeDetailMapper,
                            HisDrugCatalogMapper drugCatalogMapper, HisChargeItemMapper chargeItemMapper,
-                           HisOrgCatalogMapper orgCatalogMapper, OrgAccessGuard guard,
+                           HisOrgCatalogMapper orgCatalogMapper, HisStaffMapper staffMapper, OrgAccessGuard guard,
                            InpAllergyService allergyService, OrderTemplateService orderTemplateService) {
         this.visitMapper = visitMapper;
         this.chargeDetailMapper = chargeDetailMapper;
         this.drugCatalogMapper = drugCatalogMapper;
         this.chargeItemMapper = chargeItemMapper;
         this.orgCatalogMapper = orgCatalogMapper;
+        this.staffMapper = staffMapper;
         this.guard = guard;
         this.allergyService = allergyService;
         this.orderTemplateService = orderTemplateService;
@@ -86,9 +91,9 @@ public class InpOrderService extends ServiceImpl<HisInpOrderMapper, HisInpOrder>
         return lu.getStaffId();
     }
 
-    /** 医嘱分页查询(inpVisitId必传, 类型/状态可选) */
+    /** 医嘱分页查询(inpVisitId必传, 类型/状态/开单科室可选) */
     public IPage<HisInpOrder> listOrders(Long inpVisitId, Integer orderType, Integer orderStatus,
-                                         long page, long size) {
+                                         Long orderDeptId, long page, long size) {
         if (inpVisitId == null) {
             throw new BizException(400, "住院就诊ID不能为空");
         }
@@ -97,9 +102,19 @@ public class InpOrderService extends ServiceImpl<HisInpOrderMapper, HisInpOrder>
                 .eq(HisInpOrder::getInpVisitId, inpVisitId)
                 .eq(orderType != null, HisInpOrder::getOrderType, orderType)
                 .eq(orderStatus != null, HisInpOrder::getOrderStatus, orderStatus)
+                .eq(orderDeptId != null, HisInpOrder::getOrderDeptId, orderDeptId)
                 .orderByDesc(HisInpOrder::getStartTime)
                 .orderByDesc(HisInpOrder::getId)
                 .page(new Page<>(page, size));
+    }
+
+    /** 开单科室: 优先取当前登录医生所属科室, 回落就诊科室(多科会诊时区分开单科室)。 */
+    private Long resolveOrderDeptId(HisInpVisit visit) {
+        LoginUser lu = UserContext.get();
+        if (lu != null && lu.getDeptId() != null) {
+            return lu.getDeptId();
+        }
+        return visit == null ? null : visit.getDeptId();
     }
 
     /**
@@ -128,6 +143,32 @@ public class InpOrderService extends ServiceImpl<HisInpOrderMapper, HisInpOrder>
             throw new BizException("患者当前不在院(就诊状态:" + visit.getVisitStatus() + "), 不能开立医嘱");
         }
         Long doctorId = currentDoctorId();
+        // 手麻P1: 代开校验(权限按被代开医生口径; doctor_id 仍记实际操作人, proxy_doctor_id 记被代开)
+        if (dto.getProxyDoctorId() != null && !dto.getProxyDoctorId().equals(doctorId)) {
+            HisStaff target = staffMapper.selectById(dto.getProxyDoctorId());
+            if (target == null || Integer.valueOf(0).equals(target.getStatus())) {
+                throw new BizException(400, "被代开医生不存在或已停用");
+            }
+            LoginUser lu = UserContext.get();
+            boolean privileged = lu != null && lu.hasAnyRole(Roles.ADMIN, Roles.ORG_ADMIN, Roles.SUPER_ADMIN);
+            boolean sameDept = lu != null && lu.getDeptId() != null && lu.getDeptId().equals(target.getDeptId());
+            if (!privileged && !sameDept) {
+                throw new BizException(403, "无代开权限: 仅同科室医师或管理员可代开医嘱");
+            }
+        }
+        // 手麻P1: 手术关联/阶段一致性(术前挂申请单, 术中/术后挂手术); 手术类药品医嘱需发送后才入队
+        boolean surgeryLinked = dto.getSurgeryId() != null || dto.getSurgeryApplyId() != null;
+        if (surgeryLinked) {
+            if (dto.getOrderPhase() == null) {
+                throw new BizException(400, "手术医嘱须指定阶段(1术前/2术中/3术后)");
+            }
+            if (dto.getOrderPhase() == 1 && dto.getSurgeryApplyId() == null) {
+                throw new BizException(400, "术前医嘱须关联手术申请单");
+            }
+            if (dto.getOrderPhase() != 1 && dto.getSurgeryId() == null) {
+                throw new BizException(400, "术中/术后医嘱须关联手术");
+            }
+        }
 
         HisInpOrder o = new HisInpOrder();
         o.setOrgId(visit.getOrgId() != null ? visit.getOrgId() : guard.currentOrgId());
@@ -146,7 +187,17 @@ public class InpOrderService extends ServiceImpl<HisInpOrderMapper, HisInpOrder>
         o.setStartTime(LocalDateTime.now());
         o.setOrderStatus(1);
         o.setDoctorId(doctorId);
+        o.setOrderDeptId(resolveOrderDeptId(visit));
         o.setGroupNo(StringUtils.hasText(dto.getGroupNo()) ? dto.getGroupNo().trim() : null);
+        // 手麻P1: 手术关联/阶段/代开落列; 手术类药品医嘱初始未发送(0), 普通医嘱保持空(自动入队)
+        o.setSurgeryId(dto.getSurgeryId());
+        o.setSurgeryApplyId(dto.getSurgeryApplyId());
+        o.setOrderPhase(surgeryLinked ? dto.getOrderPhase() : null);
+        o.setProxyDoctorId(dto.getProxyDoctorId());
+        o.setProxyReason(StringUtils.hasText(dto.getProxyReason()) ? dto.getProxyReason().trim() : null);
+        if (surgeryLinked && dto.getOrderCategory() != null && dto.getOrderCategory() == 1) {
+            o.setSendPharmStatus(0);
+        }
         /* 药师审核(T35): 药品类医嘱(orderCategory=1, 服务端定价时强制 drugId 非空)开立即进入待审队列,
          * 护士审核前须药师先审; 非药品医嘱无需药审(0); 复制驳回医嘱重新开立时同样重置为待审 */
         o.setPharmAuditStatus(dto.getOrderCategory() != null && dto.getOrderCategory() == 1 ? 1 : 0);

@@ -1,4 +1,6 @@
-/* 临床路径模板管理: 左侧模板列表(350px, 搜索/状态筛选/分页) + 右侧时间轴节点编辑器(模板→第X天节点→任务 三级定义)
+/* 临床路径模板管理: 左侧模板列表(336px, 搜索/状态筛选/分页) + 右侧「路径纵览头 + 监护时间轴节点编辑器」
+ * 设计语言: 医疗监护仪轨迹 —— 品牌渐变纵览头 + 大数字指标带(--yb-fs-2xl 对 11px 注标) +
+ *           ECG 虚线轴日节点 + 任务类型色相条(医/护/检/验/教) + hover 才浮现的行操作
  * 接口: GET/POST /api/his/pathway/template (list?orgId=&keyword=&status=&page=&size= | POST | PUT /{id} | PUT /{id}/status | POST /{id}/copy)
  *       GET /api/his/pathway/template/{id} -> {template, nodes:[{node, tasks}]}
  *       /api/his/pathway/node (GET /list/{templateId} | POST | PUT /{id} | DELETE /{id})
@@ -15,6 +17,8 @@
   const ORDER_TYPE = { 1: '长期', 2: '临时' };
   const ORDER_CATEGORY = { 1: '药品', 2: '检查', 3: '检验', 4: '治疗', 5: '护理', 6: '膳食', 7: '其他' };
   const PATHWAY_STATUS = { 1: '启用', 0: '停用' };
+  /* 任务类型色相: 医嘱=品牌蓝 护理=青 检查=琥珀 检验=紫 宣教=绿(全部取自 theme.css --yb-fill-*) */
+  const TASK_TYPE_TOKEN = { 1: '--yb-fill-info', 2: '--yb-fill-teal', 3: '--yb-fill-warning', 4: '--yb-fill-purple', 5: '--yb-fill-success' };
 
   function money(value) {
     const n = Number(value);
@@ -27,68 +31,158 @@
    * 样式(注入一次): 复用 theme.css 的 --yb-* 令牌, 不改动既有 CSS 文件
    * ============================================================ */
   const CSS = `
-.cp-workbench { display:flex; height:calc(100vh - 88px); min-height:520px; overflow:hidden; background:var(--yb-surface); border:1px solid var(--yb-border); border-radius:var(--yb-r-md); box-shadow:var(--yb-sh-1); }
+.cp-root { height:calc(100vh - 88px); min-height:520px; display:flex; flex-direction:column; }
+.cp-caption { flex:none; display:flex; align-items:baseline; gap:10px; margin-bottom:10px; }
+.cp-caption .t { font-size:var(--yb-fs-xl); font-weight:700; letter-spacing:var(--yb-tracking-tight); color:var(--yb-ink-1); border-left:3px solid var(--yb-brand); padding-left:11px; }
+.cp-caption .hint { font-size:var(--yb-fs-sm); color:var(--yb-ink-3); }
+.cp-workbench { flex:1; min-height:0; display:flex; overflow:hidden; background:var(--yb-surface); border:1px solid var(--yb-border); border-radius:var(--yb-r-md); box-shadow:var(--yb-sh-1); }
 
 /* ===== 左栏: 模板列表 ===== */
-.cp-side { width:350px; flex:none; display:flex; flex-direction:column; border-right:1px solid var(--yb-border); background:var(--yb-surface-2); }
-.cp-side-head { flex:none; padding:12px; background:var(--yb-surface); border-bottom:1px solid var(--yb-border); }
+.cp-side { width:336px; flex:none; display:flex; flex-direction:column; border-right:1px solid var(--yb-border); background:var(--yb-surface-2); }
+.cp-side-head { flex:none; padding:12px 12px 10px; background:var(--yb-surface); border-bottom:1px solid var(--yb-border-light); }
 .cp-side-tools { display:flex; gap:8px; align-items:center; }
 .cp-side-tools .grow { flex:1; min-width:0; }
+.cp-side-count { margin-top:8px; display:flex; align-items:center; gap:5px; font-size:var(--yb-fs-cap); letter-spacing:.04em; color:var(--yb-ink-4); font-variant-numeric:tabular-nums; }
+.cp-side-count b { color:var(--yb-ink-3); font-weight:700; }
 .cp-side-body { flex:1; min-height:0; }
-.cp-tpl { padding:10px 12px; border-bottom:1px solid var(--yb-divider); cursor:pointer; background:var(--yb-surface); transition:background var(--yb-dur) var(--yb-ease); }
-.cp-tpl:hover { background:var(--yb-surface-3); }
-.cp-tpl.is-active { background:var(--yb-brand-subtle); box-shadow:inset 3px 0 0 var(--yb-brand); }
+/* 卡片式条目: 左侧 3px 状态脊(绿=启用/灰=停用), hover 浮现动作簇, 选中态浅底+加粗脊 */
+.cp-tpl { position:relative; margin:8px 10px; padding:10px 12px 9px 14px; border:1px solid var(--yb-border-light); border-radius:var(--yb-r-md); cursor:pointer; background:var(--yb-surface); box-shadow:var(--yb-sh-1); transition:box-shadow var(--yb-dur) var(--yb-ease), border-color var(--yb-dur) var(--yb-ease), transform var(--yb-dur) var(--yb-ease); }
+.cp-tpl::before { content:''; position:absolute; left:0; top:0; bottom:0; width:3px; border-radius:var(--yb-r-md) 0 0 var(--yb-r-md); background:var(--yb-ink-disabled); transition:width var(--yb-dur) var(--yb-ease), background var(--yb-dur) var(--yb-ease); }
+.cp-tpl.is-on::before { background:var(--yb-fill-success); }
+.cp-tpl:hover { border-color:var(--yb-brand-border); box-shadow:var(--yb-sh-2); transform:translateY(-1px); }
+.cp-tpl.is-active { border-color:var(--yb-brand-border); background:var(--yb-brand-subtle); }
+.cp-tpl.is-active::before { width:4px; background:var(--yb-brand); }
 .cp-tpl .r1 { display:flex; align-items:center; gap:6px; }
-.cp-tpl .r1 .nm { flex:1; min-width:0; font-size:var(--yb-fs-md); color:var(--yb-ink-1); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-.cp-tpl .r2 { margin-top:4px; font-size:var(--yb-fs-sm); color:var(--yb-ink-3); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-.cp-tpl .r3 { margin-top:4px; display:flex; align-items:center; gap:10px; font-size:var(--yb-fs-sm); color:var(--yb-ink-3); }
-.cp-tpl .r3 .code { font-family:var(--yb-font-mono); font-size:var(--yb-fs-cap); color:var(--yb-ink-4); }
+.cp-tpl .r1 .nm { flex:1; min-width:0; font-size:var(--yb-fs-md); font-weight:600; color:var(--yb-ink-1); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; letter-spacing:var(--yb-tracking-tight); }
+.cp-tpl .st { flex:none; width:7px; height:7px; border-radius:50%; background:var(--yb-ink-disabled); }
+.cp-tpl.is-on .st { background:var(--yb-fill-success); box-shadow:0 0 0 3px var(--yb-success-bg); }
+.cp-tpl .r2 { margin-top:5px; font-size:var(--yb-fs-sm); color:var(--yb-ink-3); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.cp-tpl .r2 .icd { font-family:var(--yb-font-mono); font-size:var(--yb-fs-cap); color:var(--yb-ink-4); margin-left:4px; }
+.cp-tpl .r3 { margin-top:7px; display:flex; align-items:center; gap:9px; font-size:var(--yb-fs-cap); color:var(--yb-ink-3); font-variant-numeric:tabular-nums; }
+.cp-tpl .r3 .code { font-family:var(--yb-font-mono); color:var(--yb-ink-4); max-width:112px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.cp-tpl .r3 .ver { padding:0 5px; height:16px; line-height:16px; border-radius:var(--yb-r-pill); background:var(--yb-surface-3); color:var(--yb-ink-3); font-weight:600; }
+.cp-tpl.is-active .r3 .ver { background:var(--yb-surface); }
 .cp-tpl .r3 .money { margin-left:auto; color:var(--yb-gold); font-family:var(--yb-font-mono); }
-.cp-side-pager { flex:none; display:flex; justify-content:center; padding:6px 0; border-top:1px solid var(--yb-border); background:var(--yb-surface); }
+/* 卡片操作簇: hover/选中才浮现, 不压诊断信息行 */
+.cp-tpl-ops { position:absolute; right:8px; bottom:7px; display:flex; gap:2px; opacity:0; transform:translateY(3px); transition:opacity var(--yb-dur) var(--yb-ease), transform var(--yb-dur) var(--yb-ease); }
+.cp-tpl:hover .cp-tpl-ops, .cp-tpl.is-active .cp-tpl-ops { opacity:1; transform:none; }
+.cp-empty-line { padding:26px 0; text-align:center; color:var(--yb-ink-4); font-size:var(--yb-fs-sm); }
+.cp-side-pager { flex:none; display:flex; justify-content:center; padding:7px 0; border-top:1px solid var(--yb-border-light); background:var(--yb-surface); }
 
 /* ===== 右栏: 详情/编辑器 ===== */
 .cp-main { flex:1; min-width:0; display:flex; flex-direction:column; overflow:hidden; background:var(--yb-surface); }
-.cp-empty { flex:1; display:flex; flex-direction:column; gap:8px; align-items:center; justify-content:center; color:var(--yb-ink-4); }
-.cp-empty .big { font-size:var(--yb-fs-lg); color:var(--yb-ink-3); }
+/* 空态: 深墨蓝大水印 + 指引 */
+.cp-empty { flex:1; display:flex; flex-direction:column; gap:10px; align-items:center; justify-content:center; color:var(--yb-ink-4); background:radial-gradient(62% 52% at 50% 40%, var(--yb-surface-2) 0%, var(--yb-surface) 100%); }
+.cp-empty .wm { font-size:64px; font-weight:800; line-height:1; color:transparent; -webkit-text-stroke:1.5px var(--yb-brand-border); letter-spacing:.06em; }
+.cp-empty .big { font-size:var(--yb-fs-xl); font-weight:700; color:var(--yb-ink-2); letter-spacing:var(--yb-tracking-tight); }
+.cp-empty .sub { font-size:var(--yb-fs-md); color:var(--yb-ink-3); }
+.cp-empty .flow { margin-top:2px; display:flex; align-items:center; gap:8px; font-size:var(--yb-fs-sm); color:var(--yb-ink-3); }
+.cp-empty .flow i { font-style:normal; padding:3px 10px; border:1px dashed var(--yb-brand-border); border-radius:var(--yb-r-pill); background:var(--yb-surface); }
 .cp-detail { flex:1; min-height:0; display:flex; flex-direction:column; overflow:hidden; }
-.cp-head { flex:none; display:flex; gap:16px; padding:12px 16px; border-bottom:1px solid var(--yb-border); background:linear-gradient(180deg, var(--yb-surface), var(--yb-surface-2)); }
-.cp-head-main { flex:1; min-width:0; }
-.cp-head .line1 { display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
-.cp-head .line1 .nm { font-size:var(--yb-fs-lg); font-weight:700; color:var(--yb-ink-1); }
-.cp-head .line2 { margin-top:8px; display:flex; flex-wrap:wrap; gap:6px 18px; font-size:var(--yb-fs-base); color:var(--yb-ink-3); }
-.cp-head .line2 b { color:var(--yb-ink-1); font-weight:600; }
-.cp-head .line2 .money { font-family:var(--yb-font-mono); color:var(--yb-gold); }
-.cp-head .line3 { margin-top:6px; font-size:var(--yb-fs-sm); color:var(--yb-ink-3); }
-.cp-head-ops { flex:none; display:flex; flex-direction:column; gap:6px; align-items:flex-end; }
+
+/* 路径纵览头: 深墨蓝渐变(呼应顶栏/登录页), 白字大标题 + 右置大数字指标带 */
+.cp-head { flex:none; position:relative; overflow:hidden; display:flex; gap:20px; padding:16px 20px 14px; color:#fff; background:var(--yb-header-grad); }
+.cp-head::after { content:''; position:absolute; left:0; right:0; bottom:10px; height:26px; opacity:.16; pointer-events:none; background:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='240' height='26' viewBox='0 0 240 26'%3E%3Cpath d='M0 13h40l8-9 7 18 6-9h44l9-6 6 12 7-6h103' fill='none' stroke='%23ffffff' stroke-width='1.4'/%3E%3C/svg%3E") repeat-x left center; animation:cp-ecg 18s linear infinite; }
+@keyframes cp-ecg { from { background-position-x:0; } to { background-position-x:-240px; } }
+.cp-head-main { flex:1; min-width:0; position:relative; z-index:1; }
+.cp-head .badges { display:flex; align-items:center; gap:7px; flex-wrap:wrap; }
+.cp-head .badges .nm { font-size:var(--yb-fs-xl); font-weight:700; letter-spacing:var(--yb-tracking-tight); }
+.cp-head .chip { display:inline-flex; align-items:center; padding:0 8px; height:20px; border-radius:var(--yb-r-pill); font-size:var(--yb-fs-cap); font-weight:600; line-height:1; background:var(--yb-header-chip); color:#fff; letter-spacing:.02em; }
+.cp-head .chip.on { background:rgba(78,154,62,.9); }
+.cp-head .chip.off { background:rgba(255,255,255,.2); color:var(--yb-header-ink-2); }
+.cp-head .chip.code { font-family:var(--yb-font-mono); font-weight:500; letter-spacing:0; }
+.cp-head .meta { margin-top:9px; display:flex; flex-wrap:wrap; gap:4px 20px; font-size:var(--yb-fs-base); color:var(--yb-header-ink-2); }
+.cp-head .meta b { color:#fff; font-weight:600; }
+.cp-head .meta .mono { font-family:var(--yb-font-mono); font-variant-numeric:tabular-nums; }
+.cp-head .desc { margin-top:7px; font-size:var(--yb-fs-sm); color:var(--yb-header-ink-2); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+/* 指标带: 28px 大数字 vs 11px 注标, 等宽数字, 金色列专用于钱 */
+.cp-stats { flex:none; position:relative; z-index:1; display:flex; align-items:stretch; }
+.cp-stat { min-width:92px; padding:2px 16px; display:flex; flex-direction:column; justify-content:center; border-left:1px solid rgba(255,255,255,.16); }
+.cp-stat:first-child { border-left:none; }
+.cp-stat .num { font-size:var(--yb-fs-2xl); font-weight:700; line-height:1.05; letter-spacing:var(--yb-tracking-tight); font-variant-numeric:tabular-nums; }
+.cp-stat .num .u { font-size:var(--yb-fs-sm); font-weight:500; margin-left:3px; color:var(--yb-header-ink-2); }
+.cp-stat .num.gold { color:#f2d9a7; }
+.cp-stat .lbl { margin-top:5px; font-size:var(--yb-fs-cap); letter-spacing:.08em; color:var(--yb-header-ink-2); white-space:nowrap; }
+.cp-head-ops { flex:none; position:relative; z-index:1; display:flex; flex-direction:column; gap:8px; align-items:flex-end; justify-content:center; }
 .cp-head-ops .row { display:flex; gap:6px; }
+.cp-head-ops .hint { max-width:150px; font-size:var(--yb-fs-cap); line-height:1.5; color:var(--yb-header-ink-2); text-align:right; }
+.cp-head .el-button { font-weight:600; }
 
-/* ===== 时间轴节点编辑器 ===== */
-.cp-body { flex:1; min-height:0; overflow:auto; padding:16px 18px 24px; }
-.cp-timeline { position:relative; padding-left:26px; }
-.cp-timeline::before { content:''; position:absolute; left:8px; top:6px; bottom:6px; width:2px; background:linear-gradient(180deg, var(--yb-brand-border), var(--yb-border-light)); }
-.cp-node { position:relative; margin-bottom:12px; }
-.cp-node::before { content:''; position:absolute; left:-24px; top:14px; width:10px; height:10px; border-radius:50%; background:var(--yb-surface); border:2px solid var(--yb-brand); box-sizing:content-box; }
-.cp-node-head { display:flex; align-items:center; gap:8px; padding:8px 12px; background:var(--yb-surface-2); border:1px solid var(--yb-border-light); border-radius:var(--yb-r-sm) var(--yb-r-sm) 0 0; }
-.cp-node-head .day { flex:none; font-weight:700; color:var(--yb-brand); font-size:var(--yb-fs-base); }
-.cp-node-head .nm { color:var(--yb-ink-1); font-weight:600; }
-.cp-node-head .desc { color:var(--yb-ink-4); font-size:var(--yb-fs-sm); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; max-width:280px; }
-.cp-node-head .count { flex:none; padding:0 6px; height:18px; line-height:18px; border-radius:var(--yb-r-pill); background:var(--yb-brand-subtle); color:var(--yb-brand); font-size:var(--yb-fs-cap); font-weight:600; }
-.cp-node-head .ops { margin-left:auto; flex:none; }
-.cp-node-tasks { border:1px solid var(--yb-border-light); border-top:none; border-radius:0 0 var(--yb-r-sm) var(--yb-r-sm); padding:8px 10px 10px; background:var(--yb-surface); }
-.cp-node-add { margin-top:8px; }
-.cp-add-day { position:relative; padding-top:2px; }
-.cp-add-day::before { content:''; position:absolute; left:-24px; top:14px; width:10px; height:10px; border-radius:50%; background:var(--yb-surface); border:2px dashed var(--yb-border-strong); box-sizing:content-box; }
+/* ===== 监护时间轴节点编辑器 ===== */
+.cp-body { flex:1; min-height:0; overflow:auto; padding:18px 20px 26px; background:var(--yb-surface); }
+.cp-timeline { position:relative; padding-left:46px; }
+/* 轨迹轴: 品牌淡线渐隐入底, 节点串其上 */
+.cp-timeline::before { content:''; position:absolute; left:17px; top:10px; bottom:10px; width:2px; background:linear-gradient(180deg, var(--yb-brand) 0%, var(--yb-brand-border) 55%, var(--yb-border-light) 100%); border-radius:1px; }
+.cp-node { position:relative; margin-bottom:14px; animation:cp-node-in .3s var(--yb-ease) both; }
+@keyframes cp-node-in { from { opacity:0; transform:translateY(7px); } to { opacity:1; transform:none; } }
+@media (prefers-reduced-motion: reduce) { .cp-node, .cp-head::after { animation:none; } }
+/* 日徽标: 圆章浮于轴点, D1/D2 监护编号语言; 首末节点实心 */
+.cp-day { position:absolute; left:-46px; top:8px; width:36px; height:36px; border-radius:50%; background:var(--yb-surface); border:2px solid var(--yb-brand-border); box-sizing:border-box; display:flex; flex-direction:column; align-items:center; justify-content:center; line-height:1; box-shadow:0 1px 3px rgba(16,24,40,.10); transition:border-color var(--yb-dur) var(--yb-ease), background var(--yb-dur) var(--yb-ease); }
+.cp-day b { font-size:14px; font-weight:700; color:var(--yb-brand); font-variant-numeric:tabular-nums; letter-spacing:-.02em; }
+.cp-day i { font-style:normal; font-size:9px; color:var(--yb-ink-4); margin-top:1px; letter-spacing:.04em; }
+.cp-node.is-edge .cp-day { background:var(--yb-brand); border-color:var(--yb-brand-strong); }
+.cp-node.is-edge .cp-day b { color:#fff; }
+.cp-node.is-edge .cp-day i { color:rgba(255,255,255,.75); }
+.cp-node:hover .cp-day { border-color:var(--yb-brand); }
+/* 节点卡 */
+.cp-node-card { border:1px solid var(--yb-border-light); border-radius:var(--yb-r-md); background:var(--yb-surface); box-shadow:var(--yb-sh-1); overflow:hidden; transition:box-shadow var(--yb-dur) var(--yb-ease), border-color var(--yb-dur) var(--yb-ease); }
+.cp-node:hover .cp-node-card { border-color:var(--yb-brand-border); box-shadow:var(--yb-sh-2); }
+/* ECG 引线: 徽标与卡片之间的监护连线 */
+.cp-node-head { display:flex; align-items:center; gap:9px; padding:9px 12px; background:linear-gradient(180deg, var(--yb-surface), var(--yb-surface-2)); border-bottom:1px dashed var(--yb-border); }
+.cp-node-head .nm { color:var(--yb-ink-1); font-weight:700; font-size:var(--yb-fs-md); letter-spacing:var(--yb-tracking-tight); }
+.cp-node-head .desc { color:var(--yb-ink-3); font-size:var(--yb-fs-sm); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; max-width:320px; }
+.cp-node-head .count { flex:none; padding:0 7px; height:18px; line-height:18px; border-radius:var(--yb-r-pill); background:var(--yb-brand-subtle); color:var(--yb-brand); font-size:var(--yb-fs-cap); font-weight:700; font-variant-numeric:tabular-nums; }
+/* 类型分布微条: 该日任务按类型着色的比例条 */
+.cp-dist { flex:none; width:84px; height:6px; border-radius:3px; overflow:hidden; display:flex; background:var(--yb-surface-3); }
+.cp-dist i { height:100%; }
+.cp-node-head .ops { margin-left:auto; flex:none; display:flex; align-items:center; opacity:.25; transition:opacity var(--yb-dur) var(--yb-ease); }
+.cp-node-head:hover .ops { opacity:1; }
+.cp-node-tasks { padding:4px 0 0; background:var(--yb-surface); }
 
-/* ===== 表单网格 ===== */
+/* 任务行: 类型色相条 + 主副信息层级 + hover 浮现操作; 去掉 el-table 的重边框 */
+.cp-task { display:flex; align-items:center; gap:10px; padding:8px 12px 8px 14px; position:relative; border-bottom:1px solid var(--yb-divider); transition:background var(--yb-dur) var(--yb-ease); }
+.cp-task::before { content:''; position:absolute; left:0; top:6px; bottom:6px; width:3px; border-radius:0 2px 2px 0; background:var(--cp-tc, var(--yb-ink-disabled)); }
+.cp-task:hover { background:var(--yb-info-light); }
+.cp-task:last-child { border-bottom:none; }
+.cp-task .tt { flex:none; width:44px; text-align:center; font-size:var(--yb-fs-cap); font-weight:700; letter-spacing:.06em; color:var(--cp-tc, var(--yb-ink-3)); }
+.cp-task .main { flex:1; min-width:0; }
+.cp-task .c1 { font-size:var(--yb-fs-md); color:var(--yb-ink-1); font-weight:500; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.cp-task .c2 { margin-top:2px; display:flex; align-items:center; gap:7px; font-size:var(--yb-fs-sm); color:var(--yb-ink-3); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.cp-task .c2 .mono { font-family:var(--yb-font-mono); font-size:var(--yb-fs-cap); color:var(--yb-ink-4); }
+.cp-task .c2 .money { font-family:var(--yb-font-mono); color:var(--yb-gold); font-variant-numeric:tabular-nums; }
+.cp-task .flag { flex:none; font-size:var(--yb-fs-cap); font-weight:700; letter-spacing:.08em; padding:0 6px; height:18px; line-height:18px; border-radius:var(--yb-r-sm); }
+.cp-task .flag.req { color:var(--yb-danger); background:var(--yb-danger-bg); border:1px solid var(--yb-danger-border); }
+.cp-task .flag.opt { color:var(--yb-ink-3); background:var(--yb-surface-2); border:1px solid var(--yb-border); }
+.cp-task .ops { flex:none; width:112px; display:flex; justify-content:flex-end; gap:2px; opacity:0; transform:translateX(4px); transition:opacity var(--yb-dur) var(--yb-ease), transform var(--yb-dur) var(--yb-ease); }
+.cp-task:hover .ops { opacity:1; transform:none; }
+.cp-node-add { display:flex; align-items:center; justify-content:center; gap:6px; margin:8px 12px 12px; padding:8px 0; border:1px dashed var(--yb-border-strong); border-radius:var(--yb-r-sm); color:var(--yb-ink-3); font-size:var(--yb-fs-sm); cursor:pointer; background:transparent; transition:all var(--yb-dur) var(--yb-ease); width:calc(100% - 24px); }
+.cp-node-add:hover { border-color:var(--yb-brand); color:var(--yb-brand); background:var(--yb-info-light); }
+/* 追加天数: 轴末端虚线圆点 */
+.cp-add-day { position:relative; padding-left:0; }
+.cp-add-day::before { content:''; position:absolute; left:-35px; top:12px; width:14px; height:14px; border-radius:50%; background:var(--yb-surface); border:2px dashed var(--yb-border-strong); box-sizing:content-box; }
+.cp-sec-label { display:flex; align-items:center; gap:8px; margin:2px 0 12px; font-size:var(--yb-fs-sm); font-weight:600; letter-spacing:.06em; color:var(--yb-ink-3); }
+.cp-sec-label::after { content:''; flex:1; height:1px; background:var(--yb-border-light); }
+
+/* ===== 对话框与表单 ===== */
 .cp-form-grid { display:grid; grid-template-columns:1fr 1fr; gap:0 14px; }
-.cp-picked { display:flex; align-items:center; gap:14px; flex-wrap:wrap; padding:7px 10px; border-radius:var(--yb-r-sm); background:var(--yb-brand-subtle); font-size:var(--yb-fs-sm); color:var(--yb-ink-2); }
-.cp-picked .money { font-family:var(--yb-font-mono); color:var(--yb-gold); }
-.cp-empty-line { padding:14px 0; text-align:center; color:var(--yb-ink-4); font-size:var(--yb-fs-sm); }
+.cp-form-sec { display:flex; align-items:center; gap:8px; margin:2px 0 12px; font-size:var(--yb-fs-sm); font-weight:700; letter-spacing:.05em; color:var(--yb-brand); }
+.cp-form-sec::before { content:''; width:3px; height:12px; border-radius:2px; background:var(--yb-brand); }
+.cp-form-sec .sub { font-weight:400; color:var(--yb-ink-4); letter-spacing:0; }
+.cp-picked { display:flex; align-items:center; gap:14px; flex-wrap:wrap; padding:8px 11px; border-radius:var(--yb-r-sm); background:var(--yb-brand-subtle); border:1px solid var(--yb-brand-border); font-size:var(--yb-fs-sm); color:var(--yb-ink-2); margin:0 0 14px; }
+.cp-picked b { font-weight:600; }
+.cp-picked .money { font-family:var(--yb-font-mono); color:var(--yb-gold); font-variant-numeric:tabular-nums; }
 .cp-chip { display:inline-flex; align-items:center; padding:0 7px; height:20px; border-radius:var(--yb-r-sm); font-size:var(--yb-fs-sm); line-height:1; background:var(--yb-surface-2); color:var(--yb-ink-3); border:1px solid var(--yb-border); white-space:nowrap; }
 .cp-dim { color:var(--yb-ink-3); font-size:var(--yb-fs-sm); }
 .cp-opt { display:flex; align-items:center; gap:10px; }
 .cp-opt .nm { color:var(--yb-ink-1); }
 .cp-opt .sub { color:var(--yb-ink-3); font-size:var(--yb-fs-sm); }
+.cp-opt .money { margin-left:auto; font-family:var(--yb-font-mono); color:var(--yb-gold); font-size:var(--yb-fs-sm); }
+/* 任务对话框: 类型/分类改为带色分的胶囊选择, 强化"这是哪类任务"的感知 */
+.cp-seg { display:flex; gap:6px; flex-wrap:wrap; }
+.cp-seg .seg { display:inline-flex; align-items:center; gap:5px; padding:0 11px; height:28px; border:1px solid var(--yb-border-strong); border-radius:var(--yb-r-pill); background:var(--yb-surface); color:var(--yb-ink-2); font-size:var(--yb-fs-sm); font-weight:500; cursor:pointer; transition:all var(--yb-dur) var(--yb-ease); line-height:1; }
+.cp-seg .seg .dot { width:7px; height:7px; border-radius:50%; background:var(--cp-tc, var(--yb-ink-disabled)); }
+.cp-seg .seg:hover { border-color:var(--yb-brand-border); color:var(--yb-brand); }
+.cp-seg .seg.is-on { border-color:var(--yb-brand); background:var(--yb-brand-subtle); color:var(--yb-brand-strong); font-weight:600; box-shadow:0 0 0 2px rgba(26,92,158,.08); }
 `;
 
   function ensureStyle() {
@@ -176,6 +270,9 @@
       maxDay() {
         return this.nodes.reduce((m, n) => Math.max(m, Number(n.dayNo) || 0), 0);
       },
+      taskTotal() {
+        return this.nodes.reduce((s, n) => s + ((n.tasks || []).length), 0);
+      },
       deptMap() {
         const map = {};
         this.depts.forEach(d => { map[d.id] = d.deptName; });
@@ -197,6 +294,7 @@
       }
     },
     created() {
+      ensureStyle();
       this.loadDepts();
       this.loadMedDict();
       this.loadTemplates(true);
@@ -211,6 +309,29 @@
       deptName(id) { return this.deptMap[id] || (id == null ? '-' : '#' + id); },
       usageName(code) { return this.usageMap[code] || code || '-'; },
       freqName(code) { return this.freqMap[code] || code || '-'; },
+      /* 任务类型色(监护色带): CSS 变量引用令牌, 保证全站只此一处调色 */
+      taskColor(v) {
+        const token = TASK_TYPE_TOKEN[v];
+        return token ? 'var(' + token + ')' : 'var(--yb-ink-disabled)';
+      },
+      /* 该日任务类型分布(按 taskType 计数, 保持 1..5 顺序) */
+      taskDist(node) {
+        const cnt = {};
+        (node.tasks || []).forEach(t => {
+          const k = Number(t.taskType) || 1;
+          cnt[k] = (cnt[k] || 0) + 1;
+        });
+        return Object.keys(cnt).sort().map(k => ({ type: Number(k), n: cnt[k] }));
+      },
+      /* 任务副行语义摘要: 药品给 剂量/用法/频次, 其余给 分类·长期/临时·单价 */
+      taskDose(t) {
+        if (Number(t.orderCategory) !== 1) { return ''; }
+        const parts = [];
+        if (t.dosage) { parts.push(t.dosage + (t.dosageUnit || '')); }
+        if (t.usageCode) { parts.push(this.usageName(t.usageCode)); }
+        if (t.freqCode) { parts.push(this.freqName(t.freqCode)); }
+        return parts.join(' · ');
+      },
       /* ===== 左栏: 列表 ===== */
       loadTemplates(immediate) {
         const vm = this;
@@ -615,36 +736,52 @@
         });
       }
     },
+    mounted() {
+      ensureStyle();
+    },
     template: `
-      <div class="cp-workbench">
+      <div class="cp-root">
+        <div class="cp-caption">
+          <span class="t">临床路径模板管理</span>
+          <span class="hint">按「模板 → 第X天节点 → 任务」三级定义病种入径标准, 必做任务入径后自动转医嘱</span>
+        </div>
+        <div class="cp-workbench">
         <aside class="cp-side">
           <div class="cp-side-head">
             <div class="cp-side-tools">
               <el-input class="grow" v-model="keyword" placeholder="路径 / 诊断名称" size="small" clearable
-                        @input="loadTemplates(false)" @keyup.enter="loadTemplates(true)"></el-input>
+                        @input="loadTemplates(false)" @keyup.enter="loadTemplates(true)">
+                <template #prefix><span style="font-size:12px;color:var(--yb-icon)">⌕</span></template>
+              </el-input>
               <el-select v-model="filterStatus" placeholder="全部" size="small" clearable style="width:88px" @change="loadTemplates(true)">
                 <el-option label="启用" :value="1"></el-option>
                 <el-option label="停用" :value="0"></el-option>
               </el-select>
               <el-button size="small" type="primary" @click="openTplCreate">新建</el-button>
             </div>
+            <div class="cp-side-count">共 <b>{{ total }}</b> 条路径模板 · 本页 <b>{{ templates.length }}</b></div>
           </div>
           <el-scrollbar class="cp-side-body" v-loading="loadingList">
             <div v-for="t in templates" :key="t.id" class="cp-tpl"
-                 :class="{'is-active': String(selectedId) === String(t.id)}" @click="selectTemplate(t)">
+                 :class="{'is-active': String(selectedId) === String(t.id), 'is-on': Number(t.status) === 1}"
+                 @click="selectTemplate(t)">
               <div class="r1">
+                <span class="st"></span>
                 <b class="nm" :title="t.pathwayName">{{ t.pathwayName }}</b>
-                <el-tag size="small" :type="Number(t.status) === 1 ? 'success' : 'info'" disable-transitions>{{ statusText(t.status) }}</el-tag>
               </div>
-              <div class="r2" :title="t.diseaseName">诊断: {{ t.diseaseName || '未绑定' }}{{ t.diseaseCode ? ' (' + t.diseaseCode + ')' : '' }}</div>
+              <div class="r2" :title="t.diseaseName">{{ t.diseaseName || '未绑定诊断' }}<span class="icd" v-if="t.diseaseCode">{{ t.diseaseCode }}</span></div>
               <div class="r3">
                 <span class="code" :title="t.pathwayCode">{{ t.pathwayCode }}</span>
-                <span>V{{ t.version || 1 }}</span>
-                <span>住院日 {{ t.avgLength != null ? t.avgLength : '-' }}</span>
+                <span class="ver">V{{ t.version || 1 }}</span>
+                <span>{{ t.avgLength != null ? '住院 ' + t.avgLength + ' 天' : '住院 -' }}</span>
                 <span class="money" v-if="t.totalCost != null">¥{{ money(t.totalCost) }}</span>
               </div>
+              <div class="cp-tpl-ops" @click.stop>
+                <el-button link size="small" @click="selectTemplate(t); openTplEdit(t)" v-if="String(selectedId) === String(t.id)">编辑</el-button>
+                <el-button link size="small" @click="selectTemplate(t)">打开</el-button>
+              </div>
             </div>
-            <div v-if="!templates.length && !loadingList" class="cp-empty-line">暂无路径模板, 点上方「新建」创建</div>
+            <div v-if="!templates.length && !loadingList" class="cp-empty-line">暂无路径模板<br>点上方「新建」创建第一个病种入径标准</div>
           </el-scrollbar>
           <div class="cp-side-pager" v-if="total > size">
             <el-pagination small background layout="prev, pager, next" :total="total" :page-size="size"
@@ -654,28 +791,46 @@
 
         <section class="cp-main">
           <div v-if="!selectedId" class="cp-empty">
-            <span class="big">临床路径模板管理</span>
-            <span>左侧选择模板查看/编辑其逐日节点与任务, 或新建一个病种入径标准</span>
-            <span>模板定义: 适用诊断 + 平均住院日 + 第1~N天节点 + 每天任务(自动转医嘱)</span>
+            <div class="wm">CP</div>
+            <span class="big">临床路径模板工作台</span>
+            <span class="sub">左侧选择一个模板, 查看并编辑其逐日节点与任务</span>
+            <div class="flow"><i>适用诊断 ICD-10</i><span>→</span><i>平均住院日</i><span>→</span><i>第1~N天节点</i><span>→</span><i>任务自动转医嘱</i></div>
+            <el-button type="primary" plain style="margin-top:10px" @click="openTplCreate">新建路径模板</el-button>
           </div>
           <div v-else class="cp-detail" v-loading="detailLoading">
             <template v-if="currentTemplate">
-              <div class="cp-head">
+              <!-- 路径纵览头: 深墨蓝渐变 + ECG 基线 + 大数字指标带 -->
+              <header class="cp-head">
                 <div class="cp-head-main">
-                  <div class="line1">
+                  <div class="badges">
                     <span class="nm">{{ currentTemplate.pathwayName }}</span>
-                    <el-tag size="small" :type="Number(currentTemplate.status) === 1 ? 'success' : 'info'" disable-transitions>{{ statusText(currentTemplate.status) }}</el-tag>
-                    <span class="cp-chip">V{{ currentTemplate.version || 1 }}</span>
+                    <span class="chip" :class="Number(currentTemplate.status) === 1 ? 'on' : 'off'">{{ statusText(currentTemplate.status) }}</span>
+                    <span class="chip">版本 V{{ currentTemplate.version || 1 }}</span>
+                    <span class="chip code">{{ currentTemplate.pathwayCode || '-' }}</span>
                   </div>
-                  <div class="line2">
-                    <span>编码 <b>{{ currentTemplate.pathwayCode || '-' }}</b></span>
-                    <span>诊断 <b>{{ currentTemplate.diseaseName || '-' }}</b>{{ currentTemplate.diseaseCode ? ' (' + currentTemplate.diseaseCode + ')' : '' }}</span>
+                  <div class="meta">
+                    <span>适用诊断 <b>{{ currentTemplate.diseaseName || '-' }}</b><span v-if="currentTemplate.diseaseCode" class="mono"> {{ currentTemplate.diseaseCode }}</span></span>
                     <span>科室 <b>{{ deptName(currentTemplate.deptId) }}</b></span>
-                    <span>平均住院日 <b>{{ currentTemplate.avgLength != null ? currentTemplate.avgLength : '-' }}</b> 天</span>
-                    <span>预估费用 <b class="money">¥{{ money(currentTemplate.totalCost) }}</b></span>
-                    <span>节点 <b>{{ nodes.length }}</b> 天</span>
                   </div>
-                  <div class="line3" v-if="currentTemplate.description">说明: {{ currentTemplate.description }}</div>
+                  <div class="desc" v-if="currentTemplate.description">{{ currentTemplate.description }}</div>
+                </div>
+                <div class="cp-stats">
+                  <div class="cp-stat">
+                    <span class="num">{{ currentTemplate.avgLength != null ? currentTemplate.avgLength : '-' }}<span class="u">天</span></span>
+                    <span class="lbl">平均住院日</span>
+                  </div>
+                  <div class="cp-stat">
+                    <span class="num gold">{{ money(currentTemplate.totalCost) }}</span>
+                    <span class="lbl">预估总费用(元)</span>
+                  </div>
+                  <div class="cp-stat">
+                    <span class="num">{{ nodes.length }}<span class="u">节点</span></span>
+                    <span class="lbl">逐日定义</span>
+                  </div>
+                  <div class="cp-stat">
+                    <span class="num">{{ taskTotal }}<span class="u">项</span></span>
+                    <span class="lbl">任务总数</span>
+                  </div>
                 </div>
                 <div class="cp-head-ops">
                   <div class="row">
@@ -683,76 +838,80 @@
                     <el-button size="small" :type="Number(currentTemplate.status) === 1 ? 'warning' : 'success'" plain @click="toggleStatus">{{ Number(currentTemplate.status) === 1 ? '停用' : '启用' }}</el-button>
                     <el-button size="small" @click="copyTemplate">复制新版本</el-button>
                   </div>
-                  <span class="cp-dim">节点任务修改立即生效; 已入径患者按旧快照执行</span>
+                  <span class="hint">节点任务修改立即生效; 已入径患者按旧快照执行</span>
                 </div>
-              </div>
+              </header>
 
               <div class="cp-body">
+                <div class="cp-sec-label">诊疗路径时间轴 · 共 {{ nodes.length }} 天节点 / {{ taskTotal }} 项任务</div>
                 <div class="cp-timeline">
-                  <div class="cp-node" v-for="n in nodes" :key="n.id">
-                    <div class="cp-node-head">
-                      <span class="day">第{{ n.dayNo }}天</span>
-                      <span class="nm">{{ n.nodeName }}</span>
-                      <span class="desc" v-if="n.nodeDesc" :title="n.nodeDesc">{{ n.nodeDesc }}</span>
-                      <span class="count">任务 {{ (n.tasks || []).length }}</span>
-                      <span class="ops">
-                        <el-button link size="small" @click="toggleNode(n)">{{ isCollapsed(n) ? '展开' : '收起' }}</el-button>
-                        <el-button link type="primary" size="small" @click="openNodeEdit(n)">编辑</el-button>
-                        <el-button link type="danger" size="small" @click="removeNode(n)">删除</el-button>
-                      </span>
-                    </div>
-                    <div class="cp-node-tasks" v-show="!isCollapsed(n)">
-                      <el-table :data="n.tasks || []" size="small" border>
-                        <el-table-column label="任务类型" width="80" align="center">
-                          <template #default="s"><el-tag size="small" effect="plain" disable-transitions>{{ taskTypeText(s.row.taskType) }}</el-tag></template>
-                        </el-table-column>
-                        <el-table-column prop="orderContent" label="内容" min-width="200" show-overflow-tooltip></el-table-column>
-                        <el-table-column label="分类" width="108">
-                          <template #default="s">{{ categoryText(s.row.orderCategory) }}<span style="color:var(--yb-ink-4)"> · {{ orderTypeText(s.row.orderType) }}</span></template>
-                        </el-table-column>
-                        <el-table-column label="用法" width="88" show-overflow-tooltip>
-                          <template #default="s">{{ s.row.usageCode ? usageName(s.row.usageCode) : '-' }}</template>
-                        </el-table-column>
-                        <el-table-column label="频次" width="88" show-overflow-tooltip>
-                          <template #default="s">{{ s.row.freqCode ? freqName(s.row.freqCode) : '-' }}</template>
-                        </el-table-column>
-                        <el-table-column label="必做" width="66" align="center">
-                          <template #default="s">
-                            <el-tag size="small" :type="Number(s.row.isMandatory) === 1 ? 'danger' : 'info'" effect="plain" disable-transitions>{{ Number(s.row.isMandatory) === 1 ? '必做' : '可选' }}</el-tag>
-                          </template>
-                        </el-table-column>
-                        <el-table-column label="操作" width="104" align="center" fixed="right">
-                          <template #default="s">
-                            <el-button link type="primary" size="small" @click="openTaskEdit(n, s.row)">编辑</el-button>
-                            <el-button link type="danger" size="small" @click="removeTask(n, s.row)">删除</el-button>
-                          </template>
-                        </el-table-column>
-                        <template #empty><div class="cp-empty-line">该天暂无任务, 点下方「添加任务」配置</div></template>
-                      </el-table>
-                      <el-button class="cp-node-add" size="small" type="primary" plain @click="openTaskCreate(n)">+ 添加任务</el-button>
+                  <div class="cp-node" v-for="(n, idx) in nodes" :key="n.id"
+                       :class="{'is-edge': idx === 0 || n.dayNo === maxDay}"
+                       :style="{animationDelay: Math.min(idx, 8) * 40 + 'ms'}">
+                    <div class="cp-day"><b>{{ n.dayNo }}</b><i>DAY</i></div>
+                    <div class="cp-node-card">
+                      <div class="cp-node-head">
+                        <span class="nm">{{ n.nodeName }}</span>
+                        <span class="desc" v-if="n.nodeDesc" :title="n.nodeDesc">{{ n.nodeDesc }}</span>
+                        <span class="count">{{ (n.tasks || []).length }} 任务</span>
+                        <span class="cp-dist" v-if="(n.tasks || []).length" :title="'任务类型分布'">
+                          <i v-for="d in taskDist(n)" :key="d.type" :style="{width: (100 * d.n / (n.tasks || []).length) + '%', background: taskColor(d.type)}"></i>
+                        </span>
+                        <span class="ops">
+                          <el-button link size="small" @click="toggleNode(n)">{{ isCollapsed(n) ? '展开' : '收起' }}</el-button>
+                          <el-button link type="primary" size="small" @click="openNodeEdit(n)">编辑</el-button>
+                          <el-button link type="danger" size="small" @click="removeNode(n)">删除</el-button>
+                        </span>
+                      </div>
+                      <div class="cp-node-tasks" v-show="!isCollapsed(n)">
+                        <div class="cp-task" v-for="t in n.tasks || []" :key="t.id" :style="{'--cp-tc': taskColor(t.taskType)}">
+                          <span class="tt">{{ taskTypeText(t.taskType) }}</span>
+                          <div class="main">
+                            <div class="c1" :title="t.orderContent">{{ t.orderContent }}</div>
+                            <div class="c2">
+                              <span>{{ categoryText(t.orderCategory) }} · {{ orderTypeText(t.orderType) }}</span>
+                              <span v-if="taskDose(t)">{{ taskDose(t) }}</span>
+                              <span class="mono" v-if="t.spec">{{ t.spec }}</span>
+                              <span class="money" v-if="t.unitPrice != null">¥{{ money(t.unitPrice) }} × {{ t.quantity }}</span>
+                            </div>
+                          </div>
+                          <span class="flag" :class="Number(t.isMandatory) === 1 ? 'req' : 'opt'">{{ Number(t.isMandatory) === 1 ? '必做' : '可选' }}</span>
+                          <span class="ops">
+                            <el-button link type="primary" size="small" @click="openTaskEdit(n, t)">编辑</el-button>
+                            <el-button link type="danger" size="small" @click="removeTask(n, t)">删除</el-button>
+                          </span>
+                        </div>
+                        <div v-if="!(n.tasks || []).length" class="cp-empty-line" style="padding:16px 0">该天暂无任务 —— 添加后入径患者将按日执行</div>
+                        <button class="cp-node-add" @click="openTaskCreate(n)">＋ 添加任务<span style="color:var(--yb-ink-4)">（医嘱 / 护理 / 检查 / 检验 / 宣教）</span></button>
+                      </div>
                     </div>
                   </div>
 
                   <div class="cp-add-day">
-                    <el-button size="small" type="primary" plain @click="openNodeCreate">+ 添加天数</el-button>
-                    <span class="cp-dim" style="margin-left:8px">当前已配置 {{ nodes.length }} 天, 新节点默认追加为第{{ maxDay + 1 }}天</span>
+                    <el-button size="small" type="primary" plain @click="openNodeCreate">＋ 追加天数节点</el-button>
+                    <span class="cp-dim" style="margin-left:8px">已配置 {{ nodes.length }} 天, 新节点默认第 {{ maxDay + 1 }} 天</span>
                   </div>
                 </div>
               </div>
             </template>
             <div v-else-if="!detailLoading" class="cp-empty">
-              <span>模板加载失败或已删除, 请从左侧重新选择</span>
+              <div class="wm">?</div>
+              <span class="big">模板加载失败或已删除</span>
+              <span class="sub">请从左侧重新选择</span>
             </div>
           </div>
         </section>
+        </div>
 
         <!-- 模板基本信息对话框 -->
         <el-dialog v-model="tplDialog" :title="tplEditId ? '编辑路径模板' : '新建路径模板'" width="640px" top="6vh" :close-on-click-modal="false">
           <el-form label-width="92px" size="small">
+            <div class="cp-form-sec">基本信息<span class="sub">编码留空自动生成</span></div>
             <div class="cp-form-grid">
-              <el-form-item label="路径编码"><el-input v-model="tplForm.pathwayCode" placeholder="留空自动生成(如 PATH001)"></el-input></el-form-item>
+              <el-form-item label="路径编码"><el-input v-model="tplForm.pathwayCode" placeholder="如 PATH001, 留空自动"></el-input></el-form-item>
               <el-form-item label="路径名称" required><el-input v-model="tplForm.pathwayName" placeholder="如: 社区获得性肺炎(成人)"></el-input></el-form-item>
             </div>
+            <div class="cp-form-sec">适用条件<span class="sub">诊断决定入径匹配口径</span></div>
             <el-form-item label="诊断检索">
               <el-select v-model="diagPickCode" filterable remote reserve-keyword clearable style="width:100%"
                          :remote-method="remoteDiagSearch" :loading="diagSearching"
@@ -776,6 +935,7 @@
                 <span class="cp-dim" style="margin-left:6px">元</span>
               </el-form-item>
             </div>
+            <div class="cp-form-sec">说明</div>
             <el-form-item label="路径描述"><el-input v-model="tplForm.description" type="textarea" :rows="3" placeholder="路径适用条件 / 入径标准 / 变异口径等说明(选填)"></el-input></el-form-item>
           </el-form>
           <template #footer>
@@ -803,13 +963,17 @@
         <!-- 任务对话框 -->
         <el-dialog v-model="taskDialog" :title="taskEditId ? '编辑任务' : '添加任务'" width="720px" top="5vh" :close-on-click-modal="false">
           <el-form label-width="86px" size="small">
+            <div class="cp-form-sec">任务定位<span class="sub">{{ taskNodeLabel }}</span></div>
+            <el-form-item label="任务类型">
+              <div class="cp-seg">
+                <span v-for="(label, key) in {1:'医嘱',2:'护理',3:'检查',4:'检验',5:'宣教'}" :key="key"
+                      class="seg" :class="{'is-on': Number(taskForm.taskType) === Number(key)}"
+                      :style="{'--cp-tc': taskColor(Number(key))}" @click="taskForm.taskType = Number(key)">
+                  <span class="dot"></span>{{ label }}
+                </span>
+              </div>
+            </el-form-item>
             <div class="cp-form-grid">
-              <el-form-item label="所属节点"><span style="color:var(--yb-brand);font-weight:600">{{ taskNodeLabel }}</span></el-form-item>
-              <el-form-item label="任务类型">
-                <el-select v-model="taskForm.taskType" style="width:100%">
-                  <el-option v-for="(label, key) in {1:'医嘱',2:'护理',3:'检查',4:'检验',5:'宣教'}" :key="key" :label="label" :value="Number(key)"></el-option>
-                </el-select>
-              </el-form-item>
               <el-form-item label="医嘱类型">
                 <el-radio-group v-model="taskForm.orderType">
                   <el-radio-button :label="1">长期</el-radio-button>
@@ -817,21 +981,22 @@
                 </el-radio-group>
               </el-form-item>
               <el-form-item label="医嘱分类">
-                <el-radio-group v-model="taskForm.orderCategory" @change="onCategoryChange">
-                  <el-radio-button v-for="(label, key) in {1:'药品',2:'检查',3:'检验',4:'治疗',5:'护理',6:'膳食',7:'其他'}" :key="key" :label="Number(key)">{{ label }}</el-radio-button>
-                </el-radio-group>
+                <el-select v-model="taskForm.orderCategory" style="width:100%" @change="onCategoryChange">
+                  <el-option v-for="(label, key) in {1:'药品',2:'检查',3:'检验',4:'治疗',5:'护理',6:'膳食',7:'其他'}" :key="key" :label="label" :value="Number(key)"></el-option>
+                </el-select>
               </el-form-item>
             </div>
 
+            <div class="cp-form-sec">项目来源<span class="sub">检索选中后自动带出规格与价格</span></div>
             <el-form-item v-if="isDrugTask" label="药品检索">
               <el-select class="grow" style="width:100%" v-model="pickDrugId" filterable remote reserve-keyword clearable
                          :remote-method="remoteDrugSearch" :loading="drugSearching"
-                         placeholder="通用名 / 编码 / 拼音简码, 选中带出规格与单价" @change="onPickDrug">
+                         placeholder="通用名 / 编码 / 拼音简码" @change="onPickDrug">
                 <el-option v-for="d in drugOptions" :key="d.id" :label="(d.genericName || '') + ' ' + (d.spec || '')" :value="d.id">
                   <div class="cp-opt">
                     <span class="nm">{{ d.genericName }}</span>
                     <span class="sub">{{ d.spec }}</span>
-                    <span class="sub" style="font-family:var(--yb-font-mono);color:var(--yb-gold)">¥{{ money(d.retailPrice) }}</span>
+                    <span class="money">¥{{ money(d.retailPrice) }}</span>
                   </div>
                 </el-option>
               </el-select>
@@ -844,22 +1009,23 @@
                   <div class="cp-opt">
                     <span class="nm">{{ c.itemName }}</span>
                     <span class="sub">{{ c.itemCode }}</span>
-                    <span class="sub" style="font-family:var(--yb-font-mono);color:var(--yb-gold)">¥{{ money(c.execPrice != null ? c.execPrice : c.price) }}</span>
+                    <span class="money">¥{{ money(c.execPrice != null ? c.execPrice : c.price) }}</span>
                   </div>
                 </el-option>
               </el-select>
             </el-form-item>
 
-            <div class="cp-picked" v-if="isDrugTask && pickedDrug" style="margin:0 0 14px">
+            <div class="cp-picked" v-if="isDrugTask && pickedDrug">
               <span>规格 <b>{{ pickedDrug.spec || '-' }}</b></span>
               <span>零售价 <b class="money">{{ money(pickedDrug.retailPrice) }}</b> 元/{{ pickedDrug.minUnit || '单位' }}</span>
               <span>剂型 {{ pickedDrug.dosformName || pickedDrug.dosform || '-' }}</span>
             </div>
-            <div class="cp-picked" v-if="!isDrugTask && pickedCharge" style="margin:0 0 14px">
+            <div class="cp-picked" v-if="!isDrugTask && pickedCharge">
               <span>编码 <b>{{ pickedCharge.itemCode || '-' }}</b></span>
               <span>执行价 <b class="money">{{ money(pickedCharge.execPrice != null ? pickedCharge.execPrice : pickedCharge.price) }}</b> 元/{{ pickedCharge.unit || '次' }}</span>
             </div>
 
+            <div class="cp-form-sec" v-if="isDrugTask">用药方案</div>
             <div class="cp-form-grid" v-if="isDrugTask">
               <el-form-item label="规格"><el-input v-model="taskForm.spec" placeholder="选中药品自动带出"></el-input></el-form-item>
               <el-form-item label="剂量">
@@ -878,6 +1044,7 @@
               </el-form-item>
             </div>
 
+            <div class="cp-form-sec">医嘱内容与执行</div>
             <el-form-item label="医嘱内容">
               <el-input v-model="taskForm.orderContent" placeholder="自动拼接(药品: 名称+剂量+用法+频次)或手动输入" @input="onContentInput">
                 <template #append><el-button @click="autoCompose">自动生成</el-button></template>
@@ -887,7 +1054,7 @@
               <el-form-item label="数量"><el-input-number v-model="taskForm.quantity" :min="0.01" :step="1" :precision="2" controls-position="right" style="width:150px"></el-input-number></el-form-item>
               <el-form-item label="是否必做">
                 <el-switch v-model="taskForm.isMandatory" :active-value="1" :inactive-value="0" active-text="必做" inactive-text="可选"></el-switch>
-                <span class="cp-dim" style="margin-left:8px">必做任务由「执行当天任务」自动转医嘱; 可选任务人工处理</span>
+                <span class="cp-dim" style="margin-left:8px">必做任务自动转医嘱</span>
               </el-form-item>
             </div>
           </el-form>

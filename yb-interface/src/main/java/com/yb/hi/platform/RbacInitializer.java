@@ -304,6 +304,9 @@ public class RbacInitializer implements ApplicationRunner {
         ids.put("mr-maintain", menuK("mr-maintain", "系统维护字典", "MrMaintain", null, gMr, ++sort[0]));
         ids.put("mr-report", menuK("mr-report", "报表统计", "MrReport", null, gMr, ++sort[0]));
         ids.put("mr-submit", menuK("mr-submit", "上报闭环", "MrSubmit", null, gMr, ++sort[0]));
+                // P3 集成阶段: DRG/DIP 预分组 + 质控前后对比
+        ids.put("mr-drg", menuK("mr-drg", "DRG分组对比", "MrDrg", null, gMr, ++sort[0]));
+        ids.put("mr-quality-diff", menuK("mr-quality-diff", "质控前后对比", "MrQualityDiff", null, gMr, ++sort[0]));
         // 收费域菜单已并入门诊挂号收费目录 g5(见上), 独立"收费结算台"目录已废弃(2026-09 两目录合并)
         // 结算记录/门诊日结(2026-09 移入门诊挂号收费目录 g5), 独立"查询报表"目录已废弃(存量库由 moveReportIntoOutpatient 迁移)
         ids.put("rpt-setl", menuK("rpt-setl", "结算记录", "SettleRecords", null, g5, ++sort[0]));
@@ -490,8 +493,8 @@ public class RbacInitializer implements ApplicationRunner {
         grants.put(Roles.DOCTOR, new String[]{"dashboard", "doctor-ws", "patient", "doctor-worklog", "medical-template", "emr-designer", "emr-element-search", "emr-quality-board", "nurse-allergy", "medtech-report-query",
                 // 住院医生站(2026-09 住院模块): 医嘱/诊断/病历/患者概览入口共用工作站组件
                 "inp-doctor-ws", "inp-order-manage", "inp-order-template", "inp-diagnosis", "inp-med-record", "inp-patient-overview",
-                // 临床路径/手术麻醉(2026-09 集成): 路径模板管理 + 手术管理 + 麻醉记录
-                "pathway-template", "surgery-manage", "anesthesia-record",
+                // 临床路径/手术麻醉(2026-09 集成): 路径模板管理 + 手术管理 + 麻醉记录; 手麻P0: 手术申请管理
+                "pathway-template", "surgery-manage", "surgery-apply", "anesthesia-record",
                 // 住院报表(2026-09 报表/打印模块): 报表中心(只读)
                 "inp-report"});
         grants.put(Roles.PHARMACIST, new String[]{"dashboard", "dispense-todo", "dispense", "drug-return", "pharmacy-def", "pharmacy-rpt", "wh-stock", "wh-in", "wh-out", "warehouse-def", "warehouse-rpt", "wh-check", "req-mgr", "trf-mgr", "price-adjust", "stock-ledger", "trace-code", "price-mgr", "pharmacy-window", "window-workstation", "window-dept-rule", "pharmacy-cross", "rx-audit", "supplier-mgr", "purchase-rule", "purchase-plan", "purchase-order", "stock-accept", "supplier-pay", "payable-rpt", "drug-maint", "maint-template", "month-end",
@@ -507,16 +510,16 @@ public class RbacInitializer implements ApplicationRunner {
         grants.put(Roles.NURSE, new String[]{"dashboard", "patient", "nurse-pending", "nurse-skin-test", "nurse-infusion", "nurse-allergy", "nurse-exec-log",
                 // 住院护士站(2026-09 住院模块): 医嘱审核/执行/护理记录/交接班/床位一览入口共用工作站组件
                 "inp-nurse-ws", "inp-order-audit", "inp-order-exec", "inp-nursing-record", "inp-shift-handover", "inp-bed-overview",
-                // 麻醉记录(2026-09 集成, 只读)
-                "anesthesia-record",
+                // 麻醉记录(2026-09 集成, 只读) + 手麻P0: 病区复核角色手术申请管理
+                "anesthesia-record", "surgery-apply",
                 // 住院报表(2026-09 报表/打印模块): 报表中心(只读)
                 "inp-report"});
         grants.put(Roles.THERAPIST, new String[]{"dashboard", "patient", "treatment-pending", "treatment-plan", "treatment-equip", "treatment-log"});
         grants.put(Roles.TECHNICIAN, new String[]{"dashboard", "patient", "medtech-specimen", "medtech-report", "medtech-critical", "medtech-critical-rule", "medtech-report-query"});
         // 病案统计科(P0): 录入组编目首页; 编目组分配+编目; 质控组审核+查阅编目
-        grants.put(Roles.MR_INPUT, new String[]{"dashboard", "mr-catalog", "mr-annotation", "mr-search", "mr-workload", "mr-report"});
-        grants.put(Roles.MR_CATALOG, new String[]{"dashboard", "mr-assign", "mr-catalog", "mr-annotation", "mr-recall", "mr-borrow", "mr-search", "mr-workload", "mr-maintain", "mr-report", "mr-submit"});
-        grants.put(Roles.MR_REVIEW, new String[]{"dashboard", "mr-catalog", "mr-review", "mr-annotation", "mr-search", "mr-workload", "mr-report", "mr-submit"});
+        grants.put(Roles.MR_INPUT, new String[]{"dashboard", "mr-catalog", "mr-annotation", "mr-search", "mr-workload", "mr-report", "mr-drg", "mr-quality-diff"});
+        grants.put(Roles.MR_CATALOG, new String[]{"dashboard", "mr-assign", "mr-catalog", "mr-annotation", "mr-recall", "mr-borrow", "mr-search", "mr-workload", "mr-maintain", "mr-report", "mr-submit", "mr-drg", "mr-quality-diff"});
+        grants.put(Roles.MR_REVIEW, new String[]{"dashboard", "mr-catalog", "mr-review", "mr-annotation", "mr-search", "mr-workload", "mr-report", "mr-submit", "mr-drg", "mr-quality-diff"});
         for (Map.Entry<String, String[]> e : grants.entrySet()) {
             Long roleId = roleIds.get(e.getKey());
             if (roleId == null) {
@@ -561,8 +564,8 @@ public class RbacInitializer implements ApplicationRunner {
         grants.put(Roles.DOCTOR, new String[]{"doctor-ws", "doctor-worklog", "medical-template", "emr-designer", "emr-element-search", "emr-quality-board", "nurse-allergy", "medtech-report-query",
                 // 住院医生站(2026-09 住院模块)
                 "inp-doctor-ws", "inp-order-manage", "inp-order-template", "inp-diagnosis", "inp-med-record", "inp-patient-overview",
-                // 临床路径/手术麻醉(2026-09 集成): 路径模板管理 + 手术管理 + 麻醉记录
-                "pathway-template", "surgery-manage", "anesthesia-record",
+                // 临床路径/手术麻醉(2026-09 集成): 路径模板管理 + 手术管理 + 麻醉记录; 手麻P0: 手术申请管理
+                "pathway-template", "surgery-manage", "surgery-apply", "anesthesia-record",
                 // 住院报表(2026-09 报表/打印模块): 报表中心(只读)
                 "inp-report",
                 // 住院危急值闭环(T41): 危急值管理(确认/处置/关闭)
@@ -570,8 +573,8 @@ public class RbacInitializer implements ApplicationRunner {
         grants.put(Roles.NURSE, new String[]{"doctor-ws", "doctor-worklog", "nurse-pending", "nurse-skin-test", "nurse-infusion", "nurse-allergy", "nurse-exec-log",
                 // 住院护士站(2026-09 住院模块)
                 "inp-nurse-ws", "inp-order-audit", "inp-order-exec", "inp-nursing-record", "inp-shift-handover", "inp-bed-overview",
-                // 麻醉记录(2026-09 集成, 只读)
-                "anesthesia-record",
+                // 麻醉记录(2026-09 集成, 只读) + 手麻P0: 病区复核角色手术申请管理
+                "anesthesia-record", "surgery-apply",
                 // 住院报表(2026-09 报表/打印模块): 报表中心(只读)
                 "inp-report",
                 // 住院危急值闭环 + PDA扫码(T41)
@@ -579,9 +582,9 @@ public class RbacInitializer implements ApplicationRunner {
         grants.put(Roles.THERAPIST, new String[]{"dashboard", "patient", "treatment-pending", "treatment-plan", "treatment-equip", "treatment-log"});
         grants.put(Roles.TECHNICIAN, new String[]{"dashboard", "patient", "medtech-specimen", "medtech-report", "medtech-critical", "medtech-critical-rule", "medtech-report-query"});
         // 病案统计科(P0)存量库补授: 录入组编目首页; 编目组分配+编目; 质控组审核+查阅编目
-        grants.put(Roles.MR_INPUT, new String[]{"dashboard", "mr-catalog", "mr-annotation", "mr-search", "mr-workload", "mr-report"});
-        grants.put(Roles.MR_CATALOG, new String[]{"dashboard", "mr-assign", "mr-catalog", "mr-annotation", "mr-recall", "mr-borrow", "mr-search", "mr-workload", "mr-maintain", "mr-report", "mr-submit"});
-        grants.put(Roles.MR_REVIEW, new String[]{"dashboard", "mr-catalog", "mr-review", "mr-annotation", "mr-search", "mr-workload", "mr-report", "mr-submit"});
+        grants.put(Roles.MR_INPUT, new String[]{"dashboard", "mr-catalog", "mr-annotation", "mr-search", "mr-workload", "mr-report", "mr-drg", "mr-quality-diff"});
+        grants.put(Roles.MR_CATALOG, new String[]{"dashboard", "mr-assign", "mr-catalog", "mr-annotation", "mr-recall", "mr-borrow", "mr-search", "mr-workload", "mr-maintain", "mr-report", "mr-submit", "mr-drg", "mr-quality-diff"});
+        grants.put(Roles.MR_REVIEW, new String[]{"dashboard", "mr-catalog", "mr-review", "mr-annotation", "mr-search", "mr-workload", "mr-report", "mr-submit", "mr-drg", "mr-quality-diff"});
         int added = 0;
         for (Map.Entry<String, String[]> e : grants.entrySet()) {
             Long roleId = roleIds.get(e.getKey());
@@ -662,7 +665,7 @@ public class RbacInitializer implements ApplicationRunner {
     }
 
     /**
-     * 幂等确保"供货商维护"菜单存在(初挂在"标准字典"目录下; 新库随后由
+     * 幂等确保“企业字典”菜单存在(初挂在“标准字典”目录下; 新库随后由
      * moveSupplierDictToBasedata 统一改挂到"医共体管理›基础数据", 供牵头机构系统管理员维护)。
      */
     private void ensureSupplierDictMenu() {
@@ -680,23 +683,25 @@ public class RbacInitializer implements ApplicationRunner {
         SysMenu m = new SysMenu();
         m.setParentId(parentId);
         m.setMenuKey("supplier-dict");
-        m.setMenuName("供货商维护");
+        m.setMenuName("企业字典");
         m.setMenuType(2);
         m.setComp("SupplierDict");
         m.setSortNo(sortNo);
         m.setStatus(1);
         menuMapper.insert(m);
-        log.info("供货商维护菜单已补充(平台超级管理员专属)");
+        log.info("企业字典菜单已补充(平台超级管理员专属)");
     }
 
     /**
-     * 幂等将"供货商维护"(supplier-dict)从"标准字典"目录改挂到"医共体管理›基础数据"(basedata)目录下,
+     * 幂等将“企业字典”(supplier-dict)从“标准字典”目录改挂到“医共体管理›基础数据”(basedata)目录下,
      * 排在医保目录对照(1)/医保疾病对照(2)/医共体字典(3)之后(sort_no=4)。
-     * 只改 parent_id/sort_no, 菜单 id 不变, sys_role_menu 授权自动保持; 机构端可见性由
+     * 同时把存量库旧名“供货商维护”更名为“企业字典”。
+     * 只改 parent_id/sort_no/menu_name, 菜单 id 不变, sys_role_menu 授权自动保持; 机构端可见性由
      * SysRoleService 移除 supplier-dict 排除项后, 经 ADMIN all_menus 递归补全 basedata→platform 祖先自动生效。
      * 须在 ensureBasedataMenuUnderPlatform/ensureDiagMapMenu 之后执行(basedata 目录已存在)。
      */
     private void moveSupplierDictToBasedata() {
+        renameMenuIfOldName("supplier-dict", "供货商维护", "企业字典");
         SysMenu basedata = menuMapper.selectOne(new QueryWrapper<SysMenu>().eq("menu_key", "basedata").last("LIMIT 1"));
         SysMenu sup = menuMapper.selectOne(new QueryWrapper<SysMenu>().eq("menu_key", "supplier-dict").last("LIMIT 1"));
         if (basedata == null || sup == null) {
@@ -708,7 +713,7 @@ public class RbacInitializer implements ApplicationRunner {
             upd.setParentId(basedata.getId());
             upd.setSortNo(4);
             menuMapper.updateById(upd);
-            log.info("「供货商维护」已归入「医共体管理 → 基础数据」");
+            log.info("「企业字典」已归入「医共体管理 → 基础数据」");
         }
     }
 
@@ -1421,6 +1426,9 @@ public class RbacInitializer implements ApplicationRunner {
         ensureChildMenu(menuIds, "mr", "mr-maintain", "系统维护字典", "MrMaintain");
         ensureChildMenu(menuIds, "mr", "mr-report", "报表统计", "MrReport");
         ensureChildMenu(menuIds, "mr", "mr-submit", "上报闭环", "MrSubmit");
+                // P3 集成阶段补种
+                ensureChildMenu(menuIds, "mr", "mr-drg", "DRG分组对比", "MrDrg");
+                ensureChildMenu(menuIds, "mr", "mr-quality-diff", "质控前后对比", "MrQualityDiff");
     }
 
     /** 幂等补种病案统计科业务角色(all_menus=0)并回填 roleIds 供授权(与 THERAPIST/TECHNICIAN 同档)。 */
@@ -1867,9 +1875,10 @@ public class RbacInitializer implements ApplicationRunner {
         // 临床路径(2026-09 临床路径模块): 路径模板管理
         ensureDirMenu(menuIds, "clinical-pathway-group", "临床路径");
         ensureChildMenu(menuIds, "clinical-pathway-group", "pathway-template", "路径模板管理", "ClinicalPathwayManage");
-        // 手术麻醉(2026-09 手麻记费模块): 手术管理/麻醉记录/手麻记费
+        // 手术麻醉(2026-09 手麻记费模块): 手术管理/麻醉记录/手麻记费; 手麻P0: 手术申请管理(含通知管理)
         ensureDirMenu(menuIds, "surgery-group", "手术麻醉");
         ensureChildMenu(menuIds, "surgery-group", "surgery-manage", "手术管理", "SurgeryManage");
+        ensureChildMenu(menuIds, "surgery-group", "surgery-apply", "手术申请管理", "SurgeryApply");
         ensureChildMenu(menuIds, "surgery-group", "anesthesia-record", "麻醉记录", "AnesthesiaRecord");
         ensureChildMenu(menuIds, "surgery-group", "surgery-fee", "手麻记费", "SurgeryFee");
         // 住院报表(2026-09 报表/打印模块): 报表中心/打印管理

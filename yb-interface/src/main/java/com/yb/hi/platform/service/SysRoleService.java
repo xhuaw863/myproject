@@ -36,7 +36,7 @@ public class SysRoleService {
     private final SysMenuService menuService;
     private final OrgAccessGuard orgAccessGuard;
 
-    /** 医院端不可见菜单: 平台级"医院管理"(顶级) + 标准字典"提取入库"/"字典维护" + "行政区划"(基础字典, 仅超管可见); 供货商维护已下沉基础数据由牵头机构维护, 不再排除 */
+    /** 医院端不可见菜单: 平台级“医院管理”(顶级) + 标准字典“提取入库”/“字典维护” + “行政区划”(基础字典, 仅超管可见); 企业字典已下沉基础数据由牵头机构维护, 不再排除 */
     private static final List<String> HOSPITAL_EXCLUDED_MENUS = Arrays.asList("hospital-manage", "std-dict-import", "std-dict-maintain", "area-code");
     /** 超级管理员精简菜单: 工作台 + 医院管理 + 标准字典(浏览+维护) */
     private static final List<String> SUPER_ADMIN_MENUS = Arrays.asList("dashboard", "hospital-manage", "std-dict");

@@ -51,4 +51,13 @@ public class HisSurgeryFee extends BaseEntity {
     private Long operatorId;
     /** 状态: 1正常 2退费 */
     private Integer status;
+    /* ---------- 手麻P0升级扩展列 ---------- */
+    /** 就诊类型: 1住院 2门诊 3日间 */
+    private Integer visitType;
+    /** 门诊就诊ID(his_visit.id) */
+    private Long visitId;
+    /** 门诊双写单据ID(his_order.id) */
+    private Long orderId;
+    /** 门诊双写明细ID(his_order_item.id) */
+    private Long orderItemId;
 }

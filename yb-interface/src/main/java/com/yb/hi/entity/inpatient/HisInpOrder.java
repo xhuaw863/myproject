@@ -93,6 +93,21 @@ public class HisInpOrder extends BaseEntity {
     /* ---------- 医嘱续开扩展列(DictSchemaMigration 幂等补列, T41/T42) ---------- */
     /** 续开来源医嘱ID(his_inp_order.id, 续开复制开立时回写, 溯源原长期医嘱) */
     private Long sourceOrderId;
+    /** 开单科室ID(his_dept.id, 开立时取开嘱医生所属科室; DictSchemaMigration 幂等补列) */
+    private Long orderDeptId;
+    /* ---------- 手麻P1扩展列(DictSchemaMigration 幂等补列) ---------- */
+    /** 手术ID(his_surgery.id, 术中/术后医嘱) */
+    private Long surgeryId;
+    /** 手术申请单ID(his_surgery_apply.id, 申请阶段术前医嘱) */
+    private Long surgeryApplyId;
+    /** 手术医嘱阶段: 1术前 2术中 3术后(普通医嘱为空) */
+    private Integer orderPhase;
+    /** 代开目标医生ID(his_staff.id, 权限按其口径校验; doctor_id 仍为实际操作人) */
+    private Long proxyDoctorId;
+    /** 代开原因留痕 */
+    private String proxyReason;
+    /** 手术类药品医嘱发送药房闸门: 0未发送 1已发送 2已撤回(普通医嘱为空自动入队) */
+    private Integer sendPharmStatus;
 
     /* ---------- 医保预审(开立回执瞬态回填, 不落库) ---------- */
     /** 医保预警提示(如"该项目无医保编码，将全额自费"; 非阻断, 不落库) */

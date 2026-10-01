@@ -4,6 +4,7 @@ import com.baomidou.mybatisplus.core.metadata.IPage;
 import com.yb.hi.entity.mr.HisMrCatalog;
 import com.yb.hi.framework.common.R;
 import com.yb.hi.service.mr.MrCatalogService;
+import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.List;
@@ -18,9 +19,11 @@ import java.util.Map;
 public class MrCatalogController {
 
     private final MrCatalogService catalogService;
+    private final JdbcTemplate jdbcTemplate;
 
-    public MrCatalogController(MrCatalogService catalogService) {
+    public MrCatalogController(MrCatalogService catalogService, JdbcTemplate jdbcTemplate) {
         this.catalogService = catalogService;
+        this.jdbcTemplate = jdbcTemplate;
     }
 
     /** 编目分页(未录/已录): catalogStatus 编目状态, catalogerId 我的待办, keyword 姓名/住院号/病案号。 */
@@ -85,5 +88,32 @@ public class MrCatalogController {
     @GetMapping("/{visitId}/validate")
     public R<List<Map<String, Object>>> validate(@PathVariable Long visitId) {
         return R.ok(catalogService.validate(visitId));
+    }
+
+    /** P3-D EMR双屏调阅: 只读获取原始临床病案首页(his_case_front_page)。 */
+    @GetMapping("/{visitId}/clinical-page")
+    public R<Map<String, Object>> clinicalPage(@PathVariable Long visitId) {
+        List<Map<String, Object>> rows = jdbcTemplate.queryForList(
+                "SELECT id, visit_id AS visitId, patient_id AS patientId,"
+                        + " admission_date AS admissionDate, discharge_date AS dischargeDate, los_days AS losDays,"
+                        + " admission_dept_id AS admissionDeptId, discharge_dept_id AS dischargeDeptId,"
+                        + " admission_diag_code AS admissionDiagCode, admission_diag_name AS admissionDiagName,"
+                        + " discharge_main_diag_code AS dischargeMainDiagCode,"
+                        + " discharge_main_diag_name AS dischargeMainDiagName,"
+                        + " discharge_other_diags AS dischargeOtherDiags, pathology_diag AS pathologyDiag,"
+                        + " injury_poison_code AS injuryPoisonCode, operation_records AS operationRecords,"
+                        + " blood_type AS bloodType, rh, allergy_drugs AS allergyDrugs, autopsy,"
+                        + " total_cost AS totalCost, drug_cost AS drugCost, exam_cost AS examCost,"
+                        + " treatment_cost AS treatmentCost, bed_cost AS bedCost, nursing_cost AS nursingCost,"
+                        + " material_cost AS materialCost, other_cost AS otherCost, self_pay AS selfPay,"
+                        + " insurance_pay AS insurancePay, quality_score AS qualityScore,"
+                        + " qc_doctor_id AS qcDoctorId, qc_time AS qcTime, status,"
+                        + " create_time AS createTime, update_time AS updateTime"
+                        + " FROM his_case_front_page WHERE visit_id = ? AND deleted = 0 LIMIT 1",
+                visitId);
+        if (rows.isEmpty()) {
+            return R.ok(null);
+        }
+        return R.ok(rows.get(0));
     }
 }

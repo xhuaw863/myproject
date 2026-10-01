@@ -155,6 +155,13 @@ body { font-family: var(--yb-font-sans); background: var(--yb-canvas); }
 .sp-main > .toolbar { flex: none; }
 .sp-main > .el-table { flex: 1; min-height: 0; }
 
+/* ================= 企业字典弹窗分区标题 ================= */
+.sup-section-title {
+  font-size: 13px; font-weight: 600; color: var(--yb-ink); margin: 18px 0 10px;
+  padding-left: 10px; border-left: 3px solid var(--yb-primary); line-height: 1;
+}
+.sup-section-title:first-child { margin-top: 4px; }
+
 /* ================= Dashboard 运营看板 ================= */
 /* 统计卡片: 顶部彩色识别条 + 图标色块 + 大数字(等宽数字避免跳动) */
 .ds-card {

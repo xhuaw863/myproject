@@ -45,4 +45,6 @@ public class HisInpDiagnosis extends BaseEntity {
     private Integer admitCondition;
     /** 并发症标志: 1是 0否 */
     private Integer complicationFlag;
+    /** 牙位编码(FDI/Palmer, 口腔诊断专用; DictSchemaMigration 幂等补列) */
+    private String toothPosition;
 }

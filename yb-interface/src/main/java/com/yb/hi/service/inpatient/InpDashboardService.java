@@ -68,6 +68,7 @@ public class InpDashboardService {
         patientStats.put("todayDischarge", counts.get("todayDischarge"));
         patientStats.put("critical", counts.get("critical"));
         patientStats.put("depositWarning", countDepositWarning(null, dept));
+        patientStats.put("todayExam", countTodayExam(dept));
 
         Map<String, Object> out = new LinkedHashMap<>();
         out.put("todoStats", doctorTodoStats(dept));
@@ -111,6 +112,15 @@ public class InpDashboardService {
                 + " JOIN his_inp_visit v ON a.inp_visit_id = v.id AND v.deleted = 0"
                 + " WHERE a.alert_type = 3 AND a.handle_result IS NULL AND a.deleted = 0 AND a.tenant_id = ?";
         return countByScope(sql, "v", wardId, deptId);
+    }
+
+    /** 今日检查分项: 当日开立的检查类医嘱(order_category=2, 1药品/2检查/3检验/4治疗...)计数, 按科室 scope。 */
+    private int countTodayExam(Long dept) {
+        String sql = "SELECT COUNT(*) FROM his_inp_order o"
+                + " JOIN his_inp_visit v ON o.inp_visit_id = v.id AND v.deleted = 0"
+                + " WHERE o.order_category = 2 AND o.deleted = 0 AND o.tenant_id = ?"
+                + " AND o.create_time >= CURDATE() AND o.create_time < CURDATE() + INTERVAL 1 DAY";
+        return countByDept(sql, "v.dept_id", dept);
     }
 
     /** 近7日入出院趋势(按日分组, 缺日补0, 供折线图直接渲染)。 */

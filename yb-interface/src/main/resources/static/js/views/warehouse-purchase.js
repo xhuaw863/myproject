@@ -62,7 +62,8 @@
       return {
         lead: HIS.isLead(), loading: false, list: [], total: 0, page: 1, size: 20, keyword: '',
         dlg: false, saving: false, togglingId: null,
-        form: { id: null, supplierCode: '', supplierName: '', contact: '', phone: '', address: '', settleCycle: null, jtFlag: 0, status: 1, remark: '' }
+        supOpts: [], supLoading: false,
+        form: { id: null, stdSupCode: '', supplierCode: '', supplierName: '', contact: '', phone: '', address: '', settleCycle: null, jtFlag: 0, status: 1, remark: '' }
       };
     },
     created: function () { this.load(); },
@@ -76,16 +77,41 @@
       },
       search: function () { this.page = 1; this.load(); },
       openCreate: function () {
-        this.form = { id: null, supplierCode: '', supplierName: '', contact: '', phone: '', address: '', settleCycle: null, jtFlag: 0, status: 1, remark: '' };
+        this.form = { id: null, stdSupCode: '', supplierCode: '', supplierName: '', contact: '', phone: '', address: '', settleCycle: null, jtFlag: 0, status: 1, remark: '' };
+        this.supOpts = [];
         this.dlg = true;
       },
       openEdit: function (row) {
         this.form = {
-          id: row.id, supplierCode: row.supplierCode, supplierName: row.supplierName,
+          id: row.id, stdSupCode: row.stdSupCode || '', supplierCode: row.supplierCode, supplierName: row.supplierName,
           contact: row.contact || '', phone: row.phone || '', address: row.address || '',
           settleCycle: row.settleCycle, jtFlag: row.jtFlag || 0, status: row.status, remark: row.remark || ''
         };
+        this.supOpts = row.stdSupCode ? [{ sup_code: row.stdSupCode, sup_name: row.supplierName }] : [];
         this.dlg = true;
+      },
+      supRemote: function (q) {
+        var vm = this;
+        if (!q || !String(q).trim()) { vm.supOpts = []; return; }
+        vm.supLoading = true;
+        HIS.get('/api/std-dict/query/supplier?keyword=' + encodeURIComponent(q)).then(function (d) {
+          vm.supOpts = (d && d.records) || d || [];
+        }).catch(HIS.notifyError).finally(function () { vm.supLoading = false; });
+      },
+      supPick: function (code) {
+        var vm = this;
+        if (!code) { return; }
+        for (var i = 0; i < vm.supOpts.length; i++) {
+          if (vm.supOpts[i].sup_code === code) {
+            var s = vm.supOpts[i];
+            vm.form.stdSupCode = code;
+            vm.form.supplierName = s.sup_name || '';
+            if (!vm.form.contact && s.contact_person) { vm.form.contact = s.contact_person; }
+            if (!vm.form.phone && s.contact_phone) { vm.form.phone = s.contact_phone; }
+            if (!vm.form.address && s.reg_address) { vm.form.address = s.reg_address; }
+            break;
+          }
+        }
       },
       save: function () {
         var vm = this;
@@ -131,6 +157,9 @@
       '  <el-pagination background layout="total, prev, pager, next" :total="total" :page-size="size" :current-page="page" @current-change="p=>{page=p;load()}" style="margin-top:8px;"></el-pagination>',
       '  <el-dialog v-model="dlg" :title="form.id ? \'编辑供应商\' : \'新增供应商\'" width="560px">',
       '    <el-form :model="form" label-width="90px">',
+      '      <el-form-item label="企业字典"><el-select v-model="form.stdSupCode" filterable remote :remote-method="supRemote" :loading="supLoading" clearable placeholder="搜索全局企业名称/编码/拼音(可选)" style="width:100%;" @change="supPick">',
+      '        <el-option v-for="s in supOpts" :key="s.sup_code" :label="s.sup_name + \' (\' + s.sup_code + \')\'" :value="s.sup_code"></el-option>',
+      '      </el-select></el-form-item>',
       '      <el-form-item label="编码" required><el-input v-model="form.supplierCode" placeholder="租户内唯一"></el-input></el-form-item>',
       '      <el-form-item label="名称" required><el-input v-model="form.supplierName"></el-input></el-form-item>',
       '      <el-form-item label="联系人"><el-input v-model="form.contact"></el-input></el-form-item>',

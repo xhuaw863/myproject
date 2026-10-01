@@ -924,6 +924,7 @@
     data: function () {
       return {
         keyword: '', reportType: '', dateRange: null,
+        allMyOrgs: false,
         loading: false, list: [], total: 0, page: 1, size: 20,
         detailVisible: false, detail: null, detailLoading: false,
         reportTypes: REPORT_TYPES, fmtTime: fmtTime,
@@ -941,6 +942,7 @@
         if (vm.reportType) { q += '&reportType=' + vm.reportType; }
         if (vm.keyword) { q += '&keyword=' + encodeURIComponent(vm.keyword); }
         if (vm.dateRange && vm.dateRange.length === 2) { q += '&from=' + vm.dateRange[0] + '&to=' + vm.dateRange[1]; }
+        if (vm.allMyOrgs) { q += '&allMyOrgs=true'; }
         HIS.get(q).then(function (d) {
           vm.list = (d && d.records) || [];
           vm.total = (d && d.total) || 0;
@@ -948,7 +950,7 @@
       },
       search: function () { this.page = 1; this.load(); },
       reset: function () {
-        this.keyword = ''; this.reportType = ''; this.dateRange = null;
+        this.keyword = ''; this.reportType = ''; this.dateRange = null; this.allMyOrgs = false;
         this.page = 1; this.load();
       },
       onPage: function (p) { this.page = p; this.load(); },
@@ -974,6 +976,7 @@
       '      <el-option v-for="t in reportTypes" :key="t.v" :label="t.l" :value="t.v"></el-option>',
       '    </el-select>',
       '    <el-date-picker v-model="dateRange" type="daterange" value-format="YYYY-MM-DD" range-separator="至" start-placeholder="报告日期起" end-placeholder="报告日期止" style="width:260px"></el-date-picker>',
+      '    <el-checkbox v-model="allMyOrgs" @change="search" title="勾选后在本登录账号可访问的医共体成员机构范围内检索报告(不放开跨租户)">医共体跨机构</el-checkbox>',
       '    <el-button type="primary" @click="search">查询</el-button>',
       '    <el-button @click="reset">重置</el-button>',
       '  </div>',

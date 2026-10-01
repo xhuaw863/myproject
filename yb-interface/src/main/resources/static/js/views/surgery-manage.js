@@ -5,6 +5,9 @@
  *   /api/his/anesthesia       麻醉记录(术前/术后评估 JSON、体征 vital_signs、事件 anesthesia_events)
  *   /api/his/surgery-fee      费用明细/汇总/自动计时计费
  *   /api/his/surgery-material 耗材登记/退回/汇总
+ *   手麻P0: /unarranged-list /anesthesia-list /room-board /register-query
+ *           /schedule-from-apply/{applyId} /urgent-schedule /{id}/check-in|transfer|reschedule|cancel-schedule|cancel-complete
+ *           /notify/pending-count ; /api/his/surgery-fee-tpl list/apply(导入模板记账)
  * 字段口径:
  *   手术列表/今日排程/在院患者为手写 SQL 返回蛇形键(直接作表格 prop);
  *   详情内的 surgery/team、麻醉、费用、耗材为实体接口返回驼峰键。
@@ -48,20 +51,37 @@
       /* 自动计时标记 */
       '.surg-flag-auto { color:var(--yb-warning); font-size:12px; margin-left:6px; }',
       /* 明细操作列紧凑 */
-      '.surg-op .el-button + .el-button { margin-left:2px; }'
+      '.surg-op .el-button + .el-button { margin-left:2px; }',
+      /* 手麻P0: 排程板拖拽 */
+      '.surg-board-card { cursor:grab; }',
+      '.surg-board-card.dragging { opacity:.4; }',
+      '.surg-board-col { min-height:60px; }',
+      '.surg-board-col.drag-over { background:var(--yb-brand-soft, rgba(64,158,255,.08)); outline:1px dashed var(--yb-brand); outline-offset:-2px; }'
     ].join('\n');
     document.head.appendChild(st);
   })();
 
   /* ===== 常量映射 ===== */
-  const SURGERY_STATUS = { 1: '申请', 2: '排程', 3: '术中', 4: '术后', 5: '完成', 6: '取消' };
-  const SURGERY_STATUS_TYPE = { 1: 'info', 2: 'warning', 3: 'danger', 4: '', 5: 'success', 6: 'info' };
+  const SURGERY_STATUS = { 1: '申请', 2: '排程', 3: '术中', 4: '术后', 5: '完成', 6: '取消', 7: '已报到' };
+  const SURGERY_STATUS_TYPE = { 1: 'info', 2: 'warning', 3: 'danger', 4: '', 5: 'success', 6: 'info', 7: 'primary' };
   const SURGERY_LEVEL = { 1: '一级', 2: '二级', 3: '三级', 4: '四级' };
   const ASA_GRADE = { 1: 'ASA I', 2: 'ASA II', 3: 'ASA III', 4: 'ASA IV', 5: 'ASA V' };
   const INCISION_TYPE = { 1: '清洁', 2: '清洁-污染', 3: '污染', 4: '感染' };
   const ANESTHESIA_TYPE = { 1: '全身麻醉', 2: '局部麻醉', 3: '椎管内麻醉', 4: '神经阻滞', 5: '复合麻醉', 6: '其他' };
+  /* 手麻P0 字典(未安排池/急诊直排/模板导入) */
+  const VISIT_TYPE = { 1: '住院', 2: '门诊', 3: '日间' };
+  const DEADLINE = { 1: '择期', 2: '限期', 3: '急诊' };
+  const DEADLINE_TYPE = { 1: 'info', 2: 'warning', 3: 'danger' };
+  const TPL_LEVEL = { 1: '个人', 2: '科室', 3: '全院' };
   const FEE_CATEGORY = { 1: '手术费', 2: '麻醉费', 3: '监测费', 4: '耗材费', 5: '药品费', 6: '其他' };
   const FEE_CATEGORY_COLOR = { 1: '#409eff', 2: '#67c23a', 3: '#e6a23c', 4: '#f56c6c', 5: '#909399', 6: '#c0c4cc' };
+  /* 手麻P1: 手术医嘱(复用住院医嘱链)标签映射 */
+  const ORDER_CATEGORY = { 1: '药品', 2: '检查', 3: '检验', 4: '治疗', 5: '护理', 6: '膳食', 7: '其他' };
+  const ORDER_PHASE = { 1: '术前', 2: '术中', 3: '术后' };
+  const ORDER_PHASE_TYPE = { 1: 'info', 2: 'danger', 3: 'warning' };
+  const ORDER_STATUS = { 1: '新开', 2: '已审核', 3: '执行中', 4: '已完成', 5: '已停止', 6: '已作废' };
+  const ORDER_STATUS_TYPE = { 1: 'primary', 2: 'success', 3: 'warning', 4: 'success', 5: 'info', 6: 'danger' };
+  const SEND_PHARM = { 0: '未发送', 1: '已发送', 2: '已撤回' };
   /* 生命体征折线色: HR红 SBP蓝 DBP浅蓝 SpO2紫 Temp橙 RR绿 */
   const VITAL_COLORS = { hr: '#c74f4f', sbp: '#2c78c7', dbp: '#8ab6e0', spo2: '#9b59b6', temp: '#d98b32', rr: '#3c862d' };
 
@@ -75,6 +95,8 @@
   const INCISION_OPTS = optsOf(INCISION_TYPE);
   const ANE_TYPE_OPTS = optsOf(ANESTHESIA_TYPE);
   const FEE_CAT_OPTS = optsOf(FEE_CATEGORY);
+  const ORDER_CAT_OPTS = optsOf(ORDER_CATEGORY);
+  const ORDER_PHASE_OPTS = optsOf(ORDER_PHASE);
   const TIME_SLOTS = (function () {
     var out = [];
     for (var h = 8; h <= 20; h++) {
@@ -119,6 +141,10 @@
     var d = new Date();
     return d.getFullYear() + '-' + pad2(d.getMonth() + 1) + '-' + pad2(d.getDate());
   }
+  /* Date → yyyy-MM-dd(排程板拖拽改日默认当前板日期) */
+  function fmtD(d) {
+    return d.getFullYear() + '-' + pad2(d.getMonth() + 1) + '-' + pad2(d.getDate());
+  }
   /* 当前时间戳 yyyy-MM-dd HH:mm:ss(体征/事件录入默认值) */
   function nowDT() {
     var d = new Date();
@@ -135,6 +161,12 @@
       { type: 'warning', confirmButtonText: '确定', cancelButtonText: '取消' });
   }
   function isCancel(e) { return e === 'cancel' || e === 'close'; }
+  /* 手麻P0: 带必填校验的原因输入框(退回/作废) */
+  function promptReason(title, placeholder) {
+    return ElementPlus.ElMessageBox.prompt(placeholder || '请填写原因', title, {
+      inputType: 'textarea', inputValidator: function (v) { return (v && v.trim()) ? true : '内容不能为空'; }
+    });
+  }
   function nvl(v, d) { return (v === null || v === undefined || v === '') ? d : v; }
   /* 安全解析 JSON 字符串数组 / 对象(麻醉记录的 vital_signs/anesthesia_events/preAssessment 等) */
   function jsonArr(s) {
@@ -160,6 +192,16 @@
   function aneTypeLabel(v) { return ANESTHESIA_TYPE[v] || orDash(v); }
   function feeCatLabel(v) { return FEE_CATEGORY[v] || '其他'; }
   function feeCatColor(v) { return FEE_CATEGORY_COLOR[v] || '#c0c4cc'; }
+  function vtLabel(v) { return VISIT_TYPE[v] || orDash(v); }
+  function dlLabel(v) { return DEADLINE[v] || orDash(v); }
+  function dlTag(v) { return DEADLINE_TYPE[v] || 'info'; }
+  function tplLevelLabel(v) { return TPL_LEVEL[v] || orDash(v); }
+  function orderCatLabel(v) { return ORDER_CATEGORY[v] || orDash(v); }
+  function phaseLabel(v) { return ORDER_PHASE[v] || '-'; }
+  function phaseTag(v) { return ORDER_PHASE_TYPE[v] || 'info'; }
+  function orderStLabel(v) { return ORDER_STATUS[v] || orDash(v); }
+  function orderStTag(v) { return ORDER_STATUS_TYPE[v] || 'info'; }
+  function sendPharmLabel(v) { return SEND_PHARM[v] || ''; }
 
   /* ===== 表单空白模板 ===== */
   function blankVital() {
@@ -167,6 +209,12 @@
   }
   function blankEvent() {
     return { time: nowDT(), eventType: '诱导', description: '' };
+  }
+  /* 手麻P1: 手术医嘱开立表单默认值(阶段默认术中, 因从已排程手术发起) */
+  function blankSoOrderForm() {
+    return { orderPhase: 2, orderCategory: 1, orderContent: '', drugId: null, chargeItemId: null,
+      spec: '', dosage: '', dosageUnit: '', usageCode: null, freqCode: null, quantity: 1,
+      proxyOn: false, proxyDoctorId: null, proxyReason: '' };
   }
 
   /* ===== 共享混入: 模板可直接使用的工具代理 + 时间段选项 ===== */
@@ -176,7 +224,10 @@
       money: money, orDash: orDash, fmtDate: fmtDate, fmtDT: fmtDT, hmOf: hmOf,
       stLabel: stLabel, stTag: stTag, levelLabel: levelLabel, asaLabel: asaLabel,
       incisionLabel: incisionLabel, aneTypeLabel: aneTypeLabel,
-      feeCatLabel: feeCatLabel, feeCatColor: feeCatColor
+      feeCatLabel: feeCatLabel, feeCatColor: feeCatColor,
+      vtLabel: vtLabel, dlLabel: dlLabel, dlTag: dlTag, tplLevelLabel: tplLevelLabel,
+      orderCatLabel: orderCatLabel, phaseLabel: phaseLabel, phaseTag: phaseTag,
+      orderStLabel: orderStLabel, orderStTag: orderStTag, sendPharmLabel: sendPharmLabel
     }
   };
 
@@ -670,7 +721,9 @@
       '    患者: <b>{{ patient ? patient.name : "-" }}</b>　{{ surgery.surgeryName }}　主刀: {{ teamName("surgeon") }}　',
       '    排程: {{ fmtDT(surgery.scheduleDate) }}　实际: {{ fmtDT(surgery.startTime) }} ~ {{ fmtDT(surgery.endTime) }}　',
       '    时长: {{ durText }}　状态: <el-tag size="small" :type="stTag(surgery.status)">{{ stLabel(surgery.status) }}</el-tag>',
+      '    <el-tag v-if="surgery.visitType === 2 || surgery.visitType === 3" size="small" type="warning" style="margin-left:6px">门诊/日间</el-tag>',
       '  </div>',
+      '  <div v-if="surgery && (surgery.visitType === 2 || surgery.visitType === 3)" class="surg-info" style="margin-bottom:14px;border-color:var(--yb-warning)">门诊/日间手术费用已双写门诊收费单据(his_order), 请引导患者到收费处缴费或医生站诊间结算</div>',
       '  <el-empty v-if="!curSid" description="请先选择手术"></el-empty>',
       '  <template v-else>',
       '    <div class="surg-section-title">费用明细</div>',
@@ -680,6 +733,8 @@
       '        <el-radio-button v-for="o in feeCatOpts" :key="o.value" :label="o.value">{{ o.label }}</el-radio-button>',
       '      </el-radio-group>',
       '      <el-button type="primary" size="small" @click="openFeeAdd">添加费用</el-button>',
+      '      <el-button type="success" size="small" plain @click="openTplDlg">导入费用模板</el-button>',
+      '      <span style="font-size:12px;color:var(--yb-ink-3)">模板按 个人→科室→全院 可见性排序</span>',
       '    </div>',
       '    <el-table :data="filteredFees" border size="small" v-loading="loading">',
       '      <el-table-column prop="itemName" label="项目名称" min-width="200"></el-table-column>',
@@ -771,6 +826,28 @@
       '      <el-button type="primary" :loading="saving" @click="submitMat">确认登记</el-button>',
       '    </template>',
       '  </el-dialog>',
+      /* ===== 手麻P0: 费用模板导入 ===== */
+      '  <el-dialog v-model="tplDialog" title="导入费用模板" width="680px" append-to-body>',
+      '    <el-select v-model="tplPickId" filterable placeholder="选择可见模板(个人/科室/全院)" style="width:100%" @change="onTplPick" :loading="tplLoading">',
+      '      <el-option v-for="(t, i) in tplList" :key="i" :label="tplText(t)" :value="i"></el-option>',
+      '    </el-select>',
+      '    <template v-if="tplPick">',
+      '      <div class="surg-info" style="margin:10px 0">手术: {{ orDash(tplPick.tpl.surgeryName) }}　共 {{ (tplPick.items || []).length }} 项, 合计 ¥{{ money(tplPickSum) }}</div>',
+      '      <el-table :data="tplPick.items || []" border size="small" max-height="300">',
+      '        <el-table-column prop="itemName" label="项目" min-width="160"></el-table-column>',
+      '        <el-table-column prop="itemCode" label="编码" width="120"></el-table-column>',
+      '        <el-table-column label="分类" width="90" align="center"><template #default="s">{{ feeCatLabel(s.row.feeCategory) }}</template></el-table-column>',
+      '        <el-table-column label="数量" width="70" align="right"><template #default="s">{{ qtyText(s.row.quantity) }}</template></el-table-column>',
+      '        <el-table-column label="单价" width="90" align="right"><template #default="s">{{ money(s.row.unitPrice) }}</template></el-table-column>',
+      '        <el-table-column label="金额" width="100" align="right"><template #default="s"><span class="surg-money">{{ money(s.row.amount) }}</span></template></el-table-column>',
+      '      </el-table>',
+      '    </template>',
+      '    <el-empty v-else description="选择模板后预览明细" :image-size="60"></el-empty>',
+      '    <template #footer>',
+      '      <el-button @click="tplDialog = false">取消</el-button>',
+      '      <el-button type="primary" :disabled="!tplPick" :loading="tplApplying" @click="doTplApply">一键导入记账</el-button>',
+      '    </template>',
+      '  </el-dialog>',
       '</div>'
     ].join('\n'),
     data: function () {
@@ -796,7 +873,9 @@
         saving: false,
         autoLoading: false,
         pieChart: null,
-        feeCatOpts: FEE_CAT_OPTS
+        feeCatOpts: FEE_CAT_OPTS,
+        /* 手麻P0: 模板导入 */
+        tplDialog: false, tplList: [], tplLoading: false, tplPickId: null, tplApplying: false
       };
     },
     computed: {
@@ -866,6 +945,15 @@
       },
       matFormAmount: function () {
         return (Number(this.matForm.quantity || 0) * Number(this.matForm.unitPrice || 0)).toFixed(2);
+      },
+      /* 手麻P0: 选中模板与明细合计 */
+      tplPick: function () {
+        return (this.tplPickId === null || this.tplPickId === undefined) ? null : (this.tplList[this.tplPickId] || null);
+      },
+      tplPickSum: function () {
+        var t = 0;
+        ((this.tplPick && this.tplPick.items) || []).forEach(function (it) { t += Number(it.amount || 0); });
+        return t;
       }
     },
     watch: {
@@ -1058,6 +1146,42 @@
           })
           .catch(function (e) { if (!isCancel(e)) { HIS.notifyError(e); } });
       },
+      /* ===== 手麻P0: 费用模板导入 ===== */
+      openTplDlg: function () {
+        var vm = this;
+        if (!vm.curSid) { return; }
+        vm.tplPickId = null;
+        vm.tplDialog = true;
+        vm.tplLoading = true;
+        HIS.get('/api/his/surgery-fee-tpl/list').then(function (l) {
+          vm.tplList = l || [];
+          vm.tplLoading = false;
+        }).catch(function (e) { vm.tplLoading = false; HIS.notifyError(e); });
+      },
+      tplText: function (m) {
+        var t = (m && m.tpl) || {};
+        var sum = 0;
+        ((m && m.items) || []).forEach(function (it) { sum += Number(it.amount || 0); });
+        return '[' + tplLevelLabel(t.tplLevel) + '] ' + orDash(t.tplName)
+          + ' · ' + ((m.items || []).length) + '项 ¥' + money(sum)
+          + (t.surgeryName ? (' · ' + t.surgeryName) : '');
+      },
+      onTplPick: function () { /* 预览由 computed 驱动 */ },
+      doTplApply: function () {
+        var vm = this;
+        var p = vm.tplPick;
+        if (!p) { return; }
+        confirmBox('确认将模板【' + escHtml(p.tpl.tplName) + '】的 ' + ((p.items || []).length) + ' 项明细一键导入记账？住院记入住院费用, 门诊/日间双写门诊收费单据。', '导入模板')
+          .then(function () {
+            vm.tplApplying = true;
+            return HIS.post('/api/his/surgery-fee-tpl/apply?surgeryId=' + vm.curSid + '&tplId=' + p.tpl.id);
+          }).then(function (r) {
+            vm.tplApplying = false;
+            vm.tplDialog = false;
+            HIS.notifySuccess('已导入 ' + ((r && r.count) || (p.items || []).length) + ' 项费用');
+            vm.loadAll();
+          }).catch(function (e) { vm.tplApplying = false; if (!isCancel(e)) { HIS.notifyError(e); } });
+      },
       /* ===== 汇总饼图 ===== */
       renderPie: function () {
         var vm = this;
@@ -1125,10 +1249,12 @@
   }
 
   /* ========================================================================
-   * 1. SurgeryManage 手术管理主页(Tab: 手术列表 / 今日看板)
-   * 状态机: 1申请→2排程→3术中→4术后→5完成 / 6取消(申请/排程可取消)
-   * 操作列按状态: 申请(编辑/排程/取消) 排程(开始手术/取消) 术中(结束手术/麻醉记录/记费)
-   *              术后(完成/麻醉记录/记费) 完成(查看/记费) 取消(查看)
+   * 1. SurgeryManage 手术管理主页
+   * Tab: 手术未安排 / 手术已安排(列表+排程板+登记报到) / 手术已完成 / 麻醉已安排
+   *      / 手术列表(全量) / 今日看板
+   * 状态机: 1申请→2排程→7已报到→3术中→4术后→5完成 / 6取消(申请/排程/报到可退回)
+   * 手麻P0: 申请池安排(schedule-from-apply)/急诊直排(urgent)/报到(check-in)/调配(transfer)
+   *          退回(cancel-schedule)/取消完成(cancel-complete)/排程板拖拽(reschedule)
    * 麻醉记录/记费 以抽屉承载 AnesthesiaRecord / SurgeryFee 子组件(传 surgery-id 锁定)。
    * ====================================================================== */
   HIS.views.SurgeryManage = {
@@ -1193,6 +1319,161 @@
       '        </template></el-table-column>',
       '      </el-table>',
       '      <el-pagination style="margin-top:12px;justify-content:flex-end;" background layout="total, sizes, prev, pager, next" :total="total" :page-size="size" :page-sizes="[10, 20, 50, 100]" :current-page="page" @current-change="onPage" @size-change="onSize"></el-pagination>',
+      '    </el-tab-pane>',
+      /* ================= 手麻P0: 手术未安排(申请待安排池) ================= */
+      '    <el-tab-pane name="unarranged">',
+      '      <template #label><span>手术未安排<el-badge v-if="unarrangedRows.length > 0" :value="unarrangedRows.length" style="margin-left:6px"/></span></template>',
+      '      <div class="toolbar" style="margin-bottom:10px;display:flex;gap:8px;align-items:center;flex-wrap:wrap">',
+      '        <span style="font-size:13px;color:var(--yb-ink-2)">病区已复核待安排的手术申请, 按时限(急诊优先)排序; 手术安排入口以手术室为主</span>',
+      '        <el-button type="primary" size="small" plain @click="loadUnarranged">刷新</el-button>',
+      '        <el-button type="danger" size="small" plain @click="openUrgent" v-if="canArrange">急诊直接安排</el-button>',
+      '      </div>',
+      '      <el-table :data="unarrangedRows" border size="small" v-loading="unarrangedLoading" max-height="calc(100vh - 268px)">',
+      '        <el-table-column label="序号" width="52" align="center"><template #default="s">{{ s.$index + 1 }}</template></el-table-column>',
+      '        <el-table-column prop="apply_no" label="申请单号" width="140"></el-table-column>',
+      '        <el-table-column label="类型" width="58" align="center"><template #default="s"><el-tag size="small" :type="s.row.visit_type === 1 ? \'\' : \'warning\'">{{ vtLabel(s.row.visit_type) }}</el-tag></template></el-table-column>',
+      '        <el-table-column prop="patient_name" label="患者" width="84"></el-table-column>',
+      '        <el-table-column label="病历号" width="110"><template #default="s">{{ orDash(s.row.medical_no) }}</template></el-table-column>',
+      '        <el-table-column prop="surgery_name" label="手术名称" min-width="150" show-overflow-tooltip></el-table-column>',
+      '        <el-table-column label="级别" width="60" align="center"><template #default="s">{{ levelLabel(s.row.surgery_level) }}</template></el-table-column>',
+      '        <el-table-column prop="surgeon_name" label="拟主刀" width="84"><template #default="s">{{ orDash(s.row.surgeon_name) }}</template></el-table-column>',
+      '        <el-table-column label="期望时间" width="130"><template #default="s">{{ fmtDT(s.row.expect_time) }}</template></el-table-column>',
+      '        <el-table-column label="时限" width="58" align="center"><template #default="s"><el-tag size="small" :type="dlTag(s.row.deadline_type)">{{ dlLabel(s.row.deadline_type) }}</el-tag></template></el-table-column>',
+      '        <el-table-column prop="apply_dept_name" label="申请科室" width="100" show-overflow-tooltip></el-table-column>',
+      '        <el-table-column label="操作" width="110" align="center" fixed="right"><template #default="s"><el-button v-if="canArrange" link type="primary" @click="openSchedApply(s.row)">安排手术</el-button></template></el-table-column>',
+      '      </el-table>',
+      '      <el-empty v-if="!unarrangedLoading && !unarrangedRows.length" description="暂无待安排申请" :image-size="60"></el-empty>',
+      '    </el-tab-pane>',
+      /* ================= 手麻P0: 手术已安排(报到/流转/调配 + 列表/排程板) ================= */
+      '    <el-tab-pane label="手术已安排" name="arranged">',
+      '      <div class="surg-info" style="margin-bottom:10px;display:flex;gap:10px;align-items:center;flex-wrap:wrap">',
+      '        <b style="white-space:nowrap">登记报到</b>',
+      '        <el-input v-model="regKw" clearable placeholder="申请单号(SQ…)/病历号/姓名, 回车检索" size="small" style="width:280px" @keyup.enter="doRegSearch"></el-input>',
+      '        <el-button type="primary" size="small" @click="doRegSearch">检索</el-button>',
+      '        <el-button v-if="pendingNotify > 0" size="small" type="warning" plain @click="goNotify">待处理通知 {{ pendingNotify }}</el-button>',
+      '      </div>',
+      '      <el-table v-if="regRows.length" :data="regRows" border size="small" highlight-current-row @current-change="onRegPick" style="margin-bottom:10px" max-height="220">',
+      '        <el-table-column prop="apply_no" label="申请单号" width="140"><template #default="s">{{ orDash(s.row.apply_no) }}</template></el-table-column>',
+      '        <el-table-column prop="patient_name" label="患者" width="90"></el-table-column>',
+      '        <el-table-column label="病历号" width="110"><template #default="s">{{ orDash(s.row.inp_no) }}</template></el-table-column>',
+      '        <el-table-column prop="surgery_name" label="手术名称" min-width="140" show-overflow-tooltip></el-table-column>',
+      '        <el-table-column label="手术间/日期" width="140"><template #default="s">{{ orDash(s.row.room_no) }} {{ fmtDate(s.row.schedule_date) }}</template></el-table-column>',
+      '        <el-table-column label="状态" width="80" align="center"><template #default="s"><el-tag size="small" :type="stTag(s.row.status)">{{ stLabel(s.row.status) }}</el-tag></template></el-table-column>',
+      '        <el-table-column label="操作" width="100" align="center"><template #default="s">',
+      '          <el-button v-if="s.row.status === 2 && canOps" link type="success" @click.stop="doCheckInRow(s.row)">报到登记</el-button>',
+      '          <span v-else-if="s.row.status === 7" style="font-size:12px;color:var(--yb-ink-3)">已报到</span>',
+      '        </template></el-table-column>',
+      '      </el-table>',
+      '      <div class="toolbar" style="margin-bottom:10px;display:flex;gap:8px;align-items:center;flex-wrap:wrap">',
+      '        <el-radio-group v-model="arrangedView" size="small" @change="onArrangedView">',
+      '          <el-radio-button value="list">列表</el-radio-button><el-radio-button value="board">排程板</el-radio-button>',
+      '        </el-radio-group>',
+      '        <template v-if="arrangedView === \'list\'">',
+      '          <el-date-picker v-model="arrFilters.dateRange" type="daterange" size="small" value-format="YYYY-MM-DD" range-separator="至" start-placeholder="开始" end-placeholder="结束" style="width:230px"></el-date-picker>',
+      '          <el-select v-model="arrFilters.status" clearable placeholder="状态" size="small" style="width:110px">',
+      '            <el-option :value="2" label="已排程"></el-option><el-option :value="7" label="已报到"></el-option>',
+      '          </el-select>',
+      '        </template>',
+      '        <template v-else>',
+      '          <el-date-picker v-model="boardDate" type="date" size="small" value-format="YYYY-MM-DD" :clearable="false" style="width:130px" @change="loadRoomBoard"></el-date-picker>',
+      '          <span style="font-size:12px;color:var(--yb-ink-3)">拖拽手术卡片到其他手术间列即改排(reschedule), 时间冲突后端拒绝并提示</span>',
+      '        </template>',
+      '        <el-button type="primary" size="small" @click="refreshArranged">查询</el-button>',
+      '      </div>',
+      '      <template v-if="arrangedView === \'list\'">',
+      '        <el-table :data="arrangedRows" border size="small" v-loading="arrangedLoading" max-height="calc(100vh - 388px)">',
+      '          <el-table-column label="序号" width="52" align="center"><template #default="s">{{ (arrP - 1) * arrSize + s.$index + 1 }}</template></el-table-column>',
+      '          <el-table-column prop="patient_name" label="患者" width="84"></el-table-column>',
+      '          <el-table-column prop="inp_no" label="病历号" width="110"><template #default="s">{{ orDash(s.row.inp_no) }}</template></el-table-column>',
+      '          <el-table-column label="类型" width="58" align="center"><template #default="s">{{ vtLabel(s.row.visit_type) }}</template></el-table-column>',
+      '          <el-table-column prop="surgery_name" label="手术名称" min-width="140" show-overflow-tooltip></el-table-column>',
+      '          <el-table-column prop="room_no" label="手术间" width="76"><template #default="s">{{ orDash(s.row.room_no) }}</template></el-table-column>',
+      '          <el-table-column label="日期" width="98"><template #default="s">{{ fmtDate(s.row.schedule_date) }}</template></el-table-column>',
+      '          <el-table-column label="时间段" width="104"><template #default="s">{{ orDash(s.row.schedule_time) }}</template></el-table-column>',
+      '          <el-table-column prop="surgeon_name" label="主刀" width="80"><template #default="s">{{ orDash(s.row.surgeon_name) }}</template></el-table-column>',
+      '          <el-table-column label="报到时间" width="126"><template #default="s">{{ s.row.register_time ? fmtDT(s.row.register_time) : "-" }}</template></el-table-column>',
+      '          <el-table-column label="状态" width="78" align="center"><template #default="s"><el-tag size="small" :type="stTag(s.row.status)">{{ stLabel(s.row.status) }}</el-tag></template></el-table-column>',
+      '          <el-table-column label="操作" width="300" fixed="right"><template #default="s">',
+      '            <span class="surg-op" v-if="canOps">',
+      '              <el-button v-if="s.row.status === 2" link type="success" @click="doCheckIn(s.row)">报到</el-button>',
+      '              <el-button v-if="s.row.status === 2 || s.row.status === 7" link type="primary" @click="doStart(s.row)">开始</el-button>',
+      '              <el-button v-if="s.row.status === 3" link type="warning" @click="doEnd(s.row)">结束</el-button>',
+      '              <el-button v-if="s.row.status === 4" link type="success" @click="doComplete(s.row)">完成</el-button>',
+      '              <el-button v-if="s.row.status === 2 || s.row.status === 7" link type="warning" @click="openTransfer(s.row)">调配</el-button>',
+      '              <el-button v-if="s.row.status === 2 || s.row.status === 7" link type="danger" @click="doCancelSchedule(s.row)">退回</el-button>',
+      '            </span>',
+      '            <el-button link type="primary" @click="openAne(s.row.id)">麻醉</el-button>',
+      '            <el-button link type="primary" @click="openFee(s.row.id)">记费</el-button>',
+      '            <el-button link type="primary" @click="openDetail(s.row.id)">查看</el-button>',
+      '          </template></el-table-column>',
+      '        </el-table>',
+      '        <el-pagination style="margin-top:12px;justify-content:flex-end;" background layout="total, prev, pager, next" :total="arrTotal" :page-size="arrSize" :current-page="arrP" @current-change="onArrPage"></el-pagination>',
+      '      </template>',
+      '      <div v-else v-loading="rbLoading" class="surg-board-col" @dragover.prevent="onDragOver($event)" @drop="onDropToBoard($event, null)">',
+      '        <el-table :data="rb.rooms || []" border size="small">',
+      '          <el-table-column prop="roomNo" label="手术间" width="92" align="center"></el-table-column>',
+      '          <el-table-column label="当日占用(时间顺序)" min-width="880">',
+      '            <template #default="s">',
+      '              <div class="surg-board-col" :class="{ \'drag-over\': dragOverRoom === s.row.roomNo }" @dragover.prevent="onDragOver($event, s.row.roomNo)" @dragleave="onDragLeave(s.row.roomNo)" @drop.stop="onDropToBoard($event, s.row.roomNo)">',
+      '                <el-tag v-if="s.row.count > 0" size="small" type="info" style="margin:0 6px 6px 0">{{ s.row.count }} 台</el-tag>',
+      '                <div v-for="c in (s.row.surgeries || [])" :key="c.id" class="surg-room-item surg-board-card" draggable="true" @dragstart="onDragStart(c)" @dragend="dragCard = null" @click="openDetail(c.id)">',
+      '                  <div class="line1">{{ hmOf(c.schedule_time) || "待定" }}　{{ c.patient_name || "-" }}<el-tag size="small" :type="stTag(c.status)" style="margin-left:6px">{{ stLabel(c.status) }}</el-tag><el-tag v-if="c.visit_type !== 1" size="small" type="warning" style="margin-left:4px">{{ vtLabel(c.visit_type) }}</el-tag></div>',
+      '                  <div class="line2">{{ c.surgery_name }}　主刀: {{ orDash(c.surgeon_name) }}</div>',
+      '                  <div class="line3"><span>{{ orDash(c.apply_no) }}　{{ orDash(c.dept_name) }}</span></div>',
+      '                </div>',
+      '                <div v-if="!(s.row.surgeries || []).length" class="surg-room-empty">空手术间 — 可拖入卡片</div>',
+      '              </div>',
+      '            </template>',
+      '          </el-table-column>',
+      '        </el-table>',
+      '      </div>',
+      '    </el-tab-pane>',
+      /* ================= 手麻P0: 手术已完成 ================= */
+      '    <el-tab-pane label="手术已完成" name="finished">',
+      '      <div class="toolbar" style="margin-bottom:10px;display:flex;gap:8px;align-items:center;flex-wrap:wrap">',
+      '        <el-date-picker v-model="finFilters.dateRange" type="daterange" size="small" value-format="YYYY-MM-DD" range-separator="至" start-placeholder="完成日起" end-placeholder="完成日止" style="width:230px"></el-date-picker>',
+      '        <el-select v-model="finFilters.visitType" clearable placeholder="就诊类型" size="small" style="width:110px">',
+      '          <el-option :value="1" label="住院"></el-option><el-option :value="2" label="门诊"></el-option><el-option :value="3" label="日间"></el-option>',
+      '        </el-select>',
+      '        <el-input v-model="finFilters.kw" clearable placeholder="本页搜索: 姓名/手术/主刀/病历号" size="small" style="width:220px"></el-input>',
+      '        <el-button type="primary" size="small" @click="loadFinished">查询</el-button>',
+      '      </div>',
+      '      <el-table :data="filteredFinished" border size="small" v-loading="finLoading" max-height="calc(100vh - 290px)">',
+      '        <el-table-column label="序号" width="52" align="center"><template #default="s">{{ (finP - 1) * finSize + s.$index + 1 }}</template></el-table-column>',
+      '        <el-table-column prop="patient_name" label="患者" width="84"></el-table-column>',
+      '        <el-table-column prop="inp_no" label="病历号" width="110"><template #default="s">{{ orDash(s.row.inp_no) }}</template></el-table-column>',
+      '        <el-table-column label="类型" width="58" align="center"><template #default="s">{{ vtLabel(s.row.visit_type) }}</template></el-table-column>',
+      '        <el-table-column prop="surgery_name" label="手术名称" min-width="140" show-overflow-tooltip></el-table-column>',
+      '        <el-table-column prop="surgeon_name" label="主刀" width="80"><template #default="s">{{ orDash(s.row.surgeon_name) }}</template></el-table-column>',
+      '        <el-table-column label="手术日期" width="98"><template #default="s">{{ fmtDate(s.row.schedule_date) }}</template></el-table-column>',
+      '        <el-table-column label="开始/结束" width="140"><template #default="s">{{ hmOf(s.row.start_time) || "-" }} ~ {{ hmOf(s.row.end_time) || "-" }}</template></el-table-column>',
+      '        <el-table-column label="操作" width="200" fixed="right"><template #default="scope">',
+      '          <el-button link type="primary" @click="openFee(scope.row.id)">记费/补退</el-button>',
+      '          <el-button link type="primary" @click="openAne(scope.row.id)">麻醉记录</el-button>',
+      '          <el-button v-if="canOps" link type="danger" @click="doCancelComplete(scope.row)">取消完成</el-button>',
+      '        </template></el-table-column>',
+      '      </el-table>',
+      '      <el-pagination style="margin-top:12px;justify-content:flex-end;" background layout="total, prev, pager, next" :total="finTotal" :page-size="finSize" :current-page="finP" @current-change="onFinPage"></el-pagination>',
+      '    </el-tab-pane>',
+      /* ================= 手麻P0: 麻醉已安排 ================= */
+      '    <el-tab-pane label="麻醉已安排" name="anes">',
+      '      <div class="toolbar" style="margin-bottom:10px;display:flex;gap:8px;align-items:center">',
+      '        <span style="font-size:13px;color:var(--yb-ink-2)">已排程/已报到且建麻醉记录的手术; 术前评估未填红标, 点击进入麻醉记录填写与调整</span>',
+      '        <el-button type="primary" size="small" plain @click="loadAnes">刷新</el-button>',
+      '      </div>',
+      '      <el-table :data="anesRows" border size="small" v-loading="anesLoading" max-height="calc(100vh - 268px)">',
+      '        <el-table-column label="序号" width="52" align="center"><template #default="s">{{ s.$index + 1 }}</template></el-table-column>',
+      '        <el-table-column prop="patient_name" label="患者" width="84"><template #default="s">{{ orDash(s.row.patient_name) }}</template></el-table-column>',
+      '        <el-table-column prop="inp_no" label="病历号" width="110"><template #default="s">{{ orDash(s.row.inp_no) }}</template></el-table-column>',
+      '        <el-table-column prop="surgery_name" label="手术名称" min-width="140" show-overflow-tooltip></el-table-column>',
+      '        <el-table-column label="手术间/日期" width="150"><template #default="s">{{ orDash(s.row.room_no) }} {{ fmtDate(s.row.schedule_date) }} {{ orDash(s.row.schedule_time) }}</template></el-table-column>',
+      '        <el-table-column prop="anesthesiologist_name" label="麻醉医师" width="92"><template #default="s">{{ orDash(s.row.anesthesiologist_name) }}</template></el-table-column>',
+      '        <el-table-column label="麻醉方式" width="96" align="center"><template #default="s">{{ aneTypeLabel(s.row.anesthesia_type) }}</template></el-table-column>',
+      '        <el-table-column label="术前评估" width="86" align="center"><template #default="s"><el-tag size="small" :type="s.row.assessed ? \'success\' : \'danger\'">{{ s.row.assessed ? "已填" : "未填" }}</el-tag></template></el-table-column>',
+      '        <el-table-column label="状态" width="78" align="center"><template #default="s"><el-tag size="small" :type="stTag(s.row.status)">{{ stLabel(s.row.status) }}</el-tag></template></el-table-column>',
+      '        <el-table-column label="操作" width="120" align="center" fixed="right"><template #default="s"><el-button link type="primary" @click="openAne(s.row.id)">麻醉记录</el-button></template></el-table-column>',
+      '      </el-table>',
+      '      <el-empty v-if="!anesLoading && !anesRows.length" description="暂无麻醉已安排手术" :image-size="60"></el-empty>',
       '    </el-tab-pane>',
       '    <el-tab-pane label="今日看板" name="board">',
       '      <div v-loading="boardLoading">',
@@ -1356,6 +1637,82 @@
       '      <el-button type="primary" :loading="saving" @click="submitSchedule">确认排程</el-button>',
       '    </template>',
       '  </el-dialog>',
+      /* ================= 手麻P0: 申请池安排 / 急诊直排 / 调配 / 拖拽改排 ================= */
+      '  <el-dialog v-model="schedApplyVisible" :title="schedUrgent ? \'急诊直接安排\' : \'安排手术\'" width="720px" :close-on-click-modal="false" append-to-body>',
+      '    <div v-if="!schedUrgent" class="surg-info" style="margin-bottom:12px">{{ schedApplyTitle }}</div>',
+      '    <template v-if="schedUrgent">',
+      '      <el-form :model="urgForm" label-width="96px">',
+      '        <el-form-item label="就诊类型" required>',
+      '          <el-radio-group v-model="urgForm.visitType" size="small">',
+      '            <el-radio-button :value="1">住院</el-radio-button><el-radio-button :value="2">门诊</el-radio-button><el-radio-button :value="3">日间</el-radio-button>',
+      '          </el-radio-group>',
+      '        </el-form-item>',
+      '        <el-form-item label="患者" required>',
+      '          <el-select v-if="urgForm.visitType === 1" v-model="urgForm.inpVisitId" filterable remote reserve-keyword :remote-method="searchPatients" :loading="urgPtLoading" placeholder="姓名/住院号检索在院患者" style="width:100%">',
+      '            <el-option v-for="p in patients" :key="p.id" :label="ptLabel(p)" :value="p.id"></el-option>',
+      '          </el-select>',
+      '          <el-select v-else v-model="urgForm.visitId" filterable remote reserve-keyword :remote-method="searchOutpVisits" :loading="urgPtLoading" placeholder="姓名/门诊号检索就诊记录" style="width:100%">',
+      '            <el-option v-for="v in outpVisits" :key="v.visit_id" :label="outpPtLabel(v)" :value="v.visit_id"></el-option>',
+      '          </el-select>',
+      '        </el-form-item>',
+      '        <el-row :gutter="16">',
+      '          <el-col :span="12"><el-form-item label="手术名称" required><el-input v-model="urgForm.surgeryName" maxlength="100"></el-input></el-form-item></el-col>',
+      '          <el-col :span="12"><el-form-item label="手术编码"><el-input v-model="urgForm.surgeryCode" maxlength="50"></el-input></el-form-item></el-col>',
+      '          <el-col :span="12"><el-form-item label="手术级别">',
+      '            <el-select v-model="urgForm.surgeryLevel" clearable placeholder="选择级别" style="width:100%"><el-option v-for="o in surgLevelOpts" :key="o.value" :label="o.label" :value="o.value"></el-option></el-select>',
+      '          </el-form-item></el-col>',
+      '          <el-col :span="12"><el-form-item label="麻醉方式">',
+      '            <el-select v-model="urgForm.anesthesiaType" clearable placeholder="选择麻醉方式" style="width:100%"><el-option v-for="o in aneTypeOpts" :key="o.value" :label="o.label" :value="o.value"></el-option></el-select>',
+      '          </el-form-item></el-col>',
+      '          <el-col :span="12"><el-form-item label="期望时间"><el-date-picker v-model="urgForm.expectTime" type="datetime" value-format="YYYY-MM-DD HH:mm:ss" placeholder="精确到分" style="width:100%"></el-date-picker></el-form-item></el-col>',
+      '          <el-col :span="12"><el-form-item label="术前诊断"><el-input v-model="urgForm.preOpDiag" maxlength="100"></el-input></el-form-item></el-col>',
+      '        </el-row>',
+      '        <div class="surg-info" style="margin:0 0 12px 96px">急诊免病区复核: 自动建档已安排申请单并直接进入排程</div>',
+      '      </el-form>',
+      '    </template>',
+      '    <el-form :model="schedForm" label-width="96px">',
+      '      <el-row :gutter="16">',
+      '        <el-col :span="12"><el-form-item label="手术日期" required><el-date-picker v-model="schedForm.scheduleDate" type="date" value-format="YYYY-MM-DD" placeholder="选择日期" style="width:100%"></el-date-picker></el-form-item></el-col>',
+      '        <el-col :span="12"><el-form-item label="时间段" required><el-select v-model="schedForm.scheduleTime" clearable placeholder="HH:mm段, 精确到分" filterable allow-create default-first-option style="width:100%"><el-option v-for="t in timeSlots" :key="t.value" :label="t.value" :value="t.value"></el-option></el-select></el-form-item></el-col>',
+      '        <el-col :span="12"><el-form-item label="手术间"><el-select v-model="schedForm.roomNo" clearable placeholder="选择手术间" style="width:100%"><el-option v-for="r in rooms" :key="r" :label="r" :value="r"></el-option></el-select></el-form-item></el-col>',
+      '        <el-col :span="12"><el-form-item label="主刀医师">',
+      '          <el-select v-model="schedForm.surgeonId" filterable clearable placeholder="默认沿用申请拟主刀" style="width:100%"><el-option v-for="s in doctors" :key="s.id" :label="staffLabel(s)" :value="s.id"></el-option></el-select>',
+      '        </el-form-item></el-col>',
+      '        <el-col :span="12"><el-form-item label="麻醉医师"><el-select v-model="schedForm.anesthesiologistId" filterable clearable placeholder="选择医师" style="width:100%"><el-option v-for="s in doctors" :key="s.id" :label="staffLabel(s)" :value="s.id"></el-option></el-select></el-form-item></el-col>',
+      '        <el-col :span="12"><el-form-item label="器械护士"><el-select v-model="schedForm.instrumentNurseId" filterable clearable placeholder="选择护士" style="width:100%"><el-option v-for="s in nurses" :key="s.id" :label="staffLabel(s)" :value="s.id"></el-option></el-select></el-form-item></el-col>',
+      '        <el-col :span="12"><el-form-item label="巡回护士"><el-select v-model="schedForm.circulatingNurseId" filterable clearable placeholder="选择护士" style="width:100%"><el-option v-for="s in nurses" :key="s.id" :label="staffLabel(s)" :value="s.id"></el-option></el-select></el-form-item></el-col>',
+      '      </el-row>',
+      '    </el-form>',
+      '    <template #footer>',
+      '      <el-button @click="schedApplyVisible = false">取消</el-button>',
+      '      <el-button type="primary" :loading="saving" @click="submitSchedApply">{{ schedUrgent ? \'急诊安排\' : \'确认安排\' }}</el-button>',
+      '    </template>',
+      '  </el-dialog>',
+      '  <el-dialog v-model="transVisible" title="手术间调配" width="440px" append-to-body>',
+      '    <div class="surg-info" style="margin-bottom:12px">{{ transTitle }}</div>',
+      '    <el-form label-width="90px">',
+      '      <el-form-item label="目标手术间" required>',
+      '        <el-select v-model="transRoom" placeholder="选择手术间" style="width:100%"><el-option v-for="r in rooms" :key="r" :label="r" :value="r"></el-option></el-select>',
+      '      </el-form-item>',
+      '    </el-form>',
+      '    <div style="font-size:12px;color:var(--yb-ink-3)">调配将产生"安排变动"通知(type2), 时间冲突将被拒绝</div>',
+      '    <template #footer>',
+      '      <el-button @click="transVisible = false">取消</el-button>',
+      '      <el-button type="primary" :loading="saving" @click="doTransfer">确认调配</el-button>',
+      '    </template>',
+      '  </el-dialog>',
+      '  <el-dialog v-model="dropVisible" title="拖拽改排确认" width="480px" append-to-body>',
+      '    <div class="surg-info" style="margin-bottom:12px">{{ dropTitle }}</div>',
+      '    <el-form :model="dropForm" label-width="90px">',
+      '      <el-form-item label="目标手术间" required><el-input v-model="dropForm.roomNo" disabled></el-input></el-form-item>',
+      '      <el-form-item label="手术日期"><el-date-picker v-model="dropForm.scheduleDate" type="date" value-format="YYYY-MM-DD" style="width:100%"></el-date-picker></el-form-item>',
+      '      <el-form-item label="时间段"><el-select v-model="dropForm.scheduleTime" clearable placeholder="不改动" filterable allow-create default-first-option style="width:100%"><el-option v-for="t in timeSlots" :key="t.value" :label="t.value" :value="t.value"></el-option></el-select></el-form-item>',
+      '    </el-form>',
+      '    <template #footer>',
+      '      <el-button @click="dropVisible = false">取消</el-button>',
+      '      <el-button type="primary" :loading="saving" @click="submitDrop">确认改排</el-button>',
+      '    </template>',
+      '  </el-dialog>',
       '  <el-drawer v-model="detailVisible" title="手术详情" size="640px" :destroy-on-close="true">',
       '    <div v-loading="detailLoading">',
       '      <template v-if="detail">',
@@ -1393,6 +1750,23 @@
       '          <el-descriptions-item label="器械护士">{{ teamName("instrumentNurse") }}</el-descriptions-item>',
       '          <el-descriptions-item label="巡回护士">{{ teamName("circulatingNurse") }}</el-descriptions-item>',
       '        </el-descriptions>',
+      '        <div class="surg-section-title" style="margin-top:14px">',
+      '          <span>术中医嘱</span>',
+      '          <el-button v-if="detail.surgery.visitType === 1" link type="primary" size="small" style="float:right;margin-top:-2px" @click="openSoDialog">+ 开立医嘱</el-button>',
+      '        </div>',
+      '        <div v-if="detail.surgery.visitType !== 1" class="surg-info" style="margin-bottom:8px">门诊/日间手术的用药通过「手术记费」记账, 不进入住院医嘱链。</div>',
+      '        <el-table v-else :data="soOrders" border size="small" v-loading="soLoading" max-height="300" empty-text="暂无手术医嘱">',
+      '          <el-table-column label="阶段" width="56" align="center"><template #default="s"><el-tag size="small" :type="phaseTag(s.row.orderPhase)">{{ phaseLabel(s.row.orderPhase) }}</el-tag></template></el-table-column>',
+      '          <el-table-column label="分类" width="52" align="center"><template #default="s">{{ orderCatLabel(s.row.orderCategory) }}</template></el-table-column>',
+      '          <el-table-column label="医嘱内容" min-width="150" show-overflow-tooltip><template #default="s">{{ s.row.orderContent }}<el-tag v-if="s.row.proxyDoctorId" size="small" type="info" style="margin-left:4px">代开</el-tag></template></el-table-column>',
+      '          <el-table-column label="状态" width="64" align="center"><template #default="s"><el-tag size="small" :type="orderStTag(s.row.orderStatus)">{{ orderStLabel(s.row.orderStatus) }}</el-tag></template></el-table-column>',
+      '          <el-table-column label="药房" width="62" align="center"><template #default="s">{{ (s.row.orderCategory === 1 \u0026\u0026 s.row.drugId) ? (sendPharmLabel(s.row.sendPharmStatus) || "未发送") : "-" }}</template></el-table-column>',
+      '          <el-table-column label="操作" width="150" align="center" fixed="right"><template #default="s">',
+      '            <el-button v-if="s.row.orderCategory === 1 && s.row.drugId && s.row.sendPharmStatus !== 1" link type="primary" @click="sendSoPharmacy(s.row)">发送药房</el-button>',
+      '            <el-button v-if="s.row.orderCategory === 1 && s.row.drugId && s.row.sendPharmStatus === 1" link type="warning" @click="recallSoPharmacy(s.row)">撤回</el-button>',
+      '            <el-button v-if="s.row.orderStatus === 1" link type="danger" @click="cancelSoOrder(s.row)">作废</el-button>',
+      '          </template></el-table-column>',
+      '        </el-table>',
       '      </template>',
       '    </div>',
       '  </el-drawer>',
@@ -1402,17 +1776,48 @@
       '  <el-drawer v-model="feeVisible" title="手术记费" size="1150px" :destroy-on-close="true">',
       '    <surgery-fee v-if="feeSid" :surgery-id="feeSid"></surgery-fee>',
       '  </el-drawer>',
+      '  <el-dialog v-model="soDlgVisible" title="开立手术医嘱" width="560px" :close-on-click-modal="false" append-to-body>',
+      '    <el-form label-width="80px" size="small">',
+      '      <el-form-item label="阶段"><el-radio-group v-model="soForm.orderPhase"><el-radio-button :value="2">术中</el-radio-button><el-radio-button :value="3">术后</el-radio-button></el-radio-group></el-form-item>',
+      '      <el-form-item label="分类"><el-select v-model="soForm.orderCategory" style="width:160px" @change="onSoCatChange"><el-option v-for="c in soCatOpts" :key="c.value" :label="c.label" :value="c.value"></el-option></el-select></el-form-item>',
+      '      <el-form-item label="药品" v-if="soForm.orderCategory === 1">',
+      '        <el-select v-model="soPickDrugId" style="width:100%" filterable remote reserve-keyword clearable :remote-method="soDrugSearch" :loading="soDrugLoading" placeholder="输入通用名检索" @change="onSoPickDrug">',
+      '          <el-option v-for="d in soDrugOptions" :key="d.id" :label="(d.genericName || \'\') + \' \' + (d.spec || \'\')" :value="d.id"></el-option>',
+      '        </el-select>',
+      '      </el-form-item>',
+      '      <el-form-item label="收费项目" v-else>',
+      '        <el-select v-model="soPickChargeId" style="width:100%" filterable remote reserve-keyword clearable :remote-method="soChargeSearch" :loading="soChargeLoading" placeholder="输入项目名检索" @change="onSoPickCharge">',
+      '          <el-option v-for="x in soChargeOptions" :key="x.id" :label="x.itemName" :value="x.id"></el-option>',
+      '        </el-select>',
+      '      </el-form-item>',
+      '      <el-form-item label="内容"><el-input v-model="soForm.orderContent" type="textarea" :rows="2" placeholder="医嘱内容"></el-input></el-form-item>',
+      '      <el-form-item label="剂量用法" v-if="soForm.orderCategory === 1">',
+      '        <el-input v-model="soForm.dosage" style="width:88px" placeholder="剂量"></el-input>',
+      '        <el-input v-model="soForm.dosageUnit" style="width:76px;margin-left:6px" placeholder="单位"></el-input>',
+      '        <el-select v-model="soForm.usageCode" clearable filterable style="width:116px;margin-left:6px" placeholder="用法"><el-option v-for="u in soUsageOpts" :key="u.code" :label="u.name" :value="u.code"></el-option></el-select>',
+      '        <el-select v-model="soForm.freqCode" clearable filterable style="width:116px;margin-left:6px" placeholder="频次"><el-option v-for="f in soFreqOpts" :key="f.code" :label="f.name" :value="f.code"></el-option></el-select>',
+      '      </el-form-item>',
+      '      <el-form-item label="数量" v-if="soForm.orderCategory === 1"><el-input-number v-model="soForm.quantity" :min="1" size="small"></el-input-number></el-form-item>',
+      '      <el-form-item label="代开"><el-switch v-model="soForm.proxyOn"></el-switch><span style="margin-left:10px;font-size:12px;color:var(--yb-ink-3)">以其他医师名义开立(权限按其口径校验)</span></el-form-item>',
+      '      <el-form-item label="代开医师" v-if="soForm.proxyOn"><el-select v-model="soForm.proxyDoctorId" filterable clearable style="width:220px" placeholder="选择医师"><el-option v-for="s in doctors" :key="s.id" :label="staffLabel(s)" :value="s.id"></el-option></el-select></el-form-item>',
+      '      <el-form-item label="代开原因" v-if="soForm.proxyOn"><el-input v-model="soForm.proxyReason" placeholder="必填, 留痕"></el-input></el-form-item>',
+      '    </el-form>',
+      '    <template #footer>',
+      '      <el-button size="small" @click="soDlgVisible = false">取消</el-button>',
+      '      <el-button size="small" type="primary" :loading="soSaving" @click="submitSoOrder">提交</el-button>',
+      '    </template>',
+      '  </el-dialog>',
       '</div>'
     ].join('\n'),
     data: function () {
       return {
-        tab: 'list',
+        tab: 'unarranged',
         rows: [],
         total: 0,
         page: 1,
         size: 20,
         loading: false,
-        filters: { deptId: null, dateRange: [], status: null, kw: '' },
+        filters: { deptId: null, dateRange: [], status: [], kw: '' },
         refDepts: [],
         doctors: [],
         nurses: [],
@@ -1441,7 +1846,36 @@
         aneVisible: false,
         aneSid: null,
         feeVisible: false,
-        feeSid: null
+        feeSid: null,
+        /* ===== 手麻P0: 角色矩阵/四状态Tab/排程板/报到/通知角标 ===== */
+        canArrange: false,
+        canOps: false,
+        pendingNotify: 0,
+        unarrangedRows: [], unarrangedLoading: false,
+        arrangedView: 'list',
+        arrangedRows: [], arrTotal: 0, arrP: 1, arrSize: 20, arrangedLoading: false,
+        arrFilters: { dateRange: [], status: null },
+        finRows: [], finTotal: 0, finP: 1, finSize: 20, finLoading: false,
+        finFilters: { dateRange: [], visitType: null, kw: '' },
+        anesRows: [], anesLoading: false,
+        regKw: '', regRows: [], regSel: null,
+        rb: { date: '', total: 0, rooms: [] }, rbLoading: false, boardDate: today(),
+        dragCard: null, dragOverRoom: '',
+        schedApplyVisible: false, schedUrgent: false, schedApplyRow: null, schedApplyTitle: '',
+        schedForm: { scheduleDate: '', scheduleTime: '', roomNo: '', surgeonId: null, anesthesiologistId: null, instrumentNurseId: null, circulatingNurseId: null },
+        urgForm: { visitType: 1, inpVisitId: null, visitId: null, surgeryCode: '', surgeryName: '', surgeryLevel: null, anesthesiaType: null, expectTime: '', preOpDiag: '' },
+        outpVisits: [], urgPtLoading: false,
+        transVisible: false, transId: null, transTitle: '', transRoom: '',
+        dropVisible: false, dropCard: null, dropTitle: '',
+        dropForm: { roomNo: '', scheduleDate: '', scheduleTime: '' },
+        /* ===== 手麻P1: 术中医嘱区 ===== */
+        soOrders: [], soLoading: false,
+        soDlgVisible: false, soSaving: false,
+        soForm: blankSoOrderForm(),
+        soPickDrugId: null, soPickChargeId: null,
+        soDrugOptions: [], soChargeOptions: [], soUsageOpts: [], soFreqOpts: [],
+        soDrugLoading: false, soChargeLoading: false, soDictLoaded: false,
+        soCatOpts: ORDER_CAT_OPTS
       };
     },
     computed: {
@@ -1451,6 +1885,17 @@
         var kw = (this.filters.kw || '').trim().toLowerCase();
         if (!kw) { return this.rows || []; }
         return (this.rows || []).filter(function (r) {
+          return String(r.patient_name || '').toLowerCase().indexOf(kw) >= 0
+            || String(r.surgery_name || '').toLowerCase().indexOf(kw) >= 0
+            || String(r.surgeon_name || '').toLowerCase().indexOf(kw) >= 0
+            || String(r.inp_no || '').toLowerCase().indexOf(kw) >= 0;
+        });
+      },
+      /* 手麻P0: 已完成Tab本页关键字过滤 */
+      filteredFinished: function () {
+        var kw = (this.finFilters.kw || '').trim().toLowerCase();
+        if (!kw) { return this.finRows || []; }
+        return (this.finRows || []).filter(function (r) {
           return String(r.patient_name || '').toLowerCase().indexOf(kw) >= 0
             || String(r.surgery_name || '').toLowerCase().indexOf(kw) >= 0
             || String(r.surgeon_name || '').toLowerCase().indexOf(kw) >= 0
@@ -1470,7 +1915,7 @@
         if (vm.filters.dateRange && vm.filters.dateRange.length === 2) {
           q += '&startDate=' + vm.filters.dateRange[0] + '&endDate=' + vm.filters.dateRange[1];
         }
-        if (vm.filters.status) { q += '&status=' + vm.filters.status; }
+        if (vm.filters.status && vm.filters.status.length) { q += '&statuses=' + vm.filters.status.join(','); }
         HIS.get(q).then(function (d) {
           vm.rows = (d && d.records) || [];
           vm.total = (d && d.total) || 0;
@@ -1481,11 +1926,23 @@
       onPage: function (p) { this.page = p; this.load(); },
       onSize: function (s) { this.size = s; this.page = 1; this.load(); },
       refresh: function () {
-        this.load();
-        if (this.tab === 'board') { this.loadBoard(); }
+        this.loadPendingCount();
+        if (this.tab === 'list') { this.load(); }
+        else if (this.tab === 'board') { this.loadBoard(); }
+        else if (this.tab === 'unarranged') { this.loadUnarranged(); }
+        else if (this.tab === 'arranged') { this.refreshArranged(); }
+        else if (this.tab === 'finished') { this.loadFinished(); }
+        else if (this.tab === 'anes') { this.loadAnes(); }
+        else { this.load(); }
       },
       onTabChange: function (name) {
-        if ((name || this.tab) === 'board') { this.loadBoard(); }
+        var n = name || this.tab;
+        if (n === 'board') { this.loadBoard(); }
+        else if (n === 'unarranged') { this.loadUnarranged(); }
+        else if (n === 'arranged') { this.refreshArranged(); }
+        else if (n === 'finished') { this.loadFinished(); }
+        else if (n === 'anes') { this.loadAnes(); }
+        else if (n === 'list') { this.load(); }
       },
       loadBoard: function () {
         var vm = this;
@@ -1705,15 +2162,395 @@
         HIS.get('/api/his/surgery/' + id).then(function (d) {
           vm.detail = d || null;
           vm.detailLoading = false;
+          vm.loadSurgeryOrders();
         }).catch(function (e) { vm.detailLoading = false; HIS.notifyError(e); });
       },
+      /* ===== 手麻P1: 术中医嘱区方法 ===== */
+      loadSurgeryOrders: function () {
+        var vm = this;
+        var s = vm.detail && vm.detail.surgery;
+        if (!s || s.visitType !== 1) { vm.soOrders = []; return; }
+        vm.soLoading = true;
+        HIS.get('/api/his/surgery/' + HIS.idParam(s.id) + '/orders')
+          .then(function (l) { vm.soOrders = l || []; })
+          .catch(function (e) { vm.soOrders = []; HIS.notifyError(e); })
+          .finally(function () { vm.soLoading = false; });
+      },
+      openSoDialog: function () {
+        var vm = this;
+        vm.soForm = blankSoOrderForm();
+        vm.soPickDrugId = null; vm.soPickChargeId = null;
+        vm.soDrugOptions = []; vm.soChargeOptions = [];
+        if (!vm.soDictLoaded) {
+          vm.soDictLoaded = true;
+          HIS.get('/api/org-catalog/available/med-dict?dictType=usage').then(function (l) { vm.soUsageOpts = l || []; }).catch(function () { });
+          HIS.get('/api/org-catalog/available/med-dict?dictType=freq').then(function (l) { vm.soFreqOpts = l || []; }).catch(function () { });
+        }
+        vm.soDlgVisible = true;
+      },
+      onSoCatChange: function () {
+        var vm = this;
+        vm.soForm.drugId = null; vm.soForm.chargeItemId = null;
+        vm.soPickDrugId = null; vm.soPickChargeId = null;
+      },
+      soDrugSearch: function (query) {
+        var vm = this;
+        var kw = String(query || '').trim();
+        if (!kw) { vm.soDrugOptions = []; return; }
+        vm.soDrugLoading = true;
+        HIS.get('/api/org-catalog/available/drug?page=1&size=30&keyword=' + encodeURIComponent(kw))
+          .then(function (data) { vm.soDrugOptions = (data && data.records) || []; })
+          .catch(HIS.notifyError)
+          .finally(function () { vm.soDrugLoading = false; });
+      },
+      onSoPickDrug: function (id) {
+        var vm = this;
+        vm.soPickDrugId = null;
+        var d = vm.soDrugOptions.find(function (x) { return HIS.sameId(x.id, id); });
+        if (!d) { return; }
+        vm.soForm.drugId = d.id;
+        vm.soForm.spec = d.spec || '';
+        if (!vm.soForm.dosageUnit) { vm.soForm.dosageUnit = d.doseUnit || d.minUnit || ''; }
+        if (!vm.soForm.orderContent) { vm.soForm.orderContent = (d.genericName || '') + (d.spec ? ' ' + d.spec : ''); }
+      },
+      soChargeSearch: function (query) {
+        var vm = this;
+        var kw = String(query || '').trim();
+        if (!kw) { vm.soChargeOptions = []; return; }
+        vm.soChargeLoading = true;
+        HIS.get('/api/org-catalog/available/charge?page=1&size=30&keyword=' + encodeURIComponent(kw))
+          .then(function (data) { vm.soChargeOptions = (data && data.records) || []; })
+          .catch(HIS.notifyError)
+          .finally(function () { vm.soChargeLoading = false; });
+      },
+      onSoPickCharge: function (id) {
+        var vm = this;
+        vm.soPickChargeId = null;
+        var it = vm.soChargeOptions.find(function (x) { return HIS.sameId(x.id, id); });
+        if (!it) { return; }
+        vm.soForm.chargeItemId = it.id;
+        vm.soForm.spec = it.spec || '';
+        if (!vm.soForm.orderContent) { vm.soForm.orderContent = it.itemName || ''; }
+      },
+      submitSoOrder: function () {
+        var vm = this;
+        var f = vm.soForm;
+        var s = vm.detail && vm.detail.surgery;
+        if (!s) { return; }
+        if (!f.orderContent || !String(f.orderContent).trim()) { HIS.notifyError('请填写医嘱内容'); return; }
+        if (f.orderCategory === 1 && !f.drugId) { HIS.notifyError('请选择药品'); return; }
+        if (f.orderCategory !== 1 && !f.chargeItemId) { HIS.notifyError('请选择收费项目'); return; }
+        if (f.proxyOn && !f.proxyDoctorId) { HIS.notifyError('代开需选择被代开医师'); return; }
+        if (f.proxyOn && !(f.proxyReason && String(f.proxyReason).trim())) { HIS.notifyError('请填写代开原因'); return; }
+        var body = {
+          orderType: 2,
+          orderCategory: Number(f.orderCategory),
+          orderContent: String(f.orderContent).trim(),
+          drugId: f.orderCategory === 1 ? f.drugId : null,
+          chargeItemId: f.orderCategory === 1 ? null : f.chargeItemId,
+          spec: f.spec || null,
+          dosage: f.orderCategory === 1 ? (f.dosage || null) : null,
+          dosageUnit: f.orderCategory === 1 ? (f.dosageUnit || null) : null,
+          usageCode: f.orderCategory === 1 ? (f.usageCode || null) : null,
+          freqCode: f.orderCategory === 1 ? (f.freqCode || null) : null,
+          quantity: f.orderCategory === 1 ? (f.quantity || 1) : null,
+          orderPhase: Number(f.orderPhase),
+          proxyDoctorId: f.proxyOn ? f.proxyDoctorId : null,
+          proxyReason: f.proxyOn ? String(f.proxyReason).trim() : null
+        };
+        vm.soSaving = true;
+        HIS.post('/api/his/surgery/' + HIS.idParam(s.id) + '/order', body)
+          .then(function () {
+            HIS.notifySuccess && HIS.notifySuccess('医嘱已开立');
+            vm.soDlgVisible = false;
+            vm.loadSurgeryOrders();
+          })
+          .catch(function (e) { HIS.notifyError(e); })
+          .finally(function () { vm.soSaving = false; });
+      },
+      sendSoPharmacy: function (row) {
+        var vm = this;
+        HIS.post('/api/his/inp/order/' + HIS.idParam(row.id) + '/send-pharmacy')
+          .then(function () { HIS.notifySuccess && HIS.notifySuccess('已发送药房'); vm.loadSurgeryOrders(); })
+          .catch(function (e) { HIS.notifyError(e); });
+      },
+      recallSoPharmacy: function (row) {
+        var vm = this;
+        HIS.post('/api/his/inp/order/' + HIS.idParam(row.id) + '/recall-pharmacy')
+          .then(function () { HIS.notifySuccess && HIS.notifySuccess('已撤回发送'); vm.loadSurgeryOrders(); })
+          .catch(function (e) { HIS.notifyError(e); });
+      },
+      cancelSoOrder: function (row) {
+        var vm = this;
+        confirmBox('确认作废该手术医嘱? 仅新开未执行医嘱可作废。', '作废确认')
+          .then(function () { return HIS.put('/api/his/inp/order/' + HIS.idParam(row.id) + '/cancel'); })
+          .then(function () { HIS.notifySuccess && HIS.notifySuccess('已作废'); vm.loadSurgeryOrders(); })
+          .catch(function (e) { if (!isCancel(e)) { HIS.notifyError(e); } });
+      },
       openAne: function (id) { this.aneSid = id; this.aneVisible = true; },
-      openFee: function (id) { this.feeSid = id; this.feeVisible = true; }
+      openFee: function (id) { this.feeSid = id; this.feeVisible = true; },
+      /* ==================== 手麻P0 ==================== */
+      /* 角色×功能矩阵: 安排/急诊=医师或管理员; 报到流转退回调配=医师/护士/管理员; 记费模板/通知不受限 */
+      loadRoles: function () {
+        var admin = HIS.hasRole('ADMIN') || HIS.hasRole('ORG_ADMIN') || HIS.hasRole('SUPER_ADMIN');
+        this.canArrange = admin || HIS.hasRole('DOCTOR');
+        this.canOps = admin || HIS.hasRole('DOCTOR') || HIS.hasRole('NURSE');
+      },
+      loadPendingCount: function () {
+        var vm = this;
+        HIS.get('/api/his/surgery/notify/pending-count').then(function (c) { vm.pendingNotify = c || 0; }).catch(function () { });
+      },
+      goNotify: function () {
+        if (HIS.go) { HIS.go('surgery-apply'); } else { HIS.notifyError('请到菜单【手术申请管理-通知管理】处理'); }
+      },
+      /* ===== 手术未安排池 ===== */
+      loadUnarranged: function () {
+        var vm = this;
+        vm.unarrangedLoading = true;
+        HIS.get('/api/his/surgery/unarranged-list').then(function (l) {
+          vm.unarrangedRows = l || [];
+          vm.unarrangedLoading = false;
+        }).catch(function (e) { vm.unarrangedLoading = false; HIS.notifyError(e); });
+      },
+      openSchedApply: function (row) {
+        this.schedUrgent = false;
+        this.schedApplyRow = row;
+        this.schedApplyTitle = orDash(row.apply_no) + '　' + orDash(row.patient_name) + ' - ' + orDash(row.surgery_name)
+          + '（' + levelLabel(row.surgery_level) + '　拟主刀: ' + orDash(row.surgeon_name) + '）';
+        this.schedForm = {
+          scheduleDate: row.expect_time ? String(row.expect_time).replace('T', ' ').slice(0, 10) : today(),
+          scheduleTime: '', roomNo: '',
+          surgeonId: row.surgeon_id || null, anesthesiologistId: null, instrumentNurseId: null, circulatingNurseId: null
+        };
+        this.schedApplyVisible = true;
+      },
+      openUrgent: function () {
+        this.schedUrgent = true;
+        this.schedApplyRow = null;
+        this.urgForm = { visitType: 1, inpVisitId: null, visitId: null, surgeryCode: '', surgeryName: '', surgeryLevel: null, anesthesiaType: null, expectTime: '', preOpDiag: '' };
+        this.schedForm = { scheduleDate: today(), scheduleTime: '', roomNo: '', surgeonId: null, anesthesiologistId: null, instrumentNurseId: null, circulatingNurseId: null };
+        this.schedApplyVisible = true;
+        this.searchPatients('');
+      },
+      searchOutpVisits: function (kw) {
+        var vm = this;
+        vm.urgPtLoading = true;
+        var q = '/api/his/surgery-apply/visit-search';
+        if (kw) { q += '?keyword=' + encodeURIComponent(kw); }
+        HIS.get(q).then(function (l) {
+          vm.outpVisits = l || [];
+          vm.urgPtLoading = false;
+        }).catch(function (e) { vm.urgPtLoading = false; HIS.notifyError(e); });
+      },
+      outpPtLabel: function (v) {
+        return orDash(v.patient_name) + (v.gender_name ? '·' + v.gender_name : '')
+          + '  门诊号 ' + orDash(v.ipt_otp_no) + '  ' + orDash(v.dept_name);
+      },
+      schedBody: function () {
+        var f = this.schedForm;
+        return {
+          scheduleDate: f.scheduleDate, scheduleTime: f.scheduleTime, roomNo: f.roomNo,
+          surgeonId: f.surgeonId, anesthesiologistId: f.anesthesiologistId,
+          instrumentNurseId: f.instrumentNurseId, circulatingNurseId: f.circulatingNurseId
+        };
+      },
+      submitSchedApply: function () {
+        var vm = this;
+        var f = vm.schedForm;
+        if (!f.scheduleDate) { HIS.notifyError('请选择手术日期'); return; }
+        if (f.roomNo && !f.scheduleTime) { HIS.notifyError('选定手术间后须填时间段(冲突校验需要)'); return; }
+        var p;
+        if (vm.schedUrgent) {
+          var u = vm.urgForm;
+          if (!u.inpVisitId && !u.visitId) { HIS.notifyError('请选择患者'); return; }
+          if (!u.surgeryName) { HIS.notifyError('请填写手术名称'); return; }
+          var body = vm.schedBody();
+          body.visitType = u.visitType;
+          body.inpVisitId = u.visitType === 1 ? u.inpVisitId : null;
+          body.visitId = u.visitType === 1 ? null : u.visitId;
+          body.surgeryCode = u.surgeryCode;
+          body.surgeryName = u.surgeryName;
+          body.surgeryLevel = u.surgeryLevel;
+          body.anesthesiaType = u.anesthesiaType;
+          body.deadlineType = 3;
+          body.expectTime = u.expectTime || null;
+          body.preOpDiag = u.preOpDiag;
+          p = HIS.post('/api/his/surgery/urgent-schedule', body);
+        } else {
+          p = HIS.post('/api/his/surgery/schedule-from-apply/' + vm.schedApplyRow.id, vm.schedBody());
+        }
+        vm.saving = true;
+        p.then(function () {
+          vm.saving = false;
+          vm.schedApplyVisible = false;
+          HIS.notifySuccess(vm.schedUrgent ? '急诊手术已安排' : '手术已安排');
+          vm.loadUnarranged();
+          vm.loadPendingCount();
+          if (vm.tab === 'arranged') { vm.refreshArranged(); }
+        }).catch(function (e) { vm.saving = false; HIS.notifyError(e); });
+      },
+      /* ===== 手术已安排(列表+排程板) ===== */
+      refreshArranged: function () {
+        if (this.arrangedView === 'board') { this.loadRoomBoard(); } else { this.loadArranged(); }
+      },
+      onArrangedView: function () { this.refreshArranged(); },
+      loadArranged: function () {
+        var vm = this;
+        vm.arrangedLoading = true;
+        var q = '/api/his/surgery/list?page=' + vm.arrP + '&size=' + vm.arrSize + '&statuses=2,7';
+        if (vm.arrFilters.status) { q += '&statusEq=' + vm.arrFilters.status; }
+        if (vm.arrFilters.dateRange && vm.arrFilters.dateRange.length === 2) {
+          q += '&startDate=' + vm.arrFilters.dateRange[0] + '&endDate=' + vm.arrFilters.dateRange[1];
+        }
+        HIS.get(q).then(function (d) {
+          var recs = (d && d.records) || [];
+          var eq = vm.arrFilters.status;
+          vm.arrangedRows = eq ? recs.filter(function (r) { return r.status === eq; }) : recs;
+          vm.arrTotal = (d && d.total) || 0;
+          vm.arrangedLoading = false;
+        }).catch(function (e) { vm.arrangedLoading = false; HIS.notifyError(e); });
+      },
+      onArrPage: function (p) { this.arrP = p; this.loadArranged(); },
+      loadRoomBoard: function () {
+        var vm = this;
+        vm.rbLoading = true;
+        var q = '/api/his/surgery/room-board?date=' + (vm.boardDate || today());
+        HIS.get(q).then(function (d) {
+          vm.rb = d || { date: '', total: 0, rooms: [] };
+          vm.rbLoading = false;
+        }).catch(function (e) { vm.rbLoading = false; HIS.notifyError(e); });
+      },
+      /* ===== 登记报到 ===== */
+      doRegSearch: function () {
+        var vm = this;
+        if (!vm.regKw) { HIS.notifyError('请输入申请单号/病历号/姓名'); return; }
+        HIS.get('/api/his/surgery/register-query?keyword=' + encodeURIComponent(vm.regKw)).then(function (l) {
+          vm.regRows = l || [];
+          if (!vm.regRows.length) { HIS.notifyError('未找到待报到手术(仅状态: 已排程/已报到)'); }
+        }).catch(function (e) { HIS.notifyError(e); });
+      },
+      onRegPick: function (row) { this.regSel = row; },
+      doCheckInRow: function (row) {
+        var vm = this;
+        confirmBox('确认为【' + escHtml(row.patient_name) + '】办理手术报到登记？报到后状态置为已报到(可开始手术)。', '登记报到')
+          .then(function () { return HIS.put('/api/his/surgery/' + row.id + '/check-in'); })
+          .then(function () {
+            HIS.notifySuccess('已报到');
+            vm.doRegSearch();
+            if (vm.tab === 'arranged') { vm.refreshArranged(); }
+          })
+          .catch(function (e) { if (!isCancel(e)) { HIS.notifyError(e); } });
+      },
+      doCheckIn: function (row) { this.doCheckInRow(row); },
+      /* ===== 调配 / 退回 / 取消完成 ===== */
+      openTransfer: function (row) {
+        this.transId = row.id;
+        this.transTitle = orDash(row.patient_name) + ' - ' + orDash(row.surgery_name) + '　当前手术间: ' + orDash(row.room_no) + '　' + fmtDate(row.schedule_date) + ' ' + orDash(row.schedule_time);
+        this.transRoom = '';
+        this.transVisible = true;
+      },
+      doTransfer: function () {
+        var vm = this;
+        if (!vm.transRoom) { HIS.notifyError('请选择目标手术间'); return; }
+        vm.saving = true;
+        HIS.put('/api/his/surgery/' + vm.transId + '/transfer', { roomNo: vm.transRoom }).then(function () {
+          vm.saving = false;
+          vm.transVisible = false;
+          HIS.notifySuccess('已调配, 产生安排变动通知');
+          vm.refreshArranged();
+          vm.loadPendingCount();
+        }).catch(function (e) { vm.saving = false; HIS.notifyError(e); });
+      },
+      doCancelSchedule: function (row) {
+        var vm = this;
+        promptReason('退回手术【' + row.patient_name + ' - ' + row.surgery_name + '】', '请填写退回原因')
+          .then(function (r) { return HIS.put('/api/his/surgery/' + row.id + '/cancel-schedule', { reason: r.value }); })
+          .then(function () {
+            HIS.notifySuccess('已退回, 来源申请回待安排池');
+            vm.refreshArranged();
+            vm.loadUnarranged();
+          })
+          .catch(function (e) { if (!isCancel(e)) { HIS.notifyError(e); } });
+      },
+      /* ===== 手术已完成 / 取消完成 ===== */
+      loadFinished: function () {
+        var vm = this;
+        vm.finLoading = true;
+        var q = '/api/his/surgery/list?page=' + vm.finP + '&size=' + vm.finSize + '&statuses=5';
+        if (vm.finFilters.visitType) { q += '&visitType=' + vm.finFilters.visitType; }
+        if (vm.finFilters.dateRange && vm.finFilters.dateRange.length === 2) {
+          q += '&startDate=' + vm.finFilters.dateRange[0] + '&endDate=' + vm.finFilters.dateRange[1];
+        }
+        HIS.get(q).then(function (d) {
+          vm.finRows = (d && d.records) || [];
+          vm.finTotal = (d && d.total) || 0;
+          vm.finLoading = false;
+        }).catch(function (e) { vm.finLoading = false; HIS.notifyError(e); });
+      },
+      onFinPage: function (p) { this.finP = p; this.loadFinished(); },
+      doCancelComplete: function (row) {
+        var vm = this;
+        confirmBox('确认取消完成【' + escHtml(row.patient_name) + ' - ' + escHtml(row.surgery_name) + '】？取消后回到术后状态, 可补录费用/退费。', '取消完成')
+          .then(function () { return HIS.put('/api/his/surgery/' + row.id + '/cancel-complete'); })
+          .then(function () { HIS.notifySuccess('已取消完成'); vm.loadFinished(); })
+          .catch(function (e) { if (!isCancel(e)) { HIS.notifyError(e); } });
+      },
+      /* ===== 麻醉已安排 ===== */
+      loadAnes: function () {
+        var vm = this;
+        vm.anesLoading = true;
+        HIS.get('/api/his/surgery/anesthesia-list').then(function (l) {
+          vm.anesRows = l || [];
+          vm.anesLoading = false;
+        }).catch(function (e) { vm.anesLoading = false; HIS.notifyError(e); });
+      },
+      /* ===== 排程板拖拽 ===== */
+      onDragStart: function (c) { this.dragCard = c; },
+      onDragOver: function (ev, room) {
+        ev.dataTransfer.dropEffect = 'move';
+        this.dragOverRoom = room || '';
+      },
+      onDragLeave: function (room) {
+        if (this.dragOverRoom === room) { this.dragOverRoom = ''; }
+      },
+      onDropToBoard: function (ev, room) {
+        this.dragOverRoom = '';
+        var c = this.dragCard;
+        this.dragCard = null;
+        if (!c || !this.canOps) { return; }
+        if (!room || room === '未安排') { HIS.notifyError('请拖入具体手术间列'); return; }
+        if (room === c.room_no) { HIS.notifyError('目标手术间未变化'); return; }
+        this.dropCard = c;
+        this.dropTitle = orDash(c.patient_name) + ' - ' + orDash(c.surgery_name) + '　原: ' + orDash(c.room_no) + ' ' + (c.schedule_time || '待定');
+        this.dropForm = { roomNo: room, scheduleDate: this.rb.date || today(), scheduleTime: c.schedule_time || '' };
+        this.dropVisible = true;
+      },
+      submitDrop: function () {
+        var vm = this;
+        var c = vm.dropCard;
+        if (!c) { return; }
+        if (!vm.dropForm.scheduleDate) { HIS.notifyError('请选择手术日期'); return; }
+        if (!vm.dropForm.scheduleTime) { HIS.notifyError('请选择时间段(冲突校验需要)'); return; }
+        var body = {
+          scheduleDate: vm.dropForm.scheduleDate, scheduleTime: vm.dropForm.scheduleTime, roomNo: vm.dropForm.roomNo,
+          surgeonId: c.surgeon_id || null
+        };
+        vm.saving = true;
+        HIS.put('/api/his/surgery/' + c.id + '/reschedule', body).then(function () {
+          vm.saving = false;
+          vm.dropVisible = false;
+          HIS.notifySuccess('已改排, 产生安排变动通知');
+          vm.loadRoomBoard();
+          vm.loadPendingCount();
+        }).catch(function (e) { vm.saving = false; HIS.notifyError(e); });
+      }
     },
     mounted: function () {
       this.loadRefs();
       this.loadRooms();
-      this.load();
+      this.loadRoles();
+      this.loadPendingCount();
+      this.loadUnarranged();
     }
   };
 })();

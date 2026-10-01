@@ -9,6 +9,7 @@ import com.yb.hi.framework.common.BizException;
 import com.yb.hi.framework.common.R;
 import com.yb.hi.framework.tenant.LoginUser;
 import com.yb.hi.framework.tenant.UserContext;
+import com.yb.hi.platform.service.SysUserOrgService;
 import com.yb.hi.service.medtech.CriticalValueService;
 import com.yb.hi.service.medtech.ExamReportService;
 import com.yb.hi.service.medtech.SpecimenService;
@@ -39,12 +40,14 @@ public class MedTechController {
     private final SpecimenService specimenService;
     private final ExamReportService examReportService;
     private final CriticalValueService criticalValueService;
+    private final SysUserOrgService userOrgService;
 
     public MedTechController(SpecimenService specimenService, ExamReportService examReportService,
-                             CriticalValueService criticalValueService) {
+                             CriticalValueService criticalValueService, SysUserOrgService userOrgService) {
         this.specimenService = specimenService;
         this.examReportService = examReportService;
         this.criticalValueService = criticalValueService;
+        this.userOrgService = userOrgService;
     }
 
     /* ================= 标本 ================= */
@@ -104,7 +107,11 @@ public class MedTechController {
 
     /* ================= 报告 ================= */
 
-    /** 报告分页(reportType/status 可选; keyword 匹配患者姓名/报告单号/患者ID; from/to 过滤报告日期 yyyy-MM-dd) */
+    /**
+     * 报告分页(reportType/status 可选; keyword 匹配患者姓名/报告单号/患者ID; from/to 过滤报告日期 yyyy-MM-dd)。
+     * T2 阶段4 跨机构查看(默认零回归): 缺省仅本机构; allMyOrgs=true 放宽到登录医生可访问的医共体成员机构白名单;
+     * 指定 orgId 则仅当其在白名单内时生效(否则回落本机构)。仍不放开跨租户(服务层强制 tenant_id)。
+     */
     @GetMapping("/reports")
     public R<IPage<Map<String, Object>>> listReports(
             @RequestParam(required = false) String reportType,
@@ -112,9 +119,21 @@ public class MedTechController {
             @RequestParam(required = false) String keyword,
             @RequestParam(required = false) String from,
             @RequestParam(required = false) String to,
+            @RequestParam(required = false) Long orgId,
+            @RequestParam(required = false, defaultValue = "false") boolean allMyOrgs,
             @RequestParam(defaultValue = "1") long page,
             @RequestParam(defaultValue = "20") long size) {
-        return R.ok(examReportService.listReports(currentOrgId(), reportType, status, keyword, from, to, page, size));
+        Long homeOrg = currentOrgId();
+        if (allMyOrgs) {
+            List<Long> scope = userOrgService.allowedOrgIds(currentUserId(), homeOrg);
+            return R.ok(examReportService.listReports(scope, reportType, status, keyword, from, to, page, size));
+        }
+        if (orgId != null && !orgId.equals(homeOrg)) {
+            List<Long> wl = userOrgService.allowedOrgIds(currentUserId(), homeOrg);
+            Long eff = wl.contains(orgId) ? orgId : homeOrg;
+            return R.ok(examReportService.listReports(eff, reportType, status, keyword, from, to, page, size));
+        }
+        return R.ok(examReportService.listReports(homeOrg, reportType, status, keyword, from, to, page, size));
     }
 
     /** 按患者查询历史报告(排除作废; 供医生站) */
@@ -170,6 +189,13 @@ public class MedTechController {
     public R<HisExamReport> reviewReport(@PathVariable Long id, @RequestBody Map<String, Object> body) {
         boolean approved = body != null && Boolean.TRUE.equals(body.get("approved"));
         return R.ok(examReportService.reviewReport(id, currentStaffId(), approved));
+    }
+
+    /** 撤回报告(作废 1/2->3, 留痕撤回人/时间/原因; body={reason}) */
+    @PostMapping("/report/{id}/void")
+    public R<HisExamReport> voidReport(@PathVariable Long id, @RequestBody(required = false) Map<String, Object> body) {
+        String reason = body == null || body.get("reason") == null ? null : body.get("reason").toString();
+        return R.ok(examReportService.voidReport(id, reason));
     }
 
     /* ================= 危急值 ================= */
@@ -251,6 +277,12 @@ public class MedTechController {
             throw new BizException(403, "当前账号未归属任何机构, 无法操作医技业务");
         }
         return u.getOrgId();
+    }
+
+    /** 当前登录用户ID(跨机构白名单解析用; 可为空则仅归属机构自身)。 */
+    private Long currentUserId() {
+        LoginUser u = UserContext.get();
+        return u == null ? null : u.getUserId();
     }
 
     private Long currentStaffId() {

@@ -7,6 +7,7 @@ import com.yb.hi.dto.inpatient.SurgeryDTO;
 import com.yb.hi.dto.inpatient.SurgeryScheduleDTO;
 import com.yb.hi.entity.inpatient.HisInpVisit;
 import com.yb.hi.entity.inpatient.HisSurgery;
+import com.yb.hi.entity.inpatient.HisSurgeryApply;
 import com.yb.hi.framework.common.BizException;
 import com.yb.hi.framework.tenant.LoginUser;
 import com.yb.hi.framework.tenant.TenantContext;
@@ -22,6 +23,8 @@ import org.springframework.util.StringUtils;
 
 import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.time.LocalTime;
+import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
@@ -46,34 +49,44 @@ public class SurgeryService {
             "手术间1", "手术间2", "手术间3", "手术间4",
             "手术间5", "手术间6", "手术间7", "手术间8"));
 
+    /** 手术时间段解析(HH:mm-HH:mm) */
+    private static final DateTimeFormatter HM_FMT = DateTimeFormatter.ofPattern("HH:mm");
+
     private final HisSurgeryMapper surgeryMapper;
     private final HisInpVisitMapper visitMapper;
     private final OrgAccessGuard guard;
     private final JdbcTemplate jdbcTemplate;
+    private final SurgeryApplyService applyService;
+    private final SurgeryAuthRuleService authRuleService;
 
     public SurgeryService(HisSurgeryMapper surgeryMapper, HisInpVisitMapper visitMapper,
-                          OrgAccessGuard guard, JdbcTemplate jdbcTemplate) {
+                          OrgAccessGuard guard, JdbcTemplate jdbcTemplate,
+                          SurgeryApplyService applyService, SurgeryAuthRuleService authRuleService) {
         this.surgeryMapper = surgeryMapper;
         this.visitMapper = visitMapper;
         this.guard = guard;
         this.jdbcTemplate = jdbcTemplate;
+        this.applyService = applyService;
+        this.authRuleService = authRuleService;
     }
 
     /* ==================== 查询 ==================== */
 
     /**
-     * 手术列表(分页): 支持机构/科室/手术日期区间/状态筛选,
+     * 手术列表(分页): 支持机构/科室/手术日期区间/状态(可逗号多值如"2,3,7")筛选,
      * JOIN his_inp_visit+his_patient 取住院号与患者信息, JOIN his_staff 取主刀医师姓名。
      */
     public IPage<Map<String, Object>> listSurgeries(Long orgId, Long deptId, LocalDate startDate,
-                                                    LocalDate endDate, Integer status, int page, int size) {
+                                                    LocalDate endDate, String statuses,
+                                                    Integer visitType, int page, int size) {
         long p = safePage(page);
         long s = safeSize(size);
 
         StringBuilder where = new StringBuilder(
                 " FROM his_surgery s"
                         + " LEFT JOIN his_inp_visit v ON v.id = s.inp_visit_id AND v.deleted = 0"
-                        + " LEFT JOIN his_patient p ON p.id = v.patient_id AND p.deleted = 0"
+                        + " LEFT JOIN his_visit hv ON hv.id = s.visit_id AND hv.deleted = 0"
+                        + " LEFT JOIN his_patient p ON p.id = COALESCE(v.patient_id, hv.patient_id) AND p.deleted = 0"
                         + " LEFT JOIN his_staff st ON st.id = s.surgeon_id AND st.deleted = 0"
                         + " LEFT JOIN his_dept d ON d.id = s.dept_id AND d.deleted = 0"
                         + " WHERE s.deleted = 0 AND s.tenant_id = ?");
@@ -95,18 +108,33 @@ public class SurgeryService {
             where.append(" AND s.schedule_date <= ?");
             args.add(endDate);
         }
-        if (status != null) {
-            where.append(" AND s.status = ?");
-            args.add(status);
+        if (statuses != null && !statuses.trim().isEmpty()) {
+            List<String> marks = new ArrayList<>();
+            for (String sv : statuses.split(",")) {
+                if (sv.trim().matches("\\d+")) {
+                    marks.add("?");
+                    args.add(Integer.parseInt(sv.trim()));
+                }
+            }
+            if (!marks.isEmpty()) {
+                where.append(" AND s.status IN (").append(String.join(",", marks)).append(")");
+            }
+        }
+        if (visitType != null) {
+            where.append(" AND IFNULL(s.visit_type, 1) = ?");
+            args.add(visitType);
         }
 
         Long total = jdbcTemplate.queryForObject("SELECT COUNT(*)" + where, Long.class, args.toArray());
         long cnt = total == null ? 0L : total;
 
-        String cols = "SELECT s.id, s.inp_visit_id, v.inp_no, p.name patient_name, p.gender_name, p.age,"
+        String cols = "SELECT s.id, s.inp_visit_id, s.visit_id, IFNULL(s.visit_type,1) visit_type, s.apply_id, s.register_time,"
+                + " IFNULL(s.deadline_type,1) deadline_type, s.module_type,"
+                + " COALESCE(v.inp_no, hv.ipt_otp_no) inp_no,"
+                + " COALESCE(p.name, hv.patient_name) patient_name, p.gender_name, p.age,"
                 + " s.surgery_code, s.surgery_name, s.surgery_level, s.surgeon_id, st.staff_name surgeon_name,"
                 + " s.room_no, s.schedule_date, s.schedule_time, s.start_time, s.end_time,"
-                + " s.asa_grade, s.incision_type, s.status, s.dept_id, d.dept_name";
+                + " s.asa_grade, s.incision_type, s.approval_status, s.status, s.dept_id, d.dept_name";
         List<Map<String, Object>> records = cnt == 0 ? new ArrayList<>()
                 : jdbcTemplate.queryForList(
                 cols + where + " ORDER BY s.id DESC LIMIT ?, ?",
@@ -339,13 +367,16 @@ public class SurgeryService {
 
     /* ==================== 状态流转(乐观更新) ==================== */
 
-    /** 开始手术: status 2->3, 记录 start_time=now */
+    /** 开始手术: status 2或7(已报到)->3, 记录 start_time=now */
     public HisSurgery start(Long id) {
         HisSurgery exist = requireSurgery(id);
         if (exist.getApprovalStatus() != null && exist.getApprovalStatus() == 1) {
             throw new BizException("该手术为待审批状态, 三级及以上手术须审批通过后方可开始");
         }
-        return transition(id, 2, 3, "开始手术", true, false);
+        if (exist.getStatus() == null || (exist.getStatus() != 2 && exist.getStatus() != 7)) {
+            throw new BizException("仅已排程/已报到的手术可开始, 当前状态: " + exist.getStatus());
+        }
+        return transition(id, exist.getStatus(), 3, "开始手术", true, false);
     }
 
     /** 结束手术: status 3->4, 记录 end_time=now */
@@ -353,23 +384,34 @@ public class SurgeryService {
         return transition(id, 3, 4, "结束手术", false, true);
     }
 
-    /** 完成手术: status 4->5 */
+    /** 完成手术: status 4->5, 来源申请单联动 4->5 */
+    @Transactional(rollbackFor = Exception.class)
     public HisSurgery complete(Long id) {
-        return transition(id, 4, 5, "完成手术", false, false);
+        HisSurgery exist = requireSurgery(id);
+        HisSurgery s = transition(id, 4, 5, "完成手术", false, false);
+        if (exist.getApplyId() != null) {
+            try {
+                applyService.updateApplyStatus(exist.getApplyId(), 4, 5, null);
+            } catch (BizException e) {
+                log.warn("完成手术回写申请单失败: applyId={}, {}", exist.getApplyId(), e.getMessage());
+            }
+        }
+        return s;
     }
 
-    /** 取消手术: status ->6, 仅申请中/已排程可取消 */
+    /** 取消手术: status ->6, 仅申请中/已排程/已报到可取消; 来源申请单回退为待安排 */
     @Transactional(rollbackFor = Exception.class)
     public HisSurgery cancel(Long id) {
-        requireSurgery(id);
+        HisSurgery exist = requireSurgery(id);
         int affected = surgeryMapper.update(null, new LambdaUpdateWrapper<HisSurgery>()
                 .set(HisSurgery::getStatus, 6)
                 .set(HisSurgery::getUpdateTime, LocalDateTime.now())
                 .eq(HisSurgery::getId, id)
-                .in(HisSurgery::getStatus, 1, 2));
+                .in(HisSurgery::getStatus, 1, 2, 7));
         if (affected == 0) {
-            throw new BizException("仅申请中/已排程的手术可取消(状态已变化), 请刷新后重试");
+            throw new BizException("仅申请中/已排程/已报到的手术可取消(状态已变化), 请刷新后重试");
         }
+        revertApplyOnCancel(exist);
         log.info("手术取消: id={}", id);
         return surgeryMapper.selectById(id);
     }
@@ -394,6 +436,387 @@ public class SurgeryService {
         }
         log.info("手术状态流转: id={}, {}->{}, action={}", id, fromStatus, toStatus, action);
         return surgeryMapper.selectById(id);
+    }
+
+    /* ==================== 手麻P0: 申请安排 / 急诊直排 / 登记报到 / 调配 / 排程板 ==================== */
+
+    /** 从申请单安排手术: 申请(2待安排)→建手术(status=2已排程)+回填申请surgery_id+申请→4; 校验手术间冲突与术者权限 */
+    @Transactional(rollbackFor = Exception.class)
+    public HisSurgery scheduleFromApply(Long applyId, SurgeryScheduleDTO dto) {
+        HisSurgeryApply a = applyService.requireApply(applyId);
+        if (a.getStatus() == null || a.getStatus() != 2) {
+            throw new BizException("仅已复核待安排的申请可安排手术, 当前状态: " + a.getStatus());
+        }
+        requireScheduleBase(dto);
+        requireNoRoomConflict(dto.getRoomNo(), dto.getScheduleDate(), dto.getScheduleTime(), null);
+        requireSurgeonAuth(a.getSurgeonId(), a.getSurgeryCode(), a.getSurgeryName(), a.getSurgeryLevel());
+        HisSurgery s = new HisSurgery();
+        s.setOrgId(a.getOrgId());
+        s.setApplyId(a.getId());
+        s.setVisitType(a.getVisitType());
+        s.setInpVisitId(a.getInpVisitId());
+        s.setVisitId(a.getVisitId());
+        s.setDeadlineType(a.getDeadlineType());
+        s.setModuleType(1);
+        s.setSurgeryCode(a.getSurgeryCode());
+        s.setSurgeryName(a.getSurgeryName());
+        s.setSurgeryLevel(a.getSurgeryLevel());
+        s.setDeptId(a.getApplyDeptId());
+        s.setSurgeonId(dto.getSurgeonId() != null ? dto.getSurgeonId() : a.getSurgeonId());
+        s.setFirstAssistantId(dto.getFirstAssistantId());
+        s.setSecondAssistantId(dto.getSecondAssistantId());
+        s.setAnesthesiologistId(dto.getAnesthesiologistId());
+        s.setAnesthesiaNurseId(dto.getAnesthesiaNurseId());
+        s.setInstrumentNurseId(dto.getInstrumentNurseId());
+        s.setCirculatingNurseId(dto.getCirculatingNurseId());
+        s.setScheduleDate(dto.getScheduleDate());
+        s.setScheduleTime(trimOrNull(dto.getScheduleTime()));
+        s.setRoomNo(trimOrNull(dto.getRoomNo()));
+        s.setApprovalStatus(a.getSurgeryLevel() != null && a.getSurgeryLevel() >= 3 ? 1 : 0);
+        s.setStatus(2);
+        surgeryMapper.insert(s);
+        applyService.updateApplyStatus(applyId, 2, 4, s.getId());
+        Map<String, Object> pt = patientContact(a.getPatientId());
+        applyService.createNotify(a.getId(), s.getId(), a.getPatientName(), str(pt.get("phone")), 3,
+                "手术安排通知: " + s.getSurgeryName() + ", " + dto.getScheduleDate() + " "
+                        + (s.getScheduleTime() == null ? "" : s.getScheduleTime())
+                        + ", " + (s.getRoomNo() == null ? "手术间待定" : s.getRoomNo()) + ", 请准时到达手术室报到");
+        log.info("申请单安排手术: applyId={}, surgeryId={}, date={}, room={}",
+                applyId, s.getId(), dto.getScheduleDate(), dto.getRoomNo());
+        return s;
+    }
+
+    /** 急诊直接安排(规范2.2.2.3.7.5): 跳过申请/复核直接建手术, 自动生成已安排状态申请单留档 */
+    @Transactional(rollbackFor = Exception.class)
+    public HisSurgery urgentSchedule(SurgeryScheduleDTO dto) {
+        if (dto == null || !StringUtils.hasText(dto.getSurgeryName())) {
+            throw new BizException(400, "急诊手术名称不能为空");
+        }
+        int visitType = dto.getVisitType() == null ? 1 : dto.getVisitType();
+        if (visitType == 1 ? dto.getInpVisitId() == null : dto.getVisitId() == null) {
+            throw new BizException(400, "急诊手术必须选择住院(1)或门诊(2/3)就诊记录");
+        }
+        requireScheduleBase(dto);
+        requireNoRoomConflict(dto.getRoomNo(), dto.getScheduleDate(), dto.getScheduleTime(), null);
+        requireSurgeonAuth(dto.getSurgeonId(), dto.getSurgeryCode(), dto.getSurgeryName(), dto.getSurgeryLevel());
+        HisSurgery s = new HisSurgery();
+        s.setOrgId(guard.currentOrgId());
+        s.setVisitType(visitType);
+        s.setInpVisitId(visitType == 1 ? dto.getInpVisitId() : null);
+        s.setVisitId(visitType == 1 ? null : dto.getVisitId());
+        s.setDeadlineType(3);
+        s.setModuleType(1);
+        s.setSurgeryCode(trimOrNull(dto.getSurgeryCode()));
+        s.setSurgeryName(dto.getSurgeryName().trim());
+        s.setSurgeryLevel(dto.getSurgeryLevel());
+        s.setDeptId(dto.getInpVisitId() != null ? visitDeptId(dto.getInpVisitId()) : null);
+        s.setSurgeonId(dto.getSurgeonId());
+        s.setFirstAssistantId(dto.getFirstAssistantId());
+        s.setSecondAssistantId(dto.getSecondAssistantId());
+        s.setAnesthesiologistId(dto.getAnesthesiologistId());
+        s.setAnesthesiaNurseId(dto.getAnesthesiaNurseId());
+        s.setInstrumentNurseId(dto.getInstrumentNurseId());
+        s.setCirculatingNurseId(dto.getCirculatingNurseId());
+        s.setScheduleDate(dto.getScheduleDate());
+        s.setScheduleTime(trimOrNull(dto.getScheduleTime()));
+        s.setRoomNo(trimOrNull(dto.getRoomNo()));
+        s.setApprovalStatus(dto.getSurgeryLevel() != null && dto.getSurgeryLevel() >= 3 ? 1 : 0);
+        s.setStatus(2);
+        surgeryMapper.insert(s);
+        HisSurgeryApply a = applyService.createUrgentApply(dto);
+        applyService.updateApplyStatus(a.getId(), 4, 4, s.getId());
+        s.setApplyId(a.getId());
+        log.info("急诊直接安排: surgeryId={}, applyId={}, surgery={}", s.getId(), a.getId(), s.getSurgeryName());
+        return surgeryMapper.selectById(s.getId());
+    }
+
+    /** 报到登记: status 2->7, 记 register_time; 来源申请同步标记(失败不阻断) */
+    @Transactional(rollbackFor = Exception.class)
+    public HisSurgery checkIn(Long id) {
+        HisSurgery exist = requireSurgery(id);
+        if (exist.getStatus() == null || exist.getStatus() != 2) {
+            throw new BizException("仅已排程手术可报到登记, 当前状态: " + exist.getStatus());
+        }
+        int affected = surgeryMapper.update(null, new LambdaUpdateWrapper<HisSurgery>()
+                .set(HisSurgery::getStatus, 7)
+                .set(HisSurgery::getRegisterTime, LocalDateTime.now())
+                .set(HisSurgery::getUpdateTime, LocalDateTime.now())
+                .eq(HisSurgery::getId, id)
+                .eq(HisSurgery::getStatus, 2));
+        if (affected == 0) {
+            throw new BizException("报到失败: 手术状态已变化, 请刷新后重试");
+        }
+        log.info("手术报到登记: id={}", id);
+        return surgeryMapper.selectById(id);
+    }
+
+    /** 报到检索: 按申请单号/病历号(住院号)/患者姓名定位待报到与已报到手术 */
+    public List<Map<String, Object>> registerQuery(String keyword) {
+        if (!StringUtils.hasText(keyword)) {
+            throw new BizException(400, "请输入申请单号/病历号/患者姓名");
+        }
+        String kw = keyword.trim();
+        StringBuilder sql = new StringBuilder(
+                "SELECT s.id, s.apply_id, a.apply_no, IFNULL(s.visit_type,1) visit_type,"
+                        + " COALESCE(v.inp_no, hv.ipt_otp_no, a.medical_no) inp_no,"
+                        + " COALESCE(p.name, hv.patient_name, a.patient_name) patient_name,"
+                        + " s.surgery_name, s.surgery_level, s.room_no, s.schedule_date, s.schedule_time,"
+                        + " s.register_time, s.status, st.staff_name surgeon_name"
+                        + " FROM his_surgery s"
+                        + " LEFT JOIN his_surgery_apply a ON a.id = s.apply_id AND a.deleted = 0"
+                        + " LEFT JOIN his_inp_visit v ON v.id = s.inp_visit_id AND v.deleted = 0"
+                        + " LEFT JOIN his_visit hv ON hv.id = s.visit_id AND hv.deleted = 0"
+                        + " LEFT JOIN his_patient p ON p.id = COALESCE(v.patient_id, hv.patient_id) AND p.deleted = 0"
+                        + " LEFT JOIN his_staff st ON st.id = s.surgeon_id AND st.deleted = 0"
+                        + " WHERE s.deleted = 0 AND s.tenant_id = ? AND s.status IN (2, 7)");
+        List<Object> args = new ArrayList<>();
+        args.add(tenantId());
+        Long scope = guard.scopeOrgId(null);
+        if (scope != null) {
+            sql.append(" AND s.org_id = ?");
+            args.add(scope);
+        }
+        String like = "%" + kw + "%";
+        boolean exactNo = kw.startsWith("SQ");
+        sql.append(" AND (a.apply_no = ? OR COALESCE(v.inp_no, hv.ipt_otp_no, a.medical_no) LIKE ?")
+                .append(" OR COALESCE(p.name, hv.patient_name, a.patient_name) LIKE ?)");
+        args.add(exactNo ? kw : "-1");
+        args.add(like);
+        args.add(like);
+        sql.append(" ORDER BY s.schedule_date DESC, s.id DESC LIMIT 30");
+        return jdbcTemplate.queryForList(sql.toString(), args.toArray());
+    }
+
+    /** 手术间调配: 仅已排程/已报到, 换 room_no 并校验冲突, 产生安排变动通知(type2) */
+    @Transactional(rollbackFor = Exception.class)
+    public HisSurgery transfer(Long id, String roomNo) {
+        if (!StringUtils.hasText(roomNo)) {
+            throw new BizException(400, "目标手术间不能为空");
+        }
+        HisSurgery exist = requireSurgery(id);
+        if (exist.getStatus() == null || (exist.getStatus() != 2 && exist.getStatus() != 7)) {
+            throw new BizException("仅已排程/已报到的手术可调配, 当前状态: " + exist.getStatus());
+        }
+        String target = roomNo.trim();
+        if (target.equals(exist.getRoomNo())) {
+            throw new BizException("目标手术间与当前一致, 无需调配");
+        }
+        requireNoRoomConflict(target, exist.getScheduleDate(), exist.getScheduleTime(), id);
+        surgeryMapper.update(null, new LambdaUpdateWrapper<HisSurgery>()
+                .set(HisSurgery::getRoomNo, target)
+                .set(HisSurgery::getUpdateTime, LocalDateTime.now())
+                .eq(HisSurgery::getId, id));
+        Map<String, Object> pt = exist.getApplyId() != null ? applyPatient(exist.getApplyId()) : new HashMap<>();
+        applyService.createNotify(exist.getApplyId(), id, str(pt.get("patient_name")),
+                str(pt.get("phone")), 2,
+                "手术调配通知: " + exist.getSurgeryName() + " 由 "
+                        + (exist.getRoomNo() == null ? "未分配" : exist.getRoomNo()) + " 调配至 " + target
+                        + (exist.getScheduleTime() == null ? "" : ", " + exist.getScheduleTime()));
+        log.info("手术间调配: id={}, {}->{}, 通知已生成", id, exist.getRoomNo(), target);
+        return surgeryMapper.selectById(id);
+    }
+
+    /** 排程修改(时间/手术间/团队变动): 已完成前可改, 旧值比对产生安排变动通知(type2, 前端红标) */
+    @Transactional(rollbackFor = Exception.class)
+    public HisSurgery reschedule(Long id, SurgeryScheduleDTO dto) {
+        HisSurgery exist = requireSurgery(id);
+        if (exist.getStatus() == null || (exist.getStatus() != 2 && exist.getStatus() != 7)) {
+            throw new BizException("仅已排程/已报到的手术可修改安排, 当前状态: " + exist.getStatus());
+        }
+        if (dto == null || dto.getScheduleDate() == null) {
+            throw new BizException(400, "手术日期不能为空");
+        }
+        List<String> changes = new ArrayList<>();
+        String newRoom = trimOrNull(dto.getRoomNo()) == null ? exist.getRoomNo() : dto.getRoomNo().trim();
+        String newTime = trimOrNull(dto.getScheduleTime()) == null ? exist.getScheduleTime() : dto.getScheduleTime().trim();
+        boolean roomChanged = !Objects.equals(newRoom, exist.getRoomNo());
+        boolean timeChanged = !Objects.equals(newTime, exist.getScheduleTime())
+                || !Objects.equals(dto.getScheduleDate(), exist.getScheduleDate());
+        boolean staffChanged = !Objects.equals(nvl(dto.getSurgeonId()), nvl(exist.getSurgeonId()))
+                || !Objects.equals(nvl(dto.getAnesthesiologistId()), nvl(exist.getAnesthesiologistId()));
+        if (roomChanged || timeChanged) {
+            requireNoRoomConflict(newRoom, dto.getScheduleDate(), newTime, id);
+        }
+        if (timeChanged) {
+            changes.add("时间: " + exist.getScheduleDate() + " " + nvlStr(exist.getScheduleTime())
+                    + " → " + dto.getScheduleDate() + " " + nvlStr(newTime));
+        }
+        if (roomChanged) {
+            changes.add("手术间: " + nvlStr(exist.getRoomNo()) + " → " + nvlStr(newRoom));
+        }
+        if (staffChanged) {
+            changes.add("手术团队人员变更");
+        }
+        surgeryMapper.update(null, new LambdaUpdateWrapper<HisSurgery>()
+                .set(HisSurgery::getScheduleDate, dto.getScheduleDate())
+                .set(HisSurgery::getScheduleTime, newTime)
+                .set(HisSurgery::getRoomNo, newRoom)
+                .set(dto.getSurgeonId() != null, HisSurgery::getSurgeonId, dto.getSurgeonId())
+                .set(dto.getFirstAssistantId() != null, HisSurgery::getFirstAssistantId, dto.getFirstAssistantId())
+                .set(dto.getSecondAssistantId() != null, HisSurgery::getSecondAssistantId, dto.getSecondAssistantId())
+                .set(dto.getAnesthesiologistId() != null, HisSurgery::getAnesthesiologistId, dto.getAnesthesiologistId())
+                .set(dto.getAnesthesiaNurseId() != null, HisSurgery::getAnesthesiaNurseId, dto.getAnesthesiaNurseId())
+                .set(dto.getInstrumentNurseId() != null, HisSurgery::getInstrumentNurseId, dto.getInstrumentNurseId())
+                .set(dto.getCirculatingNurseId() != null, HisSurgery::getCirculatingNurseId, dto.getCirculatingNurseId())
+                .set(HisSurgery::getUpdateTime, LocalDateTime.now())
+                .eq(HisSurgery::getId, id));
+        if (!changes.isEmpty()) {
+            Map<String, Object> pt = exist.getApplyId() != null ? applyPatient(exist.getApplyId()) : new HashMap<>();
+            applyService.createNotify(exist.getApplyId(), id, str(pt.get("patient_name")), str(pt.get("phone")), 2,
+                "手术安排变动: " + exist.getSurgeryName() + "; " + String.join("; ", changes));
+        }
+        log.info("排程修改: id={}, changes={}", id, changes);
+        return surgeryMapper.selectById(id);
+    }
+
+    /** 手术室退回手术(取消安排): 2/7->6, 来源申请单回退为待安排(4->2) */
+    @Transactional(rollbackFor = Exception.class)
+    public HisSurgery cancelSchedule(Long id, String reason) {
+        HisSurgery exist = requireSurgery(id);
+        if (exist.getStatus() == null || (exist.getStatus() != 2 && exist.getStatus() != 7)) {
+            throw new BizException("仅已排程/已报到的手术可退回, 当前状态: " + exist.getStatus());
+        }
+        int affected = surgeryMapper.update(null, new LambdaUpdateWrapper<HisSurgery>()
+                .set(HisSurgery::getStatus, 6)
+                .set(HisSurgery::getUpdateTime, LocalDateTime.now())
+                .eq(HisSurgery::getId, id)
+                .in(HisSurgery::getStatus, 2, 7));
+        if (affected == 0) {
+            throw new BizException("退回失败: 手术状态已变化, 请刷新后重试");
+        }
+        revertApplyOnCancel(exist);
+        log.info("手术退回: id={}, reason={}", id, reason);
+        return surgeryMapper.selectById(id);
+    }
+
+    /** 取消完成(补退费场景): 5->4, 来源申请 5->4 */
+    @Transactional(rollbackFor = Exception.class)
+    public HisSurgery cancelComplete(Long id) {
+        HisSurgery exist = requireSurgery(id);
+        int affected = surgeryMapper.update(null, new LambdaUpdateWrapper<HisSurgery>()
+                .set(HisSurgery::getStatus, 4)
+                .set(HisSurgery::getUpdateTime, LocalDateTime.now())
+                .eq(HisSurgery::getId, id)
+                .eq(HisSurgery::getStatus, 5));
+        if (affected == 0) {
+            throw new BizException("仅已完成手术可取消完成(状态已变化), 请刷新后重试");
+        }
+        if (exist.getApplyId() != null) {
+            try {
+                applyService.updateApplyStatus(exist.getApplyId(), 5, 4, null);
+            } catch (BizException e) {
+                log.warn("取消完成回写申请单失败: applyId={}, {}", exist.getApplyId(), e.getMessage());
+            }
+        }
+        log.info("取消完成: id={}", id);
+        return surgeryMapper.selectById(id);
+    }
+
+    /** 未安排手术池: 已复核待安排(2)的申请单 */
+    public List<Map<String, Object>> unarrangedList() {
+        StringBuilder sql = new StringBuilder(
+                "SELECT a.id, a.apply_no, a.visit_type, a.patient_name, a.gender, a.age, a.medical_no, a.bed_no,"
+                        + " a.surgery_code, a.surgery_name, a.surgery_level, a.anesthesia_type,"
+                        + " a.surgeon_id, a.surgeon_name, a.expect_time, a.deadline_type, a.pre_op_diag,"
+                        + " a.apply_dept_name, a.apply_time" 
+                        + " FROM his_surgery_apply a WHERE a.deleted = 0 AND a.tenant_id = ? AND a.status = 2");
+        List<Object> args = new ArrayList<>();
+        args.add(tenantId());
+        Long scope = guard.scopeOrgId(null);
+        if (scope != null) {
+            sql.append(" AND a.org_id = ?");
+            args.add(scope);
+        }
+        sql.append(" ORDER BY a.deadline_type DESC, a.expect_time, a.id");
+        return jdbcTemplate.queryForList(sql.toString(), args.toArray());
+    }
+
+    /** 麻醉已安排列表: 已排程/已报到且存在麻醉记录的手术 */
+    public List<Map<String, Object>> anesthesiaList() {
+        StringBuilder sql = new StringBuilder(
+                "SELECT s.id, s.apply_id, IFNULL(s.visit_type,1) visit_type, s.schedule_date, s.schedule_time, s.room_no, s.status,"
+                        + " COALESCE(p.name, hv.patient_name) patient_name, p.gender_name, p.age,"
+                        + " COALESCE(v.inp_no, hv.ipt_otp_no) inp_no, bed.bed_no,"
+                        + " s.surgery_name, s.surgery_level, ast.staff_name anesthesiologist_name,"
+                        + " an.id anesthesia_id, an.anesthesia_type, an.pre_assessment,"
+                        + " CASE WHEN an.pre_assessment IS NULL THEN 0 ELSE 1 END assessed" 
+                        + " FROM his_surgery s"
+                        + " INNER JOIN his_anesthesia an ON an.surgery_id = s.id AND an.deleted = 0"
+                        + " LEFT JOIN his_inp_visit v ON v.id = s.inp_visit_id AND v.deleted = 0"
+                        + " LEFT JOIN his_visit hv ON hv.id = s.visit_id AND hv.deleted = 0"
+                        + " LEFT JOIN his_patient p ON p.id = COALESCE(v.patient_id, hv.patient_id) AND p.deleted = 0"
+                        + " LEFT JOIN his_bed bed ON bed.id = v.bed_id AND bed.deleted = 0"
+                        + " LEFT JOIN his_staff ast ON ast.id = s.anesthesiologist_id AND ast.deleted = 0"
+                        + " WHERE s.deleted = 0 AND s.tenant_id = ? AND s.status IN (2, 7)");
+        List<Object> args = new ArrayList<>();
+        args.add(tenantId());
+        Long scope = guard.scopeOrgId(null);
+        if (scope != null) {
+            sql.append(" AND s.org_id = ?");
+            args.add(scope);
+        }
+        sql.append(" ORDER BY s.schedule_date, s.schedule_time, s.id");
+        return jdbcTemplate.queryForList(sql.toString(), args.toArray());
+    }
+
+    /** 手术排程板: 指定日期(默认今日)按手术间分组的占用视图(含门诊/日间, 状态<>6) */
+    public Map<String, Object> roomBoard(Long orgId, LocalDate date) {
+        LocalDate day = date == null ? LocalDate.now() : date;
+        StringBuilder sql = new StringBuilder(
+                "SELECT s.id, s.apply_id, IFNULL(s.visit_type,1) visit_type, s.schedule_time, s.room_no, s.status, s.register_time,"
+                        + " COALESCE(p.name, hv.patient_name) patient_name, p.gender_name, p.age,"
+                        + " COALESCE(v.inp_no, hv.ipt_otp_no) inp_no,"
+                        + " s.surgery_name, s.surgery_level, st.staff_name surgeon_name, d.dept_name, a.apply_no"
+                        + " FROM his_surgery s"
+                        + " LEFT JOIN his_inp_visit v ON v.id = s.inp_visit_id AND v.deleted = 0"
+                        + " LEFT JOIN his_visit hv ON hv.id = s.visit_id AND hv.deleted = 0"
+                        + " LEFT JOIN his_patient p ON p.id = COALESCE(v.patient_id, hv.patient_id) AND p.deleted = 0"
+                        + " LEFT JOIN his_staff st ON st.id = s.surgeon_id AND st.deleted = 0"
+                        + " LEFT JOIN his_dept d ON d.id = s.dept_id AND d.deleted = 0"
+                        + " LEFT JOIN his_surgery_apply a ON a.id = s.apply_id AND a.deleted = 0"
+                        + " WHERE s.deleted = 0 AND s.tenant_id = ? AND s.schedule_date = ? AND s.status <> 6");
+        List<Object> args = new ArrayList<>();
+        args.add(tenantId());
+        args.add(day);
+        if (orgId != null) {
+            sql.append(" AND s.org_id = ?");
+            args.add(orgId);
+        }
+        sql.append(" ORDER BY s.schedule_time, s.id");
+        List<Map<String, Object>> rows = jdbcTemplate.queryForList(sql.toString(), args.toArray());
+        Map<String, List<Map<String, Object>>> grouped = new LinkedHashMap<>();
+        for (String room : PRESET_ROOMS) {
+            grouped.put(room, new ArrayList<>());
+        }
+        List<Map<String, Object>> unassigned = new ArrayList<>();
+        for (Map<String, Object> row : rows) {
+            String room = str(row.get("room_no"));
+            if (room == null || room.trim().isEmpty()) {
+                unassigned.add(row);
+            } else {
+                grouped.computeIfAbsent(room, k -> new ArrayList<>()).add(row);
+            }
+        }
+        List<Map<String, Object>> rooms = new ArrayList<>();
+        for (Map.Entry<String, List<Map<String, Object>>> e : grouped.entrySet()) {
+            Map<String, Object> g = new LinkedHashMap<>();
+            g.put("roomNo", e.getKey());
+            g.put("count", e.getValue().size());
+            g.put("surgeries", e.getValue());
+            rooms.add(g);
+        }
+        if (!unassigned.isEmpty()) {
+            Map<String, Object> g = new LinkedHashMap<>();
+            g.put("roomNo", "未安排");
+            g.put("count", unassigned.size());
+            g.put("surgeries", unassigned);
+            rooms.add(g);
+        }
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("date", day.toString());
+        result.put("total", rows.size());
+        result.put("rooms", rooms);
+        return result;
     }
 
     /* ==================== 今日排程 / 手术间 ==================== */
@@ -466,6 +889,123 @@ public class SurgeryService {
     }
 
     /* ==================== 校验 / 工具 ==================== */
+
+    /** 排程基础校验: 日期必填; 选了手术间则时间段必填(冲突校验依赖) */
+    private static void requireScheduleBase(SurgeryScheduleDTO dto) {
+        if (dto == null || dto.getScheduleDate() == null) {
+            throw new BizException(400, "手术日期不能为空");
+        }
+        if (StringUtils.hasText(dto.getRoomNo()) && !StringUtils.hasText(dto.getScheduleTime())) {
+            throw new BizException(400, "指定手术间时手术时间段必填(如 09:00-11:00)");
+        }
+    }
+
+    /** 手术间时间冲突校验: 同室同日 schedule_time(HH:mm-HH:mm) 区间重叠拒绝; 无法解析的存量数据跳过 */
+    private void requireNoRoomConflict(String roomNo, LocalDate date, String scheduleTime, Long excludeId) {
+        if (!StringUtils.hasText(roomNo) || date == null || !StringUtils.hasText(scheduleTime)) {
+            return;
+        }
+        int[] win = parseTimeWindow(scheduleTime);
+        if (win == null) {
+            return;
+        }
+        List<Map<String, Object>> rows = jdbcTemplate.queryForList(
+                "SELECT id, surgery_name, schedule_time FROM his_surgery"
+                        + " WHERE deleted = 0 AND tenant_id = ? AND room_no = ? AND schedule_date = ?"
+                        + " AND status IN (2, 3, 4, 7) AND id <> ?",
+                tenantId(), roomNo.trim(), date, excludeId == null ? -1L : excludeId);
+        for (Map<String, Object> r : rows) {
+            int[] other = parseTimeWindow(str(r.get("schedule_time")));
+            if (other == null) {
+                continue;
+            }
+            if (win[0] < other[1] && other[0] < win[1]) {
+                throw new BizException("手术间冲突: " + roomNo + " 在 " + r.get("surgery_name")
+                        + "(" + r.get("schedule_time") + ") 时段已占用, 请调整时间或手术间");
+            }
+        }
+    }
+
+    /** 解析 HH:mm-HH:mm 为分钟区间; 不可解析返回 null */
+    private static int[] parseTimeWindow(String v) {
+        if (v == null) {
+            return null;
+        }
+        String[] parts = v.trim().split("-");
+        if (parts.length != 2) {
+            return null;
+        }
+        try {
+            LocalTime s = LocalTime.parse(parts[0].trim(), HM_FMT);
+            LocalTime e = LocalTime.parse(parts[1].trim(), HM_FMT);
+            int sm = s.getHour() * 60 + s.getMinute();
+            int em = e.getHour() * 60 + e.getMinute();
+            return em > sm ? new int[]{sm, em} : null;
+        } catch (Exception ex) {
+            return null;
+        }
+    }
+
+    /** 术者权限校验(申请安排/急诊直排两处钩子): 命中规则白名单或职工级别不足即拒绝 */
+    private void requireSurgeonAuth(Long staffId, String code, String name, Integer level) {
+        if (staffId == null) {
+            return;
+        }
+        Map<String, Object> chk = authRuleService.check(staffId, code, name, level);
+        if (!Boolean.TRUE.equals(chk.get("allowed"))) {
+            throw new BizException("主刀医师权限不足: " + chk.get("reason"));
+        }
+    }
+
+    /** 手术取消/退回时来源申请单回退为待安排(4->2, 非申请来源或状态已变不阻断) */
+    private void revertApplyOnCancel(HisSurgery exist) {
+        if (exist.getApplyId() != null) {
+            try {
+                applyService.updateApplyStatus(exist.getApplyId(), 4, 2, null);
+            } catch (BizException e) {
+                log.warn("手术取消回退申请单失败: applyId={}, {}", exist.getApplyId(), e.getMessage());
+            }
+        }
+    }
+
+    /** 申请单患者信息(姓名/电话) */
+    private Map<String, Object> applyPatient(Long applyId) {
+        List<Map<String, Object>> rows = jdbcTemplate.queryForList(
+                "SELECT patient_name, phone FROM his_surgery_apply WHERE id = ? AND deleted = 0", applyId);
+        return rows.isEmpty() ? new HashMap<>() : rows.get(0);
+    }
+
+    /** 患者联系电话 */
+    private Map<String, Object> patientContact(Long patientId) {
+        if (patientId == null) {
+            return new HashMap<>();
+        }
+        List<Map<String, Object>> rows = jdbcTemplate.queryForList(
+                "SELECT name patient_name, phone FROM his_patient WHERE id = ? AND deleted = 0", patientId);
+        return rows.isEmpty() ? new HashMap<>() : rows.get(0);
+    }
+
+    /** 住院就诊科室ID(急诊直排登记手术科室) */
+    private Long visitDeptId(Long inpVisitId) {
+        if (inpVisitId == null) {
+            return null;
+        }
+        List<Map<String, Object>> rows = jdbcTemplate.queryForList(
+                "SELECT dept_id FROM his_inp_visit WHERE id = ? AND deleted = 0", inpVisitId);
+        return rows.isEmpty() ? null : toLong(rows.get(0).get("dept_id"));
+    }
+
+    private static Long nvl(Long v) {
+        return v == null ? 0L : v;
+    }
+
+    private static String nvlStr(String v) {
+        return v == null ? "-" : v;
+    }
+
+    private static Long toLong(Object v) {
+        return v instanceof Number ? ((Number) v).longValue() : null;
+    }
 
     /** 手术存在性 + 机构归属校验(非牵头机构仅本机构可访问) */
     private HisSurgery requireSurgery(Long id) {

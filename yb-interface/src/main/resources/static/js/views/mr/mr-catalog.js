@@ -38,6 +38,8 @@
         diags: [], opers: [],
         others: { transfer: [], allergy: [], icu: [] },
         errors: [], logs: [],
+        /* P3-D 临床首页调阅 */
+        clinicalPage: null, clinicalLoading: false,
         /* 定位高亮 */
         flashField: '',
         diagTypes: DIAG_TYPES,
@@ -102,7 +104,7 @@
       },
       backList: function () { vm_resetDetail(this); this.view = 'list'; this.loadList(); },
       loadDetail: function () {
-        var vm = this; vm.detailLoading = true; vm.activeTab = 'header';
+        var vm = this; vm.detailLoading = true; vm.activeTab = 'header'; vm.clinicalPage = null;
         HIS.get('/api/his/mr/catalog/' + HIS.idParam(vm.visitId)).then(function (d) {
           var c = d.catalog || {};
           vm.catalog = c;
@@ -212,7 +214,17 @@
       catStatusText: function (s) { return { 1: '待编目', 2: '编目中', 3: '已编目' }[Number(s)] || '-'; },
       auditStatusText: function (s) { return { 1: '未审核', 2: '已审核', 3: '已确认' }[Number(s)] || '-'; },
       deptName: function (id) { for (var i = 0; i < this.depts.length; i++) { if (HIS.sameId(this.depts[i].id, id)) { return this.depts[i].deptName; } } return ''; },
-      money: function (v) { if (v == null || v === '') { return '-'; } var n = Number(v); return isNaN(n) ? v : n.toFixed(2); }
+      money: function (v) { if (v == null || v === '') { return '-'; } var n = Number(v); return isNaN(n) ? v : n.toFixed(2); },
+      /* P3-D 懒加载临床首页 */
+      loadClinicalPage: function () {
+        var vm = this;
+        if (vm.clinicalPage) return;
+        vm.clinicalLoading = true;
+        HIS.get('/api/his/mr/catalog/' + HIS.idParam(vm.visitId) + '/clinical-page').then(function (d) {
+          vm.clinicalPage = d || {};
+        }).catch(function () { vm.clinicalPage = {}; }).finally(function () { vm.clinicalLoading = false; });
+      },
+      cpStatusText: function (s) { return { 1: '草稿', 2: '已提交', 3: '已审核' }[Number(s)] || '-'; }
     },
     template: [
       '<div class="page-card cd-fill" v-loading="loading || detailLoading">',
@@ -351,6 +363,32 @@
       '                <el-table-column label="备注/详情" min-width="150"><template #default="s"><el-input v-model="s.row.detail" size="small" :disabled="!editable"></el-input></template></el-table-column>',
       '                <el-table-column label="操作" width="60" align="center"><template #default="s"><el-button v-if="editable" type="danger" link size="small" @click="delOther(rt.key, s.$index)">删</el-button></template></el-table-column>',
       '              </el-table>',
+      '            </div>',
+      '          </el-tab-pane>',
+      /* P3-D 临床首页调阅 */
+      '          <el-tab-pane label="临床首页" name="clinical" @tab-click="loadClinicalPage">',
+      '            <div v-loading="clinicalLoading" style="padding:8px;">',
+      '              <div v-if="!clinicalPage && !clinicalLoading" style="color:#909399;">加载中…</div>',
+      '              <div v-if="clinicalPage">',
+      '                <el-descriptions :column="2" border size="small" title="临床首页原始数据(只读)">',
+      '                  <el-descriptions-item label="状态">{{ cpStatusText(clinicalPage.status) }}</el-descriptions-item>',
+      '                  <el-descriptions-item label="住院天数">{{ clinicalPage.losDays || \'-\' }}</el-descriptions-item>',
+      '                  <el-descriptions-item label="入院日期">{{ (clinicalPage.admissionDate||\'\').replace(\'T\',\' \').slice(0,10) }}</el-descriptions-item>',
+      '                  <el-descriptions-item label="出院日期">{{ (clinicalPage.dischargeDate||\'\').replace(\'T\',\' \').slice(0,10) }}</el-descriptions-item>',
+      '                  <el-descriptions-item label="入院诊断">{{ clinicalPage.admissionDiagName || \'-\' }}</el-descriptions-item>',
+      '                  <el-descriptions-item label="出院主诊">{{ clinicalPage.dischargeMainDiagName || \'-\' }}</el-descriptions-item>',
+      '                  <el-descriptions-item label="出院主诊编码">{{ clinicalPage.dischargeMainDiagCode || \'-\' }}</el-descriptions-item>',
+      '                  <el-descriptions-item label="病理诊断">{{ clinicalPage.pathologyDiag || \'-\' }}</el-descriptions-item>',
+      '                  <el-descriptions-item label="损伤中毒编码">{{ clinicalPage.injuryPoisonCode || \'-\' }}</el-descriptions-item>',
+      '                  <el-descriptions-item label="质控评分">{{ clinicalPage.qualityScore || \'-\' }}</el-descriptions-item>',
+      '                  <el-descriptions-item label="总费用">{{ money(clinicalPage.totalCost) }}</el-descriptions-item>',
+      '                  <el-descriptions-item label="医保支付">{{ money(clinicalPage.insurancePay) }}</el-descriptions-item>',
+      '                  <el-descriptions-item label="药品费">{{ money(clinicalPage.drugCost) }}</el-descriptions-item>',
+      '                  <el-descriptions-item label="检查费">{{ money(clinicalPage.examCost) }}</el-descriptions-item>',
+      '                  <el-descriptions-item label="其他诊断" :span="2">{{ clinicalPage.dischargeOtherDiags || \'-\' }}</el-descriptions-item>',
+      '                  <el-descriptions-item label="手术记录" :span="2">{{ clinicalPage.operationRecords || \'-\' }}</el-descriptions-item>',
+      '                </el-descriptions>',
+      '              </div>',
       '            </div>',
       '          </el-tab-pane>',
       /* 留痕 */

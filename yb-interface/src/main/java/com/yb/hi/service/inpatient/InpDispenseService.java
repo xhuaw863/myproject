@@ -84,6 +84,8 @@ public class InpDispenseService {
         List<Object> args = new ArrayList<>();
         StringBuilder where = new StringBuilder(" WHERE o.order_category = 1 AND o.drug_id IS NOT NULL AND o.dispense_status = 0"
                 + " AND o.order_status IN (2,3,4) AND o.pharm_audit_status IN (0,2)"
+                // 手麻P1: 手术关联药品医嘱须"发送药房"(send_pharm_status=1)后才入队; 普通医嘱不受影响
+                + " AND ((o.surgery_id IS NULL AND o.surgery_apply_id IS NULL) OR o.send_pharm_status = 1)"
                 + " AND o.deleted = 0 AND o.tenant_id = ? AND o.org_id = ?");
         args.add(tenantId());
         args.add(orgId);
