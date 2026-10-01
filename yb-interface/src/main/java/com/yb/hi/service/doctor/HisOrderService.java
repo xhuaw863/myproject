@@ -4,6 +4,7 @@ import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
 import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
 import com.yb.hi.common.DateUtil;
 import com.yb.hi.dto.doctor.OrderReq;
+import com.yb.hi.entity.doctor.HisChargeAddonRule;
 import com.yb.hi.entity.doctor.HisDiagnosis;
 import com.yb.hi.entity.doctor.HisOrder;
 import com.yb.hi.entity.doctor.HisOrderItem;
@@ -40,13 +41,18 @@ public class HisOrderService extends ServiceImpl<HisOrderMapper, HisOrder> {
     private final HisDiagnosisService diagnosisService;
     private final HisOrderItemMapper itemMapper;
     private final org.springframework.jdbc.core.JdbcTemplate jdbcTemplate;
+    private final HisOrderFreqService orderFreqService;
+    private final HisChargeAddonRuleService chargeAddonRuleService;
 
     public HisOrderService(HisVisitService visitService, HisDiagnosisService diagnosisService,
-                           HisOrderItemMapper itemMapper, org.springframework.jdbc.core.JdbcTemplate jdbcTemplate) {
+                           HisOrderItemMapper itemMapper, org.springframework.jdbc.core.JdbcTemplate jdbcTemplate,
+                           HisOrderFreqService orderFreqService, HisChargeAddonRuleService chargeAddonRuleService) {
         this.visitService = visitService;
         this.diagnosisService = diagnosisService;
         this.itemMapper = itemMapper;
         this.jdbcTemplate = jdbcTemplate;
+        this.orderFreqService = orderFreqService;
+        this.chargeAddonRuleService = chargeAddonRuleService;
     }
 
     /** 查询某次就诊的单据列表 */
@@ -240,6 +246,11 @@ public class HisOrderService extends ServiceImpl<HisOrderMapper, HisOrder> {
             item.setAmount(price.multiply(qty).setScale(2, BigDecimal.ROUND_HALF_UP));
             total = total.add(item.getAmount());
         }
+        // OP-C 自动加收(需求2.2.2.3.14.3): 命中启用中的固定计价加收规则时, 服务端追加附加收费行并计入总额
+        List<HisOrderItem> addons = buildAddonItems(req.getItems(), tid);
+        for (HisOrderItem a : addons) {
+            total = total.add(a.getAmount());
+        }
         o.setTotalAmount(total.setScale(2, BigDecimal.ROUND_HALF_UP));
         save(o);
 
@@ -247,8 +258,75 @@ public class HisOrderService extends ServiceImpl<HisOrderMapper, HisOrder> {
             item.setOrderId(o.getId());
             itemMapper.insert(item);
         }
+        for (HisOrderItem a : addons) {
+            a.setOrderId(o.getId());
+            itemMapper.insert(a);
+        }
+        // OP-C 高频沉淀: 开立成功后按个人/科室累计医嘱项目频次(best-effort)
+        recordOrderUsage(req.getItems(), visit.getStaffId(), visit.getDeptId());
         log.info("开单成功: orderNo={}, visitId={}, total={}", o.getOrderNo(), visit.getId(), o.getTotalAmount());
         return o;
+    }
+
+    /** OP-C 自动加收: 逐主项目命中启用中的固定计价(fixed)加收规则, 按数量维度追加附加收费行; 异常仅告警不影响开单。 */
+    private List<HisOrderItem> buildAddonItems(List<HisOrderItem> mainItems, long tid) {
+        List<HisOrderItem> addons = new ArrayList<>();
+        try {
+            for (HisOrderItem mi : mainItems) {
+                if (mi.getItemId() == null) {
+                    continue;
+                }
+                List<HisChargeAddonRule> rules = chargeAddonRuleService.listByItem(mi.getItemId());
+                BigDecimal dim = mi.getQuantity() == null ? BigDecimal.ONE : mi.getQuantity();
+                for (HisChargeAddonRule r : rules) {
+                    if (!"fixed".equalsIgnoreCase(r.getCalcMode()) || r.getUnitPrice() == null) {
+                        continue;
+                    }
+                    int threshold = r.getDimThreshold() == null ? 1 : r.getDimThreshold();
+                    if (dim.compareTo(new BigDecimal(threshold)) < 0) {
+                        continue;
+                    }
+                    HisOrderItem a = new HisOrderItem();
+                    a.setItemCode(r.getAddonItemCode());
+                    a.setItemName(r.getAddonItemName());
+                    a.setPrice(r.getUnitPrice());
+                    a.setQuantity(dim);
+                    a.setAmount(r.getUnitPrice().multiply(dim).setScale(2, BigDecimal.ROUND_HALF_UP));
+                    if (r.getAddonItemCode() != null) {
+                        List<Map<String, Object>> rows = jdbcTemplate.queryForList(
+                                "SELECT id, item_name FROM his_charge_item WHERE item_code = ? AND tenant_id = ? AND status = 1 AND deleted = 0 LIMIT 1",
+                                r.getAddonItemCode(), tid);
+                        if (!rows.isEmpty()) {
+                            a.setItemId(toLong(rows.get(0).get("id")));
+                            a.setItemName(str(rows.get(0).get("item_name")));
+                        }
+                    }
+                    addons.add(a);
+                }
+            }
+        } catch (Exception e) {
+            log.warn("自动加收计算失败(不影响开单): {}", e.getMessage());
+        }
+        return addons;
+    }
+
+    /** 医嘱高频累计: 按 itemCode 记录(个人/科室), 异常仅告警。 */
+    private void recordOrderUsage(List<HisOrderItem> items, Long staffId, Long deptId) {
+        try {
+            List<HisOrderFreqService.FreqKey> keys = new ArrayList<>();
+            for (HisOrderItem it : items) {
+                if (StringUtils.hasText(it.getItemCode())) {
+                    keys.add(new HisOrderFreqService.FreqKey(it.getItemCode(), it.getItemName(), "order"));
+                }
+            }
+            orderFreqService.recordUsage(keys, staffId, deptId);
+        } catch (Exception e) {
+            log.warn("医嘱高频累计失败(不影响开单): {}", e.getMessage());
+        }
+    }
+
+    private static Long toLong(Object v) {
+        return v == null ? null : (v instanceof Number ? ((Number) v).longValue() : Long.valueOf(v.toString()));
     }
 
     /** 汇总就诊诊断名称 */

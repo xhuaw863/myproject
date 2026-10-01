@@ -73,6 +73,8 @@
         allergyVisible: false,
         allergyHits: [],
         allergyResolver: null,
+        /* OP-C 医嘱高频助手(需求2.2.2.3.14.3): 复用 /api/his/order/assistant, 仅取 kind='order' 项 */
+        assistant: { personalFrequent: [], deptFrequent: [] },
         /* 医技历史报告(2026-09 集成: /api/medtech/reports/patient/{patientId}, 供医生站调阅) */
         reportTab: 'medtech',
         medtechReports: [],
@@ -113,6 +115,19 @@
           if (!p || !p.name || names[p.name]) { return false; }
           names[p.name] = true; return true;
         });
+      },
+      /* 高频助手 chips: 合并个人/科室常用, 仅保留医嘱项(kind='order'), 去重取前 12 */
+      assistantChips: function () {
+        var a = this.assistant || {};
+        var seen = {};
+        var out = [];
+        (a.personalFrequent || []).concat(a.deptFrequent || []).forEach(function (f) {
+          var uk = f.kind + '|' + f.code;
+          if (!f.code || f.kind !== 'order' || seen[uk]) { return; }
+          seen[uk] = 1;
+          out.push(f);
+        });
+        return out.slice(0, 12);
       }
     },
     watch: {
@@ -122,7 +137,8 @@
           if (id === oldId && oldId !== undefined) { return; }
           this.resetDrafts();
           this.orders = []; this.reports = [];
-          if (id) { this.loadOrders(); this.loadReports(); }
+          this.assistant = { personalFrequent: [], deptFrequent: [] };
+          if (id) { this.loadOrders(); this.loadReports(); this.loadAssistant(); }
         }
       }
     },
@@ -184,6 +200,22 @@
             return { name: tpl.name, items: items };
           }).filter(function (p) { return p.items.length; });
         }).catch(function () { vm.backendPackages = []; });
+      },
+      /* OP-C 高频助手: 后端已按登录用户聚合科室/个人维度, 无需显式传 staffId/deptId */
+      loadAssistant: function () {
+        var vm = this;
+        return HIS.get('/api/his/order/assistant?limit=12').then(function (d) {
+          vm.assistant = d || { personalFrequent: [], deptFrequent: [] };
+        }).catch(function () { vm.assistant = { personalFrequent: [], deptFrequent: [] }; });
+      },
+      /* 点击常用 chip: 经诊疗目录回查命中 itemCode 后并入暂存(复用互认核对链路) */
+      useFrequentOrder: function (f) {
+        var vm = this;
+        if (!vm.canEdit || !f || !f.name) { return; }
+        vm.catalogSearch(f.name).then(function (rows) {
+          var hit = (rows || []).find(function (r) { return String(r.itemCode || '') === String(f.code); }) || (rows || [])[0];
+          if (hit) { vm.addOd(hit); } else { ElementPlus.ElMessage.warning('未检索到该常用项目, 请手动检索'); }
+        }).catch(function (e) { if (HIS.notifyError) { HIS.notifyError(e); } });
       },
       catalogSearch: function (keyword) {
         var q = '/api/org-catalog/available/charge?page=1&size=20&itemType=' + encodeURIComponent('诊疗');
@@ -435,7 +467,7 @@
             ElementPlus.ElMessage.success('单据已开立：' + (order.orderNo || '成功') + '，金额￥' + money(order.totalAmount));
             vm.buckets[vm.orderType] = makeBucket();
             vm.forms[vm.orderType] = vm.orderType === '检验' ? labForm() : (vm.orderType === '检查' ? examForm() : treatmentForm());
-            vm.loadOrders(); vm.$emit('order-saved', order);
+            vm.loadOrders(); vm.loadAssistant(); vm.$emit('order-saved', order);
           }).catch(HIS.notifyError).finally(function () { vm.saving = false; });
         });
       },
@@ -514,7 +546,7 @@
     template: `
       <div class="dw-panel dw-order-panel" :class="{ 'is-folded': folded }">
         <style>
-          .dw-order-panel .dw-order-toolbar{display:flex;align-items:center;gap:8px;padding:8px 10px;flex-wrap:wrap}.dw-order-panel .dw-order-pick{flex:1 1 200px;min-width:190px}.dw-order-panel .dw-order-empty{padding:18px;text-align:center;color:var(--dw-text-hint);font-size:12px}.dw-order-panel .dw-order-split{display:grid;grid-template-columns:35% 65%;min-height:440px}.dw-order-panel .dw-order-catalog{padding:10px;border-right:1px solid var(--dw-border)}.dw-order-panel .dw-order-form{padding:10px 14px}.dw-order-panel .dw-package-row{display:flex;gap:5px;flex-wrap:wrap;margin:8px 0}.dw-order-panel .dw-form-readonly{padding:6px 9px;background:var(--dw-card-muted);border:1px solid var(--dw-border);border-radius:4px;color:var(--dw-text-secondary);min-height:30px}.dw-order-panel .dw-order-cards{padding:0 10px 8px}.dw-order-panel .dw-order-history{padding:10px 14px;border-top:1px solid var(--dw-border)}.dw-order-panel .dw-progress{color:var(--dw-primary);font-size:11px;white-space:nowrap}.dw-order-panel .dw-mutual-alert{padding:12px;border-left:4px solid var(--dw-warning);background:var(--dw-warning-light);line-height:1.8}.dw-order-panel .dw-report-result{font-weight:700}.dw-critical-value-dialog{width:100vw!important;max-width:none!important;height:100vh;margin:0!important;border:8px solid var(--dw-danger)!important;border-radius:0!important;background:var(--dw-danger-light)!important;display:flex;flex-direction:column;justify-content:center}.dw-critical-value-dialog .el-message-box__title,.dw-critical-value-dialog .el-message-box__message{color:var(--dw-danger)!important;font-size:22px;font-weight:700}.dw-critical-value-dialog .el-message-box__content{max-width:760px;margin:0 auto;white-space:pre-line}.dw-critical-value-dialog .el-message-box__btns{justify-content:center}.dw-critical-value-dialog .el-button{font-size:18px;padding:18px 42px}.dw-allergy-block-dialog .el-dialog__title{color:var(--dw-danger,var(--yb-danger));font-weight:700}.dw-order-panel .dw-allergy-alert{border:2px solid var(--dw-danger,var(--yb-danger));border-radius:6px;padding:14px 16px;background:rgba(245,108,108,.07)}.dw-order-panel .dw-allergy-alert .hd{color:var(--dw-danger,var(--yb-danger));font-weight:700;font-size:15px;margin-bottom:10px}.dw-order-panel .dw-allergy-alert .row{line-height:2;color:var(--yb-ink-1)}.dw-order-panel .dw-allergy-alert .row b{color:var(--dw-danger,var(--yb-danger))}.dw-order-panel .dw-allergy-alert .tip{margin-top:10px;color:var(--yb-ink-2);font-size:12px}
+          .dw-order-panel .dw-order-toolbar{display:flex;align-items:center;gap:8px;padding:8px 10px;flex-wrap:wrap}.dw-order-panel .dw-order-pick{flex:1 1 200px;min-width:190px}.dw-order-panel .dw-order-empty{padding:18px;text-align:center;color:var(--dw-text-hint);font-size:12px}.dw-order-panel .dw-order-split{display:grid;grid-template-columns:35% 65%;min-height:440px}.dw-order-panel .dw-order-catalog{padding:10px;border-right:1px solid var(--dw-border)}.dw-order-panel .dw-order-form{padding:10px 14px}.dw-order-panel .dw-package-row{display:flex;gap:5px;flex-wrap:wrap;margin:8px 0}.dw-order-panel .dw-form-readonly{padding:6px 9px;background:var(--dw-card-muted);border:1px solid var(--dw-border);border-radius:4px;color:var(--dw-text-secondary);min-height:30px}.dw-order-panel .dw-order-cards{padding:0 10px 8px}.dw-order-panel .dw-order-history{padding:10px 14px;border-top:1px solid var(--dw-border)}.dw-order-panel .dw-progress{color:var(--dw-primary);font-size:11px;white-space:nowrap}.dw-order-panel .dw-mutual-alert{padding:12px;border-left:4px solid var(--dw-warning);background:var(--dw-warning-light);line-height:1.8}.dw-order-panel .dw-report-result{font-weight:700}.dw-critical-value-dialog{width:100vw!important;max-width:none!important;height:100vh;margin:0!important;border:8px solid var(--dw-danger)!important;border-radius:0!important;background:var(--dw-danger-light)!important;display:flex;flex-direction:column;justify-content:center}.dw-critical-value-dialog .el-message-box__title,.dw-critical-value-dialog .el-message-box__message{color:var(--dw-danger)!important;font-size:22px;font-weight:700}.dw-critical-value-dialog .el-message-box__content{max-width:760px;margin:0 auto;white-space:pre-line}.dw-critical-value-dialog .el-message-box__btns{justify-content:center}.dw-critical-value-dialog .el-button{font-size:18px;padding:18px 42px}.dw-allergy-block-dialog .el-dialog__title{color:var(--dw-danger,var(--yb-danger));font-weight:700}.dw-order-panel .dw-allergy-alert{border:2px solid var(--dw-danger,var(--yb-danger));border-radius:6px;padding:14px 16px;background:rgba(245,108,108,.07)}.dw-order-panel .dw-allergy-alert .hd{color:var(--dw-danger,var(--yb-danger));font-weight:700;font-size:15px;margin-bottom:10px}.dw-order-panel .dw-allergy-alert .row{line-height:2;color:var(--yb-ink-1)}.dw-order-panel .dw-allergy-alert .row b{color:var(--dw-danger,var(--yb-danger))}.dw-order-panel .dw-allergy-alert .tip{margin-top:10px;color:var(--yb-ink-2);font-size:12px}.dw-order-panel .dw-order-assistant{display:flex;align-items:center;flex-wrap:wrap;gap:6px;padding:2px 12px 8px}.dw-order-panel .dw-order-assistant-lbl{font-size:12px;color:var(--dw-text-hint)}.dw-order-panel .dw-order-chip{border:1px solid var(--dw-border);background:var(--dw-card,#fff);border-radius:12px;padding:2px 10px;font-size:12px;cursor:pointer;color:var(--dw-text-secondary,#666)}.dw-order-panel .dw-order-chip:hover:not(:disabled){border-color:var(--dw-primary);color:var(--dw-primary)}.dw-order-panel .dw-order-chip:disabled{opacity:.5;cursor:not-allowed}
         </style>
         <div class="dw-panel-header">
           <span>检查 · 检验 · 治疗申请 <span class="dim" v-if="orders.length">已开 {{ orders.length }} 单</span></span>
@@ -528,6 +560,10 @@
                 <div class="dw-rx-opt"><span class="nm">{{ it.itemName }}</span><span class="spec">{{ it.spec || '' }}</span><span class="price">￥{{ money(it.execPrice!=null?it.execPrice:it.price) }}</span></div>
               </el-option>
             </el-select>
+          </div>
+          <div v-if="assistantChips.length" class="dw-order-assistant">
+            <span class="dw-order-assistant-lbl">常用助手</span>
+            <button v-for="f in assistantChips" :key="f.kind+'-'+f.code" class="dw-order-chip" :title="(f.count||0)+'次'" :disabled="!canEdit" @click="useFrequentOrder(f)">{{ f.name }}</button>
           </div>
           <div class="dw-package-row" v-if="allPackages.length"><el-button v-for="p in allPackages" :key="p.name" size="small" plain :loading="packageLoading" @click="addPackage(p)">{{ p.name }}</el-button></div>
           <div class="dim" style="padding:0 12px">添加项目时自动核对患者30天内同类结果（互认提醒）与过敏史。</div>

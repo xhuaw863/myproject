@@ -19,6 +19,7 @@ import org.springframework.web.bind.annotation.RestController;
 import com.yb.hi.entity.doctor.HisChargeAddonRule;
 import com.yb.hi.entity.doctor.HisRxSplitRule;
 
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 
@@ -95,6 +96,20 @@ public class OutpRxOrderExtController {
     @GetMapping("/rx-split-rule/list")
     public R<List<HisRxSplitRule>> listSplitRule(@RequestParam(required = false) Long deptId) {
         return R.ok(rxSplitRuleService.listEffective(deptId));
+    }
+
+    /** 拆方建议(只读计算): body={deptId?, items:[{usage/insutype/chronicDise/specialDrug/pharmacy,..}]}, 返回建议处方组(带项目下标)。 */
+    @PostMapping("/rx-split-rule/suggest")
+    @SuppressWarnings("unchecked")
+    public R<List<Map<String, Object>>> suggestSplit(@RequestBody Map<String, Object> body) {
+        Long deptId = null;
+        Object d = body == null ? null : body.get("deptId");
+        if (d instanceof Number) {
+            deptId = ((Number) d).longValue();
+        }
+        Object its = body == null ? null : body.get("items");
+        List<Map<String, Object>> items = its instanceof List ? (List<Map<String, Object>>) its : new ArrayList<>();
+        return R.ok(rxSplitRuleService.suggest(items, deptId));
     }
 
     @GetMapping("/charge-addon-rule/list")

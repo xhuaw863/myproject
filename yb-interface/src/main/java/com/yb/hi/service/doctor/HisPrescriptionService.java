@@ -46,16 +46,19 @@ public class HisPrescriptionService extends ServiceImpl<HisPrescriptionMapper, H
     private final HisPatientMapper patientMapper;
     private final PharmacyDefService pharmacyDefService;
     private final PharmacyPriceService pharmacyPriceService;
+    private final HisOrderFreqService orderFreqService;
 
     public HisPrescriptionService(HisVisitService visitService, HisDiagnosisService diagnosisService,
                                   HisPrescriptionItemMapper itemMapper, HisPatientMapper patientMapper,
-                                  PharmacyDefService pharmacyDefService, PharmacyPriceService pharmacyPriceService) {
+                                  PharmacyDefService pharmacyDefService, PharmacyPriceService pharmacyPriceService,
+                                  HisOrderFreqService orderFreqService) {
         this.visitService = visitService;
         this.diagnosisService = diagnosisService;
         this.itemMapper = itemMapper;
         this.patientMapper = patientMapper;
         this.pharmacyDefService = pharmacyDefService;
         this.pharmacyPriceService = pharmacyPriceService;
+        this.orderFreqService = orderFreqService;
     }
 
     /** 查询某次就诊的处方列表 */
@@ -153,6 +156,9 @@ public class HisPrescriptionService extends ServiceImpl<HisPrescriptionMapper, H
         // 医生站科室判权(B4)
         visitService.requireVisitScope(req.getVisitId());
 
+        // OP-C 草药专业化(需求2.2.2.3.14.3): 命中 multiple_base 的单味剂量服务端强制整倍校验
+        validateHerbMultiples(req.getItems());
+
         HisPrescription p = new HisPrescription();
         p.setVisitId(visit.getId());
         p.setRxNo(genNo("RX"));
@@ -206,6 +212,8 @@ public class HisPrescriptionService extends ServiceImpl<HisPrescriptionMapper, H
             item.setPrescriptionId(p.getId());
             itemMapper.insert(item);
         }
+        // OP-C 医嘱处方高频沉淀: 开立成功后按个人/科室累计药品项目频次(best-effort, 不阻断开方)
+        recordRxUsage(req.getItems(), visit.getStaffId(), visit.getDeptId());
         log.info("开处方成功: rxNo={}, visitId={}, total={}, pharmacyId={}", p.getRxNo(), visit.getId(), p.getTotalAmount(), pharmacyId);
         return p;
     }
@@ -234,6 +242,39 @@ public class HisPrescriptionService extends ServiceImpl<HisPrescriptionMapper, H
         }
         log.info("批量开方成功: visitId={}, 处方数={}", req.getVisitId(), out.size());
         return out;
+    }
+
+    /** 草药倍数校验: multiple_base>0 时, 单味剂量(quantity)须为其正整数倍, 否则拒绝保存。 */
+    private void validateHerbMultiples(List<HisPrescriptionItem> items) {
+        for (HisPrescriptionItem it : items) {
+            Integer base = it.getMultipleBase();
+            if (base == null || base <= 0) {
+                continue;
+            }
+            BigDecimal qty = it.getQuantity();
+            if (qty == null) {
+                continue;
+            }
+            BigDecimal[] dm = qty.divideAndRemainder(new BigDecimal(base));
+            if (dm[1].compareTo(BigDecimal.ZERO) != 0 || dm[0].compareTo(BigDecimal.ZERO) <= 0) {
+                throw new BizException(400, "药材[" + it.getItemName() + "]剂量必须为 " + base + " 的整数倍, 当前:" + qty.stripTrailingZeros().toPlainString());
+            }
+        }
+    }
+
+    /** 处方高频累计: 药品项目按 itemCode 记录(个人/科室), 异常仅告警不影响开方事务。 */
+    private void recordRxUsage(List<HisPrescriptionItem> items, Long staffId, Long deptId) {
+        try {
+            List<HisOrderFreqService.FreqKey> keys = new ArrayList<>();
+            for (HisPrescriptionItem it : items) {
+                if (StringUtils.hasText(it.getItemCode())) {
+                    keys.add(new HisOrderFreqService.FreqKey(it.getItemCode(), it.getItemName(), "rx"));
+                }
+            }
+            orderFreqService.recordUsage(keys, staffId, deptId);
+        } catch (Exception e) {
+            log.warn("处方高频累计失败(不影响开方): {}", e.getMessage());
+        }
     }
 
     /** 汇总就诊诊断名称 */
