@@ -427,6 +427,8 @@ public class DictSchemaMigration implements ApplicationRunner {
             ensureP0SafetyTables(conn);
             // P1/P2 住院深化(T41): 病历版本快照/出入量记录 2 表 + 医嘱续开/病历三级签名/SBAR评估建议/费用结算关联/视频会诊/预入院 12 列(幂等)
             ensureP1P2Tables(conn);
+            // 门诊医生站对标优化 OP-A(接诊增强): 展示偏好/发热登记/诊前预问诊/生命体征 4 表 + his_visit 诊后去向补列(幂等, 新模块非启动关键路径)
+            ensureOutpWsEnhancementTables(conn);
             // 存量表补列: 药库/药房归属 + 混合支付/发票号/退费关联/部分退费已退数量(幂等, 列已存在则跳过)
             alterExistingTables(conn);
         } catch (Exception e) {
@@ -4002,6 +4004,93 @@ public class DictSchemaMigration implements ApplicationRunner {
                     + ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='药房药品定价(药房维度覆盖价)'"
             );
         }
+    }
+
+    /**
+     * 门诊医生站对标优化 OP-A(接诊增强)幂等建表:
+     *  his_user_display_pref 患者信息栏自定义显示偏好(个人级, 按场景存配置 JSON);
+     *  his_fever_register 发热病人自动登记;
+     *  his_pre_consult 诊前预问诊记录;
+     *  his_vital_sign 生命体征(含血糖/血酮趋势源, 支持设备采集/手工补录);
+     *  + his_visit 诊后去向补列(disposition/disposition_dept_id/disposition_note)。
+     */
+    private void ensureOutpWsEnhancementTables(Connection conn) throws Exception {
+        try (Statement st = conn.createStatement()) {
+            st.executeUpdate("CREATE TABLE IF NOT EXISTS his_user_display_pref ("
+                    + "id BIGINT NOT NULL AUTO_INCREMENT COMMENT '主键',"
+                    + "tenant_id BIGINT NOT NULL COMMENT '租户ID',"
+                    + "org_id BIGINT DEFAULT NULL COMMENT '机构ID',"
+                    + "user_id BIGINT NOT NULL COMMENT '用户ID(sys_user.id)',"
+                    + "scene VARCHAR(50) NOT NULL COMMENT '场景: dw_banner患者信息栏/dw_layout布局偏好',"
+                    + "config_json TEXT COMMENT '显示配置JSON(字段开关与顺序)',"
+                    + "create_by VARCHAR(50) DEFAULT NULL, create_time DATETIME DEFAULT NULL,"
+                    + "update_by VARCHAR(50) DEFAULT NULL, update_time DATETIME DEFAULT NULL, deleted TINYINT DEFAULT 0,"
+                    + "PRIMARY KEY (id),"
+                    + "UNIQUE KEY uk_tenant_user_scene (tenant_id, user_id, scene)"
+                    + ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='医生站用户显示偏好'"
+            );
+            st.executeUpdate("CREATE TABLE IF NOT EXISTS his_fever_register ("
+                    + "id BIGINT NOT NULL AUTO_INCREMENT COMMENT '主键',"
+                    + "tenant_id BIGINT NOT NULL COMMENT '租户ID',"
+                    + "org_id BIGINT DEFAULT NULL COMMENT '机构ID',"
+                    + "visit_id BIGINT DEFAULT NULL COMMENT '就诊ID(his_visit.id)',"
+                    + "patient_id BIGINT DEFAULT NULL COMMENT '患者ID',"
+                    + "patient_name VARCHAR(100) DEFAULT NULL COMMENT '患者姓名',"
+                    + "temperature DECIMAL(4,1) DEFAULT NULL COMMENT '体温(℃)',"
+                    + "exposure_history VARCHAR(500) DEFAULT NULL COMMENT '流行病学接触史',"
+                    + "disposition VARCHAR(200) DEFAULT NULL COMMENT '处理去向',"
+                    + "register_time DATETIME DEFAULT NULL COMMENT '登记时间',"
+                    + "create_by VARCHAR(50) DEFAULT NULL, create_time DATETIME DEFAULT NULL,"
+                    + "update_by VARCHAR(50) DEFAULT NULL, update_time DATETIME DEFAULT NULL, deleted TINYINT DEFAULT 0,"
+                    + "PRIMARY KEY (id),"
+                    + "KEY idx_visit (tenant_id, visit_id)"
+                    + ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='发热病人登记'"
+            );
+            st.executeUpdate("CREATE TABLE IF NOT EXISTS his_pre_consult ("
+                    + "id BIGINT NOT NULL AUTO_INCREMENT COMMENT '主键',"
+                    + "tenant_id BIGINT NOT NULL COMMENT '租户ID',"
+                    + "org_id BIGINT DEFAULT NULL COMMENT '机构ID',"
+                    + "visit_id BIGINT DEFAULT NULL COMMENT '就诊ID(his_visit.id)',"
+                    + "patient_id BIGINT DEFAULT NULL COMMENT '患者ID',"
+                    + "content_json TEXT COMMENT '预问诊内容JSON(症状/部位/时长/自述)',"
+                    + "recorder VARCHAR(50) DEFAULT NULL COMMENT '录入人',"
+                    + "recorder_id BIGINT DEFAULT NULL COMMENT '录入人ID',"
+                    + "create_by VARCHAR(50) DEFAULT NULL, create_time DATETIME DEFAULT NULL,"
+                    + "update_by VARCHAR(50) DEFAULT NULL, update_time DATETIME DEFAULT NULL, deleted TINYINT DEFAULT 0,"
+                    + "PRIMARY KEY (id),"
+                    + "KEY idx_visit (tenant_id, visit_id)"
+                    + ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='诊前预问诊记录'"
+            );
+            st.executeUpdate("CREATE TABLE IF NOT EXISTS his_vital_sign ("
+                    + "id BIGINT NOT NULL AUTO_INCREMENT COMMENT '主键',"
+                    + "tenant_id BIGINT NOT NULL COMMENT '租户ID',"
+                    + "org_id BIGINT DEFAULT NULL COMMENT '机构ID',"
+                    + "visit_id BIGINT DEFAULT NULL COMMENT '就诊ID(his_visit.id)',"
+                    + "patient_id BIGINT DEFAULT NULL COMMENT '患者ID',"
+                    + "systolic INT DEFAULT NULL COMMENT '收缩压(mmHg)',"
+                    + "diastolic INT DEFAULT NULL COMMENT '舒张压(mmHg)',"
+                    + "pulse INT DEFAULT NULL COMMENT '脉搏(次/分)',"
+                    + "temperature DECIMAL(4,1) DEFAULT NULL COMMENT '体温(℃)',"
+                    + "respiration INT DEFAULT NULL COMMENT '呼吸(次/分)',"
+                    + "blood_glucose DECIMAL(6,2) DEFAULT NULL COMMENT '血糖(mmol/L)',"
+                    + "blood_ketone DECIMAL(6,2) DEFAULT NULL COMMENT '血酮(mmol/L)',"
+                    + "weight DECIMAL(6,2) DEFAULT NULL COMMENT '体重(kg)',"
+                    + "height DECIMAL(6,2) DEFAULT NULL COMMENT '身高(cm)',"
+                    + "source VARCHAR(20) DEFAULT '手工' COMMENT '来源:设备/手工',"
+                    + "meas_time DATETIME DEFAULT NULL COMMENT '测量时间',"
+                    + "recorder_id BIGINT DEFAULT NULL COMMENT '录入人ID',"
+                    + "create_by VARCHAR(50) DEFAULT NULL, create_time DATETIME DEFAULT NULL,"
+                    + "update_by VARCHAR(50) DEFAULT NULL, update_time DATETIME DEFAULT NULL, deleted TINYINT DEFAULT 0,"
+                    + "PRIMARY KEY (id),"
+                    + "KEY idx_patient_meas (tenant_id, patient_id, meas_time),"
+                    + "KEY idx_visit (tenant_id, visit_id)"
+                    + ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='生命体征(含血糖血酮趋势源)'"
+            );
+        }
+        // his_visit 诊后去向补列(幂等)
+        addColumnIfNotExists(conn, "his_visit", "disposition", "TINYINT DEFAULT NULL COMMENT '诊后去向:1离院 2转科 3转留观 4转院'");
+        addColumnIfNotExists(conn, "his_visit", "disposition_dept_id", "BIGINT DEFAULT NULL COMMENT '转科目标科室ID(his_dept.id)'");
+        addColumnIfNotExists(conn, "his_visit", "disposition_note", "VARCHAR(500) DEFAULT NULL COMMENT '去向备注'");
     }
 
     /**

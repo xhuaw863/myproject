@@ -43,4 +43,12 @@ public class VisitFinishReq {
     private String structure;
     /** 结构化病历模板ID(scope=2) */
     private Long emrTemplateId;
+
+    /* ===== OP-A 诊后去向 ===== */
+    /** 诊后去向: 1-离院 2-转科 3-转留观 4-转院 */
+    private Integer disposition;
+    /** 转科目标科室ID */
+    private Long dispositionDeptId;
+    /** 去向备注 */
+    private String dispositionNote;
 }

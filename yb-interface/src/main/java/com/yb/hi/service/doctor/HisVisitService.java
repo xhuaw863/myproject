@@ -282,6 +282,10 @@ public class HisVisitService extends ServiceImpl<HisVisitMapper, HisVisit> {
         if (req.getBirctrlMatnDate() != null) v.setBirctrlMatnDate(parseDate(req.getBirctrlMatnDate()));
         if (req.getStructure() != null) v.setStructure(req.getStructure());
         if (req.getEmrTemplateId() != null) v.setEmrTemplateId(req.getEmrTemplateId());
+        // OP-A 诊后去向(离院/转科/转留观/转院)
+        if (req.getDisposition() != null) v.setDisposition(req.getDisposition());
+        if (req.getDispositionDeptId() != null) v.setDispositionDeptId(req.getDispositionDeptId());
+        if (req.getDispositionNote() != null) v.setDispositionNote(req.getDispositionNote());
         v.setVisitStatus(3);
         v.setFinishTime(LocalDateTime.now());
         updateById(v);

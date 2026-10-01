@@ -97,4 +97,11 @@ public class HisVisit extends BaseEntity {
     private LocalDateTime visitTime;
     /** 完成时间 */
     private LocalDateTime finishTime;
+
+    /** 诊后去向: 1-离院 2-转科 3-转留观 4-转院 */
+    private Integer disposition;
+    /** 转科目标科室ID(his_dept.id) */
+    private Long dispositionDeptId;
+    /** 去向备注 */
+    private String dispositionNote;
 }

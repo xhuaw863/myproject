@@ -26,7 +26,9 @@
       'dw-prescription-panel': HIS.components.DwPrescriptionPanel,
       'dw-order-panel': HIS.components.DwOrderPanel,
       'dw-documents-panel': HIS.components.DwDocumentsPanel,
-      'dw-orders-overview': HIS.components.DwOrdersOverview
+      'dw-orders-overview': HIS.components.DwOrdersOverview,
+      'dw-vital-panel': HIS.components.DwVitalPanel,
+      'dw-pre-consult-dialog': HIS.components.DwPreConsultDialog
     },
     data: function () {
       return {
@@ -42,7 +44,14 @@
         currentTime: '',
         visitTimer: 0,
         timerInterval: null,
-        submitting: false
+        submitting: false,
+        /* OP-A 多病人并行接诊 + 体征/预问诊/诊后去向 */
+        openVisits: [],
+        vitalVisible: false,
+        preConsultVisible: false,
+        dispositionVisible: false,
+        dispositionDepts: [],
+        dispositionForm: { disposition: 1, dispositionDeptId: null, dispositionNote: '' }
       };
     },
     provide: function () {
@@ -130,6 +139,7 @@
       },
       onSelectVisit: function (visit) {
         if (!visitIdOf(visit)) { return; }
+        this.pinOpenVisit(visit);
         this.currentVisit = visit;
         this.currentPatient = visit;
         this.visitHistory = [];
@@ -142,6 +152,64 @@
         this.loadPatientDetail(visit);
         this.loadVisitHistory(visit);
         this.loadFeeSummary(visit);
+      },
+      /* ===== OP-A 多病人并行接诊 ===== */
+      pinOpenVisit: function (visit) {
+        var id = String(visitIdOf(visit));
+        if (!id || id === 'undefined') { return; }
+        var exists = this.openVisits.some(function (v) { return String(v.id) === id; });
+        if (!exists) {
+          this.openVisits.push({ id: visitIdOf(visit), patientName: visit.patientName || '-', visitStatus: visit.visitStatus });
+        }
+      },
+      isActiveVisit: function (visit) {
+        return !!this.currentVisit && String(this.currentVisit.id) === String(visit.id);
+      },
+      switchActiveVisit: function (visit) {
+        var vm = this;
+        if (vm.isActiveVisit(visit)) { return; }
+        /* 切换前对当前接诊中病历尽力自动暂存, 避免丢失未保存书写 */
+        var emr = vm.$refs.emrPanel;
+        if (vm.canEdit && emr && typeof emr.emitSave === 'function') {
+          try { emr.emitSave(false); } catch (e) { /* 静默: 未选模板等情况不阻断切换 */ }
+        }
+        vm.onSelectVisit({ id: visit.id, patientName: visit.patientName, visitStatus: visit.visitStatus });
+      },
+      closeOpenVisit: function (visit) {
+        var vm = this;
+        var id = String(visit.id);
+        var remaining = vm.openVisits.filter(function (v) { return String(v.id) !== id; });
+        vm.openVisits = remaining;
+        if (vm.currentVisit && String(vm.currentVisit.id) === id) {
+          var next = remaining.length ? remaining[remaining.length - 1] : null;
+          if (next) { vm.switchActiveVisit(next); } else { vm.clearActiveVisit(); }
+        }
+      },
+      clearActiveVisit: function () {
+        this.currentVisit = null;
+        this.currentPatient = null;
+        this.visitHistory = [];
+        this.diagnoses = [];
+        this.feeSummary = null;
+        this.rxCount = 0;
+        this.orderCount = 0;
+      },
+      /* ===== OP-A 体征/预问诊引用中继到病历面板 ===== */
+      openVital: function () {
+        if (!this.currentVisit) { ElementPlus.ElMessage.warning('请先选择患者'); return; }
+        this.vitalVisible = true;
+      },
+      openPreConsult: function () {
+        if (!this.currentVisit) { ElementPlus.ElMessage.warning('请先选择患者'); return; }
+        this.preConsultVisible = true;
+      },
+      onQuoteVital: function (text) {
+        var emr = this.$refs.emrPanel;
+        if (emr && typeof emr.appendVital === 'function') { emr.appendVital(text); }
+      },
+      onQuotePreConsult: function (payload) {
+        var emr = this.$refs.emrPanel;
+        if (emr && typeof emr.applyPreConsult === 'function') { emr.applyPreConsult(payload); }
       },
       onStartVisit: function (visit) {
         var vm = this;
@@ -184,25 +252,40 @@
         if (!vm.diagnoses.length) { ElementPlus.ElMessage.warning('请至少录入一条诊断'); return; }
         var emr = vm.$refs.emrPanel;
         if (emr && typeof emr.validateForFinish === 'function' && !emr.validateForFinish()) { return; }
+        /* OP-A 诊后去向: 完成前弹出去向选择(离院/转科/转留观/转院) */
+        vm.dispositionForm = { disposition: 1, dispositionDeptId: null, dispositionNote: '' };
+        if (!vm.dispositionDepts.length) { vm.loadDispositionDepts(); }
+        vm.dispositionVisible = true;
+      },
+      loadDispositionDepts: function () {
+        var vm = this;
+        HIS.get('/api/his/dept/enabled').then(function (list) {
+          vm.dispositionDepts = (list || []).map(function (d) { return { id: d.id, name: d.deptName || d.name }; });
+        }).catch(function () { vm.dispositionDepts = []; });
+      },
+      doSubmitFinish: function () {
+        var vm = this;
+        if (!vm.canEdit || vm.submitting) { return; }
+        var emr = vm.$refs.emrPanel;
         var emrPayload = (emr && typeof emr.buildFinishPayload === 'function') ? emr.buildFinishPayload() : {};
         var payload = Object.assign({}, emrPayload, {
           visitId: visitIdOf(vm.currentVisit),
           diagnoses: vm.diagnoses,
-          uploadYb: true
+          uploadYb: true,
+          disposition: vm.dispositionForm.disposition,
+          dispositionDeptId: vm.dispositionForm.dispositionDeptId,
+          dispositionNote: vm.dispositionForm.dispositionNote
         });
-        ElementPlus.ElMessageBox.confirm('完成接诊将保存病历与诊断、上传医保2203就诊信息，并转入待收费。是否继续？', '完成接诊确认', {
-          type: 'warning', confirmButtonText: '完成接诊', cancelButtonText: '取消'
-        }).then(function () {
-          vm.submitting = true;
-          return HIS.post('/api/his/visit/finish', payload).then(function (saved) {
-            vm.currentVisit = saved || Object.assign({}, vm.currentVisit, { visitStatus: 3 });
-            HIS.notifySuccess('接诊完成，已进入待收费');
-            vm.loadPatientDetail(vm.currentVisit);
-            vm.loadFeeSummary(vm.currentVisit);
-            vm.refreshQueue();
-          });
+        vm.dispositionVisible = false;
+        vm.submitting = true;
+        HIS.post('/api/his/visit/finish', payload).then(function (saved) {
+          vm.currentVisit = saved || Object.assign({}, vm.currentVisit, { visitStatus: 3 });
+          HIS.notifySuccess('接诊完成，已进入待收费');
+          vm.loadPatientDetail(vm.currentVisit);
+          vm.loadFeeSummary(vm.currentVisit);
+          vm.refreshQueue();
         }).catch(function (error) {
-          if (error !== 'cancel' && error !== 'close' && error && error.message) { HIS.notifyError(error); }
+          if (error && error.message) { HIS.notifyError(error); }
         }).finally(function () { vm.submitting = false; });
       },
       onUpdateDiagnoses: function (diagList) {
@@ -369,6 +452,8 @@
             <span class="dw-header-title" style="font-size:16px;font-weight:700;letter-spacing:.08em">门诊医生工作站</span>
           </div>
           <div class="dw-header-right dw-actions">
+            <el-button size="small" @click="openPreConsult" :disabled="!currentVisit">预问诊</el-button>
+            <el-button size="small" @click="openVital" :disabled="!currentVisit">生命体征</el-button>
             <el-button size="small" @click="startVisit" :disabled="!canStart">F2 接诊</el-button>
             <el-button size="small" @click="saveDraft" :loading="submitting" :disabled="!canEdit">F3 暂存</el-button>
             <el-button size="small" type="primary" @click="finishVisit" :loading="submitting" :disabled="!canEdit">F4 完成</el-button>
@@ -382,6 +467,12 @@
           <div class="dw-main" ref="dwMain">
             <div class="dw-contextbar">
               <dw-patient-banner></dw-patient-banner>
+              <div class="dw-openvisits" v-if="openVisits.length > 1">
+                <span class="dw-openvisits-label">已打开</span>
+                <span v-for="ov in openVisits" :key="ov.id" class="dw-ov-chip" :class="{'is-active': isActiveVisit(ov)}" @click="switchActiveVisit(ov)">
+                  {{ ov.patientName }}<i class="dw-ov-close" @click.stop="closeOpenVisit(ov)">×</i>
+                </span>
+              </div>
               <nav class="dw-tabnav" role="tablist">
                 <button class="dw-tabnav-item" :class="{'is-active': activeTab==='clinic'}" role="tab" :aria-selected="activeTab==='clinic'" @click="switchTab('clinic')">诊疗工作台<span class="dw-tab-count" v-if="diagnoses.length || rxCount || orderCount">诊{{ diagnoses.length }} 方{{ rxCount }} 嘱{{ orderCount }}</span></button>
                 <button class="dw-tabnav-item" :class="{'is-active': activeTab==='overview'}" role="tab" :aria-selected="activeTab==='overview'" @click="switchTab('overview')">医嘱总览<span class="dw-tab-count" v-if="rxCount || orderCount">{{ rxCount + orderCount }}</span></button>
@@ -414,6 +505,29 @@
           <span>F2接诊 F3暂存 F4完成 F5药品 F6医嘱 F8刷新 | Ctrl+1诊疗 Ctrl+2处置 Ctrl+3总览</span>
           <span class="dw-footer-time" style="margin-left:auto;font-variant-numeric:tabular-nums">{{ currentTime }}</span>
         </div>
+
+        <dw-vital-panel v-model="vitalVisible" @quote-to-record="onQuoteVital"></dw-vital-panel>
+        <dw-pre-consult-dialog v-model="preConsultVisible" @quote-to-record="onQuotePreConsult"></dw-pre-consult-dialog>
+        <el-dialog v-model="dispositionVisible" title="诊后去向 / 完成接诊" width="460px" append-to-body>
+          <el-form :model="dispositionForm" label-width="88px" size="small">
+            <el-form-item label="去向">
+              <el-radio-group v-model="dispositionForm.disposition">
+                <el-radio :label="1">离院</el-radio><el-radio :label="2">转科</el-radio><el-radio :label="3">转留观</el-radio><el-radio :label="4">转院</el-radio>
+              </el-radio-group>
+            </el-form-item>
+            <el-form-item label="转科科室" v-if="dispositionForm.disposition===2">
+              <el-select v-model="dispositionForm.dispositionDeptId" filterable placeholder="选择目标科室" style="width:100%">
+                <el-option v-for="d in dispositionDepts" :key="d.id" :label="d.name" :value="d.id"></el-option>
+              </el-select>
+            </el-form-item>
+            <el-form-item label="备注"><el-input v-model="dispositionForm.dispositionNote" type="textarea" :autosize="{minRows:2,maxRows:3}"/></el-form-item>
+            <div class="dim">确认后将保存病历与诊断、上传医保2203就诊信息，并转入待收费。</div>
+          </el-form>
+          <template #footer>
+            <el-button size="small" @click="dispositionVisible=false">取消</el-button>
+            <el-button size="small" type="primary" :loading="submitting" @click="doSubmitFinish">确认完成</el-button>
+          </template>
+        </el-dialog>
       </div>
     `
   };

@@ -488,6 +488,17 @@ body { font-family: var(--yb-font-sans); background: var(--yb-canvas); }
 .dw-main { flex: 1 1 auto; min-width: 0; min-height: 0; display: flex; flex-direction: column; overflow: hidden; background: var(--dw-bg); }
 /* 上下文条: 患者信息 + Tab 导航常驻顶部(双栏滚动时都不丢, 不再依赖 sticky) */
 .dw-contextbar { flex: 0 0 auto; background: var(--dw-card); border-bottom: 1px solid var(--dw-border); box-shadow: 0 2px 6px rgba(0, 0, 0, .04); }
+/* OP-A 多病人并行接诊已打开患者页签条 + 患者信息栏自定义齿轮 */
+.dw-openvisits { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; padding: 4px 12px; border-top: 1px solid var(--dw-border); background: var(--dw-card-muted); }
+.dw-openvisits-label { font-size: 12px; color: var(--dw-text-hint); }
+.dw-ov-chip { display: inline-flex; align-items: center; gap: 4px; padding: 2px 8px; border: 1px solid var(--dw-border); border-radius: 12px; background: var(--dw-card); cursor: pointer; font-size: 13px; color: var(--dw-text-secondary); }
+.dw-ov-chip:hover { border-color: var(--dw-primary); }
+.dw-ov-chip.is-active { background: var(--dw-primary); color: #fff; border-color: var(--dw-primary); }
+.dw-ov-chip.is-active .dw-ov-close { color: #fff; }
+.dw-ov-close { font-style: normal; margin-left: 2px; opacity: .7; }
+.dw-ov-close:hover { opacity: 1; }
+.dw-banner-gear { border: 0; background: none; cursor: pointer; color: var(--dw-text-hint); font-size: 15px; padding: 0 2px; }
+.dw-banner-gear:hover { color: var(--dw-primary); }
 .dw-tabnav { display: flex; align-items: stretch; gap: 2px; padding: 0 12px; }
 .dw-tabnav-item { position: relative; display: inline-flex; align-items: center; gap: 4px; padding: 9px 18px; color: var(--dw-text-secondary); background: none; border: 0; border-bottom: 2px solid transparent; cursor: pointer; font-size: 14px; font-weight: 600; }
 .dw-tabnav-item:hover { color: var(--dw-primary); background: var(--dw-primary-light); }

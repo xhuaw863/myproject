@@ -266,6 +266,28 @@
         this.structForm.auxExam = (cur ? cur.replace(/\s+$/, '') + '\n' : '') + t;
         ElementPlus.ElMessage.success('已插入辅助检查, 请核对后随病历保存(F3)');
       },
+      /* OP-A 引用体征摘要到「体格检查」 */
+      appendVital: function (text) {
+        var t = String(text || '').trim();
+        if (!t) { return; }
+        if (this.isLegacySoap || this.readOnly) { ElementPlus.ElMessage.warning('病历只读, 无法引用体征'); return; }
+        if (!this.hasStructField('physicalExam')) { ElementPlus.ElMessage.warning('当前结构化模板无「体格检查」字段, 无法引用'); return; }
+        var line = '生命体征: ' + t;
+        var cur = this.structForm.physicalExam || '';
+        if (cur.indexOf(line) >= 0) { ElementPlus.ElMessage.info('体征摘要已存在, 未重复插入'); return; }
+        this.structForm.physicalExam = (cur ? cur.replace(/\s+$/, '') + '\n' : '') + line;
+        ElementPlus.ElMessage.success('已引用体征到体格检查, 请核对后随病历保存(F3)');
+      },
+      /* OP-A 引用预问诊到「主诉/现病史」 */
+      applyPreConsult: function (payload) {
+        payload = payload || {};
+        if (this.isLegacySoap || this.readOnly) { ElementPlus.ElMessage.warning('病历只读, 无法引用预问诊'); return; }
+        var vm = this, applied = 0;
+        if (vm.hasStructField('chiefComplaint') && payload.chiefComplaint) { vm.structForm.chiefComplaint = payload.chiefComplaint; applied++; }
+        if (vm.hasStructField('presentIllness') && payload.presentIllness) { vm.structForm.presentIllness = payload.presentIllness; applied++; }
+        if (applied) { ElementPlus.ElMessage.success('已引用预问诊 ' + applied + ' 项到当前病历'); }
+        else { ElementPlus.ElMessage.warning('当前模板无可对齐的主诉/现病史字段'); }
+      },
       /* 引用历史就诊: 按对齐 fieldKey 尽力回填 structForm(仅当前模板存在的字段) */
       quoteHistory: function (history) {
         if (!history) { return; }
