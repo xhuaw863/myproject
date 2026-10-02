@@ -351,6 +351,12 @@ public class InpDispenseService {
             jdbcTemplate.update("UPDATE his_inp_order SET dispense_status = 0 WHERE id = ? AND tenant_id = ? AND org_id = ? AND deleted = 0",
                     d.get("orderId"), tenantId(), orgId);
         }
+        // 手麻P3a退药闭环: 手术侧退药申请(flag=1)的医嘱, 药房退药完成即置2已退药(暂存病区/回库均视为已处理)
+        if (d.get("orderId") != null) {
+            jdbcTemplate.update("UPDATE his_inp_order SET return_apply_flag = 2, return_apply_time = NOW()"
+                            + " WHERE id = ? AND tenant_id = ? AND org_id = ? AND deleted = 0 AND return_apply_flag = 1",
+                    d.get("orderId"), tenantId(), orgId);
+        }
         Map<String, Object> out = new LinkedHashMap<>();
         out.put("returnNo", retNo);
         out.put("dispenseId", dispenseId);

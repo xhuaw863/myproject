@@ -14,6 +14,7 @@ import com.yb.hi.entity.community.HisDrugCatalog;
 import com.yb.hi.entity.community.HisOrgCatalog;
 import com.yb.hi.entity.inpatient.HisInpChargeDetail;
 import com.yb.hi.entity.inpatient.HisInpOrder;
+import com.yb.hi.entity.inpatient.HisInpOrderExec;
 import com.yb.hi.entity.inpatient.HisInpVisit;
 import com.yb.hi.entity.inpatient.HisOrderTemplate;
 import com.yb.hi.framework.common.BizException;
@@ -26,6 +27,7 @@ import com.yb.hi.mapper.basedata.HisStaffMapper;
 import com.yb.hi.mapper.community.HisDrugCatalogMapper;
 import com.yb.hi.mapper.community.HisOrgCatalogMapper;
 import com.yb.hi.mapper.inpatient.HisInpChargeDetailMapper;
+import com.yb.hi.mapper.inpatient.HisInpOrderExecMapper;
 import com.yb.hi.mapper.inpatient.HisInpOrderMapper;
 import com.yb.hi.mapper.inpatient.HisInpVisitMapper;
 import com.yb.hi.platform.service.OrgAccessGuard;
@@ -63,11 +65,13 @@ public class InpOrderService extends ServiceImpl<HisInpOrderMapper, HisInpOrder>
     private final OrgAccessGuard guard;
     private final InpAllergyService allergyService;
     private final OrderTemplateService orderTemplateService;
+    private final HisInpOrderExecMapper execMapper;
 
     public InpOrderService(HisInpVisitMapper visitMapper, HisInpChargeDetailMapper chargeDetailMapper,
                            HisDrugCatalogMapper drugCatalogMapper, HisChargeItemMapper chargeItemMapper,
                            HisOrgCatalogMapper orgCatalogMapper, HisStaffMapper staffMapper, OrgAccessGuard guard,
-                           InpAllergyService allergyService, OrderTemplateService orderTemplateService) {
+                           InpAllergyService allergyService, OrderTemplateService orderTemplateService,
+                           HisInpOrderExecMapper execMapper) {
         this.visitMapper = visitMapper;
         this.chargeDetailMapper = chargeDetailMapper;
         this.drugCatalogMapper = drugCatalogMapper;
@@ -77,6 +81,7 @@ public class InpOrderService extends ServiceImpl<HisInpOrderMapper, HisInpOrder>
         this.guard = guard;
         this.allergyService = allergyService;
         this.orderTemplateService = orderTemplateService;
+        this.execMapper = execMapper;
     }
 
     /** 当前登录医生(his_staff.id): 无职工关联的账号不能执行医生站操作 */
@@ -299,6 +304,14 @@ public class InpOrderService extends ServiceImpl<HisInpOrderMapper, HisInpOrder>
         HisInpOrder order = requireOrder(id);
         if (order.getOrderStatus() == null || order.getOrderStatus() != 1) {
             throw new BizException("仅新开(1)未审核的医嘱可作废, 当前状态: " + order.getOrderStatus());
+        }
+        /* 手麻P3a执行锁: 存在已执行留痕记录(exec_status=2)的医嘱不可作废
+         * (标准住院链零影响: 病区审核后 order_status=2 本就不可作废, 此守卫仅拦截手术侧执行后回退1的场景) */
+        Long execDone = execMapper.selectCount(new LambdaQueryWrapper<HisInpOrderExec>()
+                .eq(HisInpOrderExec::getOrderId, id)
+                .eq(HisInpOrderExec::getExecStatus, 2));
+        if (execDone != null && execDone > 0) {
+            throw new BizException("医嘱已执行, 不可作废");
         }
         currentDoctorId();
         // 本次作废范围: 自身 + 同组仍为新开的组员(费用冲销需覆盖全部作废对象)

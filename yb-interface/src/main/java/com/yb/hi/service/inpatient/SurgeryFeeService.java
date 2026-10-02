@@ -264,6 +264,17 @@ public class SurgeryFeeService {
             if (surg != null && Integer.valueOf(5).equals(surg.getStatus())) {
                 throw new BizException("手术已完成, 费用不可直接退回, 请先取消完成(回退至术后)再补退费");
             }
+            /* 手麻P3a执行锁联动: 住院手术存在执行留痕医嘱时, 冲销提示明确药品费用须走药房退药流程 */
+            if (surg != null && Integer.valueOf(1).equals(surg.getVisitType() == null ? 1 : surg.getVisitType())) {
+                Long executed = jdbcTemplate.queryForObject(
+                        "SELECT COUNT(*) FROM his_inp_order_exec x"
+                                + " JOIN his_inp_order o ON x.order_id = o.id AND o.deleted = 0 AND o.tenant_id = ?"
+                                + " WHERE o.surgery_id = ? AND x.exec_status = 2 AND x.deleted = 0 AND x.tenant_id = ?",
+                        Long.class, tenantId(), fee.getSurgeryId(), tenantId());
+                if (executed != null && executed > 0) {
+                    throw new BizException("该手术已有执行留痕医嘱, 相关药品费用退药须走药房退药流程, 不可直接冲销");
+                }
+            }
         }
         int affected = feeMapper.update(null, new LambdaUpdateWrapper<HisSurgeryFee>()
                 .set(HisSurgeryFee::getStatus, 2)

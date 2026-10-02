@@ -58,16 +58,19 @@ public class SurgeryService {
     private final JdbcTemplate jdbcTemplate;
     private final SurgeryApplyService applyService;
     private final SurgeryAuthRuleService authRuleService;
+    private final PacuService pacuService;
 
     public SurgeryService(HisSurgeryMapper surgeryMapper, HisInpVisitMapper visitMapper,
                           OrgAccessGuard guard, JdbcTemplate jdbcTemplate,
-                          SurgeryApplyService applyService, SurgeryAuthRuleService authRuleService) {
+                          SurgeryApplyService applyService, SurgeryAuthRuleService authRuleService,
+                          PacuService pacuService) {
         this.surgeryMapper = surgeryMapper;
         this.visitMapper = visitMapper;
         this.guard = guard;
         this.jdbcTemplate = jdbcTemplate;
         this.applyService = applyService;
         this.authRuleService = authRuleService;
+        this.pacuService = pacuService;
     }
 
     /* ==================== 查询 ==================== */
@@ -390,10 +393,14 @@ public class SurgeryService {
         return transition(id, 3, 4, "结束手术", false, true);
     }
 
-    /** 完成手术: status 4->5, 来源申请单联动 4->5 */
+    /** 完成手术: status 4->5, 来源申请单联动 4->5; P3b 软门禁: 存在未出复苏单则拒绝(不动七态枚举) */
     @Transactional(rollbackFor = Exception.class)
     public HisSurgery complete(Long id) {
         HisSurgery exist = requireSurgery(id);
+        /* 手麻P3b PACU 软门禁: 患者仍在复苏室(PACU)时不可完成, 须先出复苏 */
+        if (pacuService.hasInProgress(id)) {
+            throw new BizException("患者仍在复苏室(PACU), 须先出复苏后再完成手术");
+        }
         HisSurgery s = transition(id, 4, 5, "完成手术", false, false);
         if (exist.getApplyId() != null) {
             try {
@@ -409,6 +416,10 @@ public class SurgeryService {
     @Transactional(rollbackFor = Exception.class)
     public HisSurgery cancel(Long id) {
         HisSurgery exist = requireSurgery(id);
+        /* 手麻P3b PACU 软门禁: 在途复苏单存在时拒绝取消(主状态机仅1/2/7可取消, 此为防御性双保险) */
+        if (pacuService.hasInProgress(id)) {
+            throw new BizException("患者仍在复苏室(PACU), 须先出复苏后才能取消手术");
+        }
         int affected = surgeryMapper.update(null, new LambdaUpdateWrapper<HisSurgery>()
                 .set(HisSurgery::getStatus, 6)
                 .set(HisSurgery::getUpdateTime, LocalDateTime.now())

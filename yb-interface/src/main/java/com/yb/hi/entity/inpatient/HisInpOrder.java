@@ -108,6 +108,25 @@ public class HisInpOrder extends BaseEntity {
     private String proxyReason;
     /** 手术类药品医嘱发送药房闸门: 0未发送 1已发送 2已撤回(普通医嘱为空自动入队) */
     private Integer sendPharmStatus;
+    /** 发药状态: 0未发 1已发(P4 住院发药, 旧服务经手写SQL读写, 本实体补齐映射) */
+    private Integer dispenseStatus;
+    /* ---------- 手麻P3a扩展列(DictSchemaMigration 幂等补列) ---------- */
+    /** 手术侧退药申请标志: 0无 1申请中 2已退药(药房 returnDrug 完成时闭环回写) */
+    private Integer returnApplyFlag;
+    /** 退药申请原因 */
+    private String returnApplyReason;
+    /** 退药申请提交时间 */
+    private LocalDateTime returnApplyTime;
+    /** 退药申请人(登录用户名) */
+    private String returnApplyBy;
+
+    /* ---------- 手麻P3a执行留痕(按手术列表回显瞬态回填, 不落库; fastjson2 裁剪null, 前端按undefined渲染) ---------- */
+    /** 存在已执行记录(exec_status=2): true已执行 */
+    @TableField(exist = false)
+    private Boolean execDone;
+    /** 最近一次执行时间 */
+    @TableField(exist = false)
+    private LocalDateTime execTimeLast;
 
     /* ---------- 医保预审(开立回执瞬态回填, 不落库) ---------- */
     /** 医保预警提示(如"该项目无医保编码，将全额自费"; 非阻断, 不落库) */

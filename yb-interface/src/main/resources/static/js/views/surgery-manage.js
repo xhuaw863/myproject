@@ -82,6 +82,11 @@
   const ORDER_STATUS = { 1: '新开', 2: '已审核', 3: '执行中', 4: '已完成', 5: '已停止', 6: '已作废' };
   const ORDER_STATUS_TYPE = { 1: 'primary', 2: 'success', 3: 'warning', 4: 'success', 5: 'info', 6: 'danger' };
   const SEND_PHARM = { 0: '未发送', 1: '已发送', 2: '已撤回' };
+  /* 手麻P3: 退药申请标志 + 复苏(PACU)状态/去向字典 */
+  const RETURN_APPLY = { 0: '无', 1: '申请中', 2: '已退药' };
+  const PACU_STATUS = { 1: '复苏中', 2: '已出' };
+  const PACU_STATUS_TYPE = { 1: 'warning', 2: 'success' };
+  const PACU_DEST = { 1: '回病房', 2: '转ICU', 3: '门诊随访' };
   /* 生命体征折线色: HR红 SBP蓝 DBP浅蓝 SpO2紫 Temp橙 RR绿 */
   const VITAL_COLORS = { hr: '#c74f4f', sbp: '#2c78c7', dbp: '#8ab6e0', spo2: '#9b59b6', temp: '#d98b32', rr: '#3c862d' };
 
@@ -208,6 +213,10 @@
   function orderStLabel(v) { return ORDER_STATUS[v] || orDash(v); }
   function orderStTag(v) { return ORDER_STATUS_TYPE[v] || 'info'; }
   function sendPharmLabel(v) { return SEND_PHARM[v] || ''; }
+  function returnApplyLabel(v) { return RETURN_APPLY[v] || ''; }
+  function pacuStatusLabel(v) { return PACU_STATUS[v] || orDash(v); }
+  function pacuStatusTag(v) { var t = PACU_STATUS_TYPE[v]; return t === undefined ? 'info' : t; }
+  function pacuDestLabel(v) { return PACU_DEST[v] || orDash(v); }
   function moduleLabel(v) { return MODULE_TYPE[v || 1] || orDash(v); }
   function birthTypeLabel(v) { return BIRTH_TYPE[v] || orDash(v); }
   function newbornStatusLabel(v) { return NEWBORN_STATUS[v] || orDash(v); }
@@ -243,7 +252,10 @@
       feeCatLabel: feeCatLabel, feeCatColor: feeCatColor,
       vtLabel: vtLabel, dlLabel: dlLabel, dlTag: dlTag, tplLevelLabel: tplLevelLabel,
       orderCatLabel: orderCatLabel, phaseLabel: phaseLabel, phaseTag: phaseTag,
+      jsonArr: jsonArr,
       orderStLabel: orderStLabel, orderStTag: orderStTag, sendPharmLabel: sendPharmLabel,
+      returnApplyLabel: returnApplyLabel, pacuStatusLabel: pacuStatusLabel,
+      pacuStatusTag: pacuStatusTag, pacuDestLabel: pacuDestLabel,
       moduleLabel: moduleLabel, birthTypeLabel: birthTypeLabel, newbornStatusLabel: newbornStatusLabel,
       newbornStatusTag: newbornStatusTag
     }
@@ -1497,6 +1509,33 @@
       '      </el-table>',
       '      <el-empty v-if="!anesLoading && !anesRows.length" description="暂无麻醉已安排手术" :image-size="60"></el-empty>',
       '    </el-tab-pane>',
+      /* ================= 手麻P3b: 复苏(PACU)工作台 ================= */
+      '    <el-tab-pane label="复苏(PACU)" name="pacu">',
+      '      <div class="toolbar" style="margin-bottom:10px;display:flex;gap:8px;align-items:center;flex-wrap:wrap">',
+      '        <el-select v-model="pacuFilters.status" clearable placeholder="状态" size="small" style="width:110px">',
+      '          <el-option :value="1" label="复苏中"></el-option><el-option :value="2" label="已出"></el-option>',
+      '        </el-select>',
+      '        <el-input v-model="pacuFilters.kw" clearable placeholder="姓名/住院号" size="small" style="width:200px" @keyup.enter="loadPacu"></el-input>',
+      '        <el-button type="primary" size="small" @click="loadPacu">刷新</el-button>',
+      '      </div>',
+      '      <el-table :data="pacuRows" border size="small" v-loading="pacuLoading" max-height="calc(100vh - 268px)">',
+      '        <el-table-column label="序号" width="52" align="center"><template #default="s">{{ (pacuP - 1) * pacuSize + s.$index + 1 }}</template></el-table-column>',
+      '        <el-table-column prop="patientName" label="患者" width="84"><template #default="s">{{ orDash(s.row.patientName) }}</template></el-table-column>',
+      '        <el-table-column prop="inpNo" label="住院号" width="110"><template #default="s">{{ orDash(s.row.inpNo) }}</template></el-table-column>',
+      '        <el-table-column prop="surgeryName" label="手术" min-width="140" show-overflow-tooltip><template #default="s">{{ orDash(s.row.surgeryName) }}</template></el-table-column>',
+      '        <el-table-column label="入复苏" width="130"><template #default="s">{{ fmtDT(s.row.admitTime) }}</template></el-table-column>',
+      '        <el-table-column label="Aldrete入" width="76" align="center"><template #default="s">{{ orDash(s.row.aldreteAdmit) }}</template></el-table-column>',
+      '        <el-table-column label="体征" width="56" align="center"><template #default="s">{{ jsonArr(s.row.vitalsJson).length }}</template></el-table-column>',
+      '        <el-table-column label="状态" width="72" align="center"><template #default="s"><el-tag size="small" :type="pacuStatusTag(s.row.status)">{{ pacuStatusLabel(s.row.status) }}</el-tag></template></el-table-column>',
+      '        <el-table-column label="操作" width="180" align="center" fixed="right"><template #default="s">',
+      '          <el-button v-if="s.row.status === 1" link type="primary" @click="openPacuVital(s.row)">体征登记</el-button>',
+      '          <el-button v-if="s.row.status === 1" link type="success" @click="openPacuDischarge(s.row)">出复苏</el-button>',
+      '          <el-button link type="info" @click="viewPacu(s.row)">查看</el-button>',
+      '        </template></el-table-column>',
+      '      </el-table>',
+      '      <el-pagination style="margin-top:12px;justify-content:flex-end;" background layout="total, prev, pager, next" :total="pacuTotal" :page-size="pacuSize" :current-page="pacuP" @current-change="onPacuPage"></el-pagination>',
+      '      <el-empty v-if="!pacuLoading && !pacuRows.length" description="暂无复苏记录" :image-size="60"></el-empty>',
+      '    </el-tab-pane>',
       '    <el-tab-pane label="今日看板" name="board">',
       '      <div v-loading="boardLoading">',
       '        <div style="margin-bottom:10px;color:var(--yb-ink-2);font-size:13px">日期: {{ board.date || "—" }}　今日共 {{ board.total }} 台手术, 点击卡片查看手术详情</div>',
@@ -1784,11 +1823,15 @@
       '          <el-table-column label="分类" width="52" align="center"><template #default="s">{{ orderCatLabel(s.row.orderCategory) }}</template></el-table-column>',
       '          <el-table-column label="医嘱内容" min-width="150" show-overflow-tooltip><template #default="s">{{ s.row.orderContent }}<el-tag v-if="s.row.proxyDoctorId" size="small" type="info" style="margin-left:4px">代开</el-tag></template></el-table-column>',
       '          <el-table-column label="状态" width="64" align="center"><template #default="s"><el-tag size="small" :type="orderStTag(s.row.orderStatus)">{{ orderStLabel(s.row.orderStatus) }}</el-tag></template></el-table-column>',
-      '          <el-table-column label="药房" width="62" align="center"><template #default="s">{{ (s.row.orderCategory === 1 \u0026\u0026 s.row.drugId) ? (sendPharmLabel(s.row.sendPharmStatus) || "未发送") : "-" }}</template></el-table-column>',
-      '          <el-table-column label="操作" width="150" align="center" fixed="right"><template #default="s">',
+      '          <el-table-column label="药房" width="62" align="center"><template #default="s">{{ (s.row.orderCategory === 1 && s.row.drugId) ? (sendPharmLabel(s.row.sendPharmStatus) || "未发送") : "-" }}</template></el-table-column>',
+      '          <el-table-column label="执行" width="56" align="center"><template #default="s"><el-tag v-if="s.row.execDone" size="small" type="success" :title="fmtDT(s.row.execTimeLast)">已执行</el-tag><span v-else>-</span></template></el-table-column>',
+      '          <el-table-column label="退药" width="62" align="center"><template #default="s"><el-tag v-if="s.row.returnApplyFlag === 1" size="small" type="warning" :title="s.row.returnApplyReason">申请中</el-tag><el-tag v-else-if="s.row.returnApplyFlag === 2" size="small" type="success">已退药</el-tag><span v-else>-</span></template></el-table-column>',
+      '          <el-table-column label="操作" width="210" align="center" fixed="right"><template #default="s">',
+      '            <el-button v-if="!s.row.execDone && (s.row.orderStatus === 1 || s.row.orderStatus === 2)" link type="success" @click="execSoOrder(s.row)">执行</el-button>',
       '            <el-button v-if="s.row.orderCategory === 1 && s.row.drugId && s.row.sendPharmStatus !== 1" link type="primary" @click="sendSoPharmacy(s.row)">发送药房</el-button>',
       '            <el-button v-if="s.row.orderCategory === 1 && s.row.drugId && s.row.sendPharmStatus === 1" link type="warning" @click="recallSoPharmacy(s.row)">撤回</el-button>',
-      '            <el-button v-if="s.row.orderStatus === 1" link type="danger" @click="cancelSoOrder(s.row)">作废</el-button>',
+      '            <el-button v-if="s.row.orderCategory === 1 && s.row.drugId && s.row.dispenseStatus === 1 && !s.row.execDone && s.row.returnApplyFlag !== 1" link type="warning" @click="returnApplySo(s.row)">申请退药</el-button>',
+      '            <el-button v-if="s.row.orderStatus === 1 && !s.row.execDone" link type="danger" @click="cancelSoOrder(s.row)">作废</el-button>',
       '          </template></el-table-column>',
       '        </el-table>',
       '        <div class="surg-section-title" style="margin-top:14px" v-if="detail.surgery.moduleType === 3">',
@@ -1806,6 +1849,20 @@
       '          <el-table-column label="分娩方式" width="80" align="center"><template #default="s">{{ birthTypeLabel(s.row.birth_type) }}</template></el-table-column>',
       '          <el-table-column label="住院号" width="110"><template #default="s">{{ orDash(s.row.baby_inp_no) }}</template></el-table-column>',
       '          <el-table-column label="状态" width="72" align="center"><template #default="s"><el-tag size="small" :type="newbornStatusTag(s.row.status)">{{ newbornStatusLabel(s.row.status) }}</el-tag></template></el-table-column>',
+      '        </el-table>',
+      '        <div class="surg-section-title" style="margin-top:14px">',
+      '          <span>PACU 复苏</span>',
+      '          <el-button v-if="detail.surgery.status === 4 && !pacuHasInProgress" link type="primary" size="small" style="float:right;margin-top:-2px" @click="openPacuAdmit">入复苏(PACU)</el-button>',
+      '          <el-button v-if="pacuHasInProgress" link type="warning" size="small" style="float:right;margin-top:-2px;margin-right:10px" @click="gotoPacuTab">去复苏Tab处理</el-button>',
+      '        </div>',
+      '        <div v-if="detail.surgery.status === 4 && !pacuHasInProgress && !pacuList.length" class="surg-info" style="margin-bottom:8px">该手术已结束尚未完成, 可在右上「入复苏(PACU)」建立复苏单; 存在在途复苏单时需先出复苏才能完成手术。</div>',
+      '        <el-table v-if="pacuList.length" :data="pacuList" border size="small" v-loading="pacuDetailLoading" max-height="220" empty-text="暂无复苏记录">',
+      '          <el-table-column label="入复苏" width="130"><template #default="s">{{ fmtDT(s.row.admitTime) }}</template></el-table-column>',
+      '          <el-table-column label="入复苏Aldrete" width="90" align="center"><template #default="s">{{ orDash(s.row.aldreteAdmit) }}</template></el-table-column>',
+      '          <el-table-column label="体征条数" width="70" align="center"><template #default="s">{{ jsonArr(s.row.vitalsJson).length }}</template></el-table-column>',
+      '          <el-table-column label="状态" width="72" align="center"><template #default="s"><el-tag size="small" :type="pacuStatusTag(s.row.status)">{{ pacuStatusLabel(s.row.status) }}</el-tag></template></el-table-column>',
+      '          <el-table-column label="出复苏" width="130"><template #default="s">{{ fmtDT(s.row.dischargeTime) }}</template></el-table-column>',
+      '          <el-table-column label="出复苏去向" width="90" align="center"><template #default="s">{{ s.row.status === 2 ? pacuDestLabel(s.row.dischargeDest) : "-" }}</template></el-table-column>',
       '        </el-table>',
       '      </template>',
       '    </div>',
@@ -1875,6 +1932,45 @@
       '    <template #footer>',
       '      <el-button size="small" @click="nbDlgVisible = false">取消</el-button>',
       '      <el-button size="small" type="primary" :loading="nbSaving" @click="submitNewborn">建档</el-button>',
+      '    </template>',
+      '  </el-dialog>',
+      /* ================= 手麻P3b: PACU 入复苏 / 体征登记 / 出复苏 ================= */
+      '  <el-dialog v-model="pacuAdmitVisible" title="入复苏(PACU)" width="460px" :close-on-click-modal="false" append-to-body>',
+      '    <div class="surg-info" style="margin-bottom:8px">仅已结束手术(术后状态)且无在途复苏单可入复苏。</div>',
+      '    <el-form label-width="110px" size="small">',
+      '      <el-form-item label="入复苏Aldrete"><el-input-number v-model="pacuAdmitForm.aldreteAdmit" :min="0" :max="10" controls-position="right" style="width:120px"></el-input-number><span style="margin-left:6px;font-size:12px;color:var(--yb-ink-3)">0-10, 选填</span></el-form-item>',
+      '      <el-form-item label="入复苏备注"><el-input v-model="pacuAdmitForm.admitNote" type="textarea" :rows="2" placeholder="选填"></el-input></el-form-item>',
+      '    </el-form>',
+      '    <template #footer>',
+      '      <el-button size="small" @click="pacuAdmitVisible = false">取消</el-button>',
+      '      <el-button size="small" type="primary" :loading="pacuSaving" @click="submitPacuAdmit">确认入复苏</el-button>',
+      '    </template>',
+      '  </el-dialog>',
+      '  <el-dialog v-model="pacuVitalVisible" title="生命体征登记" width="560px" :close-on-click-modal="false" append-to-body>',
+      '    <div class="surg-info" style="margin-bottom:8px">{{ pacuVitalRow ? (pacuVitalRow.patientName || "") + " · 已登记 " + jsonArr(pacuVitalRow.vitalsJson).length + " 条" : "" }}</div>',
+      '    <el-form :inline="true" label-width="64px" size="small">',
+      '      <el-form-item label="血压"><el-input v-model="pacuVitalForm.hp" placeholder="如 120/80" style="width:110px"></el-input></el-form-item>',
+      '      <el-form-item label="心率"><el-input v-model="pacuVitalForm.hr" placeholder="bpm" style="width:84px"></el-input></el-form-item>',
+      '      <el-form-item label="体温"><el-input v-model="pacuVitalForm.tm" placeholder="℃" style="width:84px"></el-input></el-form-item>',
+      '      <el-form-item label="脉搏"><el-input v-model="pacuVitalForm.p" placeholder="" style="width:84px"></el-input></el-form-item>',
+      '      <el-form-item label="SpO2"><el-input v-model="pacuVitalForm.s" placeholder="%" style="width:84px"></el-input></el-form-item>',
+      '      <el-form-item><el-button type="primary" :loading="pacuSaving" @click="submitPacuVital">添加</el-button></el-form-item>',
+      '    </el-form>',
+      '    <div style="font-size:12px;color:var(--yb-ink-3)">时间取当前; 可连续多次添加。</div>',
+      '    <template #footer>',
+      '      <el-button size="small" @click="pacuVitalVisible = false">关闭</el-button>',
+      '    </template>',
+      '  </el-dialog>',
+      '  <el-dialog v-model="pacuDischargeVisible" title="出复苏" width="480px" :close-on-click-modal="false" append-to-body>',
+      '    <div class="surg-info" style="margin-bottom:8px">Aldrete ≥ 9 分直接放行; 低于 9 分必须在备注中说明理由。</div>',
+      '    <el-form label-width="110px" size="small">',
+      '      <el-form-item label="出复苏Aldrete" required><el-input-number v-model="pacuDischargeForm.aldreteDischarge" :min="0" :max="10" controls-position="right" style="width:120px"></el-input-number></el-form-item>',
+      '      <el-form-item label="去向" required><el-select v-model="pacuDischargeForm.dischargeDest" placeholder="选择去向" style="width:160px"><el-option :value="1" label="回病房"></el-option><el-option :value="2" label="转ICU"></el-option><el-option :value="3" label="门诊随访"></el-option></el-select></el-form-item>',
+      '      <el-form-item label="备注/理由"><el-input v-model="pacuDischargeForm.dischargeNote" type="textarea" :rows="2" placeholder="Aldrete<9时必填理由"></el-input></el-form-item>',
+      '    </el-form>',
+      '    <template #footer>',
+      '      <el-button size="small" @click="pacuDischargeVisible = false">取消</el-button>',
+      '      <el-button size="small" type="primary" :loading="pacuSaving" @click="submitPacuDischarge">确认出复苏</el-button>',
       '    </template>',
       '  </el-dialog>',
       '</div>'
@@ -1952,7 +2048,16 @@
         tplDlgVisible: false, tplSaving: false, tplList: [], tplLoading: false,
         tplPick: { templateId: null, orderPhase: 2 },
         /* ===== 手麻P2d: 新生儿建档(分娩联动) ===== */
-        nbGuide: null, nbList: [], nbLoading: false, nbDlgVisible: false, nbSaving: false, nbForm: blankNewbornForm()
+        nbGuide: null, nbList: [], nbLoading: false, nbDlgVisible: false, nbSaving: false, nbForm: blankNewbornForm(),
+        /* ===== 手麻P3b: 复苏(PACU) ===== */
+        pacuRows: [], pacuTotal: 0, pacuP: 1, pacuSize: 20, pacuLoading: false,
+        pacuFilters: { status: null, kw: '' },
+        pacuList: [], pacuDetailLoading: false, pacuHasInProgress: false,
+        pacuSaving: false,
+        pacuAdmitVisible: false, pacuAdmitForm: { surgeryId: null, aldreteAdmit: null, admitNote: '' },
+        pacuVitalVisible: false, pacuVitalRow: null, pacuVitalForm: { hp: '', hr: '', tm: '', p: '', s: '' },
+        pacuDischargeVisible: false, pacuDischargeRow: null,
+        pacuDischargeForm: { aldreteDischarge: 10, dischargeDest: 1, dischargeNote: '' }
       };
     },
     computed: {
@@ -2011,6 +2116,7 @@
         else if (this.tab === 'arranged') { this.refreshArranged(); }
         else if (this.tab === 'finished') { this.loadFinished(); }
         else if (this.tab === 'anes') { this.loadAnes(); }
+        else if (this.tab === 'pacu') { this.loadPacu(); }
         else { this.load(); }
       },
       onTabChange: function (name) {
@@ -2020,6 +2126,7 @@
         else if (n === 'arranged') { this.refreshArranged(); }
         else if (n === 'finished') { this.loadFinished(); }
         else if (n === 'anes') { this.loadAnes(); }
+        else if (n === 'pacu') { this.loadPacu(); }
         else if (n === 'list') { this.load(); }
       },
       loadBoard: function () {
@@ -2238,10 +2345,12 @@
         vm.detailLoading = true;
         vm.detailVisible = true;
         vm.nbGuide = null; vm.nbList = [];
+        vm.pacuList = []; vm.pacuHasInProgress = false;
         HIS.get('/api/his/surgery/' + id).then(function (d) {
           vm.detail = d || null;
           vm.detailLoading = false;
           vm.loadSurgeryOrders();
+          vm.loadDetailPacu();
           if (d && d.surgery && Number(d.surgery.moduleType) === 3) { vm.loadNewbornGuide(d.surgery); }
         }).catch(function (e) { vm.detailLoading = false; HIS.notifyError(e); });
       },
@@ -2366,6 +2475,148 @@
           .then(function () { return HIS.put('/api/his/inp/order/' + HIS.idParam(row.id) + '/cancel'); })
           .then(function () { HIS.notifySuccess && HIS.notifySuccess('已作废'); vm.loadSurgeryOrders(); })
           .catch(function (e) { if (!isCancel(e)) { HIS.notifyError(e); } });
+      },
+      /* 手麻P3a: 手术侧执行留痕(弹备注确认) */
+      execSoOrder: function (row) {
+        var vm = this;
+        ElementPlus.ElMessageBox.prompt('确认执行该医嘱? 可填执行备注(选填)', '医嘱执行确认',
+          { inputType: 'textarea', confirmButtonText: '确定执行', cancelButtonText: '取消' }).then(function (r) {
+          var remark = (r && r.value) ? String(r.value).trim() : '';
+          return HIS.post('/api/his/inp/order/' + HIS.idParam(row.id) + '/execute', { remark: remark });
+        }).then(function () {
+          HIS.notifySuccess && HIS.notifySuccess('已执行留痕'); vm.loadSurgeryOrders();
+        }).catch(function (e) { if (!isCancel(e)) { HIS.notifyError(e); } });
+      },
+      /* 手麻P3a: 已发药未执行药品医嘱发起退药申请(reason 必填) */
+      returnApplySo: function (row) {
+        var vm = this;
+        promptReason('退药申请', '请填写退药原因(必填)').then(function (r) {
+          var reason = (r && r.value) ? String(r.value).trim() : '';
+          if (!reason) { HIS.notifyError('退药原因不能为空'); return Promise.reject('cancel'); }
+          return HIS.post('/api/his/inp/order/' + HIS.idParam(row.id) + '/return-apply', { reason: reason });
+        }).then(function () {
+          HIS.notifySuccess && HIS.notifySuccess('退药申请已提交, 待药房处理'); vm.loadSurgeryOrders();
+        }).catch(function (e) { if (!isCancel(e)) { HIS.notifyError(e); } });
+      },
+      /* ===== 手麻P3b: 复苏(PACU) ===== */
+      loadPacu: function () {
+        var vm = this;
+        vm.pacuLoading = true;
+        var q = '/api/his/surgery-pacu/list?page=' + vm.pacuP + '&size=' + vm.pacuSize;
+        var org = HIS.currentOrgId();
+        if (org) { q += '&orgId=' + org; }
+        if (vm.pacuFilters.status) { q += '&status=' + vm.pacuFilters.status; }
+        if (vm.pacuFilters.kw) { q += '&kw=' + encodeURIComponent(vm.pacuFilters.kw); }
+        HIS.get(q).then(function (d) {
+          vm.pacuRows = (d && d.records) || [];
+          vm.pacuTotal = (d && d.total) || 0;
+          vm.pacuLoading = false;
+        }).catch(function (e) { vm.pacuLoading = false; HIS.notifyError(e); });
+      },
+      onPacuPage: function (p) { this.pacuP = p; this.loadPacu(); },
+      /* 详情抽屉回显本手术复苏单 */
+      loadDetailPacu: function () {
+        var vm = this;
+        var s = vm.detail && vm.detail.surgery;
+        if (!s) { vm.pacuList = []; vm.pacuHasInProgress = false; return; }
+        vm.pacuDetailLoading = true;
+        HIS.get('/api/his/surgery-pacu/by-surgery/' + HIS.idParam(s.id))
+          .then(function (l) {
+            vm.pacuList = l || [];
+            vm.pacuHasInProgress = vm.pacuList.some(function (x) { return Number(x.status) === 1; });
+          })
+          .catch(function (e) { vm.pacuList = []; vm.pacuHasInProgress = false; HIS.notifyError(e); })
+          .finally(function () { vm.pacuDetailLoading = false; });
+      },
+      openPacuAdmit: function () {
+        var vm = this;
+        var s = vm.detail && vm.detail.surgery;
+        if (!s) { return; }
+        vm.pacuAdmitForm = { surgeryId: s.id, aldreteAdmit: null, admitNote: '' };
+        vm.pacuAdmitVisible = true;
+      },
+      submitPacuAdmit: function () {
+        var vm = this;
+        vm.pacuSaving = true;
+        HIS.post('/api/his/surgery-pacu/' + HIS.idParam(vm.pacuAdmitForm.surgeryId) + '/admit',
+          { aldreteAdmit: vm.pacuAdmitForm.aldreteAdmit, admitNote: vm.pacuAdmitForm.admitNote })
+          .then(function () {
+            HIS.notifySuccess && HIS.notifySuccess('已入复苏');
+            vm.pacuAdmitVisible = false;
+            vm.loadDetailPacu();
+            if (vm.tab === 'pacu') { vm.loadPacu(); }
+          })
+          .catch(function (e) { HIS.notifyError(e); })
+          .finally(function () { vm.pacuSaving = false; });
+      },
+      openPacuVital: function (row) {
+        this.pacuVitalRow = row;
+        this.pacuVitalForm = { hp: '', hr: '', tm: '', p: '', s: '' };
+        this.pacuVitalVisible = true;
+      },
+      submitPacuVital: function () {
+        var vm = this;
+        var f = vm.pacuVitalForm;
+        if (!f.hp && !f.hr && !f.tm && !f.p && !f.s) { HIS.notifyError('请至少填写一项体征'); return; }
+        vm.pacuSaving = true;
+        HIS.post('/api/his/surgery-pacu/' + HIS.idParam(vm.pacuVitalRow.id) + '/vital',
+          { hp: f.hp || null, hr: f.hr || null, tm: f.tm || null, p: f.p || null, s: f.s || null })
+          .then(function (updated) {
+            if (updated) { vm.pacuVitalRow = updated; }
+            HIS.notifySuccess && HIS.notifySuccess('体征已登记');
+            vm.pacuVitalForm = { hp: '', hr: '', tm: '', p: '', s: '' };
+            vm.loadPacu();
+          })
+          .catch(function (e) { HIS.notifyError(e); })
+          .finally(function () { vm.pacuSaving = false; });
+      },
+      openPacuDischarge: function (row) {
+        this.pacuDischargeRow = row;
+        this.pacuDischargeForm = { aldreteDischarge: 10, dischargeDest: 1, dischargeNote: '' };
+        this.pacuDischargeVisible = true;
+      },
+      submitPacuDischarge: function () {
+        var vm = this;
+        var f = vm.pacuDischargeForm;
+        if (f.aldreteDischarge === null || f.aldreteDischarge === undefined) { HIS.notifyError('请填入复苏Aldrete评分'); return; }
+        if (!f.dischargeDest) { HIS.notifyError('请选择去向'); return; }
+        if (Number(f.aldreteDischarge) < 9 && !(f.dischargeNote && String(f.dischargeNote).trim())) {
+          HIS.notifyError('Aldrete<9分须在备注说明理由'); return;
+        }
+        vm.pacuSaving = true;
+        HIS.post('/api/his/surgery-pacu/' + HIS.idParam(vm.pacuDischargeRow.id) + '/discharge',
+          { aldreteDischarge: f.aldreteDischarge, dischargeDest: f.dischargeDest, dischargeNote: f.dischargeNote || null })
+          .then(function () {
+            HIS.notifySuccess && HIS.notifySuccess('已出复苏');
+            vm.pacuDischargeVisible = false;
+            vm.loadPacu();
+            if (vm.detailVisible) { vm.loadDetailPacu(); }
+          })
+          .catch(function (e) { HIS.notifyError(e); })
+          .finally(function () { vm.pacuSaving = false; });
+      },
+      viewPacu: function (row) {
+        var vm = this;
+        var vits = jsonArr(row.vitalsJson);
+        var lines = ['患者: ' + orDash(row.patientName) + '  住院号: ' + orDash(row.inpNo),
+          '入复苏: ' + fmtDT(row.admitTime) + '  Aldrete入: ' + orDash(row.aldreteAdmit),
+          '状态: ' + pacuStatusLabel(row.status)];
+        if (Number(row.status) === 2) {
+          lines.push('出复苏: ' + fmtDT(row.dischargeTime) + '  Aldrete出: ' + orDash(row.aldreteDischarge) + '  去向: ' + pacuDestLabel(row.dischargeDest));
+          if (row.dischargeNote) { lines.push('备注/理由: ' + row.dischargeNote); }
+        }
+        lines.push('体征登记 ' + vits.length + ' 条');
+        vits.slice(-6).forEach(function (v, i) {
+          lines.push('  #' + (i + 1) + ' ' + (v.t || '') + ' 血压' + (v.hp || '-') + ' 心率' + (v.hr || '-')
+            + ' 体温' + (v.tm || '-') + ' 脉搏' + (v.p || '-') + ' SpO2' + (v.s || '-'));
+        });
+        ElementPlus.ElMessageBox.alert(escHtml(lines.join('\n')).replace(/\n/g, '<br/>'), '复苏详情',
+          { dangerouslyUseHTMLString: true, confirmButtonText: '关闭' });
+      },
+      gotoPacuTab: function () {
+        this.tab = 'pacu';
+        this.pacuP = 1;
+        this.loadPacu();
       },
       /* ===== 手麻P2b: 手术医嘱模板套用 ===== */
       openTplDialog: function () {

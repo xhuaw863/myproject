@@ -51,6 +51,23 @@ public class InpOrderController {
         return R.ok(surgeryOrderService.recallPharmacy(id));
     }
 
+    /** 手术医嘱执行留痕(手麻P3a): 手术侧直写执行记录(转抄即执行), 已执行后锁定作废/发送撤回 */
+    @PostMapping("/{id}/execute")
+    public R<Object> execute(@PathVariable Long id, @RequestBody(required = false) Map<String, String> body) {
+        String remark = body == null ? null : body.get("remark");
+        Map<String, Object> out = new java.util.LinkedHashMap<>();
+        out.put("orderId", id);
+        out.put("execTime", surgeryOrderService.execute(id, remark).getExecTime());
+        return R.ok(out);
+    }
+
+    /** 手术药品医嘱退药申请(手麻P3a): 已发药未执行可发起, 药房 returnDrug 完成时闭环回写 */
+    @PostMapping("/{id}/return-apply")
+    public R<Integer> returnApply(@PathVariable Long id, @RequestBody(required = false) Map<String, String> body) {
+        String reason = body == null ? null : body.get("reason");
+        return R.ok(surgeryOrderService.returnApply(id, reason));
+    }
+
     /**
      * 抗菌到期/越级告警扫描(只读, 医生站工作台待办): staffId 缺省回落登录医生本人; all=true 则不限医生, 查本租户全部医生。
      */

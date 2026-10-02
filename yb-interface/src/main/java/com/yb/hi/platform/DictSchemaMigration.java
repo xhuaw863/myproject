@@ -428,6 +428,8 @@ public class DictSchemaMigration implements ApplicationRunner {
             ensureInpatientEnhancementTables(conn);
             // 手麻P2: 医嘱模板手术场景扩展列 + 通知渠道下发展开列 + 新生儿建档新表(依赖 his_order_template 已建, 故置于增强表之后; 幂等)
             ensureSurgeryP2Tables(conn);
+            // 手麻P3: 退药申请4列(his_inp_order) + 术毕复苏新表 his_surgery_pacu(幂等)
+            ensureSurgeryP3Tables(conn);
             // UI升级(住院看板/通知角标): his_inp_notification 住院通知表(幂等, 新模块非启动关键路径)
             ensureUIEnhancementTables(conn);
             // P4 住院发药增强: 住院发药记录/病区暂存冲抵台账/出院带药取药二次核发 3 表 + his_drug_return.keep_ward_flag + his_inp_order.dispense_status 补列(幂等, 新模块非启动关键路径)
@@ -3991,6 +3993,54 @@ public class DictSchemaMigration implements ApplicationRunner {
                     + "KEY idx_surgery (surgery_id),"
                     + "KEY idx_baby_visit (baby_inp_visit_id)"
                     + ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='新生儿建档(P2d 产科分娩一体化)'");
+        }
+    }
+
+    /**
+     * 手麻 P3 幂等迁移:
+     * (P3a) his_inp_order 补退药申请4列(return_apply_flag 承接手术侧退药请求, 药房 returnDrug 完成时闭环回写);
+     * (P3b) 新建 his_surgery_pacu 术毕复苏单表(入复苏→生命体征登记→出复苏 Aldrete 评估, 独立旁路单据)。
+     * 依赖 his_surgery/his_inp_order 既有表, addColumnIfNotExists 内部 tableExists 兜底, 故置于 P2 迁移之后。
+     */
+    private void ensureSurgeryP3Tables(Connection conn) throws Exception {
+        /* P3a: 手术侧退药申请标志(0无 1申请中 2已退药), 以列承接请求, 不建独立单据表 */
+        addColumnIfNotExists(conn, "his_inp_order", "return_apply_flag",
+                "TINYINT DEFAULT 0 COMMENT '手术侧退药申请标志:0无 1申请中 2已退药(P3a, 药房退药闭环留痕)'");
+        addColumnIfNotExists(conn, "his_inp_order", "return_apply_reason",
+                "VARCHAR(200) DEFAULT NULL COMMENT '退药申请原因'");
+        addColumnIfNotExists(conn, "his_inp_order", "return_apply_time",
+                "DATETIME DEFAULT NULL COMMENT '退药申请提交时间'");
+        addColumnIfNotExists(conn, "his_inp_order", "return_apply_by",
+                "VARCHAR(50) DEFAULT NULL COMMENT '退药申请人(登录用户名)'");
+        /* P3b: 术毕复苏(PACU)单表 */
+        try (Statement st = conn.createStatement()) {
+            st.executeUpdate("CREATE TABLE IF NOT EXISTS his_surgery_pacu ("
+                    + "id BIGINT NOT NULL COMMENT '主键',"
+                    + "tenant_id BIGINT NOT NULL COMMENT '租户ID',"
+                    + "org_id BIGINT NOT NULL COMMENT '机构ID',"
+                    + "surgery_id BIGINT NOT NULL COMMENT '手术ID(his_surgery.id)',"
+                    + "inp_visit_id BIGINT DEFAULT NULL COMMENT '住院就诊ID(his_inp_visit.id)',"
+                    + "patient_id BIGINT DEFAULT NULL COMMENT '患者ID快照(his_patient.id)',"
+                    + "patient_name VARCHAR(50) DEFAULT NULL COMMENT '患者姓名快照',"
+                    + "inp_no VARCHAR(30) DEFAULT NULL COMMENT '住院号快照',"
+                    + "admit_time DATETIME DEFAULT NULL COMMENT '入复苏时间',"
+                    + "admit_nurse_id BIGINT DEFAULT NULL COMMENT '入复苏护士ID(his_staff.id)',"
+                    + "admit_note VARCHAR(200) DEFAULT NULL COMMENT '入复苏备注',"
+                    + "aldrete_admit TINYINT DEFAULT NULL COMMENT '入复苏Aldrete评分(0-10)',"
+                    + "vitals_json TEXT NULL COMMENT '生命体征时间点数组JSON[{t,hp,hr,p,s,tm}]',"
+                    + "status TINYINT DEFAULT 1 COMMENT '状态:1复苏中 2已出',"
+                    + "discharge_time DATETIME DEFAULT NULL COMMENT '出复苏时间',"
+                    + "discharge_nurse_id BIGINT DEFAULT NULL COMMENT '出复苏护士ID(his_staff.id)',"
+                    + "aldrete_discharge TINYINT DEFAULT NULL COMMENT '出复苏Aldrete评分(0-10, <9须填理由)',"
+                    + "discharge_dest TINYINT DEFAULT NULL COMMENT '出复苏去向:1回病房 2转ICU 3门诊随访',"
+                    + "discharge_note VARCHAR(200) DEFAULT NULL COMMENT '出复苏备注(Aldrete<9时为低分理由)',"
+                    + "remark VARCHAR(500) DEFAULT NULL COMMENT '备注',"
+                    + "create_by VARCHAR(64) DEFAULT NULL, create_time DATETIME DEFAULT NULL,"
+                    + "update_by VARCHAR(64) DEFAULT NULL, update_time DATETIME DEFAULT NULL, deleted TINYINT DEFAULT 0,"
+                    + "PRIMARY KEY (id),"
+                    + "KEY idx_pacu_surgery (surgery_id),"
+                    + "KEY idx_pacu_org_status (tenant_id, org_id, status)"
+                    + ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='术毕复苏(PACU)单(P3b 独立旁路单据)'");
         }
     }
 
