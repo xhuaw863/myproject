@@ -85,6 +85,14 @@ public class TraceCodeController {
         return R.ok(traceCodeService.upload(resolveOrgId(orgId), locationId));
     }
 
+    /** 3506A 退货报送(批次5 M3): 已退货且销售已报送的码按原销售批次补报退货(退货联动已自动, 本端点为重扫/补扫入口) */
+    @PostMapping("/upload-returns")
+    public R<Map<String, Object>> uploadReturns(@RequestParam(required = false) Long orgId,
+                                                @RequestParam(required = false) Long locationId) {
+        guard.requireSelfOrgWrite();
+        return R.ok(traceCodeService.uploadReturns(resolveOrgId(orgId), locationId));
+    }
+
     private Long resolveOrgId(Long requested) {
         Long oid = guard.scopeOrgId(requested);
         if (oid != null) {

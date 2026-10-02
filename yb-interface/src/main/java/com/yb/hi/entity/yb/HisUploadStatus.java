@@ -24,6 +24,8 @@ public class HisUploadStatus extends BaseEntity {
     public static final String BIZ_VISIT = "VISIT";
     /** 业务类型: 追溯码(2404 药品追溯码报送, 一码一状态行 biz_id=his_drug_trace_code.id; 批次5 M1) */
     public static final String BIZ_TRACE = "TRACE";
+    /** 业务类型: 追溯码销售退货(3506A, 批次5 M3; 与 TRACE 销售报送行分离, 一码一退货状态行 biz_id=码行id) */
+    public static final String BIZ_TRACE_RTN = "TRACE_RTN";
 
     public static final int STATUS_PENDING = 0;
     public static final int STATUS_UPLOADED = 1;
@@ -36,7 +38,7 @@ public class HisUploadStatus extends BaseEntity {
     @TableId(type = IdType.AUTO)
     private Long id;
 
-    /** 业务类型: REG/VISIT/RX/FEE/SETL/CANCEL/TRACE */
+    /** 业务类型: REG/VISIT/RX/FEE/SETL/CANCEL/TRACE/TRACE_RTN */
     private String bizType;
     /** 业务主键(如就诊ID) */
     private Long bizId;

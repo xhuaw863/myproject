@@ -157,6 +157,40 @@ public class MockYbServer {
                 output.put("result", result);
                 break;
             }
+            case "3506": case "3506A": {
+                // 进销存商品销售退货(批次5 M3 通道B): 两级判定同销售; 必填补齐(07号文§12.3 表210 冻结 11 必填)。
+                // 违例: retRslt=0 + selinfoErrDetail 失败批次明细(表213); 行级部分受理语义待平台确认, mock 整单拒绝(成功时 errDetail 空数组)
+                JSONArray rows = "3506".equals(infno) ? singleRowToList(input)
+                        : (input == null ? null : input.getJSONArray("selinfoDetail"));
+                String rtnErr = validateRtnInfo(rows);
+                JSONObject result = new JSONObject();
+                JSONArray errDetail = new JSONArray();
+                if (rtnErr != null) {
+                    log.warn("【模拟医保平台】{} 退货明细业务拒绝: {}", infno, rtnErr);
+                    result.put("retRslt", "0");
+                    result.put("msgRslt", rtnErr);
+                    if (rows != null) {
+                        for (int i = 0; i < rows.size(); i++) {
+                            JSONObject r = rows.getJSONObject(i);
+                            if (r == null || hasRequiredMissing(r, RTN_REQUIRED)) {
+                                JSONObject e = new JSONObject();
+                                e.put("fixmedins_hilist_id", r == null ? "" : r.getString("fixmedins_hilist_id"));
+                                e.put("fixmedins_bchno", r == null ? "" : r.getString("fixmedins_bchno"));
+                                e.put("retRslt", "0");
+                                e.put("msgRslt", rtnErr);
+                                errDetail.add(e);
+                            }
+                        }
+                    }
+                } else {
+                    result.put("retRslt", "1");
+                    result.put("msgRslt", "受理成功");
+                    log.info("【模拟医保平台】{} 受理退货明细 {} 行", infno, rows.size());
+                }
+                output.put("result", result);
+                output.put("selinfoErrDetail", errDetail);
+                break;
+            }
             default:
                 // 2203/2402 等无输出交易
                 break;
@@ -263,6 +297,51 @@ public class MockYbServer {
                     JSONObject n = nodes.getJSONObject(j);
                     if (n == null || isEmptyStr(n.getString("drug_trac_codg"))) {
                         return "销售明细第" + (i + 1) + "行 drugtracinfo 第" + (j + 1) + "条缺 drug_trac_codg";
+                    }
+                }
+            }
+        }
+        return null;
+    }
+
+    /** 3506/3506A 退货明细必填(spec_35xx 表210 必填列实读 11 项; psn_cert_type 仅代码标识Y、必填列为空→不作必填校验) */
+    private static final String[] RTN_REQUIRED = {"fixmedins_hilist_id", "fixmedins_hilist_name", "fixmedins_bchno",
+            "manu_lotnum", "rx_flag", "trdn_flag", "sel_retn_cnt", "sel_retn_time", "sel_retn_opter_name", "mdtrt_sn"};
+
+    /** 单行必填面检查: 任一缺失即命中(供 selinfoErrDetail 失败行筛选) */
+    private static boolean hasRequiredMissing(JSONObject r, String[] required) {
+        for (String k : required) {
+            if (isEmptyStr(r.getString(k))) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * 3506/3506A 退货明细校验(07号文§12.3 表210 逐字冻结必填面): 10 必填(不含 psn_cert_type)
+     * + drugtracinfo 节点存在时每条 drug_trac_codg 非空(节点本身 V1.1.69 起去必传); 合规则返 null, 否则返首个违例描述
+     */
+    private String validateRtnInfo(JSONArray rows) {
+        if (rows == null || rows.isEmpty()) {
+            return "退货明细节点(selinfo/selinfoDetail)缺失";
+        }
+        for (int i = 0; i < rows.size(); i++) {
+            JSONObject r = rows.getJSONObject(i);
+            if (r == null) {
+                return "退货明细第" + (i + 1) + "行为空";
+            }
+            for (String k : RTN_REQUIRED) {
+                if (isEmptyStr(r.getString(k))) {
+                    return "退货明细第" + (i + 1) + "行必填缺失: " + k;
+                }
+            }
+            JSONArray nodes = r.getJSONArray("drugtracinfo");
+            if (nodes != null) {
+                for (int j = 0; j < nodes.size(); j++) {
+                    JSONObject n = nodes.getJSONObject(j);
+                    if (n == null || isEmptyStr(n.getString("drug_trac_codg"))) {
+                        return "退货明细第" + (i + 1) + "行 drugtracinfo 第" + (j + 1) + "条缺 drug_trac_codg";
                     }
                 }
             }

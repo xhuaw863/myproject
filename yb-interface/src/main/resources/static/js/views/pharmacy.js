@@ -2007,13 +2007,21 @@
           .then(function (n) { HIS.notifySuccess('已更新 ' + (n || 0) + ' 条'); vm.load(); vm.loadStats(); })
           .catch(function (e) { if (e !== 'cancel' && e !== 'close') { HIS.notifyError(e); } });
       },
-      /* ---- Mock 报送 ---- */
+      /* ---- 报送(批次5: 销售=3505A, 退货=3506A) ---- */
       doUpload: function () {
         var vm = this;
         var q = vm.filterLocation ? ('?locationId=' + vm.filterLocation) : '';
-        ElementPlus.ElMessageBox.confirm('确认对' + (vm.filterLocation ? '当前库位' : '全部库位') + '已发药未报送的追溯码执行 Mock 2404 报送?', '追溯码报送', { type: 'warning' })
+        ElementPlus.ElMessageBox.confirm('确认对' + (vm.filterLocation ? '当前库位' : '全部库位') + '已发药未报送的追溯码执行 3505A 商品销售报送?', '追溯码报送', { type: 'warning' })
           .then(function () { return HIS.post('/api/his/trace/upload' + q); })
           .then(function (d) { HIS.notifySuccess('已报送 ' + ((d && d.uploaded) || 0) + ' 条, 回执 ' + ((d && d.receipt) || '')); vm.load(); vm.loadStats(); })
+          .catch(function (e) { if (e !== 'cancel' && e !== 'close') { HIS.notifyError(e); } });
+      },
+      doUploadReturns: function () {
+        var vm = this;
+        var q = vm.filterLocation ? ('?locationId=' + vm.filterLocation) : '';
+        ElementPlus.ElMessageBox.confirm('确认对已退货且销售已报送的追溯码按原销售批次补报 3506A 销售退货?', '退货报送', { type: 'warning' })
+          .then(function () { return HIS.post('/api/his/trace/upload-returns' + q); })
+          .then(function (d) { HIS.notifySuccess('退货已报 ' + ((d && d.returned) || 0) + ' 条, 回执 ' + ((d && d.receipt) || '')); vm.load(); vm.loadStats(); })
           .catch(function (e) { if (e !== 'cancel' && e !== 'close') { HIS.notifyError(e); } });
       },
       locationName: function (id) {
@@ -2027,7 +2035,7 @@
     },
     template: [
       '<div class="page-card cd-fill">',
-      '  <div class="page-title">医保药品追溯码 <span style="font-size:12px;color:var(--yb-ink-2);font-weight:normal;">(入库采集 → 发药绑定 → 状态流转 → Mock报送 · 本机构可维护)</span></div>',
+      '  <div class="page-title">医保药品追溯码 <span style="font-size:12px;color:var(--yb-ink-2);font-weight:normal;">(入库采集 → 发药绑定 → 状态流转 → 3505A销售/3506A退货报送 · 本机构可维护)</span></div>',
       '  <el-row :gutter="12" style="margin-bottom:10px;">',
       '    <el-col :span="4"><div class="page-card" style="padding:10px;text-align:center;">追溯码总数<br/><b>{{ stats.total }}</b></div></el-col>',
       '    <el-col :span="4"><div class="page-card" style="padding:10px;text-align:center;">已报送<br/><b style="color:var(--yb-success);">{{ stats.uploaded }}</b></div></el-col>',
@@ -2057,7 +2065,8 @@
       '    <el-button :disabled="!selection.length" @click="changeStatus(0, \'回库\')">回库</el-button>',
       '    <el-button :disabled="!selection.length" @click="changeStatus(2, \'已退货\')">退货</el-button>',
       '    <el-button :disabled="!selection.length" @click="changeStatus(3, \'报废/在途\')">报废/在途</el-button>',
-      '    <el-button type="warning" :loading="uploading" @click="doUpload">Mock 2404 报送</el-button>',
+      '    <el-button type="warning" :loading="uploading" @click="doUpload">销售报送(3505A)</el-button>',
+      '    <el-button type="warning" plain :loading="uploading" @click="doUploadReturns">退货报送(3506A)</el-button>',
       '    <span style="flex:1;"></span>',
       '    <span style="color:var(--yb-ink-2);font-size:13px;">共 {{ total }} 条</span>',
       '  </div>',

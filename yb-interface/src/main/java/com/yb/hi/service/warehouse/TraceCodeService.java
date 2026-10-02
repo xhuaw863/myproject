@@ -1,5 +1,6 @@
 package com.yb.hi.service.warehouse;
 
+import com.alibaba.fastjson2.JSONArray;
 import com.alibaba.fastjson2.JSONObject;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.core.metadata.IPage;
@@ -44,7 +45,8 @@ import java.util.regex.Pattern;
  * 医保药品追溯码服务(药库/药房合规): 入库采集(扫描录入或批量占位建码, 服务端 20 位数字格式校验 P1-6) → 在库 → 发药绑定患者/处方 → 退货/报废/调拨状态流转 → 报送。
  * 报送双通道(批次5 勘误后口径, 详见 07 号文 §〇): 通道A=结算侧 2207 挂 drug_trac_info 节点(buildSettlementNodes/finalizeSettlementUpload, M2 已实施);
  * 通道B=进销存台账 upload() 真实 **3505A 商品销售**报送(两阶段认领 + 按就诊/药品/批次/发药单分组成 selinfoDetail 行 + drugtracinfo 裸码节点,
- * 字段冻结见 07 号文 §十二; 两级判定 infcode+retRslt); 两侧均 upsert his_upload_status(biz_type=TRACE, biz_id=追溯码行id)。
+ * 字段冻结见 07 号文 §十二; 两级判定 infcode+retRslt); 销售侧均 upsert his_upload_status(biz_type=TRACE, biz_id=追溯码行id)。
+ * 退货侧(M3)= uploadReturns()/退货联动 upload **3506A 商品销售退货**(fixmedins_bchno 引用原销售批次, 成败记 biz_type=TRACE_RTN 行, 不改码行 upload_status=9 语义)。
  * 唯一键 tenant_id + trace_code 拦截重复扫码; 写: requireSelfOrgWrite(控制器层); 读: scopeOrgId。
  */
 @Slf4j
@@ -211,7 +213,8 @@ public class TraceCodeService {
         return out;
     }
 
-    /** 状态流转(退货=2 / 报废·调拨在途=3 / 回库=0): 按追溯码批量更新; 退货/报废同步撤销 TRACE 状态机行(不续报, 批次5 M1) */
+    /** 状态流转(退货=2 / 报废·调拨在途=3 / 回库=0): 按追溯码批量更新; 退货/报废同步撤销 TRACE 状态机行(不续报, 批次5 M1);
+     *  退货联动(批次5 M3): 已销售上报(9)且有原销售批次的行自动补报 3506A 退货(失败不阻断状态流转, 台账退货报送可重扫) */
     @Transactional(rollbackFor = Exception.class)
     public int updateStatus(List<String> traceCodes, int targetStatus, String refBillType, Long refBillId) {
         if (CollectionUtils.isEmpty(traceCodes)) {
@@ -227,6 +230,7 @@ public class TraceCodeService {
             }
         }
         int n = 0;
+        List<Long> touchedIds = new ArrayList<>();
         for (HisDrugTraceCode row : traceMapper.selectList(Wrappers.<HisDrugTraceCode>lambdaQuery()
                 .in(HisDrugTraceCode::getTraceCode, codes))) {
             row.setStatus(targetStatus);
@@ -234,12 +238,42 @@ public class TraceCodeService {
             row.setRefBillId(refBillId);
             traceMapper.updateById(row);
             n++;
+            touchedIds.add(row.getId());
             if (targetStatus == ST_RETURNED || targetStatus == ST_SCRAPPED) {
                 uploadStatusService.markRevoked(tenantId(), HisUploadStatus.BIZ_TRACE, row.getId(), null);
             }
         }
+        if (targetStatus == ST_RETURNED && !touchedIds.isEmpty()) {
+            // 退货联动补报(批次5 M3): 仅"销售已报送成功(9)+原销售批次存在"的码可报退货; 未报过销售则平台无销售记录可冲抵, 跳过
+            try {
+                StringBuilder ph = new StringBuilder();
+                for (int i = 0; i < touchedIds.size(); i++) {
+                    ph.append(i == 0 ? "?" : ",?");
+                }
+                List<Map<String, Object>> rtnRows = jdbcTemplate.queryForList(
+                        "SELECT id, visit_id, drug_catalog_id, batch_no, trace_code, upload_batch_no FROM his_drug_trace_code"
+                                + " WHERE tenant_id = ? AND deleted = 0 AND status = 2 AND upload_status = 9"
+                                + " AND upload_batch_no IS NOT NULL AND upload_batch_no <> '' AND id IN (" + ph + ") ORDER BY id",
+                        preArgs(touchedIds));
+                if (!rtnRows.isEmpty()) {
+                    reportReturns(rtnRows, tenantId());
+                }
+            } catch (Exception e) {
+                log.warn("退货联动 3506A 补报异常(状态流转已完成, 可用台账退货报送重扫): {}", e.getMessage());
+            }
+        }
         log.info("追溯码状态流转: targetStatus={}, ref={}#{}, 更新={}", targetStatus, refBillType, refBillId, n);
         return n;
+    }
+
+    /** queryForList 参数拼接: 固定前置参 + 集合展开 */
+    private Object[] preArgs(List<Long> ids) {
+        Object[] a = new Object[ids.size() + 1];
+        a[0] = tenantId();
+        for (int i = 0; i < ids.size(); i++) {
+            a[i + 1] = ids.get(i);
+        }
+        return a;
     }
 
     /* ================= 通道B: 进销存台账 3505A 商品销售报送(批次5 M2b; 字段逐字冻结见 07号文§十二) ================= */
@@ -288,7 +322,7 @@ public class TraceCodeService {
         Map<Long, String> rowMdtrt = new LinkedHashMap<>();
         int noRef = 0;
         for (List<HisDrugTraceCode> group : groups.values()) {
-            Map<String, Object> line = buildSalesRow(group, batchNo, claimedIds, rowMdtrt);
+            Map<String, Object> line = buildSalesRow(group, batchNo, claimedIds, rowMdtrt, opterName());
             if (line == null) {
                 noRef += group.size();
             } else {
@@ -327,7 +361,7 @@ public class TraceCodeService {
      * mdtrt_setl_type 医保结算=1/自费=2 同判据; mdtrt_sn 医保时=MDTRT_ID, 自费时=院内就诊流水(OP+visit_id)。
      */
     private Map<String, Object> buildSalesRow(List<HisDrugTraceCode> group, String batchNo,
-                                              List<Long> claimedIds, Map<Long, String> rowMdtrt) {
+                                              List<Long> claimedIds, Map<Long, String> rowMdtrt, String opter) {
         long tid = tenantId();
         HisDrugTraceCode head = group.get(0);
         Long visitId = head.getVisitId();
@@ -405,7 +439,7 @@ public class TraceCodeService {
         line.put("sel_retn_time", disp.get("dispense_time") instanceof java.sql.Timestamp
                 ? ((java.sql.Timestamp) disp.get("dispense_time")).toLocalDateTime().format(SEL_TIME_FMT)
                 : LocalDateTime.now().format(SEL_TIME_FMT));
-        line.put("sel_retn_opter_name", str(disp.get("dispense_by")));
+        line.put("sel_retn_opter_name", opter);
         line.put("mdtrt_setl_type", ybSetl ? "1" : "2");
         List<Map<String, Object>> tracNodes = new ArrayList<>();
         for (String code : codes) {
@@ -478,6 +512,237 @@ public class TraceCodeService {
         }
         log.info("进销存报送收口: 批次={}, success={}, unknown={}, 行数={}", batchNo, success, unknown, claimedIds.size());
         return new int[]{ok, fail, unk};
+    }
+
+    /* ================= 通道B退货: 3506A 商品销售退货报送(批次5 M3; 字段冻结见 07号文§12.3) ================= */
+
+    /**
+     * 台账退货报送(3506A): 候选=已退货(status=2)且销售已报送成功(upload_status=9)且尚未退货成功(TRACE_RTN 状态行非1)的码。
+     * 按(就诊,药品,原销售批次)分组组装 selinfoDetail(表212, 23字段/11必填)。**口径裁决(07号文§十二.5#6 新增)**:
+     * 规范未标注退货关联原销售的字段, 且 medins_prod_sel_no 非必填——故 fixmedins_bchno 引用**原销售批次**(upload_batch_no,
+     * TRCB前缀)供平台匹敌冲抵销售记录; 无原销售批次的行不报送计数 noRef(不臆造)。退货成败只记 his_upload_status(TRACE_RTN)
+     * 状态行, 不改码行 upload_status(9=销售已报语义保留); 重发幂等同 12.5#5 待平台确认。
+     */
+    @Transactional(rollbackFor = Exception.class)
+    public Map<String, Object> uploadReturns(Long orgId, Long locationId) {
+        StringBuilder q = new StringBuilder("SELECT id, visit_id, drug_catalog_id, batch_no, trace_code, upload_batch_no"
+                + " FROM his_drug_trace_code WHERE tenant_id = ? AND deleted = 0 AND status = 2 AND upload_status = 9"
+                + " AND upload_batch_no IS NOT NULL AND upload_batch_no <> ''");
+        List<Object> args = new ArrayList<>();
+        args.add(tenantId());
+        if (orgId != null) {
+            q.append(" AND org_id = ?");
+            args.add(orgId);
+        }
+        if (locationId != null) {
+            q.append(" AND location_id = ?");
+            args.add(locationId);
+        }
+        q.append(" AND NOT EXISTS (SELECT 1 FROM his_upload_status s WHERE s.tenant_id = his_drug_trace_code.tenant_id"
+                + " AND s.biz_type = 'TRACE_RTN' AND s.biz_id = his_drug_trace_code.id AND s.status = 1 AND s.deleted = 0)")
+                .append(" ORDER BY id");
+        return reportReturns(jdbcTemplate.queryForList(q.toString(), args.toArray()), tenantId());
+    }
+
+    /** 退货报送核心(台账手动与 updateStatus 退货联动共用): 分组组装→一次 3506A→两级判定收口; 无并发抢占(台账单操作员, 幂等靠 TRACE_RTN 过滤) */
+    private Map<String, Object> reportReturns(List<Map<String, Object>> rows, long tid) {
+        String batchNo = "TRCU" + LocalDateTime.now().toLocalDate().toString().replace("-", "")
+                + "-" + ThreadLocalRandom.current().nextInt(100000, 999999);
+        Map<String, List<Map<String, Object>>> groups = new LinkedHashMap<>();
+        for (Map<String, Object> r : rows) {
+            String key = r.get("visit_id") + "|" + r.get("drug_catalog_id") + "|" + r.get("upload_batch_no");
+            groups.computeIfAbsent(key, k -> new ArrayList<>()).add(r);
+        }
+        String opter = opterName();
+        List<Map<String, Object>> rtnRows = new ArrayList<>();
+        List<Long> claimedIds = new ArrayList<>();
+        Map<Long, String> rowMdtrt = new LinkedHashMap<>();
+        int noRef = 0;
+        for (List<Map<String, Object>> group : groups.values()) {
+            Map<String, Object> line = buildReturnRow(group, claimedIds, rowMdtrt, opter);
+            if (line == null) {
+                noRef += group.size();
+            } else {
+                rtnRows.add(line);
+            }
+        }
+        Map<String, Object> out = new LinkedHashMap<>();
+        out.put("receipt", batchNo);
+        if (rtnRows.isEmpty()) {
+            out.put("returned", 0);
+            out.put("failed", 0);
+            out.put("unknown", 0);
+            out.put("noRef", noRef);
+            log.info("退货报送(3506A): 批次={}, 无可报行(候选={}, 缺原销售批次/取数={})", batchNo, rows.size(), noRef);
+            return out;
+        }
+        YbResponse resp = ybHttpClient.call("3506A", Collections.singletonMap("selinfoDetail", rtnRows));
+        int[] fin = finalizeReturnUpload(claimedIds, rowMdtrt, resp, batchNo);
+        out.put("returned", fin[0]);
+        out.put("failed", fin[1]);
+        out.put("unknown", fin[2]);
+        out.put("noRef", noRef);
+        log.info("退货报送(3506A): 批次={}, 明细行={}, 码行={}, 成功={}, 失败={}, 未知={}, 缺数据={}, 候选={}",
+                batchNo, rtnRows.size(), claimedIds.size(), fin[0], fin[1], fin[2], noRef, rows.size());
+        return out;
+    }
+
+    /**
+     * 组装一行 3506A 退货明细(表212/210 逐字冻结 11 必填): 销售侧不存在的 prsc_dr_name/hi_feesetl_type/rtal_docno/mdtrt_setl_type 不送;
+     * manu_date(V1.1.94 起非必填)/expy_end 仅批次库存有值时透传(缺不影响报送); 数量=实际码数(部分退货自然支持);
+     * 经办人=当前登录用户(退货动作发起人)。cat/visit 缺失或无原销售批次→null 不报送不臆造。
+     */
+    private Map<String, Object> buildReturnRow(List<Map<String, Object>> group, List<Long> claimedIds,
+                                               Map<Long, String> rowMdtrt, String opter) {
+        long tid = tenantId();
+        Map<String, Object> head = group.get(0);
+        Long visitId = toLongObj(head.get("visit_id"));
+        Long drugId = toLongObj(head.get("drug_catalog_id"));
+        String lotNo = str(head.get("batch_no"));
+        String saleBchno = str(head.get("upload_batch_no"));
+        if (visitId == null || drugId == null || !StringUtils.hasText(lotNo) || !StringUtils.hasText(saleBchno)) {
+            return null;
+        }
+        Map<String, Object> cat = one("SELECT drug_code, generic_name, trade_name, yb_drug_code, otc_flag, retail_price FROM his_drug_catalog WHERE id = ? AND tenant_id = ? AND deleted = 0",
+                drugId, tid);
+        Map<String, Object> visit = one("SELECT mdtrt_id, psn_no, patient_id FROM his_visit WHERE id = ? AND tenant_id = ? AND deleted = 0",
+                visitId, tid);
+        if (cat == null || visit == null) {
+            return null;
+        }
+        Map<String, Object> bill = one("SELECT setl_id FROM his_charge_bill WHERE visit_id = ? AND tenant_id = ? AND deleted = 0 AND setl_id IS NOT NULL ORDER BY id DESC LIMIT 1",
+                visitId, tid);
+        String setlId = bill == null ? null : str(bill.get("setl_id"));
+        boolean ybSetl = StringUtils.hasText(setlId);
+        Long patientId = toLongObj(visit.get("patient_id"));
+        Map<String, Object> pat = patientId == null ? null
+                : one("SELECT mdtrt_cert_type, mdtrt_cert_no, id_card, name FROM his_patient WHERE id = ? AND tenant_id = ? AND deleted = 0", patientId, tid);
+        Map<String, Object> lot = one("SELECT prod_date, exp_date FROM his_stock_in_item WHERE drug_catalog_id = ? AND batch_no = ? AND tenant_id = ? AND deleted = 0 ORDER BY id LIMIT 1",
+                drugId, lotNo, tid);
+        List<String> codes = new ArrayList<>();
+        for (Map<String, Object> r : group) {
+            Long id = toLongObj(r.get("id"));
+            if (id == null || !StringUtils.hasText(str(r.get("trace_code")))) {
+                continue;
+            }
+            claimedIds.add(id);
+            rowMdtrt.put(id, str(visit.get("mdtrt_id")));
+            codes.add(str(r.get("trace_code")));
+        }
+        if (codes.isEmpty()) {
+            return null;
+        }
+        Map<String, Object> line = new LinkedHashMap<>();
+        putIfText(line, "med_list_codg", str(cat.get("yb_drug_code")));
+        line.put("fixmedins_hilist_id", str(cat.get("drug_code")));
+        line.put("fixmedins_hilist_name", StringUtils.hasText(str(cat.get("trade_name")))
+                ? str(cat.get("trade_name")) : str(cat.get("generic_name")));
+        line.put("fixmedins_bchno", saleBchno);
+        putIfText(line, "setl_id", setlId);
+        putIfText(line, "psn_no", str(visit.get("psn_no")));
+        line.put("psn_cert_type", pat != null && StringUtils.hasText(str(pat.get("mdtrt_cert_type")))
+                ? str(pat.get("mdtrt_cert_type")) : "01");
+        if (pat != null) {
+            putIfText(line, "certno", StringUtils.hasText(str(pat.get("mdtrt_cert_no")))
+                    ? str(pat.get("mdtrt_cert_no")) : str(pat.get("id_card")));
+            putIfText(line, "psn_name", str(pat.get("name")));
+        }
+        line.put("manu_lotnum", lotNo);
+        if (lot != null) {
+            if (lot.get("prod_date") != null) {
+                line.put("manu_date", String.valueOf(lot.get("prod_date")));
+            }
+            if (lot.get("exp_date") != null) {
+                line.put("expy_end", String.valueOf(lot.get("exp_date")));
+            }
+        }
+        line.put("rx_flag", Integer.valueOf(1).equals(toIntObj(cat.get("otc_flag"))) ? "0" : "1");
+        line.put("trdn_flag", "0");
+        putIfText(line, "finl_trns_pric", str(cat.get("retail_price")));
+        line.put("sel_retn_cnt", String.valueOf(codes.size()));
+        line.put("sel_retn_time", LocalDateTime.now().format(SEL_TIME_FMT));
+        line.put("sel_retn_opter_name", opter);
+        line.put("mdtrt_sn", ybSetl && StringUtils.hasText(str(visit.get("mdtrt_id")))
+                ? str(visit.get("mdtrt_id")) : "OP" + visitId);
+        List<Map<String, Object>> tracNodes = new ArrayList<>();
+        for (String code : codes) {
+            Map<String, Object> node = new LinkedHashMap<>();
+            node.put("drug_trac_codg", code);
+            tracNodes.add(node);
+        }
+        line.put("drugtracinfo", tracNodes);
+        return line;
+    }
+
+    /**
+     * 退货收口(两级判定同销售): 传输 infcode=0 且业务 retRslt=1 → TRACE_RTN 行置已传;
+     * 拒绝/retRslt=0 → 置失败待补(台账重扫可补报); UNKNOWN → 亦记失败待补但 err 标明不可知(重发幂等 12.5#5 待确认, mock 接受)。
+     * 3506A 规范输出为失败批次明细 selinfoErrDetail(表213): 非空时逐批拼进 err 文案; 行级部分受理语义待平台确认, mock 整单拒绝。
+     */
+    private int[] finalizeReturnUpload(List<Long> claimedIds, Map<Long, String> rowMdtrt, YbResponse resp, String batchNo) {
+        long tid = tenantId();
+        boolean success = false;
+        boolean unknown = false;
+        String msgid = null;
+        String err;
+        if (resp == null) {
+            unknown = true;
+            err = "3506A无响应(UNKNOWN): 平台侧是否受理不可知, 台账退货报送可重扫";
+        } else if (resp.isUnknown()) {
+            unknown = true;
+            msgid = resp.getInfRefmsgid();
+            err = "3506A超时(UNKNOWN): 平台侧是否受理不可知, 台账退货报送可重扫";
+        } else if (!resp.isSuccess()) {
+            msgid = resp.getInfRefmsgid();
+            err = "3506A被平台拒绝(传输层): " + resp.getErrMsg();
+        } else {
+            msgid = resp.getInfRefmsgid();
+            JSONObject result = resp.getOutputNode("result");
+            String retRslt = result == null ? null : result.getString("retRslt");
+            JSONArray errDetail = resp.getOutputArray("selinfoErrDetail");
+            StringBuilder detail = new StringBuilder();
+            if (errDetail != null) {
+                for (int i = 0; i < errDetail.size(); i++) {
+                    JSONObject e = errDetail.getJSONObject(i);
+                    detail.append("[bchno=").append(e.getString("fixmedins_bchno"))
+                            .append(" msg=").append(e.getString("msgRslt")).append("]");
+                }
+            }
+            if ("1".equals(retRslt) && (errDetail == null || errDetail.isEmpty())) {
+                success = true;
+                err = null;
+            } else {
+                err = "3506A业务层失败(retRslt=" + (retRslt == null ? "缺失" : retRslt) + "): "
+                        + (detail.length() > 0 ? detail : (result == null ? "无result节点" : result.getString("msgRslt")));
+            }
+        }
+        int ok = 0;
+        int fail = 0;
+        int unk = 0;
+        for (Long id : claimedIds) {
+            String mdtrtId = rowMdtrt.get(id);
+            uploadStatusService.record(tid, HisUploadStatus.BIZ_TRACE_RTN, id, mdtrtId, success, msgid, success ? null : err);
+            if (success) {
+                ok++;
+            } else if (unknown) {
+                unk++;
+            } else {
+                fail++;
+            }
+        }
+        log.info("退货报送收口(3506A): 批次={}, success={}, unknown={}, 码行数={}", batchNo, success, unknown, claimedIds.size());
+        return new int[]{ok, fail, unk};
+    }
+
+    /** 退货经办人(3506 sel_retn_opter_name, 50 截断): 当前登录用户真实姓名→登录名→system 逐级兜底 */
+    private String opterName() {
+        LoginUser u = UserContext.get();
+        String name = u == null ? null : (StringUtils.hasText(u.getRealName()) ? u.getRealName()
+                : (StringUtils.hasText(u.getUsername()) ? u.getUsername() : null));
+        if (name == null) {
+            return "system";
+        }
+        return name.length() > 50 ? name.substring(0, 50) : name;
     }
 
     /* ================= 通道A: 2207 结算报文挂 drug_trac_info 节点(批次5 M2) ================= */
