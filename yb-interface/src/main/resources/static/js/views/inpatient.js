@@ -881,7 +881,7 @@
     mixins: [refMixin, listMixin, pageMixin],
     components: Object.assign({}, INP_ICONS),
     template: [
-      '<div class="inp-patient-list cd-fill">',
+      '<div class="inp-patient-list cd-fill is-cascade">',
       '  <div class="toolbar">',
       '    <el-select v-model="q.wardId" placeholder="全部病区" clearable filterable style="width:170px" @change="onQuery">',
       '      <el-option v-for="w in wards" :key="w.id" :label="wardLabel(w)" :value="w.id"></el-option>',

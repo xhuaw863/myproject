@@ -628,10 +628,26 @@ body {
 }
 @keyframes yb-view-in { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
 
+/* ---------- 定向区块级联入场 (opt-in: 给旗舰列表页根节点挂 .is-cascade) ----------
+ *   顶层区块按 DOM 顺序依次淡入上浮, 让页面"逐块组装"而非整块弹入。
+ *   根节点自身退出全局 .layout-main>* 整块淡入(animation:none), 改由子区块接管, 避免双动画。
+ *   仅用 opacity + 纵向 translateY(transform 不参与 flex 布局), 不触碰 cd-fill 高度链;
+ *   延迟与入场均由文末 reduced-motion 守卫中和(delay 归零 => 不做级联, 直接落终态)。 */
+.layout-main > .is-cascade { animation: none; }
+.layout-main > .is-cascade > * {
+  animation: yb-block-in .34s var(--yb-ease) both;
+}
+.layout-main > .is-cascade > :nth-child(2) { animation-delay: .06s; }
+.layout-main > .is-cascade > :nth-child(3) { animation-delay: .12s; }
+.layout-main > .is-cascade > :nth-child(4) { animation-delay: .18s; }
+.layout-main > .is-cascade > :nth-child(5) { animation-delay: .24s; }
+.layout-main > .is-cascade > :nth-child(n+6) { animation-delay: .3s; }
+@keyframes yb-block-in { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: none; } }
+
 /* ---------- 无障碍: 用户开了"减少动态效果"则完全尊重, 不做任何动画 ---------- */
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after {
     animation-duration: .001ms !important; animation-iteration-count: 1 !important;
-    transition-duration: .001ms !important; scroll-behavior: auto !important;
+    animation-delay: 0s !important; transition-duration: .001ms !important; scroll-behavior: auto !important;
   }
 }

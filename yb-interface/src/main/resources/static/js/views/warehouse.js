@@ -195,7 +195,7 @@
       expDays: expDays
     },
     template: [
-      '<div class="page-card cd-fill cd-tabs">',
+      '<div class="page-card cd-fill cd-tabs is-cascade">',
       '  <div class="page-title">库存总览 <span style="font-size:12px;color:var(--yb-ink-2);font-weight:normal;">(批次级库存 · 低库存/效期预警 · 出入库流水)</span></div>',
       '  <div class="toolbar" style="margin-bottom:6px;">',
       '    <span style="font-weight:600;color:var(--yb-ink-1);">当前药库</span>',

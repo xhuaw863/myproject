@@ -328,7 +328,7 @@
       itemTypeLabel: itemTypeLabel, itemTypeTag: itemTypeTag, insuLabel: insuLabel
     },
     template: [
-      '<div class="page-card cd-fill">',
+      '<div class="page-card cd-fill is-cascade">',
       '  <div class="page-title">待收费 <span style="font-size:12px;color:var(--yb-ink-2);font-weight:normal;">(已完成接诊未收费的就诊; 收费后进入收费记录)</span></div>',
       '  <div class="toolbar">',
       '    <el-input v-model="keyword" placeholder="患者姓名/就诊号" clearable style="width:220px" @keyup.enter="search"></el-input>',
