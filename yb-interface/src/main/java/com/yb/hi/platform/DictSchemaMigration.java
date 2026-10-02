@@ -1344,7 +1344,7 @@ public class DictSchemaMigration implements ApplicationRunner {
                     + "id BIGINT NOT NULL AUTO_INCREMENT COMMENT '主键',"
                     + "tenant_id BIGINT NOT NULL DEFAULT 0 COMMENT '租户(医共体)ID',"
                     + "org_id BIGINT DEFAULT NULL COMMENT '机构ID',"
-                    + "biz_type VARCHAR(10) DEFAULT NULL COMMENT '业务类型: REG/VISIT/RX/FEE/SETL/CANCEL',"
+                    + "biz_type VARCHAR(10) DEFAULT NULL COMMENT '业务类型: REG/VISIT/RX/FEE/SETL/CANCEL/TRACE(批次5 M1 追溯码2404)',"
                     + "biz_id BIGINT DEFAULT NULL COMMENT '业务主键(如就诊ID)',"
                     + "mdtrt_id VARCHAR(30) DEFAULT NULL COMMENT '医保就诊ID',"
                     + "status TINYINT DEFAULT 0 COMMENT '状态: 0待传 1已传 2失败待补 3已撤销',"
@@ -2578,9 +2578,11 @@ public class DictSchemaMigration implements ApplicationRunner {
                     + "patient_id BIGINT DEFAULT NULL COMMENT '发药绑定患者ID',"
                     + "visit_id BIGINT DEFAULT NULL COMMENT '发药绑定就诊ID',"
                     + "dispense_id BIGINT DEFAULT NULL COMMENT '发药记录ID',"
-                    + "upload_status TINYINT DEFAULT 0 COMMENT '报送状态:0未报送 9已报送',"
+                    + "upload_status TINYINT DEFAULT 0 COMMENT '报送状态:0未报送 1报送中 2失败待补 9已报送(批次5 M1归一)',"
                     + "upload_time DATETIME DEFAULT NULL COMMENT '报送时间',"
-                    + "upload_receipt VARCHAR(200) DEFAULT NULL COMMENT '报送回执( Mock)',"
+                    + "upload_receipt VARCHAR(200) DEFAULT NULL COMMENT '报送回执(批次号)',"
+                    + "upload_msgid VARCHAR(40) DEFAULT NULL COMMENT '2404报送发送方报文ID(UNKNOWN复核/重发凭据, 批次5 M1)',"
+                    + "upload_batch_no VARCHAR(40) DEFAULT NULL COMMENT '2404报送批次/平台回执报文ID(批次5 M1)',"
                     + "create_by VARCHAR(50) DEFAULT NULL, create_time DATETIME DEFAULT NULL,"
                     + "update_by VARCHAR(50) DEFAULT NULL, update_time DATETIME DEFAULT NULL, deleted TINYINT DEFAULT 0,"
                     + "PRIMARY KEY (id),"
@@ -5342,6 +5344,14 @@ public class DictSchemaMigration implements ApplicationRunner {
         if (tableExists(conn, "his_recon_diff") && "NO".equals(columnNullable(conn, "his_recon_diff", "org_id"))) {
             try (Statement st = conn.createStatement()) {
                 st.executeUpdate("ALTER TABLE his_recon_diff MODIFY org_id BIGINT DEFAULT NULL COMMENT '机构ID(租户级对账为空)'");
+            }
+        }
+        /* ---------- 批次5 M1: 2404 追溯码报送凭据列 + upload_status 语义归一(存量库; 新库由建表语句自带) ---------- */
+        if (tableExists(conn, "his_drug_trace_code") && !columnExists(conn, "his_drug_trace_code", "upload_msgid")) {
+            addColumnIfNotExists(conn, "his_drug_trace_code", "upload_msgid", "VARCHAR(40) DEFAULT NULL COMMENT '2404报送发送方报文ID(UNKNOWN复核/重发凭据, 批次5 M1)'");
+            addColumnIfNotExists(conn, "his_drug_trace_code", "upload_batch_no", "VARCHAR(40) DEFAULT NULL COMMENT '2404报送批次/平台回执报文ID(批次5 M1)'");
+            try (Statement st = conn.createStatement()) {
+                st.executeUpdate("ALTER TABLE his_drug_trace_code MODIFY upload_status TINYINT DEFAULT 0 COMMENT '报送状态:0未报送 1报送中 2失败待补 9已报送(批次5 M1归一)'");
             }
         }
     }

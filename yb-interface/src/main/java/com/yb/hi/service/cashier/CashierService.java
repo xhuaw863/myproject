@@ -57,6 +57,7 @@ import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashSet;
+import com.yb.hi.service.warehouse.TraceCodeService;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -105,6 +106,8 @@ public class CashierService {
     private final HisCompTaskMapper compTaskMapper;
     /** 就诊服务(M5: 收费前校验 2203 就诊上传状态) */
     private final HisVisitService visitService;
+    /** 追溯码服务(批次5 M2 通道A): 已发药码随 2207 结算挂 drug_trac_info 节点报送并三分收口 */
+    private final TraceCodeService traceCodeService;
     /** 两阶段化事务模板(T1/T3 显式事务边界, T2 医保调用不占事务) */
     private final TransactionTemplate txTemplate;
 
@@ -118,7 +121,8 @@ public class CashierService {
                           @Lazy SpecimenService specimenService,
                           PlatformTransactionManager transactionManager,
                           HisCompTaskMapper compTaskMapper,
-                          HisVisitService visitService) {
+                          HisVisitService visitService,
+                          TraceCodeService traceCodeService) {
         this.billMapper = billMapper;
         this.billItemMapper = billItemMapper;
         this.dailySettleMapper = dailySettleMapper;
@@ -133,6 +137,7 @@ public class CashierService {
         this.specimenService = specimenService;
         this.compTaskMapper = compTaskMapper;
         this.visitService = visitService;
+        this.traceCodeService = traceCodeService;
         this.txTemplate = new TransactionTemplate(transactionManager);
     }
 
@@ -643,15 +648,19 @@ public class CashierService {
         setlReq.setInscpScpAmt(firstNonNull(bd(preSetlinfo, "inscp_scp_amt"), BigDecimal.ZERO));
         BigDecimal preAcct = bd(preSetlinfo, "acct_pay");
         setlReq.setAcctUsedFlag(preAcct != null && preAcct.compareTo(BigDecimal.ZERO) > 0 ? "1" : "0");
-        // 2207 正式结算, 取结算ID
-        YbResponse setlResp = outpatientService.settlement(setlReq, ctx.insuplcAdmdvs);
+        // 2207 正式结算, 取结算ID; 批次5 M2 通道A: 本次就诊已发药追溯码挂 drug_trac_info 节点随结算报送(认领→发送→三分收口)
+        TraceCodeService.SettlementTrace stTrace = traceCodeService.buildSettlementNodes(ctx.req.getVisitId(), ctx.items);
+        YbResponse setlResp = outpatientService.settlement(setlReq, ctx.insuplcAdmdvs, stTrace.nodes());
         if (setlResp == null) {
+            traceCodeService.finalizeSettlementUpload(stTrace, false, true, mdtrtId, null, null);
             return ChargeOutcome.unknown(null, "医保结算(2207)无响应");
         }
         if (setlResp.isUnknown()) {
+            traceCodeService.finalizeSettlementUpload(stTrace, false, true, mdtrtId, setlResp.getInfRefmsgid(), null);
             return ChargeOutcome.unknown(findTxnLogId(setlResp), "医保结算(2207)网络异常, 结果未知");
         }
         if (!setlResp.isSuccess()) {
+            traceCodeService.finalizeSettlementUpload(stTrace, false, false, mdtrtId, null, "2207结算被平台拒绝: " + setlResp.getErrMsg());
             return ChargeOutcome.fail("医保结算(2207)失败: " + setlResp.getErrMsg());
         }
         JSONObject setlinfo = setlResp.getOutputNode("setlinfo");
@@ -659,8 +668,11 @@ public class CashierService {
         // 2207成功但缺少setl_id: 规范出参必含结算ID, 缺失即平台侧异常, 本地不得置已收费(否则无法撤销)
         if (!StringUtils.hasText(setlId)) {
             log.error("医保结算(2207)返回缺少setl_id: billNo={}, visitId={}", ctx.bill.getBillNo(), ctx.req.getVisitId());
+            traceCodeService.finalizeSettlementUpload(stTrace, false, false, mdtrtId, null, "2207成功但缺setl_id(平台侧异常)");
             return ChargeOutcome.fail("医保结算(2207)返回缺少结算ID(setl_id), 请核对医保平台结算状态后处理");
         }
+        // 结算实际成功: 追溯码收口已报送(通道A)
+        traceCodeService.finalizeSettlementUpload(stTrace, true, false, mdtrtId, setlResp.getInfRefmsgid(), null);
         // 金额四分(自付/基金/现金/个账)
         BigDecimal[] split = splitAmounts(setlinfo, ctx.total);
         ChargeOutcome o = ChargeOutcome.success();
@@ -1021,11 +1033,13 @@ public class CashierService {
         final String rebuildBchno;
         final boolean allRefunded;
         final Map<Long, BigDecimal> lineQtyDelta;
+        /** 批次5 M2 通道A: 原单就诊ID(追溯码按就诊认领随重结算报送; 非医保链可空) */
+        final Long visitId;
 
         PartialCtx(HisChargeBill origin, HisChargeBill refundBill, boolean hasSetl, String mdtrtId, String psnNo,
                    String insuplcAdmdvs, String mdtrtCertType, String mdtrtCertNo, Map<String, Object> visit,
                    List<Map<String, Object>> remainingItems, BigDecimal remainingTotal, String rebuildBchno,
-                   boolean allRefunded, Map<Long, BigDecimal> lineQtyDelta) {
+                   boolean allRefunded, Map<Long, BigDecimal> lineQtyDelta, Long visitId) {
             this.origin = origin;
             this.refundBill = refundBill;
             this.hasSetl = hasSetl;
@@ -1040,6 +1054,7 @@ public class CashierService {
             this.rebuildBchno = rebuildBchno;
             this.allRefunded = allRefunded;
             this.lineQtyDelta = lineQtyDelta;
+            this.visitId = visitId;
         }
     }
 
@@ -1694,7 +1709,7 @@ public class CashierService {
         }
         PartialCtx ctx = new PartialCtx(origin, refundBill, hasSetl, mdtrtId, psnNo, insuplcAdmdvs,
                 rebuildCertType, rebuildCertNo, visitYb, remainingItems, remainingTotal,
-                hasSetl ? generateBillNo("SF") : null, allRefunded, lineQtyDelta);
+                hasSetl ? generateBillNo("SF") : null, allRefunded, lineQtyDelta, origin.getVisitId());
         if (!hasSetl && allRefunded) {
             // 自费单全部退完: T1 事务内直接终态(与批次1行为一致)
             // 条件更新: 仅已收费可置已退费(行锁内本应必成, 守卫并发异常)
@@ -1810,22 +1825,29 @@ public class CashierService {
         setlReq.setInscpScpAmt(firstNonNull(bd(preSetlinfo, "inscp_scp_amt"), BigDecimal.ZERO));
         BigDecimal preAcct = bd(preSetlinfo, "acct_pay");
         setlReq.setAcctUsedFlag(preAcct != null && preAcct.compareTo(BigDecimal.ZERO) > 0 ? "1" : "0");
-        // ⑤ 2207 重结算
-        YbResponse setlResp = outpatientService.settlement(setlReq, ctx.insuplcAdmdvs);
+        // ⑤ 2207 重结算(批次5 M2 通道A: 剩余已发药追溯码挂节点随重结算报送)
+        TraceCodeService.SettlementTrace stTrace = traceCodeService.buildSettlementNodes(ctx.visitId, ctx.remainingItems);
+        YbResponse setlResp = outpatientService.settlement(setlReq, ctx.insuplcAdmdvs, stTrace.nodes());
         if (setlResp == null) {
+            traceCodeService.finalizeSettlementUpload(stTrace, false, true, mdtrtId, null, null);
             return PartialOutcome.unknown(null, 5, "重结算(2207)无响应");
         }
         if (setlResp.isUnknown()) {
+            traceCodeService.finalizeSettlementUpload(stTrace, false, true, mdtrtId, setlResp.getInfRefmsgid(), null);
             return PartialOutcome.unknown(findTxnLogId(setlResp), 5, "重结算(2207)网络异常, 结果未知");
         }
         if (!setlResp.isSuccess()) {
+            traceCodeService.finalizeSettlementUpload(stTrace, false, false, mdtrtId, null, "重结算(2207)被拒: " + setlResp.getErrMsg());
             return PartialOutcome.fail(5, "重结算(2207)失败: " + setlResp.getErrMsg());
         }
         JSONObject setlinfo = setlResp.getOutputNode("setlinfo");
         String newSetlId = setlinfo == null ? null : setlinfo.getString("setl_id");
         if (!StringUtils.hasText(newSetlId)) {
+            traceCodeService.finalizeSettlementUpload(stTrace, false, false, mdtrtId, null, "重结算成功但缺setl_id(平台侧异常)");
             return PartialOutcome.fail(5, "重结算(2207)返回缺少结算ID(setl_id), 请核对医保平台结算状态后处理");
         }
+        // 重结算实际成功: 追溯码收口已报送
+        traceCodeService.finalizeSettlementUpload(stTrace, true, false, mdtrtId, setlResp.getInfRefmsgid(), null);
         BigDecimal[] split = splitAmounts(setlinfo, ctx.remainingTotal);
         PartialOutcome o = PartialOutcome.success();
         o.setlId = newSetlId;
@@ -2058,7 +2080,7 @@ public class CashierService {
                 ? str(yb.get("mdtrt_cert_type")) : "02";
         return new PartialCtx(origin, refundBill, true, mdtrtId, psnNo, str(yb.get("insuplc_admdvs")),
                 certType, str(yb.get("mdtrt_cert_no")), yb, remaining, remainingTotal,
-                generateBillNo("SF"), allRefunded, matchRefundDeltas(originItems, refundItems));
+                generateBillNo("SF"), allRefunded, matchRefundDeltas(originItems, refundItems), origin.getVisitId());
     }
 
     /**

@@ -90,10 +90,21 @@ public class MockYbServer {
                 // 预结算/上传结算: 不落模拟流水
                 output = mockSettlement(input, msgid, false);
                 break;
-            case "2207":
-                // 结算: 落模拟流水(medins_setl_id=msgid), 供 2208/2601/补偿核对
+            case "2207": {
+                // 结算: 落模拟流水(medins_setl_id=msgid), 供 2208/2601/补偿核对;
+                // 批次5 M2 通道A: drug_trac_info 节点(表90)必填字段缺失即拒绝, 模拟平台追溯码拦截
+                String tracErr = validateDrugTrac(input == null ? null : input.getJSONArray("drug_trac_info"));
+                if (tracErr != null) {
+                    log.warn("【模拟医保平台】2207 追溯码节点校验拒绝: {}", tracErr);
+                    return failResponse(msgid, tracErr);
+                }
+                JSONArray tracNodes = input == null ? null : input.getJSONArray("drug_trac_info");
+                if (tracNodes != null && !tracNodes.isEmpty()) {
+                    log.info("【模拟医保平台】2207 受理追溯码节点 {} 条", tracNodes.size());
+                }
                 output = mockSettlement(input, msgid, true);
                 break;
+            }
             case "2208": case "2305":
                 // 撤销: 按 setl_id 返回原结算 setlinfo
                 output = mockCancelSettlement(input);
@@ -120,6 +131,32 @@ public class MockYbServer {
                 // 目录对照撤销(M4): 移除 mock 对照, 规范输出无节点, infcode=0 即成功
                 mockCatalogRevoke(input);
                 break;
+            case "3505": case "3505A": {
+                // 进销存商品销售(批次5 M2b 通道B): 两级判定——传输 infcode=0 + 业务 retRslt(表209)。
+                // 必填违例(07号文§十二.2 冻结清单)时 retRslt=0 模拟平台业务拒绝
+                JSONArray rows = "3505".equals(infno) ? singleRowToList(input)
+                        : (input == null ? null : input.getJSONArray("selinfoDetail"));
+                String selErr = validateSelInfo(rows);
+                JSONObject result = new JSONObject();
+                if (selErr != null) {
+                    log.warn("【模拟医保平台】{} 销售明细业务拒绝: {}", infno, selErr);
+                    result.put("retRslt", "0");
+                    result.put("msgRslt", selErr);
+                } else {
+                    int codes = 0;
+                    for (int i = 0; i < rows.size(); i++) {
+                        JSONArray tn = rows.getJSONObject(i).getJSONArray("drugtracinfo");
+                        if (tn != null) {
+                            codes += tn.size();
+                        }
+                    }
+                    result.put("retRslt", "1");
+                    result.put("msgRslt", "受理成功");
+                    log.info("【模拟医保平台】{} 受理销售明细 {} 行/追溯码 {} 条", infno, rows.size(), codes);
+                }
+                output.put("result", result);
+                break;
+            }
             default:
                 // 2203/2402 等无输出交易
                 break;
@@ -144,6 +181,93 @@ public class MockYbServer {
         ybResp.setRawJson(resp.toJSONString());
         log.info("【模拟医保平台】infno={} 已生成模拟响应", infno);
         return ybResp;
+    }
+
+    /** 平台拒绝响应(模拟): infcode 非0 + 错误信息, 其余报文头与成功同口径 */
+    private YbResponse failResponse(String msgid, String err) {
+        JSONObject resp = new JSONObject();
+        resp.put("infcode", "1");
+        resp.put("inf_refmsgid", msgid);
+        resp.put("refmsg_time", DateUtil.currentDateTime());
+        resp.put("respond_time", DateUtil.currentDateTime());
+        resp.put("err_msg", err);
+        resp.put("output", "");
+        YbResponse ybResp = new YbResponse();
+        ybResp.setInfcode(resp.getString("infcode"));
+        ybResp.setInfRefmsgid(resp.getString("inf_refmsgid"));
+        ybResp.setRefmsgTime(resp.getString("refmsg_time"));
+        ybResp.setRespondTime(resp.getString("respond_time"));
+        ybResp.setErrMsg(resp.getString("err_msg"));
+        ybResp.setOutput("");
+        ybResp.setRawJson(resp.toJSONString());
+        return ybResp;
+    }
+
+    /** 2207 drug_trac_info 节点校验(表90 冻结字段): feedetl_sn/drug_trac_codg/trdn_flag/min_prcunt_type 均必填; 合规则返 null */
+    private String validateDrugTrac(JSONArray nodes) {
+        if (nodes == null || nodes.isEmpty()) {
+            return null;
+        }
+        for (int i = 0; i < nodes.size(); i++) {
+            JSONObject n = nodes.getJSONObject(i);
+            if (n == null || isEmptyStr(n.getString("feedetl_sn")) || isEmptyStr(n.getString("drug_trac_codg"))
+                    || isEmptyStr(n.getString("trdn_flag")) || isEmptyStr(n.getString("min_prcunt_type"))) {
+                return "drug_trac_info第" + (i + 1) + "行必填字段缺失(feedetl_sn/drug_trac_codg/trdn_flag/min_prcunt_type)";
+            }
+        }
+        return null;
+    }
+
+    private static boolean isEmptyStr(String v) {
+        return v == null || v.trim().isEmpty();
+    }
+
+    /** 3505 单行 selinfo 包装为数组供统一校验(3505A 直接取 selinfoDetail) */
+    private static JSONArray singleRowToList(JSONObject input) {
+        JSONObject sel = input == null ? null : input.getJSONObject("selinfo");
+        if (sel == null) {
+            return null;
+        }
+        JSONArray arr = new JSONArray();
+        arr.add(sel);
+        return arr;
+    }
+
+    /**
+     * 3505/3505A 销售明细校验(07号文§十二.2 表206/208 逐字冻结必填面): 16 必填 + 医保结算(mdtrt_setl_type=1)时 setl_id 必填
+     * + drugtracinfo 节点内 drug_trac_codg 非空; 合规则返 null, 否则返首个违例描述
+     */
+    private String validateSelInfo(JSONArray rows) {
+        if (rows == null || rows.isEmpty()) {
+            return "销售明细节点(selinfo/selinfoDetail)缺失";
+        }
+        String[] req = {"fixmedins_hilist_id", "fixmedins_hilist_name", "fixmedins_bchno", "prsc_dr_name",
+                "hi_feesetl_type", "mdtrt_sn", "psn_cert_type", "manu_lotnum", "manu_date", "rx_flag", "trdn_flag",
+                "rtal_docno", "sel_retn_cnt", "sel_retn_time", "sel_retn_opter_name", "mdtrt_setl_type"};
+        for (int i = 0; i < rows.size(); i++) {
+            JSONObject r = rows.getJSONObject(i);
+            if (r == null) {
+                return "销售明细第" + (i + 1) + "行为空";
+            }
+            for (String k : req) {
+                if (isEmptyStr(r.getString(k))) {
+                    return "销售明细第" + (i + 1) + "行必填缺失: " + k;
+                }
+            }
+            if ("1".equals(r.getString("mdtrt_setl_type")) && isEmptyStr(r.getString("setl_id"))) {
+                return "销售明细第" + (i + 1) + "行医保结算时 setl_id 必填";
+            }
+            JSONArray nodes = r.getJSONArray("drugtracinfo");
+            if (nodes != null) {
+                for (int j = 0; j < nodes.size(); j++) {
+                    JSONObject n = nodes.getJSONObject(j);
+                    if (n == null || isEmptyStr(n.getString("drug_trac_codg"))) {
+                        return "销售明细第" + (i + 1) + "行 drugtracinfo 第" + (j + 1) + "条缺 drug_trac_codg";
+                    }
+                }
+            }
+        }
+        return null;
     }
 
     /**

@@ -77,7 +77,7 @@ public class TraceCodeController {
                 req.getRefBillType(), req.getRefBillId()));
     }
 
-    /** Mock 2404 报送(已发药未报送 → 已报送 + 回执) */
+    /** 2404 报送(批次5 M1: 两阶段认领+状态机留痕; 发送当前 mock 直通, M2 接真实交易链) */
     @PostMapping("/upload")
     public R<Map<String, Object>> upload(@RequestParam(required = false) Long orgId,
                                          @RequestParam(required = false) Long locationId) {

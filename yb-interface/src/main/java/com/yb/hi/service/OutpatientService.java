@@ -136,9 +136,21 @@ public class OutpatientService {
 
     /** 2207(带患者参保地区划) */
     public YbResponse settlement(SettlementReq req, String insuplcAdmdvs) {
-        log.info("门诊结算: mdtrtId={}, medfeeSumamt={}", req.getMdtrtId(), req.getMedfeeSumamt());
+        return settlement(req, insuplcAdmdvs, null);
+    }
+
+    /**
+     * 2207(带 drug_trac_info 节点, 批次5 M2 通道A): 节点与 data 平级(表90输入结构), 空则不带(兼容无追溯码结算)。
+     * 调用方(CashierService)负责结算后按三分结果收口追溯码状态(TraceCodeService.finalizeSettlementUpload)。
+     */
+    public YbResponse settlement(SettlementReq req, String insuplcAdmdvs, List<Map<String, Object>> drugTracInfo) {
+        log.info("门诊结算: mdtrtId={}, medfeeSumamt={}, 追溯码节点={}", req.getMdtrtId(), req.getMedfeeSumamt(),
+                drugTracInfo == null ? 0 : drugTracInfo.size());
         Map<String, Object> input = new LinkedHashMap<>();
         input.put("data", req);
+        if (drugTracInfo != null && !drugTracInfo.isEmpty()) {
+            input.put("drug_trac_info", drugTracInfo);
+        }
         YbResponse resp = ybHttpClient.call("2207", input, insuplcAdmdvs);
         if (resp.isSuccess()) {
             setlResultHandler.parseAndSave(resp, "outpatient", "2207", "1");

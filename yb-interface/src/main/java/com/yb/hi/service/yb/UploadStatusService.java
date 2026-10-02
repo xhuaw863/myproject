@@ -59,19 +59,27 @@ public class UploadStatusService {
     }
 
     /**
-     * 记录 2203 上传结果(按 uk_biz upsert):
-     * 成功 -> status=1/msgid/清错误; 失败 -> status=2, retry_count+1, next_retry 指数退避。
+     * 记录 2203 就诊上传结果(兼容入口): 委托泛化 record(BIZ_VISIT)。
      */
     public void recordVisit(Long tenantId, Long visitId, String mdtrtId,
                             boolean success, String msgid, String err) {
+        record(tenantId, HisUploadStatus.BIZ_VISIT, visitId, mdtrtId, success, msgid, err);
+    }
+
+    /**
+     * 按业务键 upsert 上传结果(批次5 M1 泛化: VISIT/TRACE 等共用, 与 uk_biz 一致):
+     * 成功 -> status=1/msgid/清错误; 失败 -> status=2, retry_count+1, next_retry 指数退避; 达上限转人工告警。
+     */
+    public void record(Long tenantId, String bizType, Long bizId, String mdtrtId,
+                       boolean success, String msgid, String err) {
         Long outer = TenantContext.get();
         TenantContext.set(tenantId);
         try {
-            HisUploadStatus row = selectByBiz(HisUploadStatus.BIZ_VISIT, visitId);
+            HisUploadStatus row = selectByBiz(bizType, bizId);
             if (row == null) {
                 row = new HisUploadStatus();
-                row.setBizType(HisUploadStatus.BIZ_VISIT);
-                row.setBizId(visitId);
+                row.setBizType(bizType);
+                row.setBizId(bizId);
                 row.setMdtrtId(mdtrtId);
                 row.setStatus(success ? HisUploadStatus.STATUS_UPLOADED : HisUploadStatus.STATUS_FAILED);
                 row.setRetryCount(success ? 0 : 1);
@@ -98,8 +106,8 @@ public class UploadStatusService {
                 row.setLastErr(truncate(err));
                 mapper.updateById(row);
                 if (n + 1 >= HisUploadStatus.MAX_AUTO_RETRY) {
-                    log.error("【医保上报告警】VISIT 就诊上传(2203)连续失败{}次转人工: tenantId={}, visitId={}, 原因={}",
-                            n + 1, tenantId, visitId, truncate(err));
+                    log.error("【医保上报告警】{} 上传连续失败{}次转人工: tenantId={}, bizId={}, 原因={}",
+                            bizType, n + 1, tenantId, bizId, truncate(err));
                 }
             }
         } finally {
