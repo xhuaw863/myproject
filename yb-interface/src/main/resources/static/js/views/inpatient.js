@@ -2471,158 +2471,197 @@
     }
   };
 
+  /* 出院结算同屏工作台样式(独立 id, 不与既有 #inp-style/#inp-style-30 冲突) */
+  (function ensureInpSettleStyles() {
+    if (document.getElementById('inp-style-settle')) { return; }
+    var st = document.createElement('style');
+    st.id = 'inp-style-settle';
+    st.textContent = [
+      '.inp-settle { display:flex; gap:12px; height:100%; min-height:0; }',
+      '.inp-settle .isplit-l { width:300px; flex:none; display:flex; flex-direction:column; min-height:0; border:1px solid var(--yb-border); border-radius:var(--yb-r-md); background:var(--yb-surface); }',
+      '.inp-settle .isplit-lhead { display:flex; align-items:center; justify-content:space-between; padding:10px 12px 0; }',
+      '.inp-settle .isplit-lhead .inp-section-title { margin:0; }',
+      '.inp-settle .isplit-lsub { padding:4px 12px 8px; font-size:12px; color:var(--yb-ink-4); border-bottom:1px solid var(--yb-border-light); }',
+      '.inp-settle .isplit-llist { flex:1; min-height:0; overflow-y:auto; padding:8px; }',
+      '.inp-settle .ist-p { border:1px solid var(--yb-border-light); border-radius:var(--yb-r-md); padding:8px 10px; margin-bottom:8px; cursor:pointer; transition:box-shadow var(--yb-dur) var(--yb-ease), border-color var(--yb-dur) var(--yb-ease), background var(--yb-dur) var(--yb-ease); }',
+      '.inp-settle .ist-p:hover { box-shadow:var(--yb-sh-1); }',
+      '.inp-settle .ist-p.is-on { border-color:var(--yb-brand); background:var(--yb-info-light); box-shadow:0 0 0 2px rgba(26,92,158,.14); }',
+      '.inp-settle .ist-p .ist-p-top { display:flex; align-items:center; justify-content:space-between; gap:6px; }',
+      '.inp-settle .ist-p .p-name { font-weight:600; color:var(--yb-ink-1); font-size:14px; }',
+      '.inp-settle .ist-p .p-meta { font-size:12px; color:var(--yb-ink-3); margin-top:3px; }',
+      '.inp-settle .ist-p .p-num { display:flex; justify-content:space-between; font-size:12px; color:var(--yb-ink-3); margin-top:5px; }',
+      '.inp-settle .ist-pempty, .inp-settle .ist-hempty { text-align:center; color:var(--yb-ink-4); font-size:13px; padding:24px 0; }',
+      '.inp-settle .isplit-r { flex:1; min-width:0; display:flex; flex-direction:column; min-height:0; }',
+      '.inp-settle .isplit-empty { flex:1; display:flex; align-items:center; justify-content:center; color:var(--yb-ink-4); font-size:14px; border:1px dashed var(--yb-border-strong); border-radius:var(--yb-r-md); background:var(--yb-surface); }',
+      '.inp-settle .isplit-rscroll { flex:1; min-height:0; overflow-y:auto; padding:14px 16px; border:1px solid var(--yb-border); border-radius:var(--yb-r-md); background:var(--yb-surface); }',
+      '.inp-settle .ist-hero { display:flex; align-items:flex-start; justify-content:space-between; gap:16px; flex-wrap:wrap; padding-bottom:12px; margin-bottom:12px; border-bottom:1px solid var(--yb-border-light); }',
+      '.inp-settle .ist-hero-id { display:flex; align-items:center; gap:10px; flex-wrap:wrap; }',
+      '.inp-settle .ist-hero-id .h-name { font-size:18px; font-weight:700; color:var(--yb-ink-1); }',
+      '.inp-settle .ist-hero-id .h-meta { font-size:13px; color:var(--yb-ink-3); }',
+      '.inp-settle .ist-figs { display:flex; gap:26px; flex-wrap:wrap; }',
+      '.inp-settle .ist-fig { text-align:right; min-width:96px; }',
+      '.inp-settle .ist-fig .f-label { font-size:12px; color:var(--yb-ink-3); }',
+      '.inp-settle .ist-fig .f-num { font-size:20px; font-weight:700; font-variant-numeric:tabular-nums; font-family:var(--yb-font-mono); color:var(--yb-ink-1); }',
+      '.inp-settle .ist-fig.need .f-num { color:var(--yb-danger); }',
+      '.inp-settle .ist-fig.need.refund .f-num { color:var(--yb-success); }',
+      '.inp-settle .ist-actions { flex:none; display:flex; align-items:center; justify-content:flex-end; gap:10px; padding-top:12px; }',
+      '.inp-settle .ist-actions .ist-hint { margin-right:auto; font-size:12px; color:var(--yb-ink-4); }',
+      '.inp-settle .ist-slip { margin:0 auto; max-width:760px; }',
+      '.inp-settle .ist-hist { padding-left:4px; }',
+      '@media (max-width: 960px) { .inp-settle .isplit-l { width:238px; } .inp-settle .ist-figs { gap:16px; } }'
+    ].join('\n');
+    document.head.appendChild(st);
+  })();
+
   /* ========================================================================
-   * 6. InpSettle 出院结算(步骤条: 选择患者 -> 费用确认 -> 医保预结算 -> 正式结算)
+   * 6. InpSettle 出院结算(同屏工作台: 左侧待结算患者列表 · 右侧就地完成费用确认/预结算/正式结算)
+   *   选患者即自动汇总费用并试算(2303 预结算为只读试算), 底部操作栏常驻; 结算后就地渲染结算单
    * ====================================================================== */
   HIS.views.InpSettle = {
     mixins: [refMixin],
     template: [
       '<div class="inp-settle">',
-      '  <el-steps :active="stepActive" finish-status="success" align-center style="margin-bottom:20px">',
-      '    <el-step title="选择患者" description="出院办理中"></el-step>',
-      '    <el-step title="费用确认"></el-step>',
-      '    <el-step title="医保预结算"></el-step>',
-      '    <el-step title="正式结算"></el-step>',
-      '  </el-steps>',
-      /* ---- Step1 选择患者 ---- */
-      '  <div v-if="step===1" class="inp-card" style="max-width:720px;margin:0 auto">',
-      '    <div class="inp-section-title">选择待结算患者(在院 · 可中途结算 / 出院办理中 · 办出院结算)</div>',
-      '    <el-select v-model="visitId" filterable placeholder="选择患者(住院号/姓名)" style="width:100%" @change="onPickVisit">',
-      '      <el-option v-for="v in visits" :key="v.id" :label="visitLabel(v) + (v.visit_status === 2 ? \' 〔在院〕\' : \' 〔出院办理中〕\')" :value="v.id"></el-option>',
-      '    </el-select>',
-      '    <div v-if="!visits.length" style="color:var(--yb-ink-3);font-size:13px;margin-top:10px">暂无在院或出院办理中的患者</div>',
-      '    <div v-if="pickedVisit" class="inp-info" style="margin-top:14px">',
-      '      <b>{{ pickedVisit.patient_name }}</b>　{{ pickedVisit.gender_name || genderText(pickedVisit.gender) }}　{{ pickedVisit.age }}岁　住院号: {{ pickedVisit.inp_no }}　<el-tag :type="pickedVisit.visit_status === 2 ? \'success\' : \'warning\'" size="small">{{ pickedVisit.visit_status === 2 ? \'在院\' : \'出院办理中\' }}</el-tag><br>',
-      '      病区: {{ pickedVisit.ward_name }} {{ pickedVisit.bed_no }}床　累计费用: ¥{{ money(pickedVisit.total_cost) }}　预交金余额: ¥{{ money(pickedVisit.deposit_balance) }}',
-      '    </div>',
-      '    <div v-if="pickedVisit" class="inp-card" style="margin-top:14px;background:var(--yb-surface)">',
-      '      <div class="inp-section-title">结算历史</div>',
-      '      <el-timeline v-if="historyList.length" style="padding-left:4px">',
-      '        <el-timeline-item v-for="h in historyList" :key="h.id" :timestamp="fmtTime(h.settleTime)" placement="top" :type="historyItemType(h)">',
-      '          <el-tag :type="historyItemType(h)" size="small">{{ settleTypeLabel(h.settleType) }}</el-tag>',
-      '          <el-tag v-if="h.ybStatus === 4" type="info" size="small" style="margin-left:6px">已撤销</el-tag>',
-      '          <span style="margin-left:8px">金额: <b class="inp-money">¥{{ money(h.totalAmount) }}</b></span>',
-      '          <span style="margin-left:8px;color:var(--yb-ink-3)">单号: {{ orDash(h.settleNo) }}</span>',
-      '        </el-timeline-item>',
-      '      </el-timeline>',
-      '      <div v-else style="color:var(--yb-ink-3);font-size:13px">暂无结算记录</div>',
-      '    </div>',
-      '    <div style="margin-top:16px;text-align:right">',
-      '      <el-button type="primary" :disabled="!visitId" @click="goStep2">下一步: 费用确认</el-button>',
+      /* ===== 左栏: 待结算患者列表(搜索 + 点击即载入) ===== */
+      '  <div class="isplit-l">',
+      '    <div class="isplit-lhead"><div class="inp-section-title">待结算患者</div><el-button size="small" text :loading="listLoading" @click="loadVisits">刷新</el-button></div>',
+      '    <el-input v-model="search" size="small" placeholder="住院号 / 姓名" clearable style="margin:8px 10px 0" suffix-icon="Search"></el-input>',
+      '    <div class="isplit-lsub">共 {{ filteredVisits.length }} 人 · 在院可中途结算 / 出院办理中办出院结算</div>',
+      '    <div class="isplit-llist" v-loading="listLoading">',
+      '      <div v-for="v in filteredVisits" :key="v.id" class="ist-p" :class="{ \'is-on\': isPicked(v) }" @click="selectVisit(v)">',
+      '        <div class="ist-p-top"><span class="p-name">{{ v.patient_name }}</span><el-tag :type="v.visit_status === 2 ? \'success\' : \'warning\'" size="small">{{ v.visit_status === 2 ? \'在院\' : \'出院办理\' }}</el-tag></div>',
+      '        <div class="p-meta">{{ v.gender_name || genderText(v.gender) }} · {{ v.age }}岁 · 住院号 {{ v.inp_no }} · {{ v.ward_name }} {{ v.bed_no }}床</div>',
+      '        <div class="p-num"><span>费用 <b class="inp-money">¥{{ money(v.total_cost) }}</b></span><span>预交金 <b class="inp-money" :class="Number(v.deposit_balance) < 0 ? \'inp-money-out\' : \'inp-money-in\'">¥{{ money(v.deposit_balance) }}</b></span></div>',
+      '      </div>',
+      '      <div v-if="!filteredVisits.length" class="ist-pempty">暂无待结算患者</div>',
       '    </div>',
       '  </div>',
-      /* ---- Step2 费用确认 ---- */
-      '  <div v-if="step===2">',
-      '    <div class="inp-card" style="margin-bottom:12px">',
-      '      <div class="inp-section-title">费用汇总{{ pickedVisit ? " · " + pickedVisit.patient_name : "" }}</div>',
-      '      <el-table :data="summaryItems" border size="small" show-summary :summary-method="summaryMethod">',
-      '        <el-table-column prop="feeTypeName" label="费用类别"></el-table-column>',
-      '        <el-table-column label="数量" width="100" align="right"><template #default="s">{{ qtyFmt(s.row.totalQuantity) }}</template></el-table-column>',
-      '        <el-table-column label="金额(元)" width="140" align="right"><template #default="s"><span class="inp-money">{{ money(s.row.totalAmount) }}</span></template></el-table-column>',
-      '      </el-table>',
-      '      <el-row :gutter="12" style="margin-top:14px">',
-      '        <el-col :span="8"><div class="inp-info">费用总额: <b class="inp-money">¥{{ money(summaryObj.totalAmount) }}</b></div></el-col>',
-      '        <el-col :span="8"><div class="inp-info">预交金余额: <b class="inp-money">¥{{ money(pickedVisit ? pickedVisit.deposit_balance : 0) }}</b></div></el-col>',
-      '        <el-col :span="8"><div class="inp-info">预计补缴: <b class="inp-money">¥{{ money(preNeedPay) }}</b><span style="color:var(--yb-ink-4);font-size:12px"> (以预结算为准)</span></div></el-col>',
-      '      </el-row>',
-      '    </div>',
-      '    <div style="text-align:right">',
-      '      <el-button @click="step=1">上一步</el-button>',
-      '      <el-button type="primary" :loading="preLoading" @click="doPre">预结算</el-button>',
-      '    </div>',
-      '  </div>',
-      /* ---- Step3 医保预结算 ---- */
-      '  <div v-if="step===3">',
-      '    <div class="inp-card" style="margin-bottom:12px">',
-      '      <div class="inp-section-title">预结算结果</div>',
-      '      <el-alert v-if="!preResult" type="info" :closable="false" title="尚未执行预结算"></el-alert>',
-      '      <template v-else>',
-      '        <div v-if="preResult.scopeStart" style="color:var(--yb-ink-3);font-size:12px;margin-bottom:8px">本次中途结算区间: {{ preResult.scopeStart }} ~ {{ preResult.scopeEnd }} (仅汇总该区间内未结算费用)</div>',
-      '        <el-descriptions :column="3" border size="small" style="margin-bottom:12px">',
-      '          <el-descriptions-item label="患者">{{ preResult.patientName }}</el-descriptions-item>',
-      '          <el-descriptions-item label="住院号">{{ preResult.inpNo }}</el-descriptions-item>',
-      '          <el-descriptions-item label="医保身份">{{ preResult.ybFlag ? "医保" : "自费" }}</el-descriptions-item>',
-      '          <el-descriptions-item label="医疗费总额"><span class="inp-money">¥{{ money(preResult.totalAmount) }}</span></el-descriptions-item>',
-      '          <el-descriptions-item label="预交金余额"><span class="inp-money">¥{{ money(preResult.depositBalance) }}</span></el-descriptions-item>',
-      '          <el-descriptions-item label="需补缴金额"><span class="inp-money">¥{{ money(preResult.needPay) }}</span></el-descriptions-item>',
-      '        </el-descriptions>',
-      '        <template v-if="preResult.setlInfo">',
-      '          <div class="inp-section-title" style="margin-top:4px">医保结算明细(2303试算)</div>',
-      '          <el-descriptions :column="3" border size="small">',
-      '            <el-descriptions-item label="基金支付"><span class="inp-money">¥{{ money(preResult.setlInfo.fundPaySumamt) }}</span></el-descriptions-item>',
-      '            <el-descriptions-item label="个人负担"><span class="inp-money">¥{{ money(preResult.setlInfo.psnPartAmt) }}</span></el-descriptions-item>',
-      '            <el-descriptions-item label="个账支付"><span class="inp-money">¥{{ money(preResult.setlInfo.acctPay) }}</span></el-descriptions-item>',
-      '            <el-descriptions-item label="个人现金"><span class="inp-money">¥{{ money(preResult.setlInfo.psnCashPay) }}</span></el-descriptions-item>',
-      '            <el-descriptions-item label="医疗费总额" :span="2"><span class="inp-money">¥{{ money(preResult.setlInfo.medfeeSumamt) }}</span></el-descriptions-item>',
-      '          </el-descriptions>',
-      '        </template>',
-      '        <el-alert v-else type="warning" :closable="false" style="margin-top:10px" title="非医保患者(或医保信息不完整), 仅做院内试算"></el-alert>',
-      '      </template>',
-      '    </div>',
-      '    <div style="text-align:right">',
-      '      <el-button @click="step=2">上一步</el-button>',
-      '      <el-button type="warning" :loading="preLoading" @click="doPre">重新预结算</el-button>',
-      '      <el-button v-if="isMidVisit" type="warning" :loading="settleLoading" :disabled="!preResult" @click="doMidSettle">确认中途结算</el-button>',
-      '      <el-button v-else type="primary" :loading="settleLoading" :disabled="!preResult" @click="doSettle">确认结算(出院)</el-button>',
-      '    </div>',
-      '  </div>',
-      /* ---- Step4 结算单 ---- */
-      '  <div v-if="step===4">',
-      '    <div style="max-width:780px;margin:0 auto">',
-      '      <div class="inp-slip">',
-      '        <div class="inp-slip-title">住院结算单</div>',
-      '        <el-descriptions :column="2" border size="small">',
-      '          <el-descriptions-item label="结算单号">{{ orDash(settleResult.settle.settleNo) }}</el-descriptions-item>',
-      '          <el-descriptions-item label="结算类型">{{ settleTypeLabel(settleResult.settle.settleType) }}</el-descriptions-item>',
-      '          <el-descriptions-item label="医疗费总额"><span class="inp-money">¥{{ money(settleResult.settle.totalAmount) }}</span></el-descriptions-item>',
-      '          <el-descriptions-item label="基金支付"><span class="inp-money">¥{{ money(settleResult.settle.fundPay) }}</span></el-descriptions-item>',
-      '          <el-descriptions-item label="个账支付"><span class="inp-money">¥{{ money(settleResult.settle.acctPay) }}</span></el-descriptions-item>',
-      '          <el-descriptions-item label="个人负担"><span class="inp-money">¥{{ money(settleResult.settle.selfPay) }}</span></el-descriptions-item>',
-      '          <el-descriptions-item label="预交金抵扣"><span class="inp-money">¥{{ money(settleResult.settle.depositDeduct) }}</span></el-descriptions-item>',
-      '          <el-descriptions-item label="现金支付"><span class="inp-money">¥{{ money(settleResult.settle.cashPay) }}</span></el-descriptions-item>',
-      '          <el-descriptions-item label="结算时间">{{ fmtTime(settleResult.settle.settleTime) }}</el-descriptions-item>',
-      '          <el-descriptions-item label="医保结算状态">{{ settleResult.settle.ybStatus===2 ? "已结算" : "未结算/自费" }}</el-descriptions-item>',
-      '          <el-descriptions-item label="DRG分组编码">{{ orDash(settleResult.settle.drgGroupCode) }}</el-descriptions-item>',
-      '          <el-descriptions-item label="DIP编码">{{ orDash(settleResult.settle.dipCode) }}</el-descriptions-item>',
-      '          <el-descriptions-item label="支付方式">{{ payMethodLabel(settleResult.settle.payMethod) }}</el-descriptions-item>',
-      '          <el-descriptions-item v-if="settleResult.scopeStart" label="结算区间" :span="2">{{ settleResult.scopeStart }} ~ {{ settleResult.scopeEnd }}</el-descriptions-item>',
-      '        </el-descriptions>',
-      '        <div style="margin-top:16px;text-align:center;font-size:15px">',
-      '          <template v-if="Number(settleResult.refundAmount) > 0">',
-      '            <span style="color:var(--yb-success);font-weight:700">应退患者: ¥{{ money(settleResult.refundAmount) }}</span>',
-      '          </template>',
-      '          <template v-else-if="Number(settleResult.cashPay) > 0">',
-      '            <span style="color:var(--yb-danger);font-weight:700">应补收: ¥{{ money(settleResult.cashPay) }}</span>',
-      '          </template>',
-      '          <template v-else><span style="color:var(--yb-success);font-weight:700">预交金足额抵扣, 无需退补</span></template>',
+      /* ===== 右栏: 结算工作台 ===== */
+      '  <div class="isplit-r">',
+      '    <div v-if="!pickedVisit" class="isplit-empty">← 从左侧选择患者, 系统自动汇总费用并完成医保预结算, 全程同屏操作</div>',
+      '    <template v-else>',
+      '      <div class="isplit-rscroll" v-loading="summaryLoading || (preLoading && !settleResult)">',
+      /* 患者头部 + 关键数字 */
+      '        <div class="ist-hero">',
+      '          <div class="ist-hero-id"><span class="h-name">{{ pickedVisit.patient_name }}</span><el-tag :type="isMidVisit ? \'success\' : \'warning\'" size="small">{{ isMidVisit ? \'在院 · 中途结算\' : \'出院办理中 · 出院结算\' }}</el-tag><span class="h-meta">{{ pickedVisit.gender_name || genderText(pickedVisit.gender) }} {{ pickedVisit.age }}岁 · 住院号 {{ pickedVisit.inp_no }} · {{ pickedVisit.ward_name }} {{ pickedVisit.bed_no }}床</span></div>',
+      '          <div class="ist-figs">',
+      '            <div class="ist-fig"><div class="f-label">费用总额</div><div class="f-num">¥{{ money(summaryObj.totalAmount) }}</div></div>',
+      '            <div class="ist-fig"><div class="f-label">预交金余额</div><div class="f-num">¥{{ money(pickedVisit.deposit_balance) }}</div></div>',
+      '            <div class="ist-fig need" :class="{ \'refund\': isRefund }"><div class="f-label">{{ needLabel }}</div><div class="f-num">¥{{ money(needFigure) }}</div></div>',
+      '          </div>',
       '        </div>',
-      '        <div v-if="settleResult.settle.ybStatus===2" style="margin-top:8px;text-align:center;color:var(--yb-ink-3);font-size:12px">医保结算已完成(2304), 基金支付 ¥{{ money(settleResult.settle.fundPay) }} / 个账 ¥{{ money(settleResult.settle.acctPay) }}</div>',
+      /* --- 已结算: 就地渲染结算单 --- */
+      '        <template v-if="settleResult">',
+      '          <div class="inp-slip ist-slip">',
+      '            <div class="inp-slip-title">住院结算单</div>',
+      '            <el-descriptions :column="2" border size="small">',
+      '              <el-descriptions-item label="结算单号">{{ orDash(settleResult.settle.settleNo) }}</el-descriptions-item>',
+      '              <el-descriptions-item label="结算类型">{{ settleTypeLabel(settleResult.settle.settleType) }}</el-descriptions-item>',
+      '              <el-descriptions-item label="医疗费总额"><span class="inp-money">¥{{ money(settleResult.settle.totalAmount) }}</span></el-descriptions-item>',
+      '              <el-descriptions-item label="基金支付"><span class="inp-money">¥{{ money(settleResult.settle.fundPay) }}</span></el-descriptions-item>',
+      '              <el-descriptions-item label="个账支付"><span class="inp-money">¥{{ money(settleResult.settle.acctPay) }}</span></el-descriptions-item>',
+      '              <el-descriptions-item label="个人负担"><span class="inp-money">¥{{ money(settleResult.settle.selfPay) }}</span></el-descriptions-item>',
+      '              <el-descriptions-item label="预交金抵扣"><span class="inp-money">¥{{ money(settleResult.settle.depositDeduct) }}</span></el-descriptions-item>',
+      '              <el-descriptions-item label="现金支付"><span class="inp-money">¥{{ money(settleResult.settle.cashPay) }}</span></el-descriptions-item>',
+      '              <el-descriptions-item label="结算时间">{{ fmtTime(settleResult.settle.settleTime) }}</el-descriptions-item>',
+      '              <el-descriptions-item label="医保结算状态">{{ settleResult.settle.ybStatus === 2 ? "已结算" : "未结算/自费" }}</el-descriptions-item>',
+      '              <el-descriptions-item label="DRG分组编码">{{ orDash(settleResult.settle.drgGroupCode) }}</el-descriptions-item>',
+      '              <el-descriptions-item label="DIP编码">{{ orDash(settleResult.settle.dipCode) }}</el-descriptions-item>',
+      '              <el-descriptions-item label="支付方式">{{ payMethodLabel(settleResult.settle.payMethod) }}</el-descriptions-item>',
+      '              <el-descriptions-item v-if="settleResult.scopeStart" label="结算区间" :span="2">{{ settleResult.scopeStart }} ~ {{ settleResult.scopeEnd }}</el-descriptions-item>',
+      '            </el-descriptions>',
+      '            <div style="margin-top:16px;text-align:center;font-size:15px">',
+      '              <template v-if="Number(settleResult.refundAmount) > 0"><span style="color:var(--yb-success);font-weight:700">应退患者: ¥{{ money(settleResult.refundAmount) }}</span></template>',
+      '              <template v-else-if="Number(settleResult.cashPay) > 0"><span style="color:var(--yb-danger);font-weight:700">应补收: ¥{{ money(settleResult.cashPay) }}</span></template>',
+      '              <template v-else><span style="color:var(--yb-success);font-weight:700">预交金足额抵扣, 无需退补</span></template>',
+      '            </div>',
+      '            <div v-if="settleResult.settle.ybStatus === 2" style="margin-top:8px;text-align:center;color:var(--yb-ink-3);font-size:12px">医保结算已完成(2304), 基金支付 ¥{{ money(settleResult.settle.fundPay) }} / 个账 ¥{{ money(settleResult.settle.acctPay) }}</div>',
+      '          </div>',
+      '        </template>',
+      /* --- 未结算: 费用汇总 + 医保预结算 + 结算历史 --- */
+      '        <template v-else>',
+      '          <div class="inp-section-title">费用汇总</div>',
+      '          <el-table :data="summaryItems" border size="small" max-height="200" show-summary :summary-method="summaryMethod">',
+      '            <el-table-column prop="feeTypeName" label="费用类别"></el-table-column>',
+      '            <el-table-column label="数量" width="90" align="right"><template #default="s">{{ qtyFmt(s.row.totalQuantity) }}</template></el-table-column>',
+      '            <el-table-column label="金额(元)" width="120" align="right"><template #default="s"><span class="inp-money">{{ money(s.row.totalAmount) }}</span></template></el-table-column>',
+      '          </el-table>',
+      '          <div class="inp-section-title" style="margin-top:14px">医保预结算(2303 试算)</div>',
+      '          <el-alert v-if="!preResult" type="info" :closable="false" title="正在汇总费用并试算, 请稍候…"></el-alert>',
+      '          <template v-else>',
+      '            <div v-if="preResult.scopeStart" style="color:var(--yb-ink-3);font-size:12px;margin-bottom:8px">本次中途结算区间: {{ preResult.scopeStart }} ~ {{ preResult.scopeEnd }} (仅汇总该区间内未结算费用)</div>',
+      '            <el-descriptions :column="3" border size="small" style="margin-bottom:12px">',
+      '              <el-descriptions-item label="患者">{{ preResult.patientName }}</el-descriptions-item>',
+      '              <el-descriptions-item label="住院号">{{ preResult.inpNo }}</el-descriptions-item>',
+      '              <el-descriptions-item label="医保身份">{{ preResult.ybFlag ? "医保" : "自费" }}</el-descriptions-item>',
+      '              <el-descriptions-item label="医疗费总额"><span class="inp-money">¥{{ money(preResult.totalAmount) }}</span></el-descriptions-item>',
+      '              <el-descriptions-item label="预交金余额"><span class="inp-money">¥{{ money(preResult.depositBalance) }}</span></el-descriptions-item>',
+      '              <el-descriptions-item label="需补缴金额"><span class="inp-money">¥{{ money(preResult.needPay) }}</span></el-descriptions-item>',
+      '            </el-descriptions>',
+      '            <template v-if="preResult.setlInfo">',
+      '              <div class="inp-section-title" style="margin-top:4px">医保结算明细(2303试算)</div>',
+      '              <el-descriptions :column="3" border size="small">',
+      '                <el-descriptions-item label="基金支付"><span class="inp-money">¥{{ money(preResult.setlInfo.fundPaySumamt) }}</span></el-descriptions-item>',
+      '                <el-descriptions-item label="个人负担"><span class="inp-money">¥{{ money(preResult.setlInfo.psnPartAmt) }}</span></el-descriptions-item>',
+      '                <el-descriptions-item label="个账支付"><span class="inp-money">¥{{ money(preResult.setlInfo.acctPay) }}</span></el-descriptions-item>',
+      '                <el-descriptions-item label="个人现金"><span class="inp-money">¥{{ money(preResult.setlInfo.psnCashPay) }}</span></el-descriptions-item>',
+      '                <el-descriptions-item label="医疗费总额" :span="2"><span class="inp-money">¥{{ money(preResult.setlInfo.medfeeSumamt) }}</span></el-descriptions-item>',
+      '              </el-descriptions>',
+      '            </template>',
+      '            <el-alert v-else type="warning" :closable="false" style="margin-top:10px" title="非医保患者(或医保信息不完整), 仅做院内试算"></el-alert>',
+      '          </template>',
+      '          <div class="inp-section-title" style="margin-top:14px">结算历史</div>',
+      '          <el-timeline v-if="historyList.length" class="ist-hist" style="padding-left:4px">',
+      '            <el-timeline-item v-for="h in historyList" :key="h.id" :timestamp="fmtTime(h.settleTime)" placement="top" :type="historyItemType(h)">',
+      '              <el-tag :type="historyItemType(h)" size="small">{{ settleTypeLabel(h.settleType) }}</el-tag>',
+      '              <el-tag v-if="h.ybStatus === 4" type="info" size="small" style="margin-left:6px">已撤销</el-tag>',
+      '              <span style="margin-left:8px">金额: <b class="inp-money">¥{{ money(h.totalAmount) }}</b></span>',
+      '              <span style="margin-left:8px;color:var(--yb-ink-3)">单号: {{ orDash(h.settleNo) }}</span>',
+      '            </el-timeline-item>',
+      '          </el-timeline>',
+      '          <div v-else class="ist-hempty">暂无结算记录</div>',
+      '        </template>',
       '      </div>',
-      '      <div style="margin-top:16px;text-align:right">',
-      '        <el-button @click="printSlip">打印结算单</el-button>',
-      '        <el-button type="primary" @click="resetFlow">完成, 继续下一单</el-button>',
+      /* 底部操作栏(常驻同屏) */
+      '      <div class="ist-actions">',
+      '        <template v-if="settleResult">',
+      '          <el-button @click="printSlip">打印结算单</el-button>',
+      '          <el-button type="primary" @click="resetFlow">完成, 下一单</el-button>',
+      '        </template>',
+      '        <template v-else>',
+      '          <span v-if="!canSettle" class="ist-hint">{{ canSettleHint }}</span>',
+      '          <el-button :loading="summaryLoading || preLoading" @click="reloadAll">重新预结算</el-button>',
+      '          <el-button v-if="isMidVisit" type="warning" :loading="settleLoading" :disabled="!canSettle" @click="doMidSettle">确认中途结算</el-button>',
+      '          <el-button v-else type="primary" :loading="settleLoading" :disabled="!canSettle" @click="doSettle">确认出院结算</el-button>',
+      '        </template>',
       '      </div>',
-      '    </div>',
+      '    </template>',
       '  </div>',
       '</div>'
     ].join('\n'),
     data: function () {
       return {
-        step: 1, visits: [], visitId: null,
-        summaryObj: { items: [], totalAmount: 0 },
+        search: '', listLoading: false,
+        visits: [], visitId: null,
+        summaryObj: { items: [], totalAmount: 0 }, summaryLoading: false,
         preResult: null, preLoading: false,
         settleResult: null, settleLoading: false,
         historyList: []
       };
     },
     computed: {
-      stepActive: function () { return this.settleResult ? 4 : Math.min(this.step - 1, 3); },
       pickedVisit: function () {
         if (!this.visitId) { return null; }
         for (var i = 0; i < this.visits.length; i++) {
           if (HIS.sameId(this.visits[i].id, this.visitId)) { return this.visits[i]; }
         }
         return null;
+      },
+      filteredVisits: function () {
+        var s = (this.search || '').trim().toLowerCase();
+        if (!s) { return this.visits; }
+        return this.visits.filter(function (v) {
+          return String(v.inp_no || '').toLowerCase().indexOf(s) >= 0 || String(v.patient_name || '').toLowerCase().indexOf(s) >= 0;
+        });
       },
       summaryItems: function () { return (this.summaryObj && this.summaryObj.items) || []; },
       preNeedPay: function () {
@@ -2631,19 +2670,59 @@
         return Math.max(0, total - balance);
       },
       /* 结算模式: 在院(2)可办中途结算; 出院办理中(3)办出院结算 */
-      isMidVisit: function () { return !!(this.pickedVisit && this.pickedVisit.visit_status === 2); }
+      isMidVisit: function () { return !!(this.pickedVisit && this.pickedVisit.visit_status === 2); },
+      canSettle: function () {
+        return !!(this.pickedVisit && this.preResult && !this.preLoading && !this.summaryLoading && Number(this.summaryObj.totalAmount) > 0);
+      },
+      canSettleHint: function () {
+        if (!Number(this.summaryObj.totalAmount)) { return '该患者本次区间暂无费用明细, 无法结算'; }
+        if (this.summaryLoading || this.preLoading) { return '费用汇总 / 预结算计算中…'; }
+        if (!this.preResult) { return '等待预结算完成'; }
+        return '';
+      },
+      isRefund: function () { return !!(this.settleResult && Number(this.settleResult.refundAmount) > 0); },
+      needLabel: function () {
+        if (this.settleResult) { return Number(this.settleResult.refundAmount) > 0 ? '应退患者' : '应补收'; }
+        return '预计需补';
+      },
+      needFigure: function () {
+        var s = this.settleResult;
+        if (s) { return Number(s.refundAmount) > 0 ? s.refundAmount : (Number(s.cashPay) || 0); }
+        if (this.preResult) { return this.preResult.needPay; }
+        return this.preNeedPay;
+      }
     },
     methods: {
       money: money, qtyFmt: qtyFmt, orDash: orDash, fmtTime: fmtTime,
-      genderText: genderText, settleTypeLabel: settleTypeLabel, payMethodLabel: payMethodLabel, visitLabel: visitLabelOf,
+      genderText: genderText, settleTypeLabel: settleTypeLabel, payMethodLabel: payMethodLabel,
+      isPicked: function (v) { return this.visitId != null && HIS.sameId(v.id, this.visitId); },
       loadVisits: function () {
         var vm = this;
+        vm.listLoading = true;
         fetchVisits().then(function (list) {
           /* 在院(2)可中途结算; 出院办理中(3)办出院结算 */
-          vm.visits = list.filter(function (r) { return r.visit_status === 2 || r.visit_status === 3; });
-        }).catch(HIS.notifyError);
+          vm.visits = (list || []).filter(function (r) { return r.visit_status === 2 || r.visit_status === 3; });
+        }).catch(HIS.notifyError).finally(function () { vm.listLoading = false; });
       },
-      onPickVisit: function () { this.preResult = null; this.settleResult = null; this.loadHistory(); },
+      /* 选择患者: 就地清空上次结果并自动汇总费用 + 试算 */
+      selectVisit: function (v) {
+        var vm = this;
+        if (HIS.sameId(vm.visitId, v.id)) { return; }
+        vm.visitId = v.id; vm.preResult = null; vm.settleResult = null;
+        vm.summaryObj = { items: [], totalAmount: 0 };
+        vm.loadHistory(); vm.loadFees();
+      },
+      /* 刷新当前患者的费用/预结算/历史 */
+      reloadAll: function () { if (!this.visitId) { return; } this.loadHistory(); this.loadFees(); },
+      /* 费用汇总: GET /settle/charge/summary/{visitId}; 完成后自动触发预结算试算 */
+      loadFees: function () {
+        var vm = this;
+        if (!vm.visitId) { return; }
+        vm.summaryLoading = true;
+        HIS.get('/api/his/inp/settle/charge/summary/' + HIS.idParam(vm.visitId)).then(function (d) {
+          vm.summaryObj = d || { items: [], totalAmount: 0 };
+        }).catch(HIS.notifyError).finally(function () { vm.summaryLoading = false; vm.doPre(); });
+      },
       /* 结算历史: GET /settlements/{visitId} (含中途/出院/退费; 已撤销 ybStatus=4) */
       loadHistory: function () {
         var vm = this;
@@ -2658,26 +2737,13 @@
         if (h.settleType === 3) { return 'danger'; }
         return 'success';
       },
-      goStep2: function () {
-        var vm = this;
-        if (!vm.visitId) { HIS.notifyError(new Error('请先选择患者')); return; }
-        vm.loadSummary();
-        vm.step = 2;
-      },
-      loadSummary: function () {
-        var vm = this;
-        HIS.get('/api/his/inp/settle/charge/summary/' + HIS.idParam(vm.visitId)).then(function (d) {
-          vm.summaryObj = d || { items: [], totalAmount: 0 };
-        }).catch(HIS.notifyError);
-      },
-      /* 预结算: POST /pre?visitId= (医保患者透传2303试算) */
+      /* 预结算(只读试算): POST /pre?visitId= (医保患者透传2303试算) */
       doPre: function () {
         var vm = this;
+        if (!vm.visitId) { return; }
         vm.preLoading = true;
         HIS.post('/api/his/inp/settle/pre?visitId=' + HIS.idParam(vm.visitId)).then(function (d) {
           vm.preResult = d;
-          vm.step = 3;
-          HIS.notifySuccess('预结算完成');
         }).catch(HIS.notifyError).finally(function () { vm.preLoading = false; });
       },
       /* 正式结算: POST /settle {inpVisitId, settleType:1出院结算} */
@@ -2693,7 +2759,6 @@
         }).then(function (res) {
           vm.settleResult = res;
           vm.settleLoading = false;
-          vm.step = 4;
           HIS.notifySuccess('结算完成');
         }).catch(function (e) {
           vm.settleLoading = false;
@@ -2716,7 +2781,6 @@
         }).then(function (res) {
           vm.settleResult = res;
           vm.settleLoading = false;
-          vm.step = 4;
           HIS.notifySuccess('中途结算完成');
           vm.loadHistory();
         }).catch(function (e) {
@@ -2734,7 +2798,7 @@
         }).catch(HIS.notifyError);
       },
       resetFlow: function () {
-        this.step = 1; this.visitId = null;
+        this.search = ''; this.visitId = null;
         this.summaryObj = { items: [], totalAmount: 0 };
         this.preResult = null; this.settleResult = null;
         this.historyList = [];
