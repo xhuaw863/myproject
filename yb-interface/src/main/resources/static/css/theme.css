@@ -402,18 +402,31 @@ body {
   box-shadow: var(--yb-sh-1);
 }
 .stat-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; margin-bottom: var(--yb-sp-4); }
-/* 页标题: 15px 太小撑不起页面根节点, 提到 20px 并收紧字距; 左侧改短粗色块 */
+/* 页标题: 升级为页头带 —— 品牌渐变圆角左脊(与顶栏同一色源) + 底部细分隔线,
+   把"页面根节点"从一行裸文字抬升为有层次的标题区; 内嵌副说明 span 自然随流排布。 */
 .page-title {
+  position: relative;
   font-size: var(--yb-fs-xl); font-weight: 700; color: var(--yb-ink-1);
   letter-spacing: var(--yb-tracking-tight); line-height: var(--yb-lh-tight);
   margin-bottom: var(--yb-sp-4);
-  border-left: 3px solid var(--yb-brand); padding-left: 11px;
+  padding: 2px 0 10px 13px;
+  border-bottom: 1px solid var(--yb-border);
+}
+.page-title::before {
+  content: ''; position: absolute; left: 0; top: 0; bottom: 10px; width: 3px;
+  border-radius: 3px; background: var(--yb-header-grad);
 }
 .page-title span[style*="font-size:12px"], .page-title .el-tag { vertical-align: middle; }
 
+/* 工具条: 收拢为控制台浅底容器(散落的浮控件 → 一条有意图的操作条)。
+   flex 列(.cd-fill/.cd-grow/.dept-main/.sp-main)里 .toolbar 已被 his.css 置 flex:none,
+   此处仅令其自身增高, 表格区按 flex:1 相应收窄, 不破坏"表头固定+内滚+分页钉底"撑满逻辑。 */
 .toolbar {
   display: flex; gap: var(--yb-sp-2); align-items: center;
   margin-bottom: var(--yb-sp-3); flex-wrap: wrap;
+  background: var(--yb-surface); border: 1px solid var(--yb-border);
+  border-radius: var(--yb-r-md); padding: 10px 14px;
+  box-shadow: var(--yb-sh-1);
 }
 
 .stat-card {
