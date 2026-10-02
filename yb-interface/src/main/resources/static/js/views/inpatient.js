@@ -1839,61 +1839,92 @@
     return HIS.get('/api/his/inp/patients?page=1&size=300').then(function (d) { return (d && d.records) || []; });
   }
 
+  /* 预交金管理同屏工作台样式(独立 id, 不与既有 #inp-style/#inp-style-30/#inp-style-settle 冲突) */
+  (function ensureInpDepositStyles() {
+    if (document.getElementById('inp-style-deposit')) { return; }
+    var st = document.createElement('style');
+    st.id = 'inp-style-deposit';
+    st.textContent = [
+      '.inp-deposit { display:flex; gap:12px; height:100%; min-height:0; }',
+      '.inp-deposit .dp-l { width:300px; flex:none; display:flex; flex-direction:column; min-height:0; border:1px solid var(--yb-border); border-radius:var(--yb-r-md); background:var(--yb-surface); }',
+      '.inp-deposit .dp-lhead { display:flex; align-items:center; justify-content:space-between; padding:10px 12px 0; }',
+      '.inp-deposit .dp-lsub { padding:4px 12px 8px; font-size:12px; color:var(--yb-ink-4); border-bottom:1px solid var(--yb-border-light); }',
+      '.inp-deposit .dp-list { flex:1; min-height:0; overflow-y:auto; padding:8px; }',
+      '.inp-deposit .dp-p { border:1px solid var(--yb-border-light); border-radius:var(--yb-r-md); padding:8px 10px; margin-bottom:8px; cursor:pointer; transition:box-shadow var(--yb-dur) var(--yb-ease), border-color var(--yb-dur) var(--yb-ease), background var(--yb-dur) var(--yb-ease); }',
+      '.inp-deposit .dp-p:hover { box-shadow:var(--yb-sh-1); }',
+      '.inp-deposit .dp-p.is-on { border-color:var(--yb-brand); background:var(--yb-info-light); box-shadow:0 0 0 2px rgba(26,92,158,.14); }',
+      '.inp-deposit .dp-p .p-top { display:flex; align-items:center; justify-content:space-between; gap:6px; }',
+      '.inp-deposit .dp-p .p-name { font-weight:600; color:var(--yb-ink-1); font-size:14px; }',
+      '.inp-deposit .dp-p .p-meta { font-size:12px; color:var(--yb-ink-3); margin-top:3px; }',
+      '.inp-deposit .dp-p .p-bal { font-size:12px; color:var(--yb-ink-3); margin-top:4px; }',
+      '.inp-deposit .dp-pempty { text-align:center; color:var(--yb-ink-4); font-size:13px; padding:24px 0; }',
+      '.inp-deposit .dp-r { flex:1; min-width:0; display:flex; flex-direction:column; min-height:0; overflow-y:auto; padding:14px 16px; border:1px solid var(--yb-border); border-radius:var(--yb-r-md); background:var(--yb-surface); }',
+      '.inp-deposit .dp-empty { flex:1; display:flex; align-items:center; justify-content:center; color:var(--yb-ink-4); font-size:14px; border:1px dashed var(--yb-border-strong); border-radius:var(--yb-r-md); }',
+      '.inp-deposit .dp-hero { display:flex; align-items:center; justify-content:space-between; gap:14px; flex-wrap:wrap; padding-bottom:12px; margin-bottom:14px; border-bottom:1px solid var(--yb-border-light); }',
+      '.inp-deposit .dp-hero-id { display:flex; align-items:center; gap:10px; flex-wrap:wrap; }',
+      '.inp-deposit .dp-hero-id .h-name { font-size:18px; font-weight:700; color:var(--yb-ink-1); }',
+      '.inp-deposit .dp-hero-id .h-meta { font-size:13px; color:var(--yb-ink-3); }',
+      '.inp-deposit .dp-balbox { text-align:right; }',
+      '.inp-deposit .dp-balbox .b-label { font-size:12px; color:var(--yb-ink-3); }',
+      '.inp-deposit .dp-balbox .inp-balance-num.neg { color:var(--yb-danger); }',
+      '.inp-deposit .dp-cols { display:flex; gap:14px; align-items:flex-start; flex-wrap:wrap; }',
+      '.inp-deposit .dp-form { width:340px; flex:none; }',
+      '.inp-deposit .dp-flow { flex:1; min-width:340px; }',
+      '.inp-deposit .dp-flow > .inp-section-title { display:flex; align-items:center; justify-content:space-between; }',
+      '@media (max-width: 960px) { .inp-deposit .dp-l { width:238px; } }'
+    ].join('\n');
+    document.head.appendChild(st);
+  })();
+
   /* ========================================================================
-   * 4. InpDeposit 预交金管理(缴纳/退还 + 余额大字 + 流水)
+   * 4. InpDeposit 预交金管理(同屏工作台: 左侧患者列表 · 右侧余额大字/收退操作/流水)
+   *   点选患者即自动载入余额与流水; 保留缴纳/退还校验与预警患者对话框
    * ====================================================================== */
   HIS.views.InpDeposit = {
     mixins: [refMixin],
     template: [
       '<div class="inp-deposit">',
-      '  <div class="toolbar">',
-      '    <el-select v-model="visitId" filterable placeholder="选择患者(住院号/姓名)" style="width:340px" @change="onPickVisit">',
-      '      <el-option v-for="v in visits" :key="v.id" :label="visitLabel(v)" :value="v.id"></el-option>',
-      '    </el-select>',
-      '    <el-button @click="loadVisits">刷新患者</el-button>',
-      '    <span style="color:var(--yb-ink-3);font-size:12px">仅待入院/在院/出院办理中的患者可收退预交金</span>',
-      '  </div>',
-      '  <el-row :gutter="12" style="margin-bottom:12px">',
-      '    <el-col :span="6">',
-      '      <div class="inp-alert-card" @click="openAlertList">',
-      '        <div class="inp-alert-num">{{ alertPatients.length }}</div>',
-      '        <div class="inp-stat-label">预交金不足预警患者 · 点击查看列表</div>',
+      /* ===== 左栏: 患者列表(搜索 + 点击即载入) ===== */
+      '  <div class="dp-l">',
+      '    <div class="dp-lhead"><div class="inp-section-title" style="margin:0">患者</div><el-button size="small" text :loading="listLoading" @click="loadVisits">刷新</el-button></div>',
+      '    <el-input v-model="search" size="small" placeholder="住院号 / 姓名" clearable suffix-icon="Search" style="margin:8px 10px 0"></el-input>',
+      '    <div class="dp-lsub">共 {{ filteredVisits.length }} 人 · 点击选择即载入余额与流水</div>',
+      '    <div class="dp-list" v-loading="listLoading">',
+      '      <div v-for="v in filteredVisits" :key="v.id" class="dp-p" :class="{ \'is-on\': isPicked(v) }" @click="selectVisit(v)">',
+      '        <div class="p-top"><span class="p-name">{{ v.patient_name }}</span><el-tag :type="statusTagType(v.visit_status)" size="small">{{ statusText(v.visit_status) }}</el-tag></div>',
+      '        <div class="p-meta">{{ v.gender_name || genderText(v.gender) }} · {{ v.age }}岁 · {{ v.inp_no }} · {{ v.ward_name }} {{ v.bed_no }}床</div>',
+      '        <div class="p-bal">预交金余额 <b class="inp-money" :class="Number(v.deposit_balance) < 0 ? \'inp-money-out\' : \'inp-money-in\'">¥{{ money(v.deposit_balance) }}</b></div>',
       '      </div>',
-      '    </el-col>',
-      '  </el-row>',
-      '  <el-row :gutter="12">',
-      '    <el-col :span="9">',
-      '      <div class="inp-card">',
+      '      <div v-if="!filteredVisits.length" class="dp-pempty">暂无可收退预交金的患者</div>',
+      '    </div>',
+      '  </div>',
+      /* ===== 右栏: 工作台 ===== */
+      '  <div v-if="pickedVisit" class="dp-r">',
+      '    <div class="dp-hero">',
+      '      <div class="dp-hero-id"><span class="h-name">{{ pickedVisit.patient_name }}</span><el-tag :type="statusTagType(pickedVisit.visit_status)" size="small">{{ statusText(pickedVisit.visit_status) }}</el-tag><span class="h-meta">{{ pickedVisit.gender_name || genderText(pickedVisit.gender) }} {{ pickedVisit.age }}岁 · 住院号 {{ pickedVisit.inp_no }} · {{ pickedVisit.ward_name }} {{ pickedVisit.bed_no }}床</span></div>',
+      '      <div class="dp-balbox"><div class="b-label">当前预交金余额</div><div class="inp-balance-num" :class="{ \'neg\': balance !== null && Number(balance) < 0 }">¥ {{ balance === null ? "--" : money(balance) }}</div></div>',
+      '    </div>',
+      '    <div class="dp-cols">',
+      /* 收退操作表单 */
+      '      <div class="inp-card dp-form">',
       '        <div class="inp-section-title" style="margin-bottom:10px">预交金操作</div>',
-      '        <div style="text-align:center;padding:8px 0 16px">',
-      '          <div class="inp-balance-label">当前预交金余额</div>',
-      '          <div class="inp-balance-num">¥ {{ balance === null ? "--" : money(balance) }}</div>',
-      '        </div>',
       '        <el-form :model="form" label-width="86px">',
       '          <el-form-item label="操作方向">',
-      '            <el-radio-group v-model="form.direction">',
-      '              <el-radio :label="1">缴纳</el-radio>',
-      '              <el-radio :label="2">退还</el-radio>',
-      '            </el-radio-group>',
+      '            <el-radio-group v-model="form.direction"><el-radio :label="1">缴纳</el-radio><el-radio :label="2">退还</el-radio></el-radio-group>',
       '          </el-form-item>',
       '          <el-form-item label="金额(元)" required>',
       '            <el-input-number v-model="form.amount" :min="0.01" :precision="2" :step="100" style="width:100%" placeholder="请输入金额"></el-input-number>',
       '          </el-form-item>',
       '          <el-form-item label="支付方式">',
-      '            <el-radio-group v-model="form.payType">',
-      '              <el-radio v-for="p in payTypes" :key="p.v" :label="p.v">{{ p.l }}</el-radio>',
-      '            </el-radio-group>',
+      '            <el-radio-group v-model="form.payType"><el-radio v-for="p in payTypes" :key="p.v" :label="p.v">{{ p.l }}</el-radio></el-radio-group>',
       '          </el-form-item>',
       '          <el-form-item label="备注"><el-input v-model="form.remark" placeholder="选填"></el-input></el-form-item>',
-      '          <el-form-item>',
-      '            <el-button type="primary" :loading="submitting" :disabled="!visitId" @click="submit">确认{{ form.direction===1 ? "缴纳" : "退还" }}</el-button>',
-      '          </el-form-item>',
+      '          <el-form-item><el-button type="primary" :loading="submitting" :disabled="!visitId" @click="submit">确认{{ form.direction === 1 ? "缴纳" : "退还" }}</el-button></el-form-item>',
       '        </el-form>',
       '      </div>',
-      '    </el-col>',
-      '    <el-col :span="15">',
-      '      <div class="inp-card">',
-      '        <div class="inp-section-title" style="margin-bottom:10px">预交金流水</div>',
+      /* 流水 */
+      '      <div class="inp-card dp-flow">',
+      '        <div class="inp-section-title" style="margin-bottom:10px">预交金流水<el-button size="small" text type="warning" @click="openAlertList">不足预警 {{ alertPatients.length }}</el-button></div>',
       '        <el-table :data="flowPaged" v-loading="flowLoading" border size="small" height="420">',
       '          <el-table-column label="序号" width="55" align="center"><template #default="s">{{ flowSeq(s.$index) }}</template></el-table-column>',
       '          <el-table-column label="时间" width="150"><template #default="s">{{ fmtTime(s.row.createTime) }}</template></el-table-column>',
@@ -1910,8 +1941,9 @@
       '        </el-table>',
       '        <el-pagination style="margin-top:10px;justify-content:flex-end" background layout="total, sizes, prev, pager, next" :total="flowAll.length" :page-size="flowSize" :page-sizes="[10, 20, 50, 100]" :current-page="flowPage" @current-change="onFlowPage" @size-change="onFlowSize"></el-pagination>',
       '      </div>',
-      '    </el-col>',
-      '  </el-row>',
+      '    </div>',
+      '  </div>',
+      '  <div v-else class="dp-r"><div class="dp-empty">← 从左侧选择患者, 即可同屏完成预交金收退与流水查询</div></div>',
       /* ---- 预警患者列表对话框 ---- */
       '  <el-dialog v-model="alertVisible" title="预交金不足预警患者" width="780px">',
       '    <el-table :data="alertPatients" border size="small" max-height="420">',
@@ -1926,15 +1958,14 @@
       '      </template></el-table-column>',
       '    </el-table>',
       '    <div v-if="!alertPatients.length" style="color:var(--yb-ink-4);text-align:center;padding:16px 0">当前无预交金不足预警患者</div>',
-      '    <template #footer>',
-      '      <el-button @click="alertVisible=false">关闭</el-button>',
-      '    </template>',
+      '    <template #footer><el-button @click="alertVisible=false">关闭</el-button></template>',
       '  </el-dialog>',
       '</div>'
     ].join('\n'),
     data: function () {
       return {
-        visits: [], visitId: null, balance: null,
+        search: '', listLoading: false,
+        visits: [], visitId: null, picked: null, balance: null,
         alertPatients: [], alertVisible: false,
         flowAll: [], flowLoading: false, flowPage: 1, flowSize: 20,
         form: { direction: 1, amount: null, payType: 1, remark: '' },
@@ -1942,22 +1973,47 @@
       };
     },
     computed: {
+      pickedVisit: function () {
+        if (!this.visitId) { return null; }
+        for (var i = 0; i < this.visits.length; i++) {
+          if (HIS.sameId(this.visits[i].id, this.visitId)) { return this.visits[i]; }
+        }
+        return this.picked;
+      },
+      filteredVisits: function () {
+        var s = (this.search || '').trim().toLowerCase();
+        if (!s) { return this.visits; }
+        return this.visits.filter(function (v) {
+          return String(v.inp_no || '').toLowerCase().indexOf(s) >= 0 || String(v.patient_name || '').toLowerCase().indexOf(s) >= 0;
+        });
+      },
       flowPaged: function () {
         var start = (this.flowPage - 1) * this.flowSize;
         return this.flowAll.slice(start, start + this.flowSize);
       }
     },
     methods: {
-      money: money, orDash: orDash, fmtTime: fmtTime,
+      money: money, orDash: orDash, fmtTime: fmtTime, genderText: genderText,
       payTypeLabel: payTypeLabel, directionLabel: directionLabel, visitLabel: visitLabelOf,
+      statusText: function (s) { return s === 2 ? '在院' : (s === 3 ? '出院办理' : '待入院'); },
+      statusTagType: function (s) { return s === 2 ? 'success' : (s === 3 ? 'warning' : 'info'); },
+      isPicked: function (v) { return this.visitId != null && HIS.sameId(v.id, this.visitId); },
       flowSeq: function (i) { return (this.flowPage - 1) * this.flowSize + i + 1; },
       loadVisits: function () {
         var vm = this;
+        vm.listLoading = true;
         fetchVisits().then(function (list) {
-          vm.visits = list.filter(function (r) {
+          vm.visits = (list || []).filter(function (r) {
             return r.visit_status === 1 || r.visit_status === 2 || r.visit_status === 3;
           });
-        }).catch(HIS.notifyError);
+        }).catch(HIS.notifyError).finally(function () { vm.listLoading = false; });
+      },
+      /* 点选患者: 记录快照并自动载入余额 + 流水 */
+      selectVisit: function (v) {
+        var vm = this;
+        if (HIS.sameId(vm.visitId, v.id)) { return; }
+        vm.visitId = v.id; vm.picked = v;
+        vm.onPickVisit();
       },
       /* 预交金不足预警患者清单(在院且余额低于预警线, 缺口降序) */
       loadAlerts: function () {
@@ -1973,6 +2029,7 @@
       /* 去缴费: 选中该患者并加载余额/流水 */
       pickAlertPatient: function (r) {
         this.visitId = HIS.id(r.visit_id);
+        this.picked = { patient_name: r.patient_name, inp_no: r.inp_no, visit_status: 2, deposit_balance: r.deposit_balance };
         this.alertVisible = false;
         this.onPickVisit();
       },
@@ -2017,7 +2074,7 @@
           HIS.notifySuccess(vm.form.direction === 1 ? '预交金缴纳成功' : '预交金退还成功');
           if (res && res.balance !== null && res.balance !== undefined) { vm.balance = Number(res.balance); }
           vm.form.amount = null; vm.form.remark = '';
-          vm.loadFlows();
+          vm.loadFlows(); vm.loadVisits(); vm.loadAlerts();
         }).catch(HIS.notifyError).finally(function () { vm.submitting = false; });
       }
     },
