@@ -1748,12 +1748,12 @@
     name: 'InpIoRecord',
     props: {
       wardId: { type: [String, Number], default: null },
-      visitId: { type: [String, Number], default: null }
+      visitId: { type: [String, Number], default: null },
+      patient: { type: Object, default: null }
     },
     data: function () {
       return {
         date: todayStr(),
-        patients: [], patLoading: false,
         selVisitId: null,
         form: { ioType: 1, category: '饮水', volume: null, route: '', note: '' },
         saving: false, loading: false, list: [],
@@ -1764,24 +1764,11 @@
       /* 类别选项随进/出量联动 */
       categoryOptions: function () {
         return this.form.ioType === 2 ? IO_OUTPUT_CATEGORIES : IO_INTAKE_CATEGORIES;
-      },
-      selPatient: function () {
-        var id = this.selVisitId;
-        var rows = this.patients || [];
-        for (var i = 0; i < rows.length; i++) { if (HIS.sameId(rows[i].id, id)) { return rows[i]; } }
-        return null;
       }
     },
     watch: {
-      wardId: function () {
-        this.selVisitId = null;
-        this.patients = [];
-        this.loadPatients();
-      },
-      /* 主组件左侧选中患者同步到本面板(用户仍可下拉切换) */
-      visitId: function (v) {
-        if (v != null && !HIS.sameId(v, this.selVisitId)) { this.selVisitId = v; }
-      },
+      /* 选患唯一入口 = 主组件左侧患者列表, 本面板仅跟随不自行切换 */
+      visitId: function (v) { this.selVisitId = v; },
       selVisitId: function () { this.loadAll(); },
       date: function () { this.loadAll(); },
       /* 切换进/出量时类别回退到该类型默认项 */
@@ -1791,23 +1778,10 @@
       }
     },
     created: function () {
-      if (this.visitId != null) { this.selVisitId = this.visitId; }
-      this.loadPatients();
+      this.selVisitId = this.visitId;
       this.loadAll();
     },
     methods: {
-      /* ---- 病区在院患者下拉(可搜索, 上限200) ---- */
-      loadPatients: function () {
-        var vm = this;
-        if (!vm.wardId) { vm.patients = []; return; }
-        vm.patLoading = true;
-        HIS.get('/api/his/inp/nurse/patients?wardId=' + HIS.idParam(vm.wardId) + '&page=1&size=200')
-          .then(function (d) {
-            vm.patients = (d && d.records) || [];
-            /* 初次加载时若未选中且主组件未传患者, 默认选首位患者方便快速录入 */
-            if (vm.selVisitId == null && vm.patients.length) { vm.selVisitId = HIS.id(vm.patients[0].id); }
-          }).catch(HIS.notifyError).finally(function () { vm.patLoading = false; });
-      },
       loadAll: function () {
         var vm = this;
         if (vm.selVisitId == null) { vm.list = []; vm.summary = { intakeTotal: 0, outputTotal: 0, balance: 0 }; return; }
@@ -1867,11 +1841,9 @@
       '  <div class="toolbar" style="margin-bottom:10px;">',
       '    <span style="font-weight:600;color:var(--yb-ink-1);">日期</span>',
       '    <el-date-picker v-model="date" type="date" value-format="YYYY-MM-DD" :clearable="false" style="width:150px;" @change="onDateChange"></el-date-picker>',
-      '    <el-select v-model="selVisitId" filterable placeholder="选择患者" :loading="patLoading" style="width:260px;">',
-      '      <el-option v-for="p in patients" :key="p.id" :label="(p.bedNo ? p.bedNo + \'床·\' : \'\') + p.patientName + (p.inpNo ? \'(\' + p.inpNo + \')\' : \'\')" :value="p.id"></el-option>',
-      '    </el-select>',
       '    <span style="flex:1;"></span>',
-      '    <span v-if="selPatient" style="color:var(--yb-ink-3);font-size:12px;">{{ selPatient.patientName }}{{ selPatient.admitDiag ? \' · \' + selPatient.admitDiag : \'\' }}</span>',
+      '    <span v-if="patient" style="font-size:13px;color:var(--yb-ink-2);"><b style="color:var(--yb-ink-1);">{{ patient.patientName }}</b><span style="color:var(--yb-ink-3);"> · {{ patient.bedNo || \'—\' }}床 · {{ patient.inpNo || \'-\' }}</span><span v-if="patient.admitDiag" style="color:var(--yb-ink-3);"> · {{ patient.admitDiag }}</span></span>',
+      '    <span v-else style="color:var(--yb-ink-3);font-size:12px;">请在左侧选择患者</span>',
       '    <el-button size="small" @click="loadAll">刷新</el-button>',
       '  </div>',
       /* 日汇总三卡: 进量合计 / 出量合计 / 平衡值(负值红色) */
@@ -1940,7 +1912,7 @@
       '      <template #default="s"><el-button type="danger" size="small" text @click="doRemove(s.row)">删除</el-button></template>',
       '    </el-table-column>',
       '  </el-table>',
-      '  <el-empty v-if="!loading && !list.length" :description="selVisitId ? \'该日暂无出入量记录\' : \'请先选择患者\'" :image-size="60"></el-empty>',
+      '  <el-empty v-if="!loading && !list.length" :description="selVisitId ? \'该日暂无出入量记录\' : \'请在左侧选择患者\'" :image-size="60"></el-empty>',
       '</div>'
     ].join('\n')
   };
@@ -1953,44 +1925,27 @@
     name: 'InpMedAdmin',
     props: {
       wardId: { type: [String, Number], default: null },
-      visitId: { type: [String, Number], default: null }
+      visitId: { type: [String, Number], default: null },
+      patient: { type: Object, default: null }
     },
     data: function () {
       return {
         date: todayStr(),
-        patients: [], patLoading: false,
         selVisitId: null,
         loading: false, list: []
       };
     },
     watch: {
-      wardId: function () {
-        this.selVisitId = null;
-        this.patients = [];
-        this.loadPatients();
-      },
-      visitId: function (v) {
-        if (v != null && !HIS.sameId(v, this.selVisitId)) { this.selVisitId = v; }
-      },
+      /* 选患唯一入口 = 主组件左侧患者列表, 本面板仅跟随不自行切换 */
+      visitId: function (v) { this.selVisitId = v; },
       selVisitId: function () { this.load(); },
       date: function () { this.load(); }
     },
     created: function () {
-      if (this.visitId != null) { this.selVisitId = this.visitId; }
-      this.loadPatients();
+      this.selVisitId = this.visitId;
       this.load();
     },
     methods: {
-      loadPatients: function () {
-        var vm = this;
-        if (!vm.wardId) { vm.patients = []; return; }
-        vm.patLoading = true;
-        HIS.get('/api/his/inp/nurse/patients?wardId=' + HIS.idParam(vm.wardId) + '&page=1&size=200')
-          .then(function (d) {
-            vm.patients = (d && d.records) || [];
-            if (vm.selVisitId == null && vm.patients.length) { vm.selVisitId = HIS.id(vm.patients[0].id); }
-          }).catch(HIS.notifyError).finally(function () { vm.patLoading = false; });
-      },
       load: function () {
         var vm = this;
         if (vm.selVisitId == null) { vm.list = []; return; }
@@ -2005,9 +1960,8 @@
       '  <div class="toolbar" style="margin-bottom:10px;">',
       '    <span style="font-weight:600;color:var(--yb-ink-1);">日期</span>',
       '    <el-date-picker v-model="date" type="date" value-format="YYYY-MM-DD" :clearable="false" style="width:150px;"></el-date-picker>',
-      '    <el-select v-model="selVisitId" filterable placeholder="选择患者" :loading="patLoading" style="width:260px;">',
-      '      <el-option v-for="p in patients" :key="p.id" :label="(p.bedNo ? p.bedNo + \'床·\' : \'\') + p.patientName + (p.inpNo ? \'(\' + p.inpNo + \')\' : \'\')" :value="p.id"></el-option>',
-      '    </el-select>',
+      '    <span v-if="patient" style="font-size:13px;color:var(--yb-ink-2);"><b style="color:var(--yb-ink-1);">{{ patient.patientName }}</b><span style="color:var(--yb-ink-3);"> · {{ patient.bedNo || \'—\' }}床 · {{ patient.inpNo || \'-\' }}</span></span>',
+      '    <span v-else style="color:var(--yb-ink-3);font-size:12px;">请在左侧选择患者</span>',
       '    <span style="flex:1;"></span>',
       '    <span style="color:var(--yb-ink-3);font-size:12px;">当日药品类医嘱执行流水 · 只读</span>',
       '    <el-button size="small" @click="load">刷新</el-button>',
@@ -2033,7 +1987,7 @@
       '      <template #default="s">{{ s.row.execRemark || \'-\' }}</template>',
       '    </el-table-column>',
       '  </el-table>',
-      '  <el-empty v-if="!loading && !list.length" :description="selVisitId ? \'该日暂无给药执行记录\' : \'请先选择患者\'" :image-size="60"></el-empty>',
+      '  <el-empty v-if="!loading && !list.length" :description="selVisitId ? \'该日暂无给药执行记录\' : \'请在左侧选择患者\'" :image-size="60"></el-empty>',
       '</div>'
     ].join('\n')
   };
@@ -4451,11 +4405,11 @@
       /* 出入量/给药记录(T45): v-if + :key 携带就诊ID, 切患者重挂载不串台 */
       '      <el-tab-pane name="io">',
       '        <template #label><span><i class="inp-grp-dot" :style="{ background: grpColor(\'护理\') }"></i>出入量</span></template>',
-      '        <inp-io-record v-if="activeTab === \'io\'" :key="\'io-\' + (currentVisitId || 0)" :ward-id="wardId" :visit-id="currentVisitId"></inp-io-record>',
+      '        <inp-io-record v-if="activeTab === \'io\'" :key="\'io-\' + (currentVisitId || 0)" :ward-id="wardId" :visit-id="currentVisitId" :patient="currentPatient"></inp-io-record>',
       '      </el-tab-pane>',
       '      <el-tab-pane name="med">',
       '        <template #label><span><i class="inp-grp-dot" :style="{ background: grpColor(\'护理\') }"></i>给药记录</span></template>',
-      '        <inp-med-admin v-if="activeTab === \'med\'" :key="\'med-\' + (currentVisitId || 0)" :ward-id="wardId" :visit-id="currentVisitId"></inp-med-admin>',
+      '        <inp-med-admin v-if="activeTab === \'med\'" :key="\'med-\' + (currentVisitId || 0)" :ward-id="wardId" :visit-id="currentVisitId" :patient="currentPatient"></inp-med-admin>',
       '      </el-tab-pane>',
       /* 护理评估/护理计划: v-if + :key 模式(仅激活时挂载, 避免隐藏态 ECharts 零尺寸) */
       '      <el-tab-pane name="assess">',
