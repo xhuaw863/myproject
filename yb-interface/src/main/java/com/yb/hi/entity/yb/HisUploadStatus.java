@@ -26,6 +26,8 @@ public class HisUploadStatus extends BaseEntity {
     public static final String BIZ_TRACE = "TRACE";
     /** 业务类型: 追溯码销售退货(3506A, 批次5 M3; 与 TRACE 销售报送行分离, 一码一退货状态行 biz_id=码行id) */
     public static final String BIZ_TRACE_RTN = "TRACE_RTN";
+    /** 业务类型: 追溯码销售批次删除冲正(3507A inv_data_type=4, 批次5 M4; 一码一删除状态行 biz_id=码行id) */
+    public static final String BIZ_TRACE_DEL = "TRACE_DEL";
 
     public static final int STATUS_PENDING = 0;
     public static final int STATUS_UPLOADED = 1;

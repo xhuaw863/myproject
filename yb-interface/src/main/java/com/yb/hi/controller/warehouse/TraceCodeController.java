@@ -93,6 +93,37 @@ public class TraceCodeController {
         return R.ok(traceCodeService.uploadReturns(resolveOrgId(orgId), locationId));
     }
 
+    /** 3507A 销售批次删除冲正(批次5 M4): 错报整批冲正后码行归 0 待重报; 平台侧级联删该批次销售/退货数据 */
+    @PostMapping("/delete-upload")
+    public R<Map<String, Object>> deleteUpload(@RequestParam(required = false) Long orgId,
+                                               @RequestParam String batch) {
+        guard.requireSelfOrgWrite();
+        return R.ok(traceCodeService.deleteSalesBatch(resolveOrgId(orgId), batch));
+    }
+
+    /** 3512/3513 平台追溯信息对账查询(批次5 M4, 只读): 输出驼峰字段直透; 条件校验在服务层(三选一/五选一) */
+    @GetMapping("/trac-query")
+    public R<Map<String, Object>> tracQuery(@RequestParam String infno,
+                                            @RequestParam(required = false) String medinsListCodg,
+                                            @RequestParam(required = false) String fixmedinsBchno,
+                                            @RequestParam(required = false) String medListCodg,
+                                            @RequestParam(required = false) String drugTracCodg,
+                                            @RequestParam(required = false) String mdtrtId,
+                                            @RequestParam(required = false) String certno,
+                                            @RequestParam(required = false) String begndate,
+                                            @RequestParam(required = false) String enddate) {
+        Map<String, String> p = new java.util.HashMap<>();
+        p.put("medinsListCodg", medinsListCodg);
+        p.put("fixmedinsBchno", fixmedinsBchno);
+        p.put("medListCodg", medListCodg);
+        p.put("drugTracCodg", drugTracCodg);
+        p.put("mdtrtId", mdtrtId);
+        p.put("certno", certno);
+        p.put("begndate", begndate);
+        p.put("enddate", enddate);
+        return R.ok(traceCodeService.queryTrac(infno, p));
+    }
+
     private Long resolveOrgId(Long requested) {
         Long oid = guard.scopeOrgId(requested);
         if (oid != null) {

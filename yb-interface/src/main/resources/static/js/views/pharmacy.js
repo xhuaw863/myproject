@@ -1905,7 +1905,10 @@
         drugDlg: false, drugLoading: false, drugList: [], drugTotal: 0, drugPage: 1, drugSize: 10, drugKeyword: '',
         bindDlg: false, binding: false,
         bform: { dispenseId: null, patientId: null, visitId: null, requiredPackQty: null },
-        uploading: false
+        uploading: false,
+        qaDlg: false, qaLoading: false, qaSearched: false,
+        qaForm: { infno: '3513', medinsListCodg: '', fixmedinsBchno: '', medListCodg: '', drugTracCodg: '', mdtrtId: '', certno: '', begndate: '', enddate: '' },
+        qaRows: [], qaCount: 0
       };
     },
     created: function () { this.loadLocations(); this.load(); this.loadStats(); },
@@ -2024,6 +2027,33 @@
           .then(function (d) { HIS.notifySuccess('退货已报 ' + ((d && d.returned) || 0) + ' 条, 回执 ' + ((d && d.receipt) || '')); vm.load(); vm.loadStats(); })
           .catch(function (e) { if (e !== 'cancel' && e !== 'close') { HIS.notifyError(e); } });
       },
+      /* 3507A 销售批次删除冲正(批次5 M4): 仅限错报整批冲正; 平台侧级联删该批次销售/退货数据, 本地码行归未报送待重报 */
+      doDeleteUpload: function () {
+        var vm = this;
+        ElementPlus.ElMessageBox.prompt('输入待冲正的原销售批次号(3505A 报送回执 TRCB…); 将删除平台侧整批销售/退货数据并使码行回到待报送, 仅限错报修正!', '删除冲正(3507A)',
+          { type: 'warning', inputPattern: /^TRCB\d{8}-\d{6}$/, inputErrorMessage: '批次号形如 TRCB20261002-123456' })
+          .then(function (r) { return HIS.post('/api/his/trace/delete-upload?batch=' + encodeURIComponent(r.value.trim())); })
+          .then(function (d) { HIS.notifySuccess('批次 ' + ((d && d.batch) || '') + ' 已删除冲正 ' + ((d && d.deleted) || 0) + ' 条码行'); vm.load(); vm.loadStats(); })
+          .catch(function (e) { if (e !== 'cancel' && e !== 'close') { HIS.notifyError(e); } });
+      },
+      /* 3512/3513 平台追溯信息对账查询(只读回显) */
+      openQa: function () { this.qaDlg = true; },
+      queryQa: function () {
+        var vm = this;
+        var f = vm.qaForm;
+        var q = '?infno=' + f.infno;
+        [['medinsListCodg', f.medinsListCodg], ['fixmedinsBchno', f.fixmedinsBchno], ['medListCodg', f.medListCodg],
+         ['drugTracCodg', f.drugTracCodg], ['mdtrtId', f.mdtrtId], ['certno', f.certno],
+         ['begndate', f.begndate], ['enddate', f.enddate]].forEach(function (kv) {
+          if (kv[1]) { q += '&' + kv[0] + '=' + encodeURIComponent(kv[1]); }
+        });
+        vm.qaLoading = true;
+        HIS.get('/api/his/trace/trac-query' + q).then(function (d) {
+          vm.qaRows = (d && d.rows) || [];
+          vm.qaCount = (d && d.count) || 0;
+          vm.qaSearched = true;
+        }).catch(HIS.notifyError).finally(function () { vm.qaLoading = false; });
+      },
       locationName: function (id) {
         if (id === null || id === undefined || id === '') { return '-'; }
         for (var i = 0; i < this.locations.length; i++) { if (this.locations[i].id === id) { return this.locations[i].name; } }
@@ -2067,6 +2097,8 @@
       '    <el-button :disabled="!selection.length" @click="changeStatus(3, \'报废/在途\')">报废/在途</el-button>',
       '    <el-button type="warning" :loading="uploading" @click="doUpload">销售报送(3505A)</el-button>',
       '    <el-button type="warning" plain :loading="uploading" @click="doUploadReturns">退货报送(3506A)</el-button>',
+      '    <el-button type="danger" plain :loading="uploading" @click="doDeleteUpload">删除冲正(3507A)</el-button>',
+      '    <el-button @click="openQa">对账查询(3512/3513)</el-button>',
       '    <span style="flex:1;"></span>',
       '    <span style="color:var(--yb-ink-2);font-size:13px;">共 {{ total }} 条</span>',
       '  </div>',
@@ -2123,6 +2155,38 @@
       '      <el-table-column label="操作" width="70"><template #default="s"><el-button link type="primary" @click="pickDrug(s.row)">选择</el-button></template></el-table-column>',
       '    </el-table>',
       '    <el-pagination style="margin-top:10px;justify-content:flex-end;" small background layout="total, prev, pager, next" :total="drugTotal" :page-size="drugSize" :current-page="drugPage" @current-change="onDrugPage"></el-pagination>',
+      '  </el-dialog>',
+      /* ---- 对账查询对话框(3512/3513, 批次5 M4) ---- */
+      '  <el-dialog v-model="qaDlg" title="平台追溯信息对账查询(3512/3513)" width="900px" top="6vh">',
+      '    <el-form label-width="90px" :inline="true" size="small">',
+      '      <el-form-item label="交易类型">',
+      '        <el-select v-model="qaForm.infno" style="width:190px">',
+      '          <el-option label="3512-入库追溯查询" value="3512"></el-option>',
+      '          <el-option label="3513-销售追溯查询" value="3513"></el-option>',
+      '        </el-select>',
+      '      </el-form-item>',
+      '      <el-form-item label="机构批次号"><el-input v-model="qaForm.fixmedinsBchno" placeholder="fixmedins_bchno" clearable style="width:190px"></el-input></el-form-item>',
+      '      <el-form-item label="机构目录编码"><el-input v-model="qaForm.medinsListCodg" placeholder="medins_list_codg" clearable style="width:150px"></el-input></el-form-item>',
+      '      <el-form-item label="医保目录码"><el-input v-model="qaForm.medListCodg" placeholder="med_list_codg" clearable style="width:140px"></el-input></el-form-item>',
+      '      <el-form-item label="追溯码"><el-input v-model="qaForm.drugTracCodg" placeholder="drug_trac_codg" clearable style="width:190px"></el-input></el-form-item>',
+      '      <el-form-item v-if="qaForm.infno===\'3513\'" label="就诊ID"><el-input v-model="qaForm.mdtrtId" placeholder="mdtrt_id" clearable style="width:150px"></el-input></el-form-item>',
+      '      <el-form-item v-if="qaForm.infno===\'3513\'" label="证件号"><el-input v-model="qaForm.certno" placeholder="certno" clearable style="width:150px"></el-input></el-form-item>',
+      '      <el-form-item label="起日"><el-input v-model="qaForm.begndate" placeholder="yyyy-MM-dd" clearable style="width:120px"></el-input></el-form-item>',
+      '      <el-form-item label="止日"><el-input v-model="qaForm.enddate" placeholder="yyyy-MM-dd" clearable style="width:120px"></el-input></el-form-item>',
+      '    </el-form>',
+      '    <el-alert v-if="qaForm.infno===\'3512\'" type="info" :closable="false" show-icon title="3512: 起止日期必填, 且 机构批次号/机构目录编码/医保目录码 三选一" style="margin-bottom:8px;"></el-alert>',
+      '    <el-alert v-else type="info" :closable="false" show-icon title="3513: 机构批次号/机构目录编码/医保目录码/就诊ID/证件号 五选一" style="margin-bottom:8px;"></el-alert>',
+      '    <div style="margin-bottom:8px;"><el-button type="primary" :loading="qaLoading" @click="queryQa">查询</el-button><span v-if="qaSearched" style="color:var(--yb-ink-2);font-size:13px;margin-left:10px;">命中 {{ qaCount }} 条</span></div>',
+      '    <el-table :data="qaRows" v-loading="qaLoading" border size="small" max-height="320">',
+      '      <el-table-column prop="drugTracCodg" label="追溯码" min-width="170" show-overflow-tooltip></el-table-column>',
+      '      <el-table-column prop="fixmedinsBchno" label="机构批次号" width="160" show-overflow-tooltip></el-table-column>',
+      '      <el-table-column prop="medinsListCodg" label="机构目录编码" width="120" show-overflow-tooltip></el-table-column>',
+      '      <el-table-column prop="medListCodg" label="医保目录码" width="120" show-overflow-tooltip></el-table-column>',
+      '      <el-table-column v-if="qaForm.infno===\'3513\'" prop="mdtrtId" label="就诊ID" width="120" show-overflow-tooltip></el-table-column>',
+      '      <el-table-column prop="valiFlag" label="有效" width="60" align="center"></el-table-column>',
+      '      <el-table-column prop="rid" label="rid" min-width="170" show-overflow-tooltip></el-table-column>',
+      '    </el-table>',
+      '    <template #footer><el-button @click="qaDlg=false">关 闭</el-button></template>',
       '  </el-dialog>',
       '</div>'
     ].join('\n')

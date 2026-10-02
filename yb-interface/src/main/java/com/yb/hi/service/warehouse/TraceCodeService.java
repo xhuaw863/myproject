@@ -8,6 +8,8 @@ import com.baomidou.mybatisplus.core.toolkit.Wrappers;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.yb.hi.common.YbHttpClient;
 import com.yb.hi.common.YbResponse;
+import com.yb.hi.config.TenantYbConfigResolver;
+import com.yb.hi.config.YbRuntimeConfig;
 import com.yb.hi.dto.warehouse.TraceBindReq;
 import com.yb.hi.dto.warehouse.TraceCollectReq;
 import com.yb.hi.entity.community.HisDrugCatalog;
@@ -47,6 +49,8 @@ import java.util.regex.Pattern;
  * 通道B=进销存台账 upload() 真实 **3505A 商品销售**报送(两阶段认领 + 按就诊/药品/批次/发药单分组成 selinfoDetail 行 + drugtracinfo 裸码节点,
  * 字段冻结见 07 号文 §十二; 两级判定 infcode+retRslt); 销售侧均 upsert his_upload_status(biz_type=TRACE, biz_id=追溯码行id)。
  * 退货侧(M3)= uploadReturns()/退货联动 upload **3506A 商品销售退货**(fixmedins_bchno 引用原销售批次, 成败记 biz_type=TRACE_RTN 行, 不改码行 upload_status=9 语义)。
+ * 删除冲正(M4)= deleteSalesBatch() **3507A 商品信息删除**(inv_data_type=4 级联删平台侧销售/退货数据, 成功后码行归 0 待重报, 记 biz_type=TRACE_DEL 行);
+ * 对账查询(M4)= queryTrac() **3512 入库/3513 销售追溯信息查询**(只读, 输出驼峰字段直透展示)。
  * 唯一键 tenant_id + trace_code 拦截重复扫码; 写: requireSelfOrgWrite(控制器层); 读: scopeOrgId。
  */
 @Slf4j
@@ -72,14 +76,17 @@ public class TraceCodeService {
     private final UploadStatusService uploadStatusService;
     private final JdbcTemplate jdbcTemplate;
     private final YbHttpClient ybHttpClient;
+    private final TenantYbConfigResolver configResolver;
 
     public TraceCodeService(HisDrugTraceCodeMapper traceMapper, HisDrugCatalogMapper drugCatalogMapper,
-                            UploadStatusService uploadStatusService, JdbcTemplate jdbcTemplate, YbHttpClient ybHttpClient) {
+                            UploadStatusService uploadStatusService, JdbcTemplate jdbcTemplate, YbHttpClient ybHttpClient,
+                            TenantYbConfigResolver configResolver) {
         this.traceMapper = traceMapper;
         this.drugCatalogMapper = drugCatalogMapper;
         this.uploadStatusService = uploadStatusService;
         this.jdbcTemplate = jdbcTemplate;
         this.ybHttpClient = ybHttpClient;
+        this.configResolver = configResolver;
     }
 
     /* ================= 采集(入库录入) ================= */
@@ -732,6 +739,151 @@ public class TraceCodeService {
         }
         log.info("退货报送收口(3506A): 批次={}, success={}, unknown={}, 码行数={}", batchNo, success, unknown, claimedIds.size());
         return new int[]{ok, fail, unk};
+    }
+
+    /* ================= 通道B删除: 3507A 销售批次删除冲正(批次5 M4; 字段冻结见 07号文§十二 表214/216/217) ================= */
+
+    /**
+     * 销售批次删除冲正(3507A goodDetail, inv_data_type=4 → 平台级联删 3505/3505A/3506/3506A 该批次数据):
+     * 仅用于错报整批冲正重报; 批次须存在已报送码行(upload_status=9 且 upload_batch_no=批次)。
+     * 成功收口: 码行 upload_status 归 0 待重报并清批次凭据列, TRACE/TRACE_RTN 状态行 markRevoked 撤销, 逐码记 TRACE_DEL 成功行;
+     * FAIL/UNKNOWN: 码行保持(仍为已报), 记 TRACE_DEL 失败行可重操。同批次重发幂等沿用 12.5#5 待确认(mock 接受)。
+     */
+    @Transactional(rollbackFor = Exception.class)
+    public Map<String, Object> deleteSalesBatch(Long orgId, String receiptBatch) {
+        if (!StringUtils.hasText(receiptBatch)) {
+            throw new BizException(400, "删除需提供原销售批次号(3505A 报送回执 TRCB…)");
+        }
+        String batch = receiptBatch.trim();
+        long tid = tenantId();
+        List<HisDrugTraceCode> rows = traceMapper.selectList(Wrappers.<HisDrugTraceCode>lambdaQuery()
+                .eq(HisDrugTraceCode::getUploadBatchNo, batch)
+                .eq(HisDrugTraceCode::getUploadStatus, UP_DONE)
+                .eq(orgId != null, HisDrugTraceCode::getOrgId, orgId));
+        if (rows.isEmpty()) {
+            throw new BizException(400, "批次 " + batch + " 不存在已报送的追溯码行, 无需删除");
+        }
+        Map<String, Object> line = new LinkedHashMap<>();
+        line.put("fixmedins_bchno", batch);
+        line.put("inv_data_type", "4");
+        YbResponse resp = ybHttpClient.call("3507A", Collections.singletonMap("goodDetail", Collections.singletonList(line)));
+        boolean success = false;
+        boolean unknown = false;
+        String msgid = null;
+        String err;
+        if (resp == null) {
+            unknown = true;
+            err = "3507A无响应(UNKNOWN): 平台侧是否删除不可知, 可重试删除操作";
+        } else if (resp.isUnknown()) {
+            unknown = true;
+            msgid = resp.getInfRefmsgid();
+            err = "3507A超时(UNKNOWN): 平台侧是否删除不可知, 可重试删除操作";
+        } else if (!resp.isSuccess()) {
+            msgid = resp.getInfRefmsgid();
+            err = "3507A被平台拒绝(传输层): " + resp.getErrMsg();
+        } else {
+            msgid = resp.getInfRefmsgid();
+            JSONObject result = resp.getOutputNode("result");
+            String retRslt = result == null ? null : result.getString("retRslt");
+            JSONArray errDetail = resp.getOutputArray("goodErrDetail");
+            StringBuilder detail = new StringBuilder();
+            if (errDetail != null) {
+                for (int i = 0; i < errDetail.size(); i++) {
+                    JSONObject e = errDetail.getJSONObject(i);
+                    detail.append("[bchno=").append(e.getString("fixmedins_bchno"))
+                            .append(" msg=").append(e.getString("msgRslt")).append("]");
+                }
+            }
+            if ("1".equals(retRslt) && (errDetail == null || errDetail.isEmpty())) {
+                success = true;
+                err = null;
+            } else {
+                err = "3507A业务层失败(retRslt=" + (retRslt == null ? "缺失" : retRslt) + "): "
+                        + (detail.length() > 0 ? detail : (result == null ? "无result节点" : result.getString("msgRslt")));
+            }
+        }
+        Map<String, Object> out = new LinkedHashMap<>();
+        out.put("batch", batch);
+        for (HisDrugTraceCode row : rows) {
+            if (success) {
+                traceMapper.update(null, Wrappers.<HisDrugTraceCode>lambdaUpdate()
+                        .set(HisDrugTraceCode::getUploadStatus, UP_PENDING)
+                        .set(HisDrugTraceCode::getUploadBatchNo, null)
+                        .set(HisDrugTraceCode::getUploadTime, null)
+                        .set(HisDrugTraceCode::getUploadReceipt, null)
+                        .set(HisDrugTraceCode::getUploadMsgid, null)
+                        .eq(HisDrugTraceCode::getId, row.getId()));
+                uploadStatusService.record(tid, HisUploadStatus.BIZ_TRACE_DEL, row.getId(), null, true, msgid, null);
+                uploadStatusService.markRevoked(tid, HisUploadStatus.BIZ_TRACE, row.getId(), null);
+                uploadStatusService.markRevoked(tid, HisUploadStatus.BIZ_TRACE_RTN, row.getId(), null);
+            } else {
+                uploadStatusService.record(tid, HisUploadStatus.BIZ_TRACE_DEL, row.getId(), null, false, msgid, err);
+            }
+        }
+        out.put("deleted", success ? rows.size() : 0);
+        out.put("failed", success || unknown ? 0 : rows.size());
+        out.put("unknown", unknown ? rows.size() : 0);
+        out.put("msg", err);
+        log.info("销售批次删除冲正(3507A): 批次={}, 码行={}, success={}, unknown={}, err={}", batch, rows.size(), success, unknown, err);
+        return out;
+    }
+
+    /* ================= 通道B查询: 3512入库/3513销售追溯信息查询(批次5 M4 对账, 输出驼峰字段) ================= */
+
+    /**
+     * 平台追溯信息对账查询(3512 入库/3513 销售, 只读; 字段冻结 07号文§十二 表224/225):
+     * data 节点 fixmedins_code 取机构配置(必填); 3512 须 begndate/enddate 且 三选一(medins_list_codg|fixmedins_bchno|med_list_codg);
+     * 3513 须 五选一(上述三 + mdtrt_id|certno), begn/end 日期可选。输出为驼峰字段数组直透展示; 查询不进状态机(txn_log 留痕)。
+     */
+    public Map<String, Object> queryTrac(String infno, Map<String, String> p) {
+        if (!"3512".equals(infno) && !"3513".equals(infno)) {
+            throw new BizException(400, "仅支持 3512(入库)/3513(销售) 追溯信息查询");
+        }
+        YbRuntimeConfig cfg = configResolver.resolve();
+        if (cfg == null || !StringUtils.hasText(cfg.getFixmedinsCode())) {
+            throw new BizException(400, "本机构未配置定点医药机构编号(fixmedins_code), 无法查询");
+        }
+        Map<String, Object> data = new LinkedHashMap<>();
+        data.put("fixmedins_code", cfg.getFixmedinsCode());
+        putIfText(data, "medins_list_codg", p.get("medinsListCodg"));
+        putIfText(data, "fixmedins_bchno", p.get("fixmedinsBchno"));
+        putIfText(data, "med_list_codg", p.get("medListCodg"));
+        putIfText(data, "drug_trac_codg", p.get("drugTracCodg"));
+        if ("3513".equals(infno)) {
+            putIfText(data, "mdtrt_id", p.get("mdtrtId"));
+            putIfText(data, "certno", p.get("certno"));
+        }
+        putIfText(data, "begndate", p.get("begndate"));
+        putIfText(data, "enddate", p.get("enddate"));
+        if ("3512".equals(infno) && !data.containsKey("begndate")) {
+            throw new BizException(400, "3512 须指定开始日期(yyyy-MM-dd)");
+        }
+        if ("3512".equals(infno) && !data.containsKey("enddate")) {
+            throw new BizException(400, "3512 须指定结束日期(yyyy-MM-dd)");
+        }
+        boolean hasKey = data.containsKey("medins_list_codg") || data.containsKey("fixmedins_bchno") || data.containsKey("med_list_codg")
+                || ("3513".equals(infno) && (data.containsKey("mdtrt_id") || data.containsKey("certno")));
+        if (!hasKey) {
+            throw new BizException(400, "3512 须三选一(医药机构目录编码/批次流水号/医疗目录编码); 3513 须五选一(另可就诊ID/证件号码)");
+        }
+        YbResponse resp = ybHttpClient.call(infno, Collections.singletonMap("data", data));
+        if (resp == null || resp.isUnknown()) {
+            throw new BizException(502, "追溯查询超时(UNKNOWN), 请稍后重试");
+        }
+        if (!resp.isSuccess()) {
+            throw new BizException(502, "追溯查询被平台拒绝: " + resp.getErrMsg());
+        }
+        JSONArray rows = resp.getOutputArray("output");
+        List<Map<String, Object>> list = new ArrayList<>();
+        for (int i = 0; rows != null && i < rows.size(); i++) {
+            list.add(rows.getJSONObject(i));
+        }
+        Map<String, Object> out = new LinkedHashMap<>();
+        out.put("infno", infno);
+        out.put("rows", list);
+        out.put("count", list.size());
+        log.info("追溯信息对账查询({}): 条件={}, 命中={}", infno, data.keySet(), list.size());
+        return out;
     }
 
     /** 退货经办人(3506 sel_retn_opter_name, 50 截断): 当前登录用户真实姓名→登录名→system 逐级兜底 */

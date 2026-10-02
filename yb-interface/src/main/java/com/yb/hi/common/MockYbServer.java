@@ -191,6 +191,69 @@ public class MockYbServer {
                 output.put("selinfoErrDetail", errDetail);
                 break;
             }
+            case "3507": case "3507A": {
+                // 进销存商品信息删除(批次5 M4): inv_data_type=4 级联删销售/退货数据; 冻结面(07号文§十二 表214/216): bchno+inv_data_type(1-4) 必填
+                // 违例: retRslt=0 + goodErrDetail 失败批次明细(表217); 成功时 goodErrDetail 空数组
+                JSONArray dels = "3507".equals(infno)
+                        ? (input == null ? null : wrapNode(input, "data"))
+                        : (input == null ? null : input.getJSONArray("goodDetail"));
+                JSONObject result = new JSONObject();
+                JSONArray errDetail = new JSONArray();
+                String delErr = validateDelInfo(dels);
+                if (delErr != null) {
+                    log.warn("【模拟医保平台】{} 删除批次业务拒绝: {}", infno, delErr);
+                    result.put("retRslt", "0");
+                    result.put("msgRslt", delErr);
+                    if (dels != null) {
+                        for (int i = 0; i < dels.size(); i++) {
+                            JSONObject r = dels.getJSONObject(i);
+                            if (r == null || isEmptyStr(r.getString("fixmedins_bchno"))
+                                    || !"1".equals(r.getString("inv_data_type")) && !"2".equals(r.getString("inv_data_type"))
+                                    && !"3".equals(r.getString("inv_data_type")) && !"4".equals(r.getString("inv_data_type"))) {
+                                JSONObject e = new JSONObject();
+                                e.put("fixmedins_bchno", r == null ? "" : r.getString("fixmedins_bchno"));
+                                e.put("inv_data_type", r == null ? "" : r.getString("inv_data_type"));
+                                e.put("retRslt", "0");
+                                e.put("msgRslt", delErr);
+                                errDetail.add(e);
+                            }
+                        }
+                    }
+                } else {
+                    result.put("retRslt", "1");
+                    result.put("msgRslt", "删除受理成功");
+                    log.info("【模拟医保平台】{} 受理删除批次 {} 个(数据类型={})", infno, dels.size(),
+                            dels.getJSONObject(0).getString("inv_data_type"));
+                }
+                output.put("result", result);
+                output.put("goodErrDetail", errDetail);
+                break;
+            }
+            case "3512": case "3513": {
+                // 入库/销售追溯信息查询(批次5 M4 对账): 机构侧必填校验已在服务层, mock 宽松回显(命中1行驼峰字段, 便于 e2e 断言直透)
+                JSONObject qd = input == null ? null : input.getJSONObject("data");
+                if (qd == null || isEmptyStr(qd.getString("fixmedins_code"))) {
+                    log.warn("【模拟医保平台】{} 查询缺 fixmedins_code, 返回空结果", infno);
+                } else {
+                    JSONObject row = new JSONObject();
+                    row.put("fixmedinsCode", qd.getString("fixmedins_code"));
+                    row.put("fixmedinsBchno", qd.getString("fixmedins_bchno"));
+                    row.put("medinsListCodg", qd.getString("medins_list_codg"));
+                    row.put("medListCodg", qd.getString("med_list_codg"));
+                    row.put("drugTracCodg", qd.getString("drug_trac_codg"));
+                    row.put("valiFlag", "1");
+                    row.put("rid", qd.getString("fixmedins_code") + "MOCK" + ("3512".equals(infno) ? "1" : "2"));
+                    if ("3513".equals(infno)) {
+                        row.put("mdtrtId", qd.getString("mdtrt_id"));
+                        row.put("mdtrtSetlType", "1");
+                    }
+                    JSONArray rows = new JSONArray();
+                    rows.add(row);
+                    output.put("output", rows);
+                    log.info("【模拟医保平台】{} 查询回显 1 行", infno);
+                }
+                break;
+            }
             default:
                 // 2203/2402 等无输出交易
                 break;
@@ -344,6 +407,44 @@ public class MockYbServer {
                         return "退货明细第" + (i + 1) + "行 drugtracinfo 第" + (j + 1) + "条缺 drug_trac_codg";
                     }
                 }
+            }
+        }
+        return null;
+    }
+
+    /** 单行对象节点包装为数组供统一校验(3507 data 节点) */
+    private static JSONArray wrapNode(JSONObject input, String node) {
+        JSONObject n = input == null ? null : input.getJSONObject(node);
+        if (n == null) {
+            return null;
+        }
+        JSONArray arr = new JSONArray();
+        arr.add(n);
+        return arr;
+    }
+
+    /**
+     * 3507/3507A 删除批次校验(07号文§十二 表214/216 冻结): fixmedins_bchno 必填 + inv_data_type 必填且值域 1-4;
+     * 合规则返 null, 否则返首个违例描述
+     */
+    private String validateDelInfo(JSONArray rows) {
+        if (rows == null || rows.isEmpty()) {
+            return "删除节点(data/goodDetail)缺失";
+        }
+        for (int i = 0; i < rows.size(); i++) {
+            JSONObject r = rows.getJSONObject(i);
+            if (r == null) {
+                return "删除明细第" + (i + 1) + "行为空";
+            }
+            if (isEmptyStr(r.getString("fixmedins_bchno"))) {
+                return "删除明细第" + (i + 1) + "行必填缺失: fixmedins_bchno";
+            }
+            String t = r.getString("inv_data_type");
+            if (isEmptyStr(t)) {
+                return "删除明细第" + (i + 1) + "行必填缺失: inv_data_type";
+            }
+            if (!"1".equals(t) && !"2".equals(t) && !"3".equals(t) && !"4".equals(t)) {
+                return "删除明细第" + (i + 1) + "行 inv_data_type 非法值域(1盘存/2库存变更/3采购/4销售): " + t;
             }
         }
         return null;
