@@ -616,6 +616,18 @@ body {
 .el-dropdown-menu__item:hover { background: var(--yb-surface-2); color: var(--yb-brand); }
 .el-dropdown-menu { padding: 4px; }
 
+/* ============================================================================
+ * 动效精修 —— 视图切入淡入 (micro-interaction pass)
+ *   layout-main 用 <component :is :key=activeKey> 渲染, 每次导航都重挂载视图根节点,
+ *   故对该根节点施加的入场动画会在切页时自然重放, 无需任何 JS 钩子或视图标点改动。
+ *   位移仅用纵向 translateY(无横向), 且父层 .layout-main 为纵向滚动容器, 不产生横向溢出;
+ *   `both` 填充在 reduced-motion 守卫下(duration≈0)直接落终态(opacity:1), 不会残留隐形内容。
+ * ========================================================================== */
+.layout-main > * {
+  animation: yb-view-in .24s var(--yb-ease) both;
+}
+@keyframes yb-view-in { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
+
 /* ---------- 无障碍: 用户开了"减少动态效果"则完全尊重, 不做任何动画 ---------- */
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after {
