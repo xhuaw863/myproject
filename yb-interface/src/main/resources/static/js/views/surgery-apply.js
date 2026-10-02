@@ -62,6 +62,37 @@
   function asaStatusLabel(s) { return APPLY_STATUS[s] || orDash(s); }
   function stTag(s) { var t = APPLY_STATUS_TYPE[s]; return t === undefined ? 'info' : t; }
 
+  /* ===== 手麻UI: 手术申请监护台样式一次性注入(前缀 sa-*, 与临床路径同源的监护仪语言, 复用 --yb-* 令牌) ===== */
+  function ensureSurgApplyStyles() {
+    if (document.getElementById('surg-apply-style')) { return; }
+    var st = document.createElement('style');
+    st.id = 'surg-apply-style';
+    st.textContent = [
+      /* 监护台纵览头: 深墨蓝渐变 + ECG 流动基线 */
+      '.sa-head { position:relative; overflow:hidden; display:flex; align-items:center; gap:16px; flex-wrap:wrap; padding:15px 20px; margin-bottom:14px; border-radius:var(--yb-r-md); color:#fff; background:var(--yb-header-grad); box-shadow:var(--yb-sh-2); }',
+      '.sa-head::after { content:""; position:absolute; left:0; right:0; bottom:7px; height:24px; opacity:.15; pointer-events:none; background:url("data:image/svg+xml;utf8,<svg xmlns=\'http://www.w3.org/2000/svg\' width=\'240\' height=\'24\' viewBox=\'0 0 240 24\'><path d=\'M0 12h40l8-8 7 16 6-8h44l9-5 6 10 7-5h103\' fill=\'none\' stroke=\'white\' stroke-width=\'1.4\'/></svg>") repeat-x left center; animation:sa-ecg 18s linear infinite; }',
+      '@keyframes sa-ecg { from { background-position-x:0; } to { background-position-x:-240px; } }',
+      '.sa-head .t { position:relative; z-index:1; font-size:var(--yb-fs-xl); font-weight:700; letter-spacing:var(--yb-tracking-tight); }',
+      '.sa-metrics { position:relative; z-index:1; display:flex; gap:6px; margin-left:auto; }',
+      '.sa-metric { min-width:80px; padding:2px 14px; display:flex; flex-direction:column; justify-content:center; border-left:1px solid rgba(255,255,255,.16); }',
+      '.sa-metric:first-child { border-left:none; }',
+      '.sa-metric .num { font-size:26px; font-weight:700; line-height:1.05; letter-spacing:var(--yb-tracking-tight); font-variant-numeric:tabular-nums; }',
+      '.sa-metric .num.warn { color:#ffd08a; }',
+      '.sa-metric .lbl { margin-top:4px; font-size:var(--yb-fs-cap); letter-spacing:.06em; color:var(--yb-header-ink-2); white-space:nowrap; }',
+      /* 工具条: 控制台式浅底容器 */
+      '.sa-console { display:flex; flex-wrap:wrap; gap:8px; align-items:center; background:var(--yb-surface); border:1px solid var(--yb-border-light); border-radius:var(--yb-r-md); padding:10px 14px; box-shadow:var(--yb-sh-1); }',
+      /* 申请单行状态脊: 首单元格左侧内描边(待复核琥珀/待安排蓝/已退回红/已安排主蓝/已完成绿) */
+      '.surg-apply tr.rs-1 > td.el-table__cell:first-child { box-shadow:inset 3px 0 0 var(--yb-fill-warning); }',
+      '.surg-apply tr.rs-2 > td.el-table__cell:first-child { box-shadow:inset 3px 0 0 var(--yb-fill-info); }',
+      '.surg-apply tr.rs-3 > td.el-table__cell:first-child { box-shadow:inset 3px 0 0 var(--yb-fill-danger); }',
+      '.surg-apply tr.rs-4 > td.el-table__cell:first-child { box-shadow:inset 3px 0 0 var(--yb-brand); }',
+      '.surg-apply tr.rs-5 > td.el-table__cell:first-child { box-shadow:inset 3px 0 0 var(--yb-fill-success); }',
+      '.surg-apply tr.rs-6 > td.el-table__cell:first-child { box-shadow:inset 3px 0 0 var(--yb-ink-disabled); }',
+      '@media (prefers-reduced-motion: reduce) { .sa-head::after { animation:none; } }'
+    ].join('\n');
+    document.head.appendChild(st);
+  }
+
   /* 申请表单空白模板 */
   function blankForm() {
     return {
@@ -78,10 +109,16 @@
   HIS.views.SurgeryApply = {
     template: [
       '<div class="surg-apply">',
-      '  <div class="page-title">手术申请管理</div>',
+      '  <div class="sa-head">',
+      '    <span class="t">手术申请监护台</span>',
+      '    <div class="sa-metrics">',
+      '      <div class="sa-metric"><span class="num">{{ total }}</span><span class="lbl">当前筛选申请单</span></div>',
+      '      <div class="sa-metric"><span class="num warn">{{ pendingNotify }}</span><span class="lbl">待处理通知</span></div>',
+      '    </div>',
+      '  </div>',
       '  <el-tabs v-model="tab" @tab-change="onTab">',
       '    <el-tab-pane label="申请单管理" name="apply">',
-      '      <div class="toolbar" style="margin-bottom:10px;display:flex;flex-wrap:wrap;gap:8px;align-items:center">',
+      '      <div class="toolbar sa-console" style="margin-bottom:12px">',
       '        <el-radio-group v-model="filters.status" size="small" @change="onSearch">',
       '          <el-radio-button :value="null">全部</el-radio-button>',
       '          <el-radio-button v-for="o in statusOpts" :key="o.value" :value="o.value">{{ o.label }}</el-radio-button>',
@@ -95,7 +132,7 @@
       '        <el-button type="primary" size="small" @click="onSearch">查询</el-button>',
       '        <el-button type="primary" size="small" plain @click="openCreate" v-if="canApply">新增申请</el-button>',
       '      </div>',
-      '      <el-table :data="rows" border size="small" v-loading="loading" max-height="calc(100vh - 268px)">',
+      '      <el-table :data="rows" border size="small" v-loading="loading" :row-class-name="applyRowCls" max-height="calc(100vh - 268px)">',
       '        <el-table-column label="序号" width="52" align="center"><template #default="s">{{ seqNo(s.$index) }}</template></el-table-column>',
       '        <el-table-column prop="apply_no" label="申请单号" width="140"></el-table-column>',
       '        <el-table-column label="类型" width="60" align="center"><template #default="s"><el-tag size="small" :type="s.row.visit_type === 1 ? \'\' : \'warning\'">{{ vtLabel(s.row.visit_type) }}</el-tag></template></el-table-column>',
@@ -133,7 +170,7 @@
       '    </el-tab-pane>',
       '    <el-tab-pane name="notify">',
       '      <template #label><span>通知管理<el-badge v-if="pendingNotify > 0" :value="pendingNotify" style="margin-left:6px"/></span></template>',
-      '      <div class="toolbar" style="margin-bottom:10px;display:flex;gap:8px;align-items:center">',
+      '      <div class="toolbar sa-console" style="margin-bottom:12px">',
       '        <el-select v-model="nFilters.status" clearable placeholder="通知状态" size="small" style="width:120px" @change="nSearch">',
       '          <el-option v-for="o in notifyStatusOpts" :key="o.value" :label="o.label" :value="o.value"></el-option>',
       '        </el-select>',
@@ -321,6 +358,8 @@
     methods: {
       orDash: orDash, fmtDT: fmtDT,
       seqNo: function (i) { return (this.page - 1) * this.size + i + 1; },
+      /* 手麻UI: 申请单行状态脊 class(按 status 上色) */
+      applyRowCls: function (o) { return 'rs-' + (o.row && o.row.status); },
       vtLabel: function (v) { return VISIT_TYPE[v] || orDash(v); },
       dlLabel: function (v) { return DEADLINE[v] || orDash(v); },
       dlTag: function (v) { return DEADLINE_TYPE[v] || 'info'; },
@@ -570,6 +609,7 @@
       }
     },
     mounted: function () {
+      ensureSurgApplyStyles();
       this.load();
       /* 待通知角标(进入通知 Tab 前也可见) */
       var vm = this;

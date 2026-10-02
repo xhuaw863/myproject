@@ -95,6 +95,12 @@
       '.sr-note { font-size:12px; color:var(--yb-ink-4); }',
       '.sr-money { font-variant-numeric:tabular-nums; font-family:var(--yb-font-mono); }',
       '.sr-rate-warn { color:var(--yb-danger); font-weight:600; }',
+      /* 手麻UI轻触统一: KPI 卡片品牌脊 + 级联入场(与手术监护中控台同源) */
+      '.sr-kpi::before { content:""; position:absolute; left:0; top:0; bottom:0; width:3px; background:var(--yb-brand); opacity:.9; }',
+      '.sr-kpi.is-dim::before { background:var(--yb-border-strong); opacity:.6; }',
+      '.sr-kpi { animation:sr-in .3s var(--yb-ease) both; }',
+      '@keyframes sr-in { from { opacity:0; transform:translateY(6px); } to { opacity:1; transform:none; } }',
+      '@media (prefers-reduced-motion: reduce) { .sr-kpi { animation:none; } }',
       '@media (max-width:1280px) { .sr-kpis.cols-6 { grid-template-columns:repeat(3,1fr); } .sr-cols { grid-template-columns:1fr; } }'
     ].join('\n');
     document.head.appendChild(st);

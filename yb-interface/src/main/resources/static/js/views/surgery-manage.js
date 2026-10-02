@@ -56,7 +56,37 @@
       '.surg-board-card { cursor:grab; }',
       '.surg-board-card.dragging { opacity:.4; }',
       '.surg-board-col { min-height:60px; }',
-      '.surg-board-col.drag-over { background:var(--yb-brand-soft, rgba(64,158,255,.08)); outline:1px dashed var(--yb-brand); outline-offset:-2px; }'
+      '.surg-board-col.drag-over { background:var(--yb-brand-soft, rgba(64,158,255,.08)); outline:1px dashed var(--yb-brand); outline-offset:-2px; }',
+      /* ===== 手麻UI: 手术监护中控台(与临床路径同源的监护仪语言, 复用 --yb-* 令牌) ===== */
+      /* 今日看板: 深墨蓝渐变纵览头 + ECG 流动基线(呼应登录页/顶栏) */
+      '.surg-board-head { position:relative; overflow:hidden; display:flex; align-items:center; gap:16px; flex-wrap:wrap; padding:16px 20px; margin-bottom:16px; border-radius:var(--yb-r-md); color:#fff; background:var(--yb-header-grad); box-shadow:var(--yb-sh-2); }',
+      '.surg-board-head::after { content:""; position:absolute; left:0; right:0; bottom:8px; height:24px; opacity:.15; pointer-events:none; background:url("data:image/svg+xml;utf8,<svg xmlns=\'http://www.w3.org/2000/svg\' width=\'240\' height=\'24\' viewBox=\'0 0 240 24\'><path d=\'M0 12h40l8-8 7 16 6-8h44l9-5 6 10 7-5h103\' fill=\'none\' stroke=\'white\' stroke-width=\'1.4\'/></svg>") repeat-x left center; animation:surg-ecg 18s linear infinite; }',
+      '@keyframes surg-ecg { from { background-position-x:0; } to { background-position-x:-240px; } }',
+      '.surg-board-head .bh-ttl { position:relative; z-index:1; display:flex; flex-direction:column; gap:3px; }',
+      '.surg-board-head .bh-ttl .t { font-size:var(--yb-fs-xl); font-weight:700; letter-spacing:var(--yb-tracking-tight); }',
+      '.surg-board-head .bh-ttl .d { font-size:var(--yb-fs-sm); color:var(--yb-header-ink-2); font-variant-numeric:tabular-nums; }',
+      /* 字阶指标带: 26px 大数字对 11px 注标, 等宽数字; 术中琥珀/完成绿专色 */
+      '.surg-metrics { position:relative; z-index:1; display:flex; gap:6px; margin-left:auto; flex-wrap:wrap; }',
+      '.surg-metric { min-width:84px; padding:2px 14px; display:flex; flex-direction:column; justify-content:center; border-left:1px solid rgba(255,255,255,.16); }',
+      '.surg-metric:first-child { border-left:none; }',
+      '.surg-metric .num { font-size:26px; font-weight:700; line-height:1.05; letter-spacing:var(--yb-tracking-tight); font-variant-numeric:tabular-nums; }',
+      '.surg-metric .num.run { color:#ffd08a; } .surg-metric .num.done { color:#a9e0a0; }',
+      '.surg-metric .lbl { margin-top:4px; font-size:var(--yb-fs-cap); letter-spacing:.06em; color:var(--yb-header-ink-2); white-space:nowrap; }',
+      /* 手术间卡片: 悬停抬升 + 级联入场 */
+      '.surg-room-card { transition:box-shadow var(--yb-dur) var(--yb-ease), border-color var(--yb-dur) var(--yb-ease); animation:surg-in .32s var(--yb-ease) both; }',
+      '.surg-room-card:hover { border-color:var(--yb-brand-border); box-shadow:var(--yb-sh-2); }',
+      '@keyframes surg-in { from { opacity:0; transform:translateY(8px); } to { opacity:1; transform:none; } }',
+      /* 手术条目: 左侧状态脊(排程蓝/报到主蓝/术中红呼吸/完成绿) */
+      '.surg-room-item { position:relative; padding-left:12px; }',
+      '.surg-room-item::before { content:""; position:absolute; left:0; top:5px; bottom:5px; width:3px; border-radius:0 2px 2px 0; background:var(--yb-ink-disabled); }',
+      '.surg-room-item.st-2::before { background:var(--yb-fill-info); }',
+      '.surg-room-item.st-3::before { background:var(--yb-fill-danger); }',
+      '.surg-room-item.st-5::before { background:var(--yb-fill-success); }',
+      '.surg-room-item.st-7::before { background:var(--yb-brand); }',
+      /* 术中呼吸圆点 */
+      '.surg-live { display:inline-block; width:7px; height:7px; border-radius:50%; background:var(--yb-fill-danger); margin-left:6px; vertical-align:middle; animation:surg-breathe 1.4s var(--yb-ease) infinite; }',
+      '@keyframes surg-breathe { 0%,100% { box-shadow:0 0 0 0 rgba(217,96,95,.5); opacity:1; } 50% { box-shadow:0 0 0 4px rgba(217,96,95,0); opacity:.55; } }',
+      '@media (prefers-reduced-motion: reduce) { .surg-board-head::after, .surg-room-card, .surg-live { animation:none; } }'
     ].join('\n');
     document.head.appendChild(st);
   })();
@@ -1452,8 +1482,8 @@
       '            <template #default="s">',
       '              <div class="surg-board-col" :class="{ \'drag-over\': dragOverRoom === s.row.roomNo }" @dragover.prevent="onDragOver($event, s.row.roomNo)" @dragleave="onDragLeave(s.row.roomNo)" @drop.stop="onDropToBoard($event, s.row.roomNo)">',
       '                <el-tag v-if="s.row.count > 0" size="small" type="info" style="margin:0 6px 6px 0">{{ s.row.count }} 台</el-tag>',
-      '                <div v-for="c in (s.row.surgeries || [])" :key="c.id" class="surg-room-item surg-board-card" draggable="true" @dragstart="onDragStart(c)" @dragend="dragCard = null" @click="openDetail(c.id)">',
-      '                  <div class="line1">{{ hmOf(c.schedule_time) || "待定" }}　{{ c.patient_name || "-" }}<el-tag size="small" :type="stTag(c.status)" style="margin-left:6px">{{ stLabel(c.status) }}</el-tag><el-tag v-if="c.visit_type !== 1" size="small" type="warning" style="margin-left:4px">{{ vtLabel(c.visit_type) }}</el-tag></div>',
+      '                <div v-for="c in (s.row.surgeries || [])" :key="c.id" class="surg-room-item surg-board-card" :class="\'st-\'+c.status" draggable="true" @dragstart="onDragStart(c)" @dragend="dragCard = null" @click="openDetail(c.id)">',
+      '                  <div class="line1">{{ hmOf(c.schedule_time) || "待定" }}　{{ c.patient_name || "-" }}<span v-if="c.status===3" class="surg-live"/><el-tag size="small" :type="stTag(c.status)" style="margin-left:6px">{{ stLabel(c.status) }}</el-tag><el-tag v-if="c.visit_type !== 1" size="small" type="warning" style="margin-left:4px">{{ vtLabel(c.visit_type) }}</el-tag></div>',
       '                  <div class="line2">{{ c.surgery_name }}　主刀: {{ orDash(c.surgeon_name) }}</div>',
       '                  <div class="line3"><span>{{ orDash(c.apply_no) }}　{{ orDash(c.dept_name) }}</span></div>',
       '                </div>',
@@ -1540,14 +1570,23 @@
       '    </el-tab-pane>',
       '    <el-tab-pane label="今日看板" name="board">',
       '      <div v-loading="boardLoading">',
-      '        <div style="margin-bottom:10px;color:var(--yb-ink-2);font-size:13px">日期: {{ board.date || "—" }}　今日共 {{ board.total }} 台手术, 点击卡片查看手术详情</div>',
+      '        <div class="surg-board-head">',
+      '          <div class="bh-ttl"><span class="t">今日手术总览</span><span class="d">{{ board.date || "—" }} · 点击卡片查看手术详情</span></div>',
+      '          <div class="surg-metrics">',
+      '            <div class="surg-metric"><span class="num">{{ boardStats.total }}</span><span class="lbl">今日台数</span></div>',
+      '            <div class="surg-metric"><span class="num">{{ boardStats.rooms }}</span><span class="lbl">手术间</span></div>',
+      '            <div class="surg-metric"><span class="num run">{{ boardStats.running }}</span><span class="lbl">术中</span></div>',
+      '            <div class="surg-metric"><span class="num">{{ boardStats.scheduled }}</span><span class="lbl">待术</span></div>',
+      '            <div class="surg-metric"><span class="num done">{{ boardStats.done }}</span><span class="lbl">已完成</span></div>',
+      '          </div>',
+      '        </div>',
       '        <el-row :gutter="12">',
       '          <el-col v-for="r in board.rooms" :key="r.roomNo" :span="6" style="margin-bottom:12px">',
       '            <div class="surg-room-card">',
       '              <div class="surg-room-title"><span>{{ r.roomNo }}</span><span class="cnt">{{ r.count }} 台</span></div>',
       '              <div v-if="r.surgeries && r.surgeries.length">',
-      '                <div v-for="s in r.surgeries" :key="s.id" class="surg-room-item" @click="openDetail(s.id)">',
-      '                  <div class="line1">{{ hmOf(s.schedule_time) || "待定" }}　{{ s.patient_name || "-" }}</div>',
+      '                <div v-for="s in r.surgeries" :key="s.id" class="surg-room-item" :class="\'st-\'+s.status" @click="openDetail(s.id)">',
+      '                  <div class="line1">{{ hmOf(s.schedule_time) || "待定" }}　{{ s.patient_name || "-" }}<span v-if="s.status===3" class="surg-live"/></div>',
       '                  <div class="line2">{{ s.surgery_name }}</div>',
       '                  <div class="line3"><span>主刀: {{ s.surgeon_name || "-" }}</span><el-tag size="small" :type="stTag(s.status)">{{ stLabel(s.status) }}</el-tag></div>',
       '                </div>',
@@ -1556,6 +1595,7 @@
       '            </div>',
       '          </el-col>',
       '        </el-row>',
+      '        <el-empty v-if="!boardLoading && !(board.rooms && board.rooms.length)" description="今日暂无排程" :image-size="60"></el-empty>',
       '      </div>',
       '    </el-tab-pane>',
       '  </el-tabs>',
@@ -2146,6 +2186,19 @@
             || String(r.surgeon_name || '').toLowerCase().indexOf(kw) >= 0
             || String(r.inp_no || '').toLowerCase().indexOf(kw) >= 0;
         });
+      },
+      /* 手麻UI: 今日看板监护指标带(全部由 board.rooms 实算, 无虚构) */
+      boardStats: function () {
+        var rooms = this.board.rooms || [];
+        var running = 0, done = 0, scheduled = 0;
+        rooms.forEach(function (r) {
+          (r.surgeries || []).forEach(function (s) {
+            if (s.status === 3) { running++; }
+            else if (s.status === 5) { done++; }
+            else if (s.status === 2 || s.status === 7) { scheduled++; }
+          });
+        });
+        return { total: this.board.total || 0, rooms: rooms.length, running: running, scheduled: scheduled, done: done };
       }
     },
     methods: {
