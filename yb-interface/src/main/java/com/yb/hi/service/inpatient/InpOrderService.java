@@ -32,6 +32,7 @@ import com.yb.hi.mapper.inpatient.HisInpOrderMapper;
 import com.yb.hi.mapper.inpatient.HisInpVisitMapper;
 import com.yb.hi.platform.service.OrgAccessGuard;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.CollectionUtils;
@@ -66,12 +67,13 @@ public class InpOrderService extends ServiceImpl<HisInpOrderMapper, HisInpOrder>
     private final InpAllergyService allergyService;
     private final OrderTemplateService orderTemplateService;
     private final HisInpOrderExecMapper execMapper;
+    private final JdbcTemplate jdbcTemplate;
 
     public InpOrderService(HisInpVisitMapper visitMapper, HisInpChargeDetailMapper chargeDetailMapper,
                            HisDrugCatalogMapper drugCatalogMapper, HisChargeItemMapper chargeItemMapper,
                            HisOrgCatalogMapper orgCatalogMapper, HisStaffMapper staffMapper, OrgAccessGuard guard,
                            InpAllergyService allergyService, OrderTemplateService orderTemplateService,
-                           HisInpOrderExecMapper execMapper) {
+                           HisInpOrderExecMapper execMapper, JdbcTemplate jdbcTemplate) {
         this.visitMapper = visitMapper;
         this.chargeDetailMapper = chargeDetailMapper;
         this.drugCatalogMapper = drugCatalogMapper;
@@ -82,6 +84,7 @@ public class InpOrderService extends ServiceImpl<HisInpOrderMapper, HisInpOrder>
         this.allergyService = allergyService;
         this.orderTemplateService = orderTemplateService;
         this.execMapper = execMapper;
+        this.jdbcTemplate = jdbcTemplate;
     }
 
     /** 当前登录医生(his_staff.id): 无职工关联的账号不能执行医生站操作 */
@@ -223,6 +226,8 @@ public class InpOrderService extends ServiceImpl<HisInpOrderMapper, HisInpOrder>
                 o.getId(), visit.getId(), o.getOrderType(), o.getOrderCategory(), o.getUnitPrice(), o.getGroupNo());
         // 医保预审(T42, 非阻断): 依据定价环节回查的目录医保码/甲乙丙分类, 在开立回执上瞬态回填提示
         appendInsurancePreview(o, priced);
+        // 手麻P4c 新生儿软守卫(非阻断): 新生儿药品医嘱且未录体重 -> 回执瞬态提示补录, 不拦截开立
+        appendNewbornWeightGuard(o, visit);
         return o;
     }
 
@@ -788,6 +793,34 @@ public class InpOrderService extends ServiceImpl<HisInpOrderMapper, HisInpOrder>
         String clsText = (drug.getDrugClass() == null ? "" : drug.getDrugClass())
                 + "|" + (drug.getDrugClassName() == null ? "" : drug.getDrugClassName());
         return containsAnyKeyword(clsText, "高警示", "麻醉", "精神", "毒性", "放射");
+    }
+
+    /**
+     * 手麻P4c 新生儿医嘱软守卫(非阻断): 若医嘱就诊为新生儿建档关联就诊(his_newborn.baby_inp_visit_id)
+     * 且为药品类(orderCategory=1)而新生儿未记录体重(weight_g 为空), 在开立回执瞬态回填提醒补录体重。
+     * 仅提示不拦截(系统无新生儿剂量字典, 不做医疗硬拦截); 任何异常仅记日志, 不影响医嘱保存。
+     */
+    private void appendNewbornWeightGuard(HisInpOrder o, HisInpVisit visit) {
+        if (o == null || visit == null || o.getInpVisitId() == null) {
+            return;
+        }
+        if (o.getOrderCategory() == null || o.getOrderCategory() != 1) {
+            return;
+        }
+        try {
+            List<Map<String, Object>> rows = jdbcTemplate.queryForList(
+                    "SELECT weight_g FROM his_newborn WHERE deleted = 0 AND baby_inp_visit_id = ?",
+                    o.getInpVisitId());
+            if (rows.isEmpty()) {
+                return;
+            }
+            Object wg = rows.get(0).get("weight_g");
+            if (wg == null) {
+                o.setNewbornWeightWarning("新生儿未记录体重, 请补录后按 mg/kg 核算剂量");
+            }
+        } catch (Exception e) {
+            log.warn("新生儿体重软守卫异常(不阻断医嘱保存): orderId={}, err={}", o.getId(), e.getMessage());
+        }
     }
 
     /**

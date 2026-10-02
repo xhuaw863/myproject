@@ -28,6 +28,8 @@
     return Object.keys(map).map(function (k) { return { value: Number(k), label: map[k] }; });
   }
   var MODULE_OPTS = optsOf(MODULE);
+  /* 手麻P4b: 手术间资源类型(利用率报表) */
+  var DEVICE_ROOM_TYPE = { 0: '未登记', 1: '手术间', 2: 'DSA机房', 3: '内镜室', 4: '产房' };
 
   /* ===== 工具 ===== */
   function pad2(n) { return (n < 10 ? '0' : '') + n; }
@@ -130,7 +132,10 @@
         qualityLoaded: false, qualityLoading: false,
 
         dashboard: { today: '', todayCount: 0, inOperation: 0, pendingSchedule: 0, completeRate: 0, cancelRate: 0, level34Ratio: 0, range30Count: 0 },
-        dashboardLoaded: false, dashboardLoading: false
+        dashboardLoaded: false, dashboardLoading: false,
+
+        device: { byRoom: [], byRoomType: [], dayCount: 0, availMinPerDay: 0, startDate: '', endDate: '' },
+        deviceLoaded: false, deviceLoading: false
       };
     },
 
@@ -199,8 +204,22 @@
           { num: pctText(d.level34Ratio), lbl: '三四级占比(近30天)', color: T.gold }
         ];
       },
+      deviceKpis: function () {
+        if (!this.deviceLoaded) { return []; }
+        var dv = this.device;
+        var cases = 0, occ = 0, rooms = 0;
+        (dv.byRoom || []).forEach(function (r) { cases += toNum(r.cases); occ += toNum(r.occupiedMin); });
+        (dv.byRoomType || []).forEach(function (r) { rooms += toNum(r.roomCount); });
+        var avail = toNum(dv.availMinPerDay) * toNum(dv.dayCount) * (rooms > 0 ? rooms : 1);
+        return [
+          { num: fmtNum(cases), lbl: '开机台次(区间内有起止)', color: T.brand },
+          { num: fmtNum(occ) + ' 分', lbl: '占用时长合计', color: T.teal },
+          { num: fmtNum((dv.byRoom || []).length), lbl: '在用手术间/机房', color: T.link },
+          { num: avail > 0 ? pctText(occ / avail) : '—', lbl: '整体利用率', color: T.gold }
+        ];
+      },
       currentTabLabel: function () {
-        var m = { volume: '手术量', anesthesia: '麻醉分布', duration: '手术时长', fee: '费用统计', quality: '质量指标', dashboard: '工作台KPI' };
+        var m = { volume: '手术量', anesthesia: '麻醉分布', duration: '手术时长', fee: '费用统计', quality: '质量指标', dashboard: '工作台KPI', device: '设备利用率' };
         return m[this.activeTab] || '报表';
       }
     },
@@ -231,14 +250,15 @@
       search: function () {
         this.volumeLoaded = false; this.anesthesiaLoaded = false; this.durationLoaded = false;
         this.feeLoaded = false; this.qualityLoaded = false; this.dashboardLoaded = false;
+        this.deviceLoaded = false;
         this.loadActive();
       },
 
       onTabChange: function (name) { if (name) { this.activeTab = name; } this.loadActive(); },
 
       loadActive: function () {
-        var loaders = { volume: 'loadVolume', anesthesia: 'loadAnesthesia', duration: 'loadDuration', fee: 'loadFee', quality: 'loadQuality', dashboard: 'loadDashboard' };
-        var flags = { volume: 'volumeLoaded', anesthesia: 'anesthesiaLoaded', duration: 'durationLoaded', fee: 'feeLoaded', quality: 'qualityLoaded', dashboard: 'dashboardLoaded' };
+        var loaders = { volume: 'loadVolume', anesthesia: 'loadAnesthesia', duration: 'loadDuration', fee: 'loadFee', quality: 'loadQuality', dashboard: 'loadDashboard', device: 'loadDevice' };
+        var flags = { volume: 'volumeLoaded', anesthesia: 'anesthesiaLoaded', duration: 'durationLoaded', fee: 'feeLoaded', quality: 'qualityLoaded', dashboard: 'dashboardLoaded', device: 'deviceLoaded' };
         var tab = this.activeTab;
         if (loaders[tab] && !this[flags[tab]]) { this[loaders[tab]](); }
       },
@@ -420,6 +440,26 @@
           vm.dashboardLoaded = true;
         }).catch(HIS.notifyError).finally(function () { vm.dashboardLoading = false; });
       },
+
+      /* ==================== Tab7 设备利用率(P4b) ==================== */
+      loadDevice: function () {
+        var vm = this; vm.deviceLoading = true;
+        HIS.get('/api/his/surgery-report/device-utilization?' + vm.baseParams().toString()).then(function (d) {
+          d = d || {};
+          var byRoom = (d.byRoom || []).map(function (r) {
+            return { room: r.room, roomName: r.room_name || '', roomType: toNum(r.room_type), cases: toNum(r.cases),
+              activeCases: toNum(r.active_cases), occupiedMin: toNum(r.occupiedMin), rate: toNum(r.utilizationRate) };
+          });
+          var byType = (d.byRoomType || []).map(function (r) {
+            return { rt: toNum(r.rt), name: r.name || ('类型' + r.rt), roomCount: toNum(r.roomCount), cases: toNum(r.cases),
+              activeCases: toNum(r.active_cases), occupiedMin: toNum(r.occupiedMin), rate: toNum(r.utilizationRate) };
+          });
+          vm.device = { byRoom: byRoom, byRoomType: byType, dayCount: toNum(d.dayCount),
+            availMinPerDay: toNum(d.availMinPerDay), startDate: d.startDate || '', endDate: d.endDate || '' };
+          vm.deviceLoaded = true;
+        }).catch(HIS.notifyError).finally(function () { vm.deviceLoading = false; });
+      },
+      deviceRoomTypeLabel: function (rt) { return DEVICE_ROOM_TYPE[rt] || orDash(rt); },
 
       /* ==================== 快照 / 导出 ==================== */
       saveSnapshot: function () {
@@ -629,6 +669,32 @@
       '      <div v-loading="dashboardLoading">',
       '        <div class="sr-note" style="margin-bottom:8px;">当日快照(不受区间约束): <b>{{ dashboard.today || \'-\' }}</b> · 完成率/取消率/三四级占比为近 30 天口径(共 {{ dashboard.range30Count }} 台)</div>',
       kpiBlock('dashKpis', 6),
+      '      </div>',
+      '    </el-tab-pane>',
+
+      /* ================= Tab7 设备利用率(P4b) ================= */
+      '    <el-tab-pane label="设备利用率" name="device">',
+      '      <div v-loading="deviceLoading">',
+      kpiBlock('deviceKpis', 4),
+      '        <div class="sr-note" style="margin-bottom:8px;">区间 {{ device.startDate || \'-\' }} ~ {{ device.endDate || \'-\' }}（{{ device.dayCount }} 天）；可用机时按每日 {{ device.availMinPerDay }} 分钟估算（诚实口径：无设备开机日志，占用以手术实际 start~end 计）</div>',
+      '        <div class="sr-cols">',
+      '          <div class="sr-card"><div class="sr-card-title">按资源类型汇总</div>',
+      '            <el-table :data="device.byRoomType" size="small" border style="width:100%;">',
+      '              <el-table-column prop="name" label="类型" min-width="90"></el-table-column>',
+      '              <el-table-column prop="roomCount" label="可用房数" width="84" align="right"></el-table-column>',
+      '              <el-table-column prop="cases" label="台次" width="64" align="right"></el-table-column>',
+      '              <el-table-column label="占用(分)" width="82" align="right"><template #default="s">{{ fmtNum(s.row.occupiedMin) }}</template></el-table-column>',
+      '              <el-table-column label="利用率" min-width="120"><template #default="s"><el-progress :percentage="Math.round(s.row.rate*100)" :stroke-width="10"/></template></el-table-column>',
+      '            </el-table></div>',
+      '          <div class="sr-card"><div class="sr-card-title">按手术间/机房明细</div>',
+      '            <el-table :data="device.byRoom" size="small" border max-height="360" style="width:100%;">',
+      '              <el-table-column prop="room" label="手术间" min-width="90"></el-table-column>',
+      '              <el-table-column label="类型" width="90" align="center"><template #default="s">{{ deviceRoomTypeLabel(s.row.roomType) }}</template></el-table-column>',
+      '              <el-table-column prop="cases" label="台次" width="56" align="right"></el-table-column>',
+      '              <el-table-column label="占用(分)" width="82" align="right"><template #default="s">{{ fmtNum(s.row.occupiedMin) }}</template></el-table-column>',
+      '              <el-table-column label="利用率" min-width="120"><template #default="s"><el-progress :percentage="Math.round(s.row.rate*100)" :stroke-width="10"/></template></el-table-column>',
+      '            </el-table></div>',
+      '        </div>',
       '      </div>',
       '    </el-tab-pane>',
       '  </el-tabs>',

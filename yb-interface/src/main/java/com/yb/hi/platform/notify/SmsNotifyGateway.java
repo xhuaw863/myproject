@@ -15,6 +15,17 @@ public interface SmsNotifyGateway {
      */
     Result send(String phone, String content);
 
+    /**
+     * 送达回查(P4a): 依据下发返回的网关回执ID查询最终送达状态。
+     * 缺省实现返回"未知"(Noop/Http 无回查能力时不影响主流程), Mock 网关覆盖为确定性派生。
+     *
+     * @param msgId 下发时返回的网关回执ID
+     * @return 送达回查报告
+     */
+    default DeliveryReport queryDelivery(String msgId) {
+        return DeliveryReport.unknown();
+    }
+
     /** 下发结果。 */
     class Result {
         private final boolean success;
@@ -41,6 +52,38 @@ public interface SmsNotifyGateway {
 
         public String getMsgId() {
             return msgId;
+        }
+
+        public String getError() {
+            return error;
+        }
+    }
+
+    /** 送达回查报告(P4a)。state: 1已送达 2送达失败 0未知/无可回查。 */
+    class DeliveryReport {
+        private final int state;
+        private final String error;
+
+        private DeliveryReport(int state, String error) {
+            this.state = state;
+            this.error = error;
+        }
+
+        public static DeliveryReport delivered() {
+            return new DeliveryReport(1, null);
+        }
+
+        public static DeliveryReport failed(String error) {
+            return new DeliveryReport(2, error);
+        }
+
+        public static DeliveryReport unknown() {
+            return new DeliveryReport(0, null);
+        }
+
+        /** 1已送达 2送达失败 0未知。 */
+        public int getState() {
+            return state;
         }
 
         public String getError() {

@@ -40,6 +40,8 @@ public class SurgeryReportService {
     public static final int RT_FEE = 9;
     public static final int RT_QUALITY = 10;
     public static final int RT_DASHBOARD = 11;
+    /** 手麻P4b: 设备/机房利用率快照类型。 */
+    public static final int RT_DEVICE = 12;
 
     private static final Map<Integer, String> SURG_LEVEL_NAMES = new LinkedHashMap<>();
     private static final Map<Integer, String> ANESTH_TYPE_NAMES = new LinkedHashMap<>();
@@ -258,6 +260,82 @@ public class SurgeryReportService {
         out.put("cancelRate", rate(cancel30, cnt30));
         out.put("level34Ratio", rate(high30, cnt30));
         out.put("range30Count", cnt30);
+        return R.ok(out);
+    }
+
+    /* ==================== 设备/机房利用率(P4b) ==================== */
+
+    /** 每日可用机时(分钟, 诚实假设 08:00-18:00=600): 利用率=占用分钟/(可用机时×天数×机房数)。 */
+    private static final int AVAIL_MIN_PER_DAY = 600;
+    private static final Map<Integer, String> ROOM_TYPE_NAMES = new LinkedHashMap<>();
+    static {
+        ROOM_TYPE_NAMES.put(1, "手术间");
+        ROOM_TYPE_NAMES.put(2, "DSA机房");
+        ROOM_TYPE_NAMES.put(3, "内镜室");
+        ROOM_TYPE_NAMES.put(4, "产房");
+    }
+
+    /**
+     * 设备/机房利用率(P4b): 按实际手术间(room_no)与资源类型(room_type)统计开机台次/占用时长/利用率。
+     * 源 his_surgery(start/end/schedule_date) + his_surgery_room(room_name/room_type); 口径与其余报表一致(schedule_date区间+moduleType)。
+     */
+    public R<Map<String, Object>> deviceUtilization(SurgeryReportQueryDTO q, Long orgId) {
+        LocalDate[] range = resolveRange(q);
+        long dayCount = range[1].toEpochDay() - range[0].toEpochDay() + 1;
+        Map<String, Object> out = new LinkedHashMap<>();
+        out.put("startDate", range[0]);
+        out.put("endDate", range[1]);
+        out.put("dayCount", dayCount);
+        out.put("availMinPerDay", AVAIL_MIN_PER_DAY);
+        List<Map<String, Object>> byRoom = jdbcTemplate.queryForList(
+                "SELECT s.room_no room, COUNT(*) cases,"
+                        + " SUM(CASE WHEN s.start_time IS NOT NULL THEN 1 ELSE 0 END) active_cases,"
+                        + " SUM(CASE WHEN s.start_time IS NOT NULL AND s.end_time IS NOT NULL"
+                        + " THEN TIMESTAMPDIFF(MINUTE, s.start_time, s.end_time) ELSE 0 END) occupied_min,"
+                        + " IFNULL(r.room_name, '') room_name, IFNULL(r.room_type, 0) room_type"
+                        + " FROM his_surgery s"
+                        + " LEFT JOIN his_surgery_room r ON r.room_code = s.room_no AND r.deleted = 0 AND r.tenant_id = s.tenant_id"
+                        + " WHERE " + surgWhere(q, orgId, range)
+                        + " AND s.room_no IS NOT NULL AND s.room_no <> '' AND s.status <> 6"
+                        + " GROUP BY s.room_no, r.room_name, r.room_type ORDER BY occupied_min DESC",
+                args(q, orgId, range).toArray());
+        for (Map<String, Object> row : byRoom) {
+            long occ = toLong(row.get("occupied_min"));
+            row.put("occupiedMin", occ);
+            row.put("utilizationRate", div(BigDecimal.valueOf(occ),
+                    BigDecimal.valueOf((long) AVAIL_MIN_PER_DAY * dayCount), 4));
+        }
+        out.put("byRoom", byRoom);
+        // 按资源类型聚合(机房/内镜室/产房): 利用率分母=该类型可用房数×可用机时×天数
+        Map<Integer, Long> roomCountByType = new LinkedHashMap<>();
+        for (Map<String, Object> rc : jdbcTemplate.queryForList(
+                "SELECT room_type rt, COUNT(*) c FROM his_surgery_room"
+                        + " WHERE deleted = 0 AND status = 1 AND tenant_id = ?"
+                        + (orgId != null ? " AND org_id = ?" : "") + " GROUP BY room_type",
+                orgArgs(orgId).toArray())) {
+            roomCountByType.put(toLong(rc.get("rt")).intValue(), toLong(rc.get("c")));
+        }
+        List<Map<String, Object>> byType = jdbcTemplate.queryForList(
+                "SELECT r.room_type rt, COUNT(*) cases,"
+                        + " SUM(CASE WHEN s.start_time IS NOT NULL THEN 1 ELSE 0 END) active_cases,"
+                        + " SUM(CASE WHEN s.start_time IS NOT NULL AND s.end_time IS NOT NULL"
+                        + " THEN TIMESTAMPDIFF(MINUTE, s.start_time, s.end_time) ELSE 0 END) occupied_min"
+                        + " FROM his_surgery s JOIN his_surgery_room r ON r.room_code = s.room_no AND r.deleted = 0"
+                        + " AND r.tenant_id = s.tenant_id"
+                        + " WHERE " + surgWhere(q, orgId, range) + " AND s.status <> 6"
+                        + " GROUP BY r.room_type ORDER BY rt",
+                args(q, orgId, range).toArray());
+        for (Map<String, Object> row : byType) {
+            int rt = toLong(row.get("rt")).intValue();
+            long occ = toLong(row.get("occupied_min"));
+            long rooms = roomCountByType.getOrDefault(rt, 0L);
+            row.put("name", ROOM_TYPE_NAMES.get(rt));
+            row.put("roomCount", rooms);
+            row.put("occupiedMin", occ);
+            row.put("utilizationRate", div(BigDecimal.valueOf(occ),
+                    BigDecimal.valueOf((long) AVAIL_MIN_PER_DAY * dayCount * (rooms <= 0 ? 1 : rooms)), 4));
+        }
+        out.put("byRoomType", byType);
         return R.ok(out);
     }
 

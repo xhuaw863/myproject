@@ -430,6 +430,8 @@ public class DictSchemaMigration implements ApplicationRunner {
             ensureSurgeryP2Tables(conn);
             // 手麻P3: 退药申请4列(his_inp_order) + 术毕复苏新表 his_surgery_pacu(幂等)
             ensureSurgeryP3Tables(conn);
+            // 手麻P4: 通知送达闭环(notify 3列 + his_surgery_notify_log 留痕表) + DSA·内镜·产科一体化(his_surgery_room 资源表 + his_surgery_module_ext 专属字段表)(幂等)
+            ensureSurgeryP4Tables(conn);
             // UI升级(住院看板/通知角标): his_inp_notification 住院通知表(幂等, 新模块非启动关键路径)
             ensureUIEnhancementTables(conn);
             // P4 住院发药增强: 住院发药记录/病区暂存冲抵台账/出院带药取药二次核发 3 表 + his_drug_return.keep_ward_flag + his_inp_order.dispense_status 补列(幂等, 新模块非启动关键路径)
@@ -4041,6 +4043,104 @@ public class DictSchemaMigration implements ApplicationRunner {
                     + "KEY idx_pacu_surgery (surgery_id),"
                     + "KEY idx_pacu_org_status (tenant_id, org_id, status)"
                     + ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='术毕复苏(PACU)单(P3b 独立旁路单据)'");
+        }
+    }
+    
+    /**
+     * 手麻 P4 幂等迁移:
+     * (P4a) his_surgery_notify 补送达闭环3列(send_status/delivered_time/error_msg) + 新建 his_surgery_notify_log 下发留痕表(outbox);
+     * (P4b) 新建 his_surgery_room 手术/机房/内镜室/产房资源表(room_type 区分, 附默认种子资源) + his_surgery_module_ext 一体化专属字段旁挂表。
+     * 依赖 his_surgery_notify(P0)/his_surgery(P0) 既有表, addColumnIfNotExists 内部 tableExists 兜底, 故置于 P3 迁移之后。
+     */
+    private void ensureSurgeryP4Tables(Connection conn) throws Exception {
+        /* P4a: 通知送达闭环列 */
+        addColumnIfNotExists(conn, "his_surgery_notify", "send_status",
+                "TINYINT DEFAULT 0 COMMENT '下发送达状态:0待提交 1已提交网关 2已送达 3送达失败(P4a)'");
+        addColumnIfNotExists(conn, "his_surgery_notify", "delivered_time",
+                "DATETIME DEFAULT NULL COMMENT '送达时间(P4a 回查回填)'");
+        addColumnIfNotExists(conn, "his_surgery_notify", "error_msg",
+                "VARCHAR(200) DEFAULT NULL COMMENT '下发/送达失败原因(P4a)'");
+        /* P4a: 通知下发留痕表(outbox, 每次下发/回查追加一行) */
+        try (Statement st = conn.createStatement()) {
+            st.executeUpdate("CREATE TABLE IF NOT EXISTS his_surgery_notify_log ("
+                    + "id BIGINT NOT NULL COMMENT '主键',"
+                    + "tenant_id BIGINT NOT NULL DEFAULT 0 COMMENT '租户ID',"
+                    + "org_id BIGINT DEFAULT NULL COMMENT '机构ID',"
+                    + "notify_id BIGINT NOT NULL COMMENT '通知ID(his_surgery_notify.id)',"
+                    + "phone VARCHAR(30) DEFAULT NULL COMMENT '接收号码快照',"
+                    + "channel TINYINT DEFAULT NULL COMMENT '渠道快照:1短信 2电话 3诊间 4自助机 5APP 6公众号',"
+                    + "content VARCHAR(500) DEFAULT NULL COMMENT '下发内容快照',"
+                    + "gateway_msg_id VARCHAR(120) DEFAULT NULL COMMENT '网关回执ID(Mock/Http 回填)',"
+                    + "send_status TINYINT DEFAULT 0 COMMENT '本行留痕状态:1已提交 2已送达 3失败',"
+                    + "error_msg VARCHAR(200) DEFAULT NULL COMMENT '失败原因',"
+                    + "create_by VARCHAR(64) DEFAULT NULL, create_time DATETIME DEFAULT NULL,"
+                    + "update_by VARCHAR(64) DEFAULT NULL, update_time DATETIME DEFAULT NULL, deleted TINYINT DEFAULT 0,"
+                    + "PRIMARY KEY (id),"
+                    + "KEY idx_nlog_notify (notify_id),"
+                    + "KEY idx_nlog_tenant_time (tenant_id, create_time)"
+                    + ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='手术通知下发留痕(P4a outbox)'");
+        }
+        /* P4b: 手术/机房/内镜室/产房资源表 */
+        try (Statement st = conn.createStatement()) {
+            st.executeUpdate("CREATE TABLE IF NOT EXISTS his_surgery_room ("
+                    + "id BIGINT NOT NULL COMMENT '主键',"
+                    + "tenant_id BIGINT NOT NULL DEFAULT 0 COMMENT '租户ID',"
+                    + "org_id BIGINT DEFAULT NULL COMMENT '机构ID',"
+                    + "room_code VARCHAR(30) NOT NULL COMMENT '资源编码(唯一)',"
+                    + "room_name VARCHAR(50) DEFAULT NULL COMMENT '资源名称',"
+                    + "room_type TINYINT DEFAULT 1 COMMENT '资源类型:1手术间 2DSA机房 3内镜室 4产房',"
+                    + "dept_id BIGINT DEFAULT NULL COMMENT '归属科室ID',"
+                    + "status TINYINT DEFAULT 1 COMMENT '状态:1可用 0停用',"
+                    + "remark VARCHAR(200) DEFAULT NULL COMMENT '备注',"
+                    + "create_by VARCHAR(64) DEFAULT NULL, create_time DATETIME DEFAULT NULL,"
+                    + "update_by VARCHAR(64) DEFAULT NULL, update_time DATETIME DEFAULT NULL, deleted TINYINT DEFAULT 0,"
+                    + "PRIMARY KEY (id),"
+                    + "UNIQUE KEY uk_room_code (tenant_id, room_code),"
+                    + "KEY idx_room_org_type (org_id, room_type)"
+                    + ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='手术/机房/内镜室/产房资源(P4b 一体化)'");
+        }
+        /* P4b: 一体化专属字段旁挂表(与手术 1:1, 不动主表) */
+        try (Statement st = conn.createStatement()) {
+            st.executeUpdate("CREATE TABLE IF NOT EXISTS his_surgery_module_ext ("
+                    + "id BIGINT NOT NULL COMMENT '主键',"
+                    + "tenant_id BIGINT NOT NULL DEFAULT 0 COMMENT '租户ID',"
+                    + "org_id BIGINT DEFAULT NULL COMMENT '机构ID',"
+                    + "surgery_id BIGINT NOT NULL COMMENT '手术ID(his_surgery.id)',"
+                    + "module_type TINYINT DEFAULT NULL COMMENT '一体化模块:1手术室 2DSA 3产科分娩 4内镜 5麻醉治疗',"
+                    + "dsa_equipment VARCHAR(50) DEFAULT NULL COMMENT 'DSA造影设备',"
+                    + "dsa_contrast VARCHAR(100) DEFAULT NULL COMMENT 'DSA对比剂',"
+                    + "dsa_radiation_dose DECIMAL(10,2) DEFAULT NULL COMMENT 'DSA辐射剂量(mGy)',"
+                    + "endo_scope_type VARCHAR(50) DEFAULT NULL COMMENT '内镜镜种',"
+                    + "endo_biopsy_cnt INT DEFAULT NULL COMMENT '内镜活检数',"
+                    + "obst_gestational_week VARCHAR(20) DEFAULT NULL COMMENT '产科孕周',"
+                    + "obst_birth_type TINYINT DEFAULT NULL COMMENT '分娩方式:1顺产 2剖宫产 3产钳',"
+                    + "remark VARCHAR(500) DEFAULT NULL COMMENT '备注',"
+                    + "create_by VARCHAR(64) DEFAULT NULL, create_time DATETIME DEFAULT NULL,"
+                    + "update_by VARCHAR(64) DEFAULT NULL, update_time DATETIME DEFAULT NULL, deleted TINYINT DEFAULT 0,"
+                    + "PRIMARY KEY (id),"
+                    + "UNIQUE KEY uk_ext_surgery (surgery_id)"
+                    + ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='手术一体化专属字段(P4b 旁挂)'");
+        }
+        /* P4b: 牵头机构(tenant_id=1/org_id=1) 幂等种子默认资源(按 room_code 去重, 固定小区间 id 避撞雪花) */
+        seedSurgeryRoom(conn, 91001L, "OR-01", "一号手术间", 1);
+        seedSurgeryRoom(conn, 91002L, "OR-02", "二号手术间", 1);
+        seedSurgeryRoom(conn, 91003L, "DSA-01", "DSA机房1", 2);
+        seedSurgeryRoom(conn, 91004L, "ENDO-01", "内镜室1", 3);
+        seedSurgeryRoom(conn, 91005L, "DELIV-01", "产房1", 4);
+    }
+    
+    /** P4b 手术间资源幂等种子: 存在同 room_code(未删)则跳过。 */
+    private void seedSurgeryRoom(Connection conn, long id, String code, String name, int roomType) throws Exception {
+        try (java.sql.PreparedStatement ps = conn.prepareStatement(
+                "INSERT INTO his_surgery_room (id, tenant_id, org_id, room_code, room_name, room_type, status, create_time, deleted)"
+                        + " SELECT ?, 1, 1, ?, ?, ?, 1, NOW(), 0 FROM DUAL"
+                        + " WHERE NOT EXISTS (SELECT 1 FROM his_surgery_room WHERE tenant_id = 1 AND room_code = ? AND deleted = 0)")) {
+            ps.setLong(1, id);
+            ps.setString(2, code);
+            ps.setString(3, name);
+            ps.setInt(4, roomType);
+            ps.setString(5, code);
+            ps.executeUpdate();
         }
     }
 

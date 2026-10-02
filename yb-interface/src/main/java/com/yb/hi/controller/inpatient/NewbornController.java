@@ -13,6 +13,7 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
+import java.math.BigDecimal;
 import java.util.List;
 import java.util.Map;
 
@@ -52,6 +53,20 @@ public class NewbornController {
     @GetMapping("/{id}")
     public R<HisNewborn> detail(@PathVariable Long id) {
         return R.ok(newbornService.detail(id));
+    }
+
+    /** 手麻P4c 开嘱上下文(体重/日龄/性别/母亲住院号与床号) */
+    @GetMapping("/order-context")
+    public R<Map<String, Object>> orderContext(@RequestParam Long babyInpVisitId) {
+        return R.ok(newbornService.orderContext(babyInpVisitId));
+    }
+
+    /** 手麻P4c 剂量换算提示(纯 mg/kg·ml/kg 展示, 不做医疗拦截) */
+    @GetMapping("/dose-hint")
+    public R<Map<String, Object>> doseHint(@RequestParam Long babyInpVisitId,
+                                           @RequestParam(required = false) BigDecimal qty,
+                                           @RequestParam(required = false) String unit) {
+        return R.ok(newbornService.doseHint(babyInpVisitId, qty, unit));
     }
 
     /** 补录新生儿信息(Apgar/体重/身长/分娩方式等) */

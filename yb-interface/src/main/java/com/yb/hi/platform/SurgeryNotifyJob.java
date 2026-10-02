@@ -63,4 +63,37 @@ public class SurgeryNotifyJob {
         }
         log.info("术前提醒调度结束: 新增提醒={}条", total);
     }
+
+    /**
+     * 每日送达回查调度(P4a, 幂等): 逐租户对已提交网关(send_status=1)的通知回查最终送达并回填状态。
+     * 与术前提醒同模式设/清 TenantContext; 单租户失败不影响其余。仅处理 send_status=1, 可重复执行。
+     */
+    @Scheduled(cron = "${yb.surgery.delivery-cron:0 30 8 * * *}")
+    public void recheckDelivery() {
+        List<Long> tenants;
+        try {
+            tenants = jdbcTemplate.queryForList(
+                    "SELECT DISTINCT tenant_id FROM his_surgery_notify"
+                            + " WHERE deleted = 0 AND tenant_id > 0 AND send_status = 1 ORDER BY tenant_id",
+                    Long.class);
+        } catch (Exception e) {
+            log.error("送达回查调度: 租户扫描失败, 原因: {}", e.getMessage(), e);
+            return;
+        }
+        if (tenants.isEmpty()) {
+            return;
+        }
+        int total = 0;
+        for (Long tenantId : tenants) {
+            try {
+                TenantContext.set(tenantId);
+                total += applyService.batchQueryDelivery();
+            } catch (Exception e) {
+                log.error("【送达回查告警】租户{}失败: {}", tenantId, e.getMessage(), e);
+            } finally {
+                TenantContext.clear();
+            }
+        }
+        log.info("送达回查调度结束: 状态变更={}条", total);
+    }
 }

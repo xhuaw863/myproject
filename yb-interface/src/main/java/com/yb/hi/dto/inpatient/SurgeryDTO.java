@@ -2,6 +2,8 @@ package com.yb.hi.dto.inpatient;
 
 import lombok.Data;
 
+import java.math.BigDecimal;
+
 /**
  * 手术申请创建请求
  */
@@ -38,4 +40,19 @@ public class SurgeryDTO {
     private Integer incisionType;
     /** 一体化模块: 1手术室 2DSA 3产科分娩 4内镜 5麻醉治疗(缺省1) */
     private Integer moduleType;
+    /* ---------- 手麻P4b: 一体化专属字段(module_type 2/3/4 采集, 旁挂 his_surgery_module_ext) ---------- */
+    /** DSA: 设备/机房 */
+    private String dsaEquipment;
+    /** DSA: 对比剂 */
+    private String dsaContrast;
+    /** DSA: 辐射剂量 */
+    private BigDecimal dsaRadiationDose;
+    /** 内镜: 镜种 */
+    private String endoScopeType;
+    /** 内镜: 活检数 */
+    private Integer endoBiopsyCnt;
+    /** 产科: 孕周 */
+    private String obstGestationalWeek;
+    /** 产科: 分娩方式 */
+    private Integer obstBirthType;
 }

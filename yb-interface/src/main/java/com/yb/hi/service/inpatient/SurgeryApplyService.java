@@ -8,11 +8,13 @@ import com.yb.hi.dto.inpatient.SurgeryApplyDTO;
 import com.yb.hi.dto.inpatient.SurgeryScheduleDTO;
 import com.yb.hi.entity.inpatient.HisSurgeryApply;
 import com.yb.hi.entity.inpatient.HisSurgeryNotify;
+import com.yb.hi.entity.inpatient.HisSurgeryNotifyLog;
 import com.yb.hi.framework.common.BizException;
 import com.yb.hi.framework.tenant.LoginUser;
 import com.yb.hi.framework.tenant.TenantContext;
 import com.yb.hi.framework.tenant.UserContext;
 import com.yb.hi.mapper.inpatient.HisSurgeryApplyMapper;
+import com.yb.hi.mapper.inpatient.HisSurgeryNotifyLogMapper;
 import com.yb.hi.mapper.inpatient.HisSurgeryNotifyMapper;
 import com.yb.hi.platform.notify.SmsNotifyGateway;
 import com.yb.hi.platform.service.OrgAccessGuard;
@@ -46,16 +48,19 @@ public class SurgeryApplyService {
 
     private final HisSurgeryApplyMapper applyMapper;
     private final HisSurgeryNotifyMapper notifyMapper;
+    private final HisSurgeryNotifyLogMapper notifyLogMapper;
     private final SurgeryAuthRuleService authRuleService;
     private final OrgAccessGuard guard;
     private final JdbcTemplate jdbcTemplate;
     private final SmsNotifyGateway notifyGateway;
 
     public SurgeryApplyService(HisSurgeryApplyMapper applyMapper, HisSurgeryNotifyMapper notifyMapper,
+                               HisSurgeryNotifyLogMapper notifyLogMapper,
                                SurgeryAuthRuleService authRuleService, OrgAccessGuard guard,
                                JdbcTemplate jdbcTemplate, SmsNotifyGateway notifyGateway) {
         this.applyMapper = applyMapper;
         this.notifyMapper = notifyMapper;
+        this.notifyLogMapper = notifyLogMapper;
         this.authRuleService = authRuleService;
         this.guard = guard;
         this.jdbcTemplate = jdbcTemplate;
@@ -409,7 +414,7 @@ public class SurgeryApplyService {
                 : jdbcTemplate.queryForList(
                 "SELECT n.id, n.apply_id, n.surgery_id, n.patient_name, n.phone, n.notify_type, n.channel,"
                         + " n.content, n.status, n.reply_content, n.send_by, n.send_time,"
-                        + " n.retry_count, n.gateway_msg_id, n.create_time"
+                        + " n.retry_count, n.gateway_msg_id, n.send_status, n.delivered_time, n.error_msg, n.create_time"
                         + where + " ORDER BY n.id DESC LIMIT ?, ?",
                 dataArgs.toArray());
         Page<Map<String, Object>> result = new Page<>(p, s, cnt);
@@ -418,8 +423,9 @@ public class SurgeryApplyService {
     }
 
     /**
-     * 批量发送通知: 置状态2+留痕; 电话(2)/诊间(3)仅登记不真实下发, 其余渠道(短信1/自助机4/APP5/公众号6)
-     * 经 notifyGateway 下发, Noop 恒成功(无回执), Http 回填 gateway_msg_id。每次下发 retry_count+1。
+     * 批量发送通知: 置状态2+留痕; 电话(2)/诊间(3)仅登记不真实下发(send_status=2 已送达), 其余渠道(短信1/自助机4/APP5/公众号6)
+     * 经 notifyGateway 下发(send_status=1 已提交网关, 待回查送达)。每次下发写 his_surgery_notify_log 留痕, retry_count+1。
+     * Mock/Http 网关回填 gateway_msg_id; 网关返回失败则跳过(不置状态)。
      */
     @Transactional(rollbackFor = Exception.class)
     public int notifySend(List<Long> ids) {
@@ -434,26 +440,34 @@ public class SurgeryApplyService {
                 continue;
             }
             Integer ch = n.getChannel();
+            int sendStatus;
             if (needGateway(ch)) {
                 SmsNotifyGateway.Result r = notifyGateway.send(n.getPhone(), n.getContent());
                 if (!r.isSuccess()) {
                     log.warn("手术通知下发失败: id={}, channel={}, err={}", id, ch, r.getError());
+                    appendNotifyLog(n, null, 3, r.getError());
                     continue;
                 }
                 n.setGatewayMsgId(r.getMsgId());
+                n.setErrorMsg(null);
+                sendStatus = 1;
+            } else {
+                sendStatus = 2;
             }
             n.setStatus(2);
+            n.setSendStatus(sendStatus);
             n.setRetryCount((n.getRetryCount() == null ? 0 : n.getRetryCount()) + 1);
             n.setSendBy(displayName(lu));
             n.setSendTime(LocalDateTime.now());
             notifyMapper.updateById(n);
+            appendNotifyLog(n, n.getGatewayMsgId(), sendStatus == 1 ? 1 : 2, null);
             sent++;
         }
         log.info("手术通知批量发送: 请求={}条, 实际={}条", ids.size(), sent);
         return sent;
     }
 
-    /** 单条重发(失败或需再触达): 不校验原状态, 走网关后 retry_count+1 并置已通知。 */
+    /** 单条重发(失败或需再触达): 不校验原状态, 走网关后 retry_count+1 并置已通知; 下发留痕同 notifySend。 */
     @Transactional(rollbackFor = Exception.class)
     public HisSurgeryNotify notifyResend(Long id) {
         if (id == null) {
@@ -465,19 +479,106 @@ public class SurgeryApplyService {
         }
         LoginUser lu = requireLogin();
         Integer ch = n.getChannel();
+        int sendStatus;
         if (needGateway(ch)) {
             SmsNotifyGateway.Result r = notifyGateway.send(n.getPhone(), n.getContent());
             if (!r.isSuccess()) {
+                appendNotifyLog(n, null, 3, r.getError());
                 throw new BizException("下发失败: " + r.getError());
             }
             n.setGatewayMsgId(r.getMsgId());
+            n.setErrorMsg(null);
+            sendStatus = 1;
+        } else {
+            sendStatus = 2;
         }
         n.setStatus(2);
+        n.setSendStatus(sendStatus);
         n.setRetryCount((n.getRetryCount() == null ? 0 : n.getRetryCount()) + 1);
         n.setSendBy(displayName(lu));
         n.setSendTime(LocalDateTime.now());
         notifyMapper.updateById(n);
+        appendNotifyLog(n, n.getGatewayMsgId(), sendStatus == 1 ? 1 : 2, null);
         return notifyMapper.selectById(id);
+    }
+
+    /**
+     * 送达回查(P4a): 取通知 gateway_msg_id 调网关 queryDelivery, 依状态置 send_status(2已送达/3送达失败)
+     * 与 delivered_time/error_msg, 并追加 notify_log 留痕; 网关无回查能力(state=0)则不改状态。
+     */
+    @Transactional(rollbackFor = Exception.class)
+    public HisSurgeryNotify queryDelivery(Long id) {
+        if (id == null) {
+            throw new BizException(400, "通知ID不能为空");
+        }
+        HisSurgeryNotify n = notifyMapper.selectById(id);
+        if (n == null) {
+            throw new BizException(404, "通知记录不存在");
+        }
+        String msgId = n.getGatewayMsgId();
+        if (!StringUtils.hasText(msgId)) {
+            throw new BizException("该通知无网关回执, 无法回查送达(未走真实/Mock 通道)");
+        }
+        SmsNotifyGateway.DeliveryReport rep = notifyGateway.queryDelivery(msgId);
+        int state = rep.getState();
+        if (state == 1) {
+            n.setSendStatus(2);
+            n.setDeliveredTime(LocalDateTime.now());
+            n.setErrorMsg(null);
+            notifyMapper.updateById(n);
+            appendNotifyLog(n, msgId, 2, null);
+        } else if (state == 2) {
+            n.setSendStatus(3);
+            n.setErrorMsg(rep.getError());
+            notifyMapper.updateById(n);
+            appendNotifyLog(n, msgId, 3, rep.getError());
+        }
+        return notifyMapper.selectById(id);
+    }
+
+    /** 追加下发/送达留痕(outbox): 松耦合 notify_id, 记录当次网关回执与状态。 */
+    private void appendNotifyLog(HisSurgeryNotify n, String gatewayMsgId, int logStatus, String error) {
+        HisSurgeryNotifyLog log = new HisSurgeryNotifyLog();
+        log.setOrgId(n.getOrgId());
+        log.setNotifyId(n.getId());
+        log.setPhone(n.getPhone());
+        log.setChannel(n.getChannel());
+        log.setContent(n.getContent());
+        log.setGatewayMsgId(gatewayMsgId);
+        log.setSendStatus(logStatus);
+        log.setErrorMsg(error);
+        notifyLogMapper.insert(log);
+    }
+
+    /**
+     * 批量送达回查(P4a, 供调度器无登录上下文调用): 对已提交网关(send_status=1)且有网关回执的通知逐条 queryDelivery,
+     * 回填最终送达状态。幂等可重复执行(仅处理 send_status=1), 单条失败不影响其余。返回送达状态发生变化的条数。
+     */
+    public int batchQueryDelivery() {
+        Long scope = guard.scopeOrgId(null);
+        List<Object> args = new ArrayList<>();
+        args.add(tenantId());
+        String orgSql = "";
+        if (scope != null) {
+            orgSql = " AND n.org_id = ?";
+            args.add(scope);
+        }
+        List<Long> ids = jdbcTemplate.queryForList(
+                "SELECT n.id FROM his_surgery_notify n WHERE n.deleted = 0 AND n.tenant_id = ?" + orgSql
+                        + " AND n.send_status = 1 AND n.gateway_msg_id IS NOT NULL AND n.gateway_msg_id <> ''"
+                        + " ORDER BY n.id", Long.class, args.toArray());
+        int changed = 0;
+        for (Long id : ids) {
+            try {
+                HisSurgeryNotify r = queryDelivery(id);
+                if (r != null && r.getSendStatus() != null && r.getSendStatus() != 1) {
+                    changed++;
+                }
+            } catch (Exception e) {
+                log.warn("手术通知批量送达回查失败: id={}, err={}", id, e.getMessage());
+            }
+        }
+        return changed;
     }
 
     /**

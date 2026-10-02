@@ -135,4 +135,9 @@ public class HisInpOrder extends BaseEntity {
     /** 医保甲乙丙分类名称(甲类/乙类/丙类; 对照目录同步维护, 不落库) */
     @TableField(exist = false)
     private String insuranceCategory;
+
+    /* ---------- 手麻P4c 新生儿医嘱软守卫(开立回执瞬态回填, 不落库; 非阻断仅提示) ---------- */
+    /** 新生儿药品医嘱缺体重提示(如"新生儿未记录体重, 请补录后按mg/kg核算剂量"; 非阻断, 不落库) */
+    @TableField(exist = false)
+    private String newbornWeightWarning;
 }

@@ -90,10 +90,10 @@ public class SurgeryController {
         return R.ok(surgeryService.todaySchedule(guard.scopeOrgId(orgId)));
     }
 
-    /** 手术间列表(预置, 后续可配置化) */
+    /** 手术间列表(P4b: moduleType 按资源类型过滤机房/内镜室/产房; 未传时预置8间+资源表手术间) */
     @GetMapping("/room/list")
-    public R<List<String>> roomList() {
-        return R.ok(surgeryService.roomList());
+    public R<List<String>> roomList(@RequestParam(required = false) Integer moduleType) {
+        return R.ok(surgeryService.roomList(moduleType));
     }
 
     /** 手术详情(含患者信息、手术团队人员信息) */

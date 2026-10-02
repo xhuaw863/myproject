@@ -28,6 +28,9 @@
   /* 手麻P2c: 渠道扩展 4自助机 5APP 6公众号(对齐后端 notifyPage channel 口径) */
   const NOTIFY_CHANNEL = { 1: '短信', 2: '电话', 3: '诊间', 4: '自助机', 5: 'APP', 6: '公众号' };
   const NOTIFY_CHANNEL_OPTS = optsOf(NOTIFY_CHANNEL);
+  /* 手麻P4a: 下发送达状态(send_status) 0待提交 1已提交网关 2已送达 3送达失败 */
+  const SEND_STATUS = { 0: '待提交', 1: '已提交网关', 2: '已送达', 3: '送达失败' };
+  const SEND_STATUS_TYPE = { 0: 'info', 1: 'warning', 2: 'success', 3: 'danger' };
 
   function optsOf(map) {
     return Object.keys(map).map(function (k) { return { value: Number(k), label: map[k] }; });
@@ -145,7 +148,7 @@
       '        <el-input-number v-model="preopHours" :min="1" :max="168" size="small" controls-position="right" style="width:110px"></el-input-number>',
       '        <span style="font-size:12px;color:var(--yb-ink-3)">小时前</span>',
       '        <el-button size="small" plain :loading="preopLoading" @click="doPreOp">生成术前提醒</el-button>',
-      '        <span style="font-size:12px;color:var(--yb-ink-3)">短信/APP等经网关下发(未配真实网关时 Noop 不阻断)</span>',
+      '        <span style="font-size:12px;color:var(--yb-ink-3)">短信/APP等经网关下发(缺省Mock闭环: 尾号0模拟送达失败, 可回查送达)</span>',
       '      </div>',
       '      <el-table :data="nRows" border size="small" v-loading="nLoading" @selection-change="function (v) { nSel = v; }" max-height="calc(100vh - 268px)">',
       '        <el-table-column type="selection" width="42" :selectable="function (r) { return r.status === 1; }"></el-table-column>',
@@ -156,9 +159,16 @@
       '        <el-table-column label="渠道" width="88" align="center"><template #default="s">{{ chLabel(s.row.channel) }}<span v-if="s.row.retry_count > 0" style="color:var(--yb-warning)"> ↻{{ s.row.retry_count }}</span></template></el-table-column>',
       '        <el-table-column prop="content" label="通知内容" min-width="240" show-overflow-tooltip></el-table-column>',
       '        <el-table-column label="状态" width="84" align="center"><template #default="s"><el-tag size="small" :type="nsTag(s.row.status)">{{ nsLabel(s.row.status) }}</el-tag></template></el-table-column>',
+      '        <el-table-column label="送达" width="104" align="center"><template #default="s">',
+      '          <el-tooltip v-if="s.row.send_status === 3 && s.row.error_msg" :content="s.row.error_msg" placement="top">',
+      '            <el-tag size="small" :type="ssTag(s.row.send_status)">{{ ssLabel(s.row.send_status) }}</el-tag>',
+      '          </el-tooltip>',
+      '          <el-tag v-else size="small" :type="ssTag(s.row.send_status)">{{ ssLabel(s.row.send_status) }}</el-tag>',
+      '        </template></el-table-column>',
       '        <el-table-column prop="reply_content" label="患者回复" width="140" show-overflow-tooltip><template #default="s">{{ orDash(s.row.reply_content) }}</template></el-table-column>',
       '        <el-table-column label="发送人/时间" width="150"><template #default="s">{{ orDash(s.row.send_by) }} {{ s.row.send_time ? fmtDT(s.row.send_time) : "" }}</template></el-table-column>',
-      '        <el-table-column label="操作" width="160" fixed="right"><template #default="s">',
+      '        <el-table-column label="操作" width="210" fixed="right"><template #default="s">',
+      '          <el-button v-if="s.row.gateway_msg_id && s.row.send_status !== 2" link type="success" @click="doQueryDelivery(s.row)">回查送达</el-button>',
       '          <el-button v-if="s.row.status !== 3" link type="primary" @click="doReply(s.row)">回复登记</el-button>',
       '          <el-button v-if="s.row.status !== 1" link type="warning" @click="doResend(s.row)">重发</el-button>',
       '          <span v-if="s.row.status === 3" style="font-size:12px;color:var(--yb-ink-3)">已回复</span>',
@@ -319,6 +329,8 @@
       ntLabel: function (v) { return NOTIFY_TYPE[v] || orDash(v); },
       nsLabel: function (v) { return NOTIFY_STATUS[v] || orDash(v); },
       nsTag: function (v) { return NOTIFY_STATUS_TYPE[v] || 'info'; },
+      ssLabel: function (v) { return SEND_STATUS[v == null ? 0 : v] || '待提交'; },
+      ssTag: function (v) { return SEND_STATUS_TYPE[v == null ? 0 : v] || 'info'; },
       chLabel: function (v) { return NOTIFY_CHANNEL[v] || orDash(v); },
       asaStatusLabel: asaStatusLabel, stTag: stTag,
       candLabel: function (c) { return c.staff_name + (c.allowed ? '' : '（无权限）'); },
@@ -528,6 +540,16 @@
           .then(function () { return HIS.post('/api/his/surgery-apply/notify/' + row.id + '/resend'); })
           .then(function () { HIS.notifySuccess('已重发'); vm.nLoad(); })
           .catch(function (e) { if (!isCancel(e)) { HIS.notifyError(e); } });
+      },
+      /* 手麻P4a: 送达回查(取网关回执调通道查最终送达, 回填 send_status/delivered_time/error_msg) */
+      doQueryDelivery: function (row) {
+        var vm = this;
+        HIS.post('/api/his/surgery-apply/notify/' + row.id + '/query-delivery').then(function (d) {
+          var ss = d && d.sendStatus;
+          var tip = ss === 2 ? '送达确认: 已送达' : (ss === 3 ? '送达确认: 失败(' + (d && d.errorMsg || '未知') + ')' : '通道无回查结果, 状态未变');
+          HIS.notifySuccess(tip);
+          vm.nLoad();
+        }).catch(function (e) { HIS.notifyError(e); });
       },
       /* 手麻P2c: 手动批量生成术前提醒(幂等去重), 对已安排且临近排期手术产 notify_type=3 记录 */
       doPreOp: function () {

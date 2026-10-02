@@ -1291,7 +1291,8 @@
     mixins: [surgMixin],
     components: {
       'anesthesia-record': HIS.views.AnesthesiaRecord,
-      'surgery-fee': HIS.views.SurgeryFee
+      'surgery-fee': HIS.views.SurgeryFee,
+      'inp-order-panel': HIS.components.InpOrderPanel
     },
     template: [
       '<div class="surg-manage">',
@@ -1410,7 +1411,8 @@
       '        </template>',
       '        <template v-else>',
       '          <el-date-picker v-model="boardDate" type="date" size="small" value-format="YYYY-MM-DD" :clearable="false" style="width:130px" @change="loadRoomBoard"></el-date-picker>',
-      '          <span style="font-size:12px;color:var(--yb-ink-3)">拖拽手术卡片到其他手术间列即改排(reschedule), 时间冲突后端拒绝并提示</span>',
+      '          <el-select v-model="boardModuleType" clearable placeholder="模块/机房类型" size="small" style="width:140px" @change="loadRoomBoard"><el-option v-for="o in moduleOpts" :key="o.value" :label="o.label" :value="o.value"></el-option></el-select>',
+      '          <span style="font-size:12px;color:var(--yb-ink-3)">拖拽手术卡片到其他手术间列即改排(reschedule), 时间冲突后端拒绝并提示; 选模块可切换至DSA机房/内镜室/产房分列</span>',
       '        </template>',
       '        <el-button type="primary" size="small" @click="refreshArranged">查询</el-button>',
       '      </div>',
@@ -1742,6 +1744,23 @@
       '        <el-col :span="12"><el-form-item label="麻醉医师"><el-select v-model="schedForm.anesthesiologistId" filterable clearable placeholder="选择医师" style="width:100%"><el-option v-for="s in doctors" :key="s.id" :label="staffLabel(s)" :value="s.id"></el-option></el-select></el-form-item></el-col>',
       '        <el-col :span="12"><el-form-item label="器械护士"><el-select v-model="schedForm.instrumentNurseId" filterable clearable placeholder="选择护士" style="width:100%"><el-option v-for="s in nurses" :key="s.id" :label="staffLabel(s)" :value="s.id"></el-option></el-select></el-form-item></el-col>',
       '        <el-col :span="12"><el-form-item label="巡回护士"><el-select v-model="schedForm.circulatingNurseId" filterable clearable placeholder="选择护士" style="width:100%"><el-option v-for="s in nurses" :key="s.id" :label="staffLabel(s)" :value="s.id"></el-option></el-select></el-form-item></el-col>',
+      '        <el-col :span="12"><el-form-item label="一体化模块">',
+      '          <el-select v-model="schedForm.moduleType" style="width:100%" @change="onSchedModule"><el-option v-for="o in moduleOpts" :key="o.value" :label="o.label" :value="o.value"></el-option></el-select>',
+      '        </el-form-item></el-col>',
+      '      </el-row>',
+      /* 手麻P4b: 按一体化模块切换专属字段区(DSA/内镜/产科), 旁挂 his_surgery_module_ext */
+      '      <el-row :gutter="16" v-if="schedForm.moduleType === 2">',
+      '        <el-col :span="8"><el-form-item label="DSA设备"><el-input v-model="schedForm.dsaEquipment" maxlength="50" placeholder="设备/机房型号"></el-input></el-form-item></el-col>',
+      '        <el-col :span="8"><el-form-item label="对比剂"><el-input v-model="schedForm.dsaContrast" maxlength="100" placeholder="名称/用量"></el-input></el-form-item></el-col>',
+      '        <el-col :span="8"><el-form-item label="辐射剂量"><el-input-number v-model="schedForm.dsaRadiationDose" :min="0" :precision="2" :step="1" controls-position="right" style="width:100%"></el-input-number></el-form-item></el-col>',
+      '      </el-row>',
+      '      <el-row :gutter="16" v-if="schedForm.moduleType === 4">',
+      '        <el-col :span="12"><el-form-item label="内镜镜种"><el-input v-model="schedForm.endoScopeType" maxlength="50" placeholder="胃镜/肠镜/支气管镜等"></el-input></el-form-item></el-col>',
+      '        <el-col :span="12"><el-form-item label="活检数"><el-input-number v-model="schedForm.endoBiopsyCnt" :min="0" :max="999" controls-position="right" style="width:100%"></el-input-number></el-form-item></el-col>',
+      '      </el-row>',
+      '      <el-row :gutter="16" v-if="schedForm.moduleType === 3">',
+      '        <el-col :span="12"><el-form-item label="孕周"><el-input v-model="schedForm.obstGestationalWeek" maxlength="20" placeholder="如 39+2周"></el-input></el-form-item></el-col>',
+      '        <el-col :span="12"><el-form-item label="分娩方式"><el-select v-model="schedForm.obstBirthType" clearable placeholder="选择方式" style="width:100%"><el-option v-for="o in birthTypeOpts" :key="o.value" :label="o.label" :value="o.value"></el-option></el-select></el-form-item></el-col>',
       '      </el-row>',
       '    </el-form>',
       '    <template #footer>',
@@ -1802,6 +1821,18 @@
       '          <el-descriptions-item label="开始时间">{{ fmtDT(detail.surgery.startTime) }}</el-descriptions-item>',
       '          <el-descriptions-item label="结束时间">{{ fmtDT(detail.surgery.endTime) }}</el-descriptions-item>',
       '        </el-descriptions>',
+      '        <template v-if="detail.moduleExt">',
+      '          <div class="surg-section-title" style="margin-top:14px">一体化专属字段（{{ moduleLabel(detail.surgery.moduleType) }}）</div>',
+      '          <el-descriptions :column="2" border size="small">',
+      '            <el-descriptions-item v-if="detail.moduleExt.dsaEquipment" label="DSA设备">{{ detail.moduleExt.dsaEquipment }}</el-descriptions-item>',
+      '            <el-descriptions-item v-if="detail.moduleExt.dsaContrast" label="对比剂">{{ detail.moduleExt.dsaContrast }}</el-descriptions-item>',
+      '            <el-descriptions-item v-if="detail.moduleExt.dsaRadiationDose != null" label="辐射剂量">{{ detail.moduleExt.dsaRadiationDose }}</el-descriptions-item>',
+      '            <el-descriptions-item v-if="detail.moduleExt.endoScopeType" label="内镜镜种">{{ detail.moduleExt.endoScopeType }}</el-descriptions-item>',
+      '            <el-descriptions-item v-if="detail.moduleExt.endoBiopsyCnt != null" label="活检数">{{ detail.moduleExt.endoBiopsyCnt }}</el-descriptions-item>',
+      '            <el-descriptions-item v-if="detail.moduleExt.obstGestationalWeek" label="孕周">{{ detail.moduleExt.obstGestationalWeek }}</el-descriptions-item>',
+      '            <el-descriptions-item v-if="detail.moduleExt.obstBirthType != null" label="分娩方式">{{ birthTypeLabel(detail.moduleExt.obstBirthType) }}</el-descriptions-item>',
+      '          </el-descriptions>',
+      '        </template>',
       '        <div class="surg-section-title" style="margin-top:14px">手术团队</div>',
       '        <el-descriptions :column="2" border size="small">',
       '          <el-descriptions-item label="主刀医师">{{ teamName("surgeon") }}</el-descriptions-item>',
@@ -1848,7 +1879,10 @@
       '          <el-table-column label="身长(cm)" width="76" align="center"><template #default="s">{{ orDash(s.row.height_cm) }}</template></el-table-column>',
       '          <el-table-column label="分娩方式" width="80" align="center"><template #default="s">{{ birthTypeLabel(s.row.birth_type) }}</template></el-table-column>',
       '          <el-table-column label="住院号" width="110"><template #default="s">{{ orDash(s.row.baby_inp_no) }}</template></el-table-column>',
+      '          <el-table-column label="母亲住院号" width="120"><template #default="s">{{ orDash(s.row.mother_inp_no) }}</template></el-table-column>',
+      '          <el-table-column label="母亲床号" width="80" align="center"><template #default="s">{{ orDash(s.row.mother_bed_no) }}</template></el-table-column>',
       '          <el-table-column label="状态" width="72" align="center"><template #default="s"><el-tag size="small" :type="newbornStatusTag(s.row.status)">{{ newbornStatusLabel(s.row.status) }}</el-tag></template></el-table-column>',
+      '          <el-table-column label="操作" width="84" align="center" fixed="right"><template #default="s"><el-button v-if="s.row.baby_inp_visit_id && s.row.status !== 3" link type="primary" size="small" @click="openNewbornOrder(s.row)">开医嘱</el-button><span v-else>-</span></template></el-table-column>',
       '        </el-table>',
       '        <div class="surg-section-title" style="margin-top:14px">',
       '          <span>PACU 复苏</span>',
@@ -1934,6 +1968,29 @@
       '      <el-button size="small" type="primary" :loading="nbSaving" @click="submitNewborn">建档</el-button>',
       '    </template>',
       '  </el-dialog>',
+      /* ================= 手麻P4c: 新生儿开医嘱抽屉(复用住院医嘱面板 + 体重/日龄上下文 + mg/kg换算) ================= */
+      '  <el-drawer v-model="nbOrderVisible" :title="nbOrderTitle" size="1180px" :destroy-on-close="true" append-to-body>',
+      '    <div v-loading="nbOrderCtxLoading" class="surg-info" style="margin-bottom:10px;display:flex;flex-wrap:wrap;gap:14px;align-items:center">',
+      '      <span>体重: <b>{{ nbOrderCtx && nbOrderCtx.weightG != null ? nbOrderCtx.weightG + " g" : "未记录" }}</b><span v-if="nbOrderCtx && nbOrderCtx.weightKg != null"> ({{ nbOrderCtx.weightKg }} kg)</span></span>',
+      '      <span>日龄: <b>{{ nbOrderCtx ? (nbOrderCtx.ageText || orDash(nbOrderCtx.ageDay)) : "-" }}</b></span>',
+      '      <span>性别: <b>{{ nbOrderCtx ? orDash(nbOrderCtx.babySexName) : "-" }}</b></span>',
+      '      <span>母亲住院号: <b>{{ nbOrderCtx ? orDash(nbOrderCtx.motherInpNo) : "-" }}</b></span>',
+      '      <span>母亲床号: <b>{{ nbOrderCtx ? orDash(nbOrderCtx.motherBedNo) : "-" }}</b></span>',
+      '      <el-tag v-if="nbOrderCtx && !nbOrderCtx.hasWeight" size="small" type="warning">无体重·开立药品医嘱将提示补录</el-tag>',
+      '    </div>',
+      '    <div style="margin-bottom:10px;padding:8px 10px;border:1px dashed var(--yb-line,#ddd);border-radius:6px;display:flex;flex-wrap:wrap;gap:8px;align-items:center">',
+      '      <span style="font-size:13px;color:var(--yb-ink-2)">剂量换算(按体重 mg/kg·ml/kg):</span>',
+      '      <el-input-number v-model="nbDose.qty" :min="0" :controls="false" size="small" style="width:110px" placeholder="单次总量"></el-input-number>',
+      '      <el-select v-model="nbDose.unit" size="small" style="width:80px"><el-option label="mg" value="mg"></el-option><el-option label="ml" value="ml"></el-option></el-select>',
+      '      <el-button size="small" :loading="nbDoseLoading" :disabled="nbDose.qty == null" @click="doDoseHint">换算</el-button>',
+      '      <span v-if="nbDoseResult" style="font-size:13px">',
+      '        <b v-if="nbDoseResult.perKg != null" style="color:var(--yb-brand,#2a6)">{{ nbDoseResult.qty }} {{ nbDoseResult.unit }} ≈ {{ nbDoseResult.perKg }} {{ nbDoseResult.perKgUnit }}</b>',
+      '        <span v-else style="color:var(--yb-ink-3)">{{ nbDoseResult.message }}</span>',
+      '      </span>',
+      '      <span style="font-size:12px;color:var(--yb-ink-3)">(仅单位换算展示, 系统无剂量字典不做医疗拦截)</span>',
+      '    </div>',
+      '    <inp-order-panel v-if="nbOrderVisible && nbOrderVisitId" :visit-id="nbOrderVisitId" :key="\'nbod-\' + nbOrderVisitId"></inp-order-panel>',
+      '  </el-drawer>',
       /* ================= 手麻P3b: PACU 入复苏 / 体征登记 / 出复苏 ================= */
       '  <el-dialog v-model="pacuAdmitVisible" title="入复苏(PACU)" width="460px" :close-on-click-modal="false" append-to-body>',
       '    <div class="surg-info" style="margin-bottom:8px">仅已结束手术(术后状态)且无在途复苏单可入复苏。</div>',
@@ -2027,7 +2084,7 @@
         finFilters: { dateRange: [], visitType: null, kw: '' },
         anesRows: [], anesLoading: false,
         regKw: '', regRows: [], regSel: null,
-        rb: { date: '', total: 0, rooms: [] }, rbLoading: false, boardDate: today(),
+        rb: { date: '', total: 0, rooms: [] }, rbLoading: false, boardDate: today(), boardModuleType: null,
         dragCard: null, dragOverRoom: '',
         schedApplyVisible: false, schedUrgent: false, schedApplyRow: null, schedApplyTitle: '',
         schedForm: { scheduleDate: '', scheduleTime: '', roomNo: '', surgeonId: null, anesthesiologistId: null, instrumentNurseId: null, circulatingNurseId: null },
@@ -2049,6 +2106,10 @@
         tplPick: { templateId: null, orderPhase: 2 },
         /* ===== 手麻P2d: 新生儿建档(分娩联动) ===== */
         nbGuide: null, nbList: [], nbLoading: false, nbDlgVisible: false, nbSaving: false, nbForm: blankNewbornForm(),
+        /* ===== 手麻P4c: 新生儿开医嘱(复用住院医嘱链 + 体重/日龄上下文 + mg/kg换算) ===== */
+        nbOrderVisible: false, nbOrderVisitId: null, nbOrderName: '',
+        nbOrderCtx: null, nbOrderCtxLoading: false,
+        nbDose: { qty: null, unit: 'mg' }, nbDoseResult: null, nbDoseLoading: false,
         /* ===== 手麻P3b: 复苏(PACU) ===== */
         pacuRows: [], pacuTotal: 0, pacuP: 1, pacuSize: 20, pacuLoading: false,
         pacuFilters: { status: null, kw: '' },
@@ -2062,6 +2123,8 @@
     },
     computed: {
       dlgTitle: function () { return this.editId ? '编辑手术' : '新增手术'; },
+      /* 手麻P4c: 新生儿开医嘱抽屉标题 */
+      nbOrderTitle: function () { return this.nbOrderName ? ('新生儿开医嘱 · ' + this.nbOrderName) : '新生儿开医嘱'; },
       /* 本页关键字过滤(列表接口无 keyword 参数) */
       filteredRows: function () {
         var kw = (this.filters.kw || '').trim().toLowerCase();
@@ -2140,9 +2203,11 @@
           vm.boardLoading = false;
         }).catch(function (e) { vm.boardLoading = false; HIS.notifyError(e); });
       },
-      loadRooms: function () {
+      loadRooms: function (moduleType) {
         var vm = this;
-        HIS.get('/api/his/surgery/room/list').then(function (l) { vm.rooms = l || []; }).catch(function () { });
+        var q = '/api/his/surgery/room/list';
+        if (moduleType) { q += '?moduleType=' + moduleType; }
+        HIS.get(q).then(function (l) { vm.rooms = l || []; }).catch(function () { });
       },
       loadRefs: function () {
         var vm = this;
@@ -2698,6 +2763,35 @@
           .catch(function (e) { HIS.notifyError(e); })
           .finally(function () { vm.nbSaving = false; });
       },
+      /* ===== 手麻P4c: 新生儿开医嘱(体重/日龄上下文 + mg/kg换算 + 复用住院医嘱面板) ===== */
+      openNewbornOrder: function (row) {
+        this.nbOrderVisitId = row.baby_inp_visit_id;
+        this.nbOrderName = row.baby_name || '';
+        this.nbOrderCtx = null;
+        this.nbDose = { qty: null, unit: 'mg' };
+        this.nbDoseResult = null;
+        this.nbOrderVisible = true;
+        this.loadNewbornCtx(row.baby_inp_visit_id);
+      },
+      loadNewbornCtx: function (visitId) {
+        var vm = this;
+        if (!visitId) { return; }
+        vm.nbOrderCtxLoading = true;
+        HIS.get('/api/his/newborn/order-context?babyInpVisitId=' + HIS.idParam(visitId))
+          .then(function (c) { vm.nbOrderCtx = c || null; })
+          .catch(function (e) { vm.nbOrderCtx = null; HIS.notifyError(e); })
+          .finally(function () { vm.nbOrderCtxLoading = false; });
+      },
+      doDoseHint: function () {
+        var vm = this;
+        if (!vm.nbOrderVisitId || vm.nbDose.qty == null || vm.nbDose.qty === '') { return; }
+        vm.nbDoseLoading = true; vm.nbDoseResult = null;
+        HIS.get('/api/his/newborn/dose-hint?babyInpVisitId=' + HIS.idParam(vm.nbOrderVisitId)
+            + '&qty=' + encodeURIComponent(vm.nbDose.qty) + '&unit=' + encodeURIComponent(vm.nbDose.unit || 'mg'))
+          .then(function (r) { vm.nbDoseResult = r || null; })
+          .catch(function (e) { HIS.notifyError(e); })
+          .finally(function () { vm.nbDoseLoading = false; });
+      },
       openAne: function (id) { this.aneSid = id; this.aneVisible = true; },
       openFee: function (id) { this.feeSid = id; this.feeVisible = true; },
       /* ==================== 手麻P0 ==================== */
@@ -2730,18 +2824,28 @@
           + '（' + levelLabel(row.surgery_level) + '　拟主刀: ' + orDash(row.surgeon_name) + '）';
         this.schedForm = {
           scheduleDate: row.expect_time ? String(row.expect_time).replace('T', ' ').slice(0, 10) : today(),
-          scheduleTime: '', roomNo: '',
-          surgeonId: row.surgeon_id || null, anesthesiologistId: null, instrumentNurseId: null, circulatingNurseId: null
+          scheduleTime: '', roomNo: '', moduleType: 1,
+          surgeonId: row.surgeon_id || null, anesthesiologistId: null, instrumentNurseId: null, circulatingNurseId: null,
+          dsaEquipment: '', dsaContrast: '', dsaRadiationDose: null, endoScopeType: '', endoBiopsyCnt: null,
+          obstGestationalWeek: '', obstBirthType: null
         };
+        this.loadRooms(1);
         this.schedApplyVisible = true;
       },
       openUrgent: function () {
         this.schedUrgent = true;
         this.schedApplyRow = null;
         this.urgForm = { visitType: 1, inpVisitId: null, visitId: null, surgeryCode: '', surgeryName: '', surgeryLevel: null, anesthesiaType: null, expectTime: '', preOpDiag: '' };
-        this.schedForm = { scheduleDate: today(), scheduleTime: '', roomNo: '', surgeonId: null, anesthesiologistId: null, instrumentNurseId: null, circulatingNurseId: null };
+        this.schedForm = { scheduleDate: today(), scheduleTime: '', roomNo: '', moduleType: 1, surgeonId: null, anesthesiologistId: null, instrumentNurseId: null, circulatingNurseId: null,
+          dsaEquipment: '', dsaContrast: '', dsaRadiationDose: null, endoScopeType: '', endoBiopsyCnt: null, obstGestationalWeek: '', obstBirthType: null };
+        this.loadRooms(1);
         this.schedApplyVisible = true;
         this.searchPatients('');
+      },
+      /* 手麻P4b: 排程对话框切换一体化模块时按资源类型重载手术间候选 */
+      onSchedModule: function (mt) {
+        this.schedForm.roomNo = '';
+        this.loadRooms(mt);
       },
       searchOutpVisits: function (kw) {
         var vm = this;
@@ -2761,8 +2865,12 @@
         var f = this.schedForm;
         return {
           scheduleDate: f.scheduleDate, scheduleTime: f.scheduleTime, roomNo: f.roomNo,
+          moduleType: f.moduleType || 1,
           surgeonId: f.surgeonId, anesthesiologistId: f.anesthesiologistId,
-          instrumentNurseId: f.instrumentNurseId, circulatingNurseId: f.circulatingNurseId
+          instrumentNurseId: f.instrumentNurseId, circulatingNurseId: f.circulatingNurseId,
+          dsaEquipment: f.dsaEquipment || null, dsaContrast: f.dsaContrast || null, dsaRadiationDose: f.dsaRadiationDose,
+          endoScopeType: f.endoScopeType || null, endoBiopsyCnt: f.endoBiopsyCnt,
+          obstGestationalWeek: f.obstGestationalWeek || null, obstBirthType: f.obstBirthType
         };
       },
       submitSchedApply: function () {
@@ -2826,6 +2934,7 @@
         var vm = this;
         vm.rbLoading = true;
         var q = '/api/his/surgery/room-board?date=' + (vm.boardDate || today());
+        if (vm.boardModuleType) { q += '&moduleType=' + vm.boardModuleType; }
         HIS.get(q).then(function (d) {
           vm.rb = d || { date: '', total: 0, rooms: [] };
           vm.rbLoading = false;

@@ -113,6 +113,12 @@ public class SurgeryApplyController {
         return R.ok(applyService.notifyResend(id));
     }
 
+    /** 送达回查(P4a): 取网关回执调通道查最终送达, 回填 send_status/delivered_time/error_msg */
+    @PostMapping("/notify/{id}/query-delivery")
+    public R<HisSurgeryNotify> notifyQueryDelivery(@PathVariable Long id) {
+        return R.ok(applyService.queryDelivery(id));
+    }
+
     /** 术前提醒批量生成(手动触发, 幂等去重): 对已安排且临近排期手术产 notify_type=3 记录, 返回新增条数 */
     @PostMapping("/notify/pre-op")
     public R<Integer> notifyPreOp(@RequestParam(defaultValue = "24") int beforeHours) {

@@ -48,4 +48,10 @@ public class HisSurgeryNotify extends BaseEntity {
     private Integer retryCount;
     /** 短信/APP网关回执ID(真实通道回填, P2c) */
     private String gatewayMsgId;
+    /** 下发送达状态: 0待提交 1已提交网关 2已送达 3送达失败(P4a) */
+    private Integer sendStatus;
+    /** 送达时间(P4a 回查回填) */
+    private LocalDateTime deliveredTime;
+    /** 下发/送达失败原因(P4a) */
+    private String errorMsg;
 }

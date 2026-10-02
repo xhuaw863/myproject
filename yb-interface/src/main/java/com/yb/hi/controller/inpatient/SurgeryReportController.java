@@ -75,6 +75,13 @@ public class SurgeryReportController {
         return reportService.dashboard(q, guard.scopeOrgId(orgId));
     }
 
+    /** 设备/机房利用率(P4b): 按手术间/资源类型统计开机台次/占用时长/利用率(moduleType 可选限定一体化模块) */
+    @GetMapping("/device-utilization")
+    public R<Map<String, Object>> deviceUtilization(SurgeryReportQueryDTO q,
+                                                    @RequestParam(required = false) Long orgId) {
+        return reportService.deviceUtilization(q, guard.scopeOrgId(orgId));
+    }
+
     /** 报表快照落盘(按类型重算后存 his_inp_report_snapshot, report_type 6-11; date 缺省今天)。 */
     @PostMapping("/{type}/snapshot")
     public R<Void> snapshot(@PathVariable String type, SurgeryReportQueryDTO q,
@@ -108,6 +115,11 @@ public class SurgeryReportController {
             case "dashboard":
                 data = reportService.dashboard(q, scoped);
                 rt = SurgeryReportService.RT_DASHBOARD;
+                break;
+            case "device":
+            case "device-utilization":
+                data = reportService.deviceUtilization(q, scoped);
+                rt = SurgeryReportService.RT_DEVICE;
                 break;
             default:
                 throw new BizException(400, "未知报表类型: " + type);

@@ -19,10 +19,13 @@ import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.StringUtils;
 
 import java.math.BigDecimal;
+import java.math.RoundingMode;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
+import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -135,10 +138,13 @@ public class NewbornService {
                 "SELECT n.id, n.org_id, n.mother_inp_visit_id, n.surgery_id, n.baby_patient_id, n.baby_inp_visit_id,"
                         + " n.baby_name, n.baby_sex, n.birth_time, n.apgar_1, n.apgar_5, n.apgar_10,"
                         + " n.weight_g, n.height_cm, n.birth_type, n.status, n.remark,"
-                        + " v.inp_no baby_inp_no, p.patient_no baby_patient_no"
+                        + " v.inp_no baby_inp_no, p.patient_no baby_patient_no,"
+                        + " mv.inp_no mother_inp_no, mb.bed_no mother_bed_no"
                         + " FROM his_newborn n"
                         + " LEFT JOIN his_inp_visit v ON v.id = n.baby_inp_visit_id AND v.deleted = 0"
                         + " LEFT JOIN his_patient p ON p.id = n.baby_patient_id AND p.deleted = 0"
+                        + " LEFT JOIN his_inp_visit mv ON mv.id = n.mother_inp_visit_id AND mv.deleted = 0"
+                        + " LEFT JOIN his_bed mb ON mb.id = mv.bed_id AND mb.deleted = 0"
                         + " WHERE n.deleted = 0 AND n.tenant_id = ? AND n.mother_inp_visit_id = ?");
         List<Object> args = new ArrayList<>();
         args.add(tenantId());
@@ -155,6 +161,138 @@ public class NewbornService {
     /** 新生儿建档详情。 */
     public HisNewborn detail(Long id) {
         return requireNewborn(id);
+    }
+
+    /**
+     * 手麻P4c 新生儿开嘱上下文: 按新生儿住院就诊ID回带体重/日龄/性别/母亲住院号与床号,
+     * 供医嘱开立面板展示与按 mg/kg 核算。日龄以出生时间→当下推算(天)。
+     */
+    public Map<String, Object> orderContext(Long babyInpVisitId) {
+        if (babyInpVisitId == null) {
+            throw new BizException(400, "新生儿住院就诊ID不能为空");
+        }
+        List<Map<String, Object>> rows = jdbcTemplate.queryForList(
+                "SELECT n.id newborn_id, n.org_id, n.baby_name, n.baby_sex, n.birth_time, n.weight_g, n.height_cm, n.status,"
+                        + " mv.inp_no mother_inp_no, b.bed_no mother_bed_no"
+                        + " FROM his_newborn n"
+                        + " LEFT JOIN his_inp_visit mv ON mv.id = n.mother_inp_visit_id AND mv.deleted = 0"
+                        + " LEFT JOIN his_bed b ON b.id = mv.bed_id AND b.deleted = 0"
+                        + " WHERE n.deleted = 0 AND n.tenant_id = ? AND n.baby_inp_visit_id = ?",
+                tenantId(), babyInpVisitId);
+        if (rows.isEmpty()) {
+            throw new BizException(404, "未找到该新生儿住院就诊对应的建档记录");
+        }
+        Map<String, Object> r = rows.get(0);
+        Long orgId = toLong(r.get("org_id"));
+        Long scope = guard.scopeOrgId(orgId);
+        if (scope == null || !scope.equals(orgId)) {
+            throw new BizException(403, "无权访问其他机构的新生儿数据");
+        }
+        LocalDateTime birthTime = toDateTime(r.get("birth_time"));
+        Integer weightG = toInt(r.get("weight_g"));
+        Map<String, Object> ctx = new LinkedHashMap<>();
+        ctx.put("babyInpVisitId", babyInpVisitId);
+        ctx.put("newbornId", toLong(r.get("newborn_id")));
+        ctx.put("babyName", str(r.get("baby_name")));
+        ctx.put("babySex", toInt(r.get("baby_sex")));
+        ctx.put("babySexName", sexName(toInt(r.get("baby_sex"))));
+        ctx.put("birthTime", birthTime);
+        ctx.put("ageDay", birthTime == null ? null : ChronoUnit.DAYS.between(birthTime.toLocalDate(), LocalDate.now()));
+        ctx.put("ageText", ageDaysText(birthTime));
+        ctx.put("weightG", weightG);
+        ctx.put("weightKg", weightG == null ? null : BigDecimal.valueOf(weightG).divide(BigDecimal.valueOf(1000), 3, RoundingMode.HALF_UP));
+        ctx.put("hasWeight", weightG != null && weightG > 0);
+        ctx.put("heightCm", r.get("height_cm"));
+        ctx.put("status", toInt(r.get("status")));
+        ctx.put("motherInpNo", str(r.get("mother_inp_no")));
+        ctx.put("motherBedNo", str(r.get("mother_bed_no")));
+        return ctx;
+    }
+
+    /**
+     * 手麻P4c 新生儿剂量换算提示(诚实边界): 仅按体重做纯 mg/kg 或 ml/kg 单位换算展示,
+     * 系统无新生儿剂量字典, 不做任何医疗拦截或安全阀判断。qty 为单次总量, unit 取 mg 或 ml。
+     */
+    public Map<String, Object> doseHint(Long babyInpVisitId, BigDecimal qty, String unit) {
+        if (babyInpVisitId == null) {
+            throw new BizException(400, "新生儿住院就诊ID不能为空");
+        }
+        Map<String, Object> out = new LinkedHashMap<>();
+        out.put("qty", qty);
+        String u = unit == null ? "" : unit.trim().toLowerCase();
+        out.put("unit", u);
+        boolean convertible = "mg".equals(u) || "ml".equals(u);
+        out.put("convertible", convertible);
+        out.put("perKgUnit", convertible ? ("mg".equals(u) ? "mg/kg" : "ml/kg") : null);
+        HisNewborn nb = requireNewbornByBabyVisit(babyInpVisitId);
+        Integer weightG = nb == null ? null : nb.getWeightG();
+        boolean hasWeight = weightG != null && weightG > 0;
+        out.put("hasWeight", hasWeight);
+        out.put("weightG", weightG);
+        if (!hasWeight) {
+            out.put("perKg", null);
+            out.put("message", "未记录新生儿体重, 无法换算(请先补录体重)");
+            return out;
+        }
+        BigDecimal weightKg = BigDecimal.valueOf(weightG).divide(BigDecimal.valueOf(1000), 3, RoundingMode.HALF_UP);
+        out.put("weightKg", weightKg);
+        if (!convertible || qty == null || qty.compareTo(BigDecimal.ZERO) <= 0) {
+            out.put("perKg", null);
+            out.put("message", convertible ? "单次总量需为正数" : "仅支持 mg 或 ml 单位换算");
+            return out;
+        }
+        BigDecimal perKg = qty.divide(weightKg, 2, RoundingMode.HALF_UP);
+        out.put("perKg", perKg);
+        out.put("message", null);
+        return out;
+    }
+
+    /** 按新生儿住院就诊ID取建档(含机构隔离); 不存在返回 null。 */
+    private HisNewborn requireNewbornByBabyVisit(Long babyInpVisitId) {
+        HisNewborn nb = newbornMapper.selectOne(new LambdaQueryWrapper<HisNewborn>()
+                .eq(HisNewborn::getBabyInpVisitId, babyInpVisitId)
+                .last("LIMIT 1"));
+        if (nb == null) {
+            return null;
+        }
+        Long scope = guard.scopeOrgId(nb.getOrgId());
+        if (scope == null || !scope.equals(nb.getOrgId())) {
+            throw new BizException(403, "无权访问其他机构的新生儿数据");
+        }
+        return nb;
+    }
+
+    private static String sexName(Integer sex) {
+        if (sex == null) {
+            return null;
+        }
+        return sex == 2 ? "女" : (sex == 1 ? "男" : null);
+    }
+
+    /** 日龄可读文本: <1天按小时, 其余按天。 */
+    private static String ageDaysText(LocalDateTime birthTime) {
+        if (birthTime == null) {
+            return null;
+        }
+        long days = ChronoUnit.DAYS.between(birthTime.toLocalDate(), LocalDate.now());
+        if (days <= 0) {
+            long hours = ChronoUnit.HOURS.between(birthTime, LocalDateTime.now());
+            return Math.max(hours, 0) + " 小时";
+        }
+        return days + " 天";
+    }
+
+    private static LocalDateTime toDateTime(Object v) {
+        if (v == null) {
+            return null;
+        }
+        if (v instanceof LocalDateTime) {
+            return (LocalDateTime) v;
+        }
+        if (v instanceof java.sql.Timestamp) {
+            return ((java.sql.Timestamp) v).toLocalDateTime();
+        }
+        return null;
     }
 
     /** 补录新生儿信息(姓名/Apgar/体重/身长/分娩方式/备注): 仅未出院(status<>3)可改。 */

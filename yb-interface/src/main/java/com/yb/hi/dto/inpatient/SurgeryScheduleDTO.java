@@ -3,6 +3,7 @@ package com.yb.hi.dto.inpatient;
 import com.fasterxml.jackson.annotation.JsonFormat;
 import lombok.Data;
 
+import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 
@@ -56,4 +57,19 @@ public class SurgeryScheduleDTO {
     private LocalDateTime expectTime;
     /** 术前诊断(急诊直排留档) */
     private String preOpDiag;
+    /* ---------- 手麻P4b: 一体化专属字段(module_type 2/3/4 采集, 旁挂 his_surgery_module_ext) ---------- */
+    /** DSA: 设备/机房 */
+    private String dsaEquipment;
+    /** DSA: 对比剂 */
+    private String dsaContrast;
+    /** DSA: 辐射剂量 */
+    private BigDecimal dsaRadiationDose;
+    /** 内镜: 镜种 */
+    private String endoScopeType;
+    /** 内镜: 活检数 */
+    private Integer endoBiopsyCnt;
+    /** 产科: 孕周 */
+    private String obstGestationalWeek;
+    /** 产科: 分娩方式 */
+    private Integer obstBirthType;
 }

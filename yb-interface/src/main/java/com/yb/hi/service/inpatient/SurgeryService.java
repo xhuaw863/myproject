@@ -1,6 +1,7 @@
 package com.yb.hi.service.inpatient;
 
 import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
+import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.core.metadata.IPage;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.yb.hi.dto.inpatient.SurgeryDTO;
@@ -8,12 +9,16 @@ import com.yb.hi.dto.inpatient.SurgeryScheduleDTO;
 import com.yb.hi.entity.inpatient.HisInpVisit;
 import com.yb.hi.entity.inpatient.HisSurgery;
 import com.yb.hi.entity.inpatient.HisSurgeryApply;
+import com.yb.hi.entity.inpatient.HisSurgeryModuleExt;
+import com.yb.hi.entity.inpatient.HisSurgeryRoom;
 import com.yb.hi.framework.common.BizException;
 import com.yb.hi.framework.tenant.LoginUser;
 import com.yb.hi.framework.tenant.TenantContext;
 import com.yb.hi.framework.tenant.UserContext;
 import com.yb.hi.mapper.inpatient.HisInpVisitMapper;
 import com.yb.hi.mapper.inpatient.HisSurgeryMapper;
+import com.yb.hi.mapper.inpatient.HisSurgeryModuleExtMapper;
+import com.yb.hi.mapper.inpatient.HisSurgeryRoomMapper;
 import com.yb.hi.platform.service.OrgAccessGuard;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -25,10 +30,12 @@ import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.LocalTime;
 import java.time.format.DateTimeFormatter;
+import java.math.BigDecimal;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -59,11 +66,14 @@ public class SurgeryService {
     private final SurgeryApplyService applyService;
     private final SurgeryAuthRuleService authRuleService;
     private final PacuService pacuService;
+    private final HisSurgeryRoomMapper roomMapper;
+    private final HisSurgeryModuleExtMapper moduleExtMapper;
 
     public SurgeryService(HisSurgeryMapper surgeryMapper, HisInpVisitMapper visitMapper,
                           OrgAccessGuard guard, JdbcTemplate jdbcTemplate,
                           SurgeryApplyService applyService, SurgeryAuthRuleService authRuleService,
-                          PacuService pacuService) {
+                          PacuService pacuService, HisSurgeryRoomMapper roomMapper,
+                          HisSurgeryModuleExtMapper moduleExtMapper) {
         this.surgeryMapper = surgeryMapper;
         this.visitMapper = visitMapper;
         this.guard = guard;
@@ -71,6 +81,8 @@ public class SurgeryService {
         this.applyService = applyService;
         this.authRuleService = authRuleService;
         this.pacuService = pacuService;
+        this.roomMapper = roomMapper;
+        this.moduleExtMapper = moduleExtMapper;
     }
 
     /* ==================== 查询 ==================== */
@@ -201,6 +213,10 @@ public class SurgeryService {
         } else {
             detail.put("deptName", null);
         }
+        // 手麻P4b: 一体化专属字段(DSA/内镜/产科)旁挂回带(无则 fastjson2 裁剪为 undefined)
+        HisSurgeryModuleExt ext = moduleExtMapper.selectOne(new LambdaQueryWrapper<HisSurgeryModuleExt>()
+                .eq(HisSurgeryModuleExt::getSurgeryId, id).last("LIMIT 1"));
+        detail.put("moduleExt", ext);
         return detail;
     }
 
@@ -239,6 +255,10 @@ public class SurgeryService {
         s.setApprovalStatus(dto.getSurgeryLevel() != null && dto.getSurgeryLevel() >= 3 ? 1 : 0);
         s.setStatus(1);
         surgeryMapper.insert(s);
+        upsertModuleExt(s.getId(), orgId, s.getModuleType(),
+                dto.getDsaEquipment(), dto.getDsaContrast(), dto.getDsaRadiationDose(),
+                dto.getEndoScopeType(), dto.getEndoBiopsyCnt(),
+                dto.getObstGestationalWeek(), dto.getObstBirthType());
         log.info("手术申请创建: id={}, visitId={}, name={}, orgId={}",
                 s.getId(), dto.getInpVisitId(), s.getSurgeryName(), orgId);
         return s;
@@ -312,6 +332,8 @@ public class SurgeryService {
         if (dto == null || dto.getScheduleDate() == null) {
             throw new BizException(400, "手术日期不能为空");
         }
+        requireNoRoomConflict(trimOrNull(dto.getRoomNo()), dto.getScheduleDate(), dto.getScheduleTime(), id);
+        requireRoomResource(dto.getRoomNo(), exist.getModuleType(), exist.getOrgId());
         int affected = surgeryMapper.update(null, new LambdaUpdateWrapper<HisSurgery>()
                 .set(HisSurgery::getScheduleDate, dto.getScheduleDate())
                 .set(HisSurgery::getScheduleTime, trimOrNull(dto.getScheduleTime()))
@@ -466,6 +488,7 @@ public class SurgeryService {
         }
         requireScheduleBase(dto);
         requireNoRoomConflict(dto.getRoomNo(), dto.getScheduleDate(), dto.getScheduleTime(), null);
+        requireRoomResource(dto.getRoomNo(), dto.getModuleType(), a.getOrgId());
         requireSurgeonAuth(a.getSurgeonId(), a.getSurgeryCode(), a.getSurgeryName(), a.getSurgeryLevel());
         HisSurgery s = new HisSurgery();
         s.setOrgId(a.getOrgId());
@@ -493,6 +516,10 @@ public class SurgeryService {
         s.setStatus(2);
         surgeryMapper.insert(s);
         applyService.updateApplyStatus(applyId, 2, 4, s.getId());
+        upsertModuleExt(s.getId(), a.getOrgId(), s.getModuleType(),
+                dto.getDsaEquipment(), dto.getDsaContrast(), dto.getDsaRadiationDose(),
+                dto.getEndoScopeType(), dto.getEndoBiopsyCnt(),
+                dto.getObstGestationalWeek(), dto.getObstBirthType());
         Map<String, Object> pt = patientContact(a.getPatientId());
         applyService.createNotify(a.getId(), s.getId(), a.getPatientName(), str(pt.get("phone")), 3,
                 "手术安排通知: " + s.getSurgeryName() + ", " + dto.getScheduleDate() + " "
@@ -515,6 +542,7 @@ public class SurgeryService {
         }
         requireScheduleBase(dto);
         requireNoRoomConflict(dto.getRoomNo(), dto.getScheduleDate(), dto.getScheduleTime(), null);
+        requireRoomResource(dto.getRoomNo(), dto.getModuleType(), guard.currentOrgId());
         requireSurgeonAuth(dto.getSurgeonId(), dto.getSurgeryCode(), dto.getSurgeryName(), dto.getSurgeryLevel());
         HisSurgery s = new HisSurgery();
         s.setOrgId(guard.currentOrgId());
@@ -543,6 +571,10 @@ public class SurgeryService {
         HisSurgeryApply a = applyService.createUrgentApply(dto);
         applyService.updateApplyStatus(a.getId(), 4, 4, s.getId());
         s.setApplyId(a.getId());
+        upsertModuleExt(s.getId(), s.getOrgId(), s.getModuleType(),
+                dto.getDsaEquipment(), dto.getDsaContrast(), dto.getDsaRadiationDose(),
+                dto.getEndoScopeType(), dto.getEndoBiopsyCnt(),
+                dto.getObstGestationalWeek(), dto.getObstBirthType());
         log.info("急诊直接安排: surgeryId={}, applyId={}, surgery={}", s.getId(), a.getId(), s.getSurgeryName());
         return surgeryMapper.selectById(s.getId());
     }
@@ -619,6 +651,7 @@ public class SurgeryService {
             throw new BizException("目标手术间与当前一致, 无需调配");
         }
         requireNoRoomConflict(target, exist.getScheduleDate(), exist.getScheduleTime(), id);
+        requireRoomResource(target, exist.getModuleType(), exist.getOrgId());
         surgeryMapper.update(null, new LambdaUpdateWrapper<HisSurgery>()
                 .set(HisSurgery::getRoomNo, target)
                 .set(HisSurgery::getUpdateTime, LocalDateTime.now())
@@ -653,6 +686,9 @@ public class SurgeryService {
                 || !Objects.equals(nvl(dto.getAnesthesiologistId()), nvl(exist.getAnesthesiologistId()));
         if (roomChanged || timeChanged) {
             requireNoRoomConflict(newRoom, dto.getScheduleDate(), newTime, id);
+        }
+        if (roomChanged) {
+            requireRoomResource(newRoom, exist.getModuleType(), exist.getOrgId());
         }
         if (timeChanged) {
             changes.add("时间: " + exist.getScheduleDate() + " " + nvlStr(exist.getScheduleTime())
@@ -806,7 +842,7 @@ public class SurgeryService {
         sql.append(" ORDER BY s.schedule_time, s.id");
         List<Map<String, Object>> rows = jdbcTemplate.queryForList(sql.toString(), args.toArray());
         Map<String, List<Map<String, Object>>> grouped = new LinkedHashMap<>();
-        for (String room : PRESET_ROOMS) {
+        for (String room : boardRoomColumns(moduleType)) {
             grouped.put(room, new ArrayList<>());
         }
         List<Map<String, Object>> unassigned = new ArrayList<>();
@@ -904,7 +940,7 @@ public class SurgeryService {
         return result;
     }
 
-    /** 手术间列表(预置8间; 后续可配置化) */
+    /** 手术间列表(预置8间; 手麻P4b 保留无参口径与存量一致, 资源维度请用 roomList(moduleType)) */
     public List<String> roomList() {
         return new ArrayList<>(PRESET_ROOMS);
     }
@@ -965,6 +1001,153 @@ public class SurgeryService {
         } catch (Exception ex) {
             return null;
         }
+    }
+
+    /* ==================== 手麻P4b: 手术间资源校验 / 一体化专属字段 ==================== */
+
+    /** module_type -> 期望资源 room_type 映射(1手术室->1手术间, 2DSA->2机房, 4内镜->3内镜室, 3产科->4产房; 其余 null 不约束)。 */
+    private static Integer roomTypeForModule(Integer moduleType) {
+        if (moduleType == null) {
+            return null;
+        }
+        switch (moduleType) {
+            case 1:
+                return 1;
+            case 2:
+                return 2;
+            case 4:
+                return 3;
+            case 3:
+                return 4;
+            default:
+                return null;
+        }
+    }
+
+    private static String roomTypeName(Integer t) {
+        if (t == null) {
+            return "未知";
+        }
+        switch (t) {
+            case 1: return "手术间";
+            case 2: return "DSA机房";
+            case 3: return "内镜室";
+            case 4: return "产房";
+            default: return "未知";
+        }
+    }
+
+    private static String moduleTypeName(Integer m) {
+        if (m == null) {
+            return "未知";
+        }
+        switch (m) {
+            case 1: return "手术室";
+            case 2: return "DSA";
+            case 3: return "产科分娩";
+            case 4: return "内镜";
+            case 5: return "麻醉治疗";
+            default: return "未知";
+        }
+    }
+
+    /**
+     * 手术间资源校验(P4b): 若 room_no 命中 his_surgery_room(资源表)则校验其可用/类型匹配/机构归属;
+     * 未命中视为存量自由文本手术间(如"手术间1"), 不做资源约束(向后兼容)。
+     */
+    private void requireRoomResource(String roomNo, Integer moduleType, Long orgId) {
+        if (!StringUtils.hasText(roomNo)) {
+            return;
+        }
+        HisSurgeryRoom room = roomMapper.selectOne(new LambdaQueryWrapper<HisSurgeryRoom>()
+                .eq(HisSurgeryRoom::getRoomCode, roomNo.trim()).last("LIMIT 1"));
+        if (room == null) {
+            return;
+        }
+        if (room.getStatus() != null && room.getStatus() == 0) {
+            throw new BizException("手术间 " + roomNo + " 已停用, 不可排程");
+        }
+        Integer expected = roomTypeForModule(moduleType);
+        if (expected != null && room.getRoomType() != null && !expected.equals(room.getRoomType())) {
+            throw new BizException("手术间 " + roomNo + "(" + roomTypeName(room.getRoomType())
+                    + ") 与手术模块(" + moduleTypeName(moduleType) + ")不匹配, 请选择对应类型的机房/手术间");
+        }
+        if (orgId != null && room.getOrgId() != null && !orgId.equals(room.getOrgId())) {
+            throw new BizException("手术间 " + roomNo + " 不属于本机构, 不可排程");
+        }
+    }
+
+    /** 一体化专属字段 upsert(P4b): 仅 module_type∈{2,3,4} 且采集到任一专属字段时旁挂写入 his_surgery_module_ext。 */
+    private void upsertModuleExt(Long surgeryId, Long orgId, Integer moduleType,
+                                 String dsaEquip, String dsaContrast, BigDecimal dsaDose,
+                                 String endoScope, Integer endoBiopsy, String obstWeek, Integer obstBirth) {
+        if (surgeryId == null || moduleType == null) {
+            return;
+        }
+        if (moduleType != 2 && moduleType != 3 && moduleType != 4) {
+            return;
+        }
+        boolean hasData = StringUtils.hasText(dsaEquip) || StringUtils.hasText(dsaContrast) || dsaDose != null
+                || StringUtils.hasText(endoScope) || endoBiopsy != null
+                || StringUtils.hasText(obstWeek) || obstBirth != null;
+        if (!hasData) {
+            return;
+        }
+        HisSurgeryModuleExt ext = moduleExtMapper.selectOne(new LambdaQueryWrapper<HisSurgeryModuleExt>()
+                .eq(HisSurgeryModuleExt::getSurgeryId, surgeryId).last("LIMIT 1"));
+        boolean isNew = ext == null;
+        if (isNew) {
+            ext = new HisSurgeryModuleExt();
+        }
+        ext.setSurgeryId(surgeryId);
+        ext.setOrgId(orgId);
+        ext.setModuleType(moduleType);
+        if (moduleType == 2) {
+            ext.setDsaEquipment(trimOrNull(dsaEquip));
+            ext.setDsaContrast(trimOrNull(dsaContrast));
+            ext.setDsaRadiationDose(dsaDose);
+        } else if (moduleType == 4) {
+            ext.setEndoScopeType(trimOrNull(endoScope));
+            ext.setEndoBiopsyCnt(endoBiopsy);
+        } else {
+            ext.setObstGestationalWeek(trimOrNull(obstWeek));
+            ext.setObstBirthType(obstBirth);
+        }
+        if (isNew) {
+            moduleExtMapper.insert(ext);
+        } else {
+            moduleExtMapper.updateById(ext);
+        }
+    }
+
+    /** 手术间可用资源列表(P4b): 按 module_type 映射资源类型返回可用房 room_code; 手术室/未指定时并入预置8间(向后兼容)。 */
+    public List<String> roomList(Integer moduleType) {
+        Integer rt = roomTypeForModule(moduleType);
+        Long scope = guard.scopeOrgId(null);
+        LambdaQueryWrapper<HisSurgeryRoom> w = new LambdaQueryWrapper<HisSurgeryRoom>()
+                .eq(HisSurgeryRoom::getStatus, 1);
+        if (rt != null) {
+            w.eq(HisSurgeryRoom::getRoomType, rt);
+        }
+        if (scope != null) {
+            w.eq(HisSurgeryRoom::getOrgId, scope);
+        }
+        List<HisSurgeryRoom> rooms = roomMapper.selectList(w.orderByAsc(HisSurgeryRoom::getRoomCode));
+        List<String> codes = new ArrayList<>();
+        for (HisSurgeryRoom r : rooms) {
+            codes.add(r.getRoomCode());
+        }
+        if (rt == null || rt == 1) {
+            LinkedHashSet<String> set = new LinkedHashSet<>(PRESET_ROOMS);
+            set.addAll(codes);
+            return new ArrayList<>(set);
+        }
+        return codes;
+    }
+
+    /** 排程板房列(P4b): 指定模块时取对应类型资源房, 未指定保留预置8间(与存量一致)。 */
+    private List<String> boardRoomColumns(Integer moduleType) {
+        return moduleType != null ? roomList(moduleType) : new ArrayList<>(PRESET_ROOMS);
     }
 
     /** 术者权限校验(申请安排/急诊直排两处钩子): 命中规则白名单或职工级别不足即拒绝 */
