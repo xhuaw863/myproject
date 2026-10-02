@@ -131,6 +131,26 @@ public class MockYbServer {
                 // 目录对照撤销(M4): 移除 mock 对照, 规范输出无节点, infcode=0 即成功
                 mockCatalogRevoke(input);
                 break;
+            case "3503": case "3503A": {
+                // 进销存商品采购(入库)报送(批次5 M5 通道B): 两级判定——传输 infcode=0 + 业务 retRslt(表201, 3503A 输出无失败明细节点)。
+                // 必填违例(07号文§十二 表198/200 冻结 13 必填)时 retRslt=0 模拟平台业务拒绝
+                JSONArray purcRows = "3503".equals(infno) ? singleRowToList(input)
+                        : (input == null ? null : input.getJSONArray("purcinfoDetail"));
+                String purcErr = validatePurcInfo(purcRows);
+                JSONObject purcResult = new JSONObject();
+                if (purcErr != null) {
+                    log.warn("【模拟医保平台】{} 采购明细业务拒绝: {}", infno, purcErr);
+                    purcResult.put("retRslt", "0");
+                    purcResult.put("msgRslt", purcErr);
+                } else {
+                    purcResult.put("retRslt", "1");
+                    purcResult.put("msgRslt", "采购受理成功");
+                    log.info("【模拟医保平台】{} 受理采购明细 {} 行, 首批次={}", infno, purcRows.size(),
+                            purcRows.getJSONObject(0).getString("fixmedins_bchno"));
+                }
+                output.put("result", purcResult);
+                break;
+            }
             case "3505": case "3505A": {
                 // 进销存商品销售(批次5 M2b 通道B): 两级判定——传输 infcode=0 + 业务 retRslt(表209)。
                 // 必填违例(07号文§十二.2 冻结清单)时 retRslt=0 模拟平台业务拒绝
@@ -361,6 +381,29 @@ public class MockYbServer {
                     if (n == null || isEmptyStr(n.getString("drug_trac_codg"))) {
                         return "销售明细第" + (i + 1) + "行 drugtracinfo 第" + (j + 1) + "条缺 drug_trac_codg";
                     }
+                }
+            }
+        }
+        return null;
+    }
+
+    /** 3503/3503A 采购明细必填(spec_35xx 表198/200 逐字冻结 13 必填): 日期格式/数量 Decimal(16,4) 语义待平台确认, mock 仅校验非空 */
+    private static final String[] PURC_REQUIRED = {"fixmedins_hilist_id", "fixmedins_hilist_name", "fixmedins_bchno",
+            "spler_name", "manu_lotnum", "prodentp_name", "aprvno", "manu_date", "expy_end", "purc_retn_cnt",
+            "rx_flag", "purc_retn_stoin_time", "purc_retn_opter_name"};
+
+    private String validatePurcInfo(JSONArray rows) {
+        if (rows == null || rows.isEmpty()) {
+            return "采购明细节点(purcinfo/purcinfoDetail)缺失";
+        }
+        for (int i = 0; i < rows.size(); i++) {
+            JSONObject r = rows.getJSONObject(i);
+            if (r == null) {
+                return "采购明细第" + (i + 1) + "行为空";
+            }
+            for (String k : PURC_REQUIRED) {
+                if (isEmptyStr(r.getString(k))) {
+                    return "采购明细第" + (i + 1) + "行必填缺失: " + k;
                 }
             }
         }

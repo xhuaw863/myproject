@@ -305,7 +305,7 @@
         suppliers: [],
         /* 右侧当前单据: current=主表, currentItems=明细; isNew=新建可编辑 */
         current: null, currentItems: [], isNew: false, detailLoading: false,
-        saving: false,
+        saving: false, purcUploading: false,
         inTypes: IN_TYPES,
         /* 药品选择器 */
         drugDlg: false, drugKeyword: '', drugList: [], drugLoading: false,
@@ -529,6 +529,22 @@
           })
           .catch(function () { });
       },
+      /* 医保采购报送(批次5 M5): 已确认采购入库单逐明细行 3503A 报送; 已报成功行后端留痕自动跳过, 缺必填行不报送 */
+      uploadPurchase: function () {
+        var vm = this;
+        ElementPlus.ElMessageBox.confirm('将入库单 ' + vm.current.inNo + ' 的采购明细逐行报送医保平台(3503A)? 已报送成功的行自动跳过。', '医保采购报送', { type: 'warning' })
+          .then(function () {
+            vm.purcUploading = true;
+            HIS.post('/api/his/trace/upload-purchase?stockInId=' + vm.current.id).then(function (m) {
+              var msg = '采购报送完成: 成功' + ((m && m.submitted) || 0) + '行';
+              if (m && m.failed) { msg += ', 失败' + m.failed + '行'; }
+              if (m && m.unknown) { msg += ', 不可知' + m.unknown + '行'; }
+              if (m && m.noRef) { msg += ', 缺必填未报送' + m.noRef + '行'; }
+              if (m && (m.failed || m.unknown || m.noRef)) { ElementPlus.ElMessage.warning(msg); } else { HIS.notifySuccess(msg); }
+            }).catch(HIS.notifyError).finally(function () { vm.purcUploading = false; });
+          })
+          .catch(function () { });
+      },
       /* 入库冲红(批次B): 对已确认单生成红字反向单并回退库存 */
       redReverse: function () {
         var vm = this;
@@ -647,6 +663,7 @@
       '          <el-button v-if="lead && (editable || current.status===0)" type="primary" :loading="saving" @click="confirmBill">确认入库</el-button>',
       '          <el-button v-if="lead && !editable && current.status===0" type="danger" @click="voidBill">作废</el-button>',
       '          <el-button v-if="lead && !editable && current.status===1 && current.reversedFlag!==1 && !current.redOfId" type="danger" @click="redReverse">入库冲红</el-button>',
+      '          <el-button v-if="lead && !editable && current.status===1 && current.inType===1" type="warning" plain :loading="purcUploading" @click="uploadPurchase">医保采购报送(3503A)</el-button>',
       '        </div>',
       '      </div>',
       '    </div>',

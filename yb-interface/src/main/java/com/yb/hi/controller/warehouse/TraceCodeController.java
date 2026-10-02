@@ -93,6 +93,14 @@ public class TraceCodeController {
         return R.ok(traceCodeService.uploadReturns(resolveOrgId(orgId), locationId));
     }
 
+    /** 3503A 采购入库报送(批次5 M5): 已确认采购入库单逐单手动报送; 幂等靠 TRACE_PURC 状态行 + 确定性批次号 PURB+明细id */
+    @PostMapping("/upload-purchase")
+    public R<Map<String, Object>> uploadPurchase(@RequestParam(required = false) Long orgId,
+                                                 @RequestParam Long stockInId) {
+        guard.requireSelfOrgWrite();
+        return R.ok(traceCodeService.uploadPurchases(resolveOrgId(orgId), stockInId));
+    }
+
     /** 3507A 销售批次删除冲正(批次5 M4): 错报整批冲正后码行归 0 待重报; 平台侧级联删该批次销售/退货数据 */
     @PostMapping("/delete-upload")
     public R<Map<String, Object>> deleteUpload(@RequestParam(required = false) Long orgId,

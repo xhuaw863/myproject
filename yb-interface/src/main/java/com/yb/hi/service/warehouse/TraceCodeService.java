@@ -886,6 +886,188 @@ public class TraceCodeService {
         return out;
     }
 
+    /* ================= 通道B采购: 3503A 商品采购(入库)报送(批次5 M5; 字段冻结见 07号文§十二 表198/200/201) ================= */
+
+    /**
+     * 采购入库报送(3503A, 台账逐单手动): 候选=已确认采购入库单(status=1已确认 + in_type=1采购 + 本机构)下
+     * his_stock_in_item 尚未报送成功的行(无 TRACE_PURC status=1 状态行)。fixmedins_bchno 以 "PURB"+明细行id 确定性派生
+     * (≤30 字符, 重发天然幂等, 对账口径同 12.5#5 待平台确认)——不给 his_stock_in_item 加列(避让并行线 DictSchemaMigration)。
+     * 必填补(13项: 目录编码/名称/供应商/批号/生产厂家/批准文号/生产日期/有效期/数量/rx_flag/入库时间/经办人)任缺的行计 noRef 不报送(不臆造);
+     * 成败仅记 his_upload_status(TRACE_PURC, biz_id=明细行id), 不动入库单状态。
+     */
+    @Transactional(rollbackFor = Exception.class)
+    public Map<String, Object> uploadPurchases(Long orgId, Long stockInId) {
+        if (stockInId == null) {
+            throw new BizException(400, "采购报送需提供入库单(stockInId)");
+        }
+        long tid = tenantId();
+        Map<String, Object> head = one("SELECT id, in_no, in_type, supplier, status, confirm_time, org_id FROM his_stock_in"
+                + " WHERE id = ? AND tenant_id = ? AND deleted = 0", stockInId, tid);
+        if (head == null) {
+            throw new BizException(400, "入库单不存在: stockInId=" + stockInId);
+        }
+        if (orgId != null && !orgId.equals(toLongObj(head.get("org_id")))) {
+            throw new BizException(400, "入库单不属于本机构, 不可报送");
+        }
+        if (!Integer.valueOf(1).equals(toIntObj(head.get("status")))) {
+            throw new BizException(400, "仅已确认的入库单可采购报送(3503A 必填入库时间依赖确认时间)");
+        }
+        if (!Integer.valueOf(1).equals(toIntObj(head.get("in_type")))) {
+            throw new BizException(400, "仅采购入库(in_type=1)属于 3503A 报送范围");
+        }
+        if (head.get("confirm_time") == null) {
+            throw new BizException(400, "入库单缺少确认时间(purc_retn_stoin_time 必填), 不可报送");
+        }
+        List<Map<String, Object>> items = jdbcTemplate.queryForList(
+                "SELECT id, drug_catalog_id, batch_no, qty, prod_date, exp_date, cost_price FROM his_stock_in_item"
+                        + " WHERE stock_in_id = ? AND tenant_id = ? AND deleted = 0"
+                        + " AND NOT EXISTS (SELECT 1 FROM his_upload_status s WHERE s.tenant_id = his_stock_in_item.tenant_id"
+                        + " AND s.biz_type = 'TRACE_PURC' AND s.biz_id = his_stock_in_item.id AND s.status = 1 AND s.deleted = 0)"
+                        + " ORDER BY id", stockInId, tid);
+        return reportPurchases(head, items, tid);
+    }
+
+    /** 采购报送核心: 逐明细行组装 purcinfoDetail(表200)→一次 3503A→两级判定收口(输出表201 result, 无失败明细节点); 台账单操作员无并发抢占, 幂等靠 TRACE_PURC 过滤+确定性批次号 */
+    private Map<String, Object> reportPurchases(Map<String, Object> head, List<Map<String, Object>> items, long tid) {
+        String opter = opterName();
+        Object ct = head.get("confirm_time");
+        LocalDateTime stoTime = ct instanceof LocalDateTime ? (LocalDateTime) ct
+                : (ct instanceof java.sql.Timestamp ? ((java.sql.Timestamp) ct).toLocalDateTime() : null);
+        if (stoTime == null) {
+            throw new BizException(400, "入库单确认时间类型异常, 不可报送");
+        }
+        List<Map<String, Object>> rows = new ArrayList<>();
+        List<Long> claimedIds = new ArrayList<>();
+        int noRef = 0;
+        for (Map<String, Object> it : items) {
+            Map<String, Object> line = buildPurchaseRow(it, head, stoTime, opter, claimedIds);
+            if (line == null) {
+                noRef++;
+            } else {
+                rows.add(line);
+            }
+        }
+        Map<String, Object> out = new LinkedHashMap<>();
+        out.put("inNo", str(head.get("in_no")));
+        if (rows.isEmpty()) {
+            out.put("submitted", 0);
+            out.put("failed", 0);
+            out.put("unknown", 0);
+            out.put("noRef", noRef);
+            log.info("采购报送(3503A): 单={}, 无可报行(候选={}, 缺必填={})", head.get("in_no"), items.size(), noRef);
+            return out;
+        }
+        YbResponse resp = ybHttpClient.call("3503A", Collections.singletonMap("purcinfoDetail", rows));
+        int[] fin = finalizePurchaseUpload(claimedIds, resp, str(head.get("in_no")));
+        out.put("submitted", fin[0]);
+        out.put("failed", fin[1]);
+        out.put("unknown", fin[2]);
+        out.put("noRef", noRef);
+        log.info("采购报送(3503A): 单={}, 明细行={}, 成功={}, 失败={}, 未知={}, 缺数据={}, 候选={}",
+                head.get("in_no"), rows.size(), fin[0], fin[1], fin[2], noRef, items.size());
+        return out;
+    }
+
+    /**
+     * 组装一行 3503A 采购明细(表200/198 冻结 13 必填): spler_pmtno(供应商表无许可证列)/purc_invo_codg/purc_invo_no(发票覆盖低)
+     * 等非必填且不臆造字段不送; finl_trns_pric(16,6) 进价有值时透传; rx_flag 按 otc_flag 反转(非处方→0); 数量 Decimal(16,4) 去尾零直送;
+     * 目录缺失或任一必填缺失→ null 计 noRef。med_list_codg=医保目录编码(有则透传)。
+     */
+    private Map<String, Object> buildPurchaseRow(Map<String, Object> it, Map<String, Object> head,
+                                                 LocalDateTime stoTime, String opter, List<Long> claimedIds) {
+        Long itemId = toLongObj(it.get("id"));
+        Long drugId = toLongObj(it.get("drug_catalog_id"));
+        if (itemId == null || drugId == null) {
+            return null;
+        }
+        Map<String, Object> cat = one("SELECT drug_code, generic_name, trade_name, yb_drug_code, otc_flag, manufacturer, approval_no"
+                + " FROM his_drug_catalog WHERE id = ? AND tenant_id = ? AND deleted = 0", drugId, tenantId());
+        if (cat == null) {
+            return null;
+        }
+        String hilistId = str(cat.get("drug_code"));
+        String hilistName = StringUtils.hasText(str(cat.get("trade_name"))) ? str(cat.get("trade_name")) : str(cat.get("generic_name"));
+        String splerName = str(head.get("supplier"));
+        String lotNum = str(it.get("batch_no"));
+        String prodentp = str(cat.get("manufacturer"));
+        String aprvno = str(cat.get("approval_no"));
+        String manuDate = it.get("prod_date") == null ? null : String.valueOf(it.get("prod_date"));
+        String expyEnd = it.get("exp_date") == null ? null : String.valueOf(it.get("exp_date"));
+        Object qty = it.get("qty");
+        if (!StringUtils.hasText(hilistId) || !StringUtils.hasText(hilistName) || !StringUtils.hasText(splerName)
+                || !StringUtils.hasText(lotNum) || !StringUtils.hasText(prodentp) || !StringUtils.hasText(aprvno)
+                || !StringUtils.hasText(manuDate) || !StringUtils.hasText(expyEnd) || !(qty instanceof Number)) {
+            return null;
+        }
+        Map<String, Object> line = new LinkedHashMap<>();
+        putIfText(line, "med_list_codg", str(cat.get("yb_drug_code")));
+        line.put("fixmedins_hilist_id", hilistId);
+        line.put("fixmedins_hilist_name", hilistName);
+        line.put("fixmedins_bchno", "PURB" + itemId);
+        line.put("spler_name", splerName);
+        line.put("manu_lotnum", lotNum);
+        line.put("prodentp_name", prodentp);
+        line.put("aprvno", aprvno);
+        line.put("manu_date", manuDate);
+        line.put("expy_end", expyEnd);
+        line.put("purc_retn_cnt", new BigDecimal(String.valueOf(qty)).stripTrailingZeros().toPlainString());
+        line.put("rx_flag", Integer.valueOf(1).equals(toIntObj(cat.get("otc_flag"))) ? "0" : "1");
+        line.put("purc_retn_stoin_time", stoTime.format(SEL_TIME_FMT));
+        line.put("purc_retn_opter_name", opter);
+        putIfText(line, "finl_trns_pric", str(it.get("cost_price")));
+        claimedIds.add(itemId);
+        return line;
+    }
+
+    /**
+     * 采购收口(两级判定同销售/退货): 传输 infcode=0 且业务 retRslt=1(表201 result, 3503A 规范无失败明细节点)→ TRACE_PURC 行置已传;
+     * 拒绝/retRslt=0 → 置失败待补(台账重扫可补报); UNKNOWN → 亦记失败但 err 标明不可知(重发幂等靠确定性批次号 PURB+明细id, mock 接受)。
+     */
+    private int[] finalizePurchaseUpload(List<Long> claimedIds, YbResponse resp, String inNo) {
+        long tid = tenantId();
+        boolean success = false;
+        boolean unknown = false;
+        String msgid = null;
+        String err;
+        if (resp == null) {
+            unknown = true;
+            err = "3503A无响应(UNKNOWN): 平台侧是否受理不可知, 可重发本单采购报送";
+        } else if (resp.isUnknown()) {
+            unknown = true;
+            msgid = resp.getInfRefmsgid();
+            err = "3503A超时(UNKNOWN): 平台侧是否受理不可知, 可重发本单采购报送";
+        } else if (!resp.isSuccess()) {
+            msgid = resp.getInfRefmsgid();
+            err = "3503A被平台拒绝(传输层): " + resp.getErrMsg();
+        } else {
+            msgid = resp.getInfRefmsgid();
+            JSONObject result = resp.getOutputNode("result");
+            String retRslt = result == null ? null : result.getString("retRslt");
+            if ("1".equals(retRslt)) {
+                success = true;
+                err = null;
+            } else {
+                err = "3503A业务层失败(retRslt=" + (retRslt == null ? "缺失" : retRslt) + "): "
+                        + (result == null ? "无result节点" : result.getString("msgRslt"));
+            }
+        }
+        int ok = 0;
+        int fail = 0;
+        int unk = 0;
+        for (Long id : claimedIds) {
+            uploadStatusService.record(tid, HisUploadStatus.BIZ_TRACE_PURC, id, null, success, msgid, success ? null : err);
+            if (success) {
+                ok++;
+            } else if (unknown) {
+                unk++;
+            } else {
+                fail++;
+            }
+        }
+        log.info("采购报送收口(3503A): 单={}, success={}, unknown={}, 明细行={}", inNo, success, unknown, claimedIds.size());
+        return new int[]{ok, fail, unk};
+    }
+
     /** 退货经办人(3506 sel_retn_opter_name, 50 截断): 当前登录用户真实姓名→登录名→system 逐级兜底 */
     private String opterName() {
         LoginUser u = UserContext.get();
