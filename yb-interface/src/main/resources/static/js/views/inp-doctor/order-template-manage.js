@@ -14,6 +14,9 @@
   const ORDER_CATEGORY = { 1: '药品', 2: '检查', 3: '检验', 4: '治疗', 5: '护理', 6: '膳食', 7: '其他' };
   const TEMPLATE_TYPE = { 1: '个人', 2: '科室', 3: '全院' };
   const SCOPE_TYPE = { 1: '单条', 2: '套餐' };
+  /* 手麻P2b: 适用场景(1普通住院 2手术医嘱) + 手术模板目标阶段(1术前 2术中 3术后) */
+  const APPLY_SCENE = { 1: '普通住院', 2: '手术医嘱' };
+  const SURG_PHASE = { 1: '术前', 2: '术中', 3: '术后' };
   const TYPE_OPTS = [{ v: 1, l: '长期' }, { v: 2, l: '临时' }];
   const CAT_OPTS = Object.keys(ORDER_CATEGORY).map(k => ({ v: Number(k), l: ORDER_CATEGORY[k] }));
 
@@ -69,7 +72,7 @@
     data: function () {
       return {
         loading: false, rows: [], total: 0, page: 1, size: 20,
-        flt: { keyword: '', templateType: null, scopeType: null, status: null },
+        flt: { keyword: '', templateType: null, scopeType: null, status: null, applyScene: null, surgeryPhase: null },
         depts: [], usageOptions: [], freqOptions: [], dictLoaded: false,
         dlg: { visible: false, saving: false, edit: false, rowId: null, model: { items: [blankItem()] } },
         diagOptions: [], diagSearching: false,
@@ -86,6 +89,8 @@
       /* ===== 文案/工具 ===== */
       typeText: function (t) { return TEMPLATE_TYPE[t] || '-'; },
       scopeText: function (t) { return SCOPE_TYPE[t] || '-'; },
+      sceneText: function (t) { return APPLY_SCENE[t] || '-'; },
+      phaseText: function (t) { return SURG_PHASE[t] || ''; },
       orderTypeText: function (t) { return ORDER_TYPE[t] || '-'; },
       catText: function (t) { return ORDER_CATEGORY[t] || '-'; },
       deptName: function (id) { return id == null ? '-' : (this.deptMap[id] || ('#' + id)); },
@@ -124,12 +129,14 @@
         if (vm.flt.templateType) { p.set('templateType', vm.flt.templateType); }
         if (vm.flt.scopeType) { p.set('scopeType', vm.flt.scopeType); }
         if (vm.flt.status != null) { p.set('status', vm.flt.status); }
+        if (vm.flt.applyScene) { p.set('applyScene', vm.flt.applyScene); }
+        if (vm.flt.surgeryPhase) { p.set('surgeryPhase', vm.flt.surgeryPhase); }
         HIS.get('/api/his/inp/order-template/list?' + p.toString())
           .then(d => { vm.rows = (d && d.records) || []; vm.total = (d && d.total) || 0; })
           .catch(HIS.notifyError).finally(() => { vm.loading = false; });
       },
       onSearch: function () { this.page = 1; this.load(); },
-      reset: function () { this.flt = { keyword: '', templateType: null, scopeType: null, status: null }; this.onSearch(); },
+      reset: function () { this.flt = { keyword: '', templateType: null, scopeType: null, status: null, applyScene: null, surgeryPhase: null }; this.onSearch(); },
       onPage: function (p) { this.page = p; this.load(); },
       onSize: function (s) { this.size = s; this.page = 1; this.load(); },
       /* ===== 编辑对话框 ===== */
@@ -137,7 +144,7 @@
         this.dlg.edit = false; this.dlg.rowId = null;
         this.dlg.model = {
           templateName: '', templateType: 1, scopeType: scopeType || 1, deptId: null,
-          diseaseCode: '', status: 1, items: [blankItem()]
+          diseaseCode: '', status: 1, applyScene: 1, surgeryPhase: null, items: [blankItem()]
         };
         this.diagOptions = [];
         this.loadDicts();
@@ -153,6 +160,7 @@
             templateName: t.templateName || '', templateType: Number(t.templateType) || 1,
             scopeType: Number(t.scopeType) || 1, deptId: t.deptId || null,
             diseaseCode: t.diseaseCode || '', status: Number(t.status) != null ? Number(t.status) : 1,
+            applyScene: Number(t.applyScene) || 1, surgeryPhase: t.surgeryPhase != null ? Number(t.surgeryPhase) : null,
             items: items.length ? items : [blankItem()]
           };
           vm.diagOptions = t.diseaseCode ? [{ code: t.diseaseCode, name: t.diseaseCode }] : [];
@@ -233,6 +241,8 @@
           deptId: Number(m.templateType) === 2 ? m.deptId : null,
           diseaseCode: m.diseaseCode || null,
           status: Number(m.status),
+          applyScene: Number(m.applyScene) || 1,
+          surgeryPhase: Number(m.applyScene) === 2 ? (m.surgeryPhase || null) : null,
           items: (m.items || []).map(it => ({
             orderType: Number(it.orderType), orderCategory: Number(it.orderCategory),
             orderContent: String(it.orderContent).trim(),
@@ -288,6 +298,12 @@
     <el-select v-model="flt.status" placeholder="状态" clearable style="width:110px" @change="onSearch">
       <el-option label="启用" :value="1"></el-option><el-option label="停用" :value="0"></el-option>
     </el-select>
+    <el-select v-model="flt.applyScene" placeholder="适用场景" clearable style="width:120px" @change="onSearch">
+      <el-option label="普通住院" :value="1"></el-option><el-option label="手术医嘱" :value="2"></el-option>
+    </el-select>
+    <el-select v-model="flt.surgeryPhase" placeholder="手术阶段" clearable style="width:110px" @change="onSearch">
+      <el-option label="术前" :value="1"></el-option><el-option label="术中" :value="2"></el-option><el-option label="术后" :value="3"></el-option>
+    </el-select>
     <el-button size="small" @click="onSearch">查询</el-button>
     <el-button size="small" @click="reset">重置</el-button>
     <span class="grow"></span>
@@ -300,6 +316,7 @@
       <el-table-column prop="templateName" label="名称" min-width="160" show-overflow-tooltip></el-table-column>
       <el-table-column label="级别" width="72"><template #default="{row}">{{ typeText(row.templateType) }}</template></el-table-column>
       <el-table-column label="类型" width="72"><template #default="{row}">{{ scopeText(row.scopeType) }}</template></el-table-column>
+      <el-table-column label="场景" width="100"><template #default="{row}">{{ sceneText(row.applyScene) }}<span v-if="Number(row.applyScene)===2 && row.surgeryPhase" style="color:var(--yb-ink-3)">·{{ phaseText(row.surgeryPhase) }}</span></template></el-table-column>
       <el-table-column label="适用科室" width="120" show-overflow-tooltip><template #default="{row}">{{ deptName(row.deptId) }}</template></el-table-column>
       <el-table-column label="医嘱项" width="80" align="center">
         <template #default="{row}">
@@ -343,6 +360,16 @@
         <el-form-item label="适用病种">
           <el-select v-model="dlg.model.diseaseCode" filterable remote reserve-keyword clearable :remote-method="remoteDiagSearch" :loading="diagSearching" placeholder="ICD-10 诊断检索(可空)" style="width:100%">
             <el-option v-for="d in diagOptions" :key="d.code" :label="(d.code + ' ' + (d.name || ''))" :value="d.code"></el-option>
+          </el-select>
+        </el-form-item>
+        <el-form-item label="适用场景">
+          <el-radio-group v-model="dlg.model.applyScene" @change="dlg.model.applyScene===2 || (dlg.model.surgeryPhase=null)">
+            <el-radio-button :label="1">普通住院</el-radio-button><el-radio-button :label="2">手术医嘱</el-radio-button>
+          </el-radio-group>
+        </el-form-item>
+        <el-form-item label="手术阶段" v-if="Number(dlg.model.applyScene)===2">
+          <el-select v-model="dlg.model.surgeryPhase" placeholder="模板默认阶段(套用时可覆盖)" clearable style="width:100%">
+            <el-option label="术前" :value="1"></el-option><el-option label="术中" :value="2"></el-option><el-option label="术后" :value="3"></el-option>
           </el-select>
         </el-form-item>
         <el-form-item label="状态">

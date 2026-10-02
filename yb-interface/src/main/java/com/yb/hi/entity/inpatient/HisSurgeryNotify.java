@@ -44,4 +44,8 @@ public class HisSurgeryNotify extends BaseEntity {
     private String sendBy;
     /** 发送时间 */
     private LocalDateTime sendTime;
+    /** 通知下发重试次数(P2c) */
+    private Integer retryCount;
+    /** 短信/APP网关回执ID(真实通道回填, P2c) */
+    private String gatewayMsgId;
 }

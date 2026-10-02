@@ -4,6 +4,7 @@ import com.baomidou.mybatisplus.core.metadata.IPage;
 import com.yb.hi.dto.inpatient.SurgeryDTO;
 import com.yb.hi.dto.inpatient.SurgeryScheduleDTO;
 import com.yb.hi.dto.inpatient.InpOrderDTO;
+import com.yb.hi.dto.inpatient.SurgeryTemplateDTO;
 import com.yb.hi.entity.inpatient.HisInpOrder;
 import com.yb.hi.entity.inpatient.HisSurgery;
 import com.yb.hi.framework.common.R;
@@ -55,10 +56,11 @@ public class SurgeryController {
             @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate endDate,
             @RequestParam(required = false) String statuses,
             @RequestParam(required = false) Integer visitType,
+            @RequestParam(required = false) Integer moduleType,
             @RequestParam(defaultValue = "1") int page,
             @RequestParam(defaultValue = "20") int size) {
         return R.ok(surgeryService.listSurgeries(guard.scopeOrgId(orgId), deptId,
-                startDate, endDate, statuses, visitType, page, size));
+                startDate, endDate, statuses, visitType, moduleType, page, size));
     }
 
     /** 未安排手术池(已复核待安排 status=2 的申请单, 急诊/择期按时限排序) */
@@ -73,12 +75,13 @@ public class SurgeryController {
         return R.ok(surgeryService.anesthesiaList());
     }
 
-    /** 手术排程板(日期×手术间占用视图, date 默认今日) */
+    /** 手术排程板(日期×手术间占用视图, date 默认今日; moduleType 可选切换一体化模块) */
     @GetMapping("/room-board")
     public R<Map<String, Object>> roomBoard(
             @RequestParam(required = false) Long orgId,
-            @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate date) {
-        return R.ok(surgeryService.roomBoard(guard.scopeOrgId(orgId), date));
+            @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate date,
+            @RequestParam(required = false) Integer moduleType) {
+        return R.ok(surgeryService.roomBoard(guard.scopeOrgId(orgId), date, moduleType));
     }
 
     /** 今日手术排程表(schedule_date=today, 按手术间分组, 含患者/主刀医师信息) */
@@ -200,7 +203,7 @@ public class SurgeryController {
     /** 手术未处理通知角标计数(待通知总数): 前端变动提醒红标 */
     @GetMapping("/notify/pending-count")
     public R<Integer> notifyPendingCount() {
-        return R.ok((int) applyService.notifyPage(1, null, 1, 1).getTotal());
+        return R.ok((int) applyService.notifyPage(1, null, null, 1, 1).getTotal());
     }
 
     /* ==================== 手麻P1: 手术医嘱 ==================== */
@@ -229,5 +232,19 @@ public class SurgeryController {
     public R<HisInpOrder> addApplyOrder(@PathVariable Long applyId, @RequestBody InpOrderDTO dto) {
         dto.setSurgeryApplyId(applyId);
         return R.ok(surgeryOrderService.addOrder(dto));
+    }
+
+    /** 手术模板批量开嘱(术中/术后, 挂手术 id, P2b) */
+    @PostMapping("/{id}/order/from-template")
+    public R<List<HisInpOrder>> surgeryOrderFromTemplate(@PathVariable Long id, @RequestBody SurgeryTemplateDTO body) {
+        return R.ok(surgeryOrderService.createFromTemplate(id, null, body.getTemplateId(),
+                body.getOrderPhase(), body.getProxyDoctorId(), body.getProxyReason()));
+    }
+
+    /** 手术模板批量开术前医嘱(挂申请单, P2b) */
+    @PostMapping("/apply/{applyId}/order/from-template")
+    public R<List<HisInpOrder>> applyOrderFromTemplate(@PathVariable Long applyId, @RequestBody SurgeryTemplateDTO body) {
+        return R.ok(surgeryOrderService.createFromTemplate(null, applyId, body.getTemplateId(),
+                body.getOrderPhase(), body.getProxyDoctorId(), body.getProxyReason()));
     }
 }

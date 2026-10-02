@@ -1,12 +1,18 @@
 package com.yb.hi.service.inpatient;
 
+import com.alibaba.fastjson2.JSON;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import com.yb.hi.dto.inpatient.InpOrderDTO;
+import com.yb.hi.dto.inpatient.OrderTemplateItemDTO;
 import com.yb.hi.entity.inpatient.HisInpOrder;
+import com.yb.hi.entity.inpatient.HisOrderTemplate;
 import com.yb.hi.entity.inpatient.HisSurgery;
 import com.yb.hi.entity.inpatient.HisSurgeryApply;
 import com.yb.hi.framework.common.BizException;
+import com.yb.hi.framework.tenant.LoginUser;
 import com.yb.hi.framework.tenant.TenantContext;
+import com.yb.hi.framework.tenant.UserContext;
 import com.yb.hi.mapper.inpatient.HisInpOrderMapper;
 import com.yb.hi.mapper.inpatient.HisSurgeryApplyMapper;
 import com.yb.hi.mapper.inpatient.HisSurgeryMapper;
@@ -15,7 +21,10 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.util.CollectionUtils;
+import org.springframework.util.StringUtils;
 
+import java.util.ArrayList;
 import java.util.List;
 
 /**
@@ -29,16 +38,19 @@ import java.util.List;
 public class SurgeryOrderService {
 
     private final InpOrderService inpOrderService;
+    private final OrderTemplateService orderTemplateService;
     private final HisSurgeryMapper surgeryMapper;
     private final HisSurgeryApplyMapper applyMapper;
     private final HisInpOrderMapper orderMapper;
     private final OrgAccessGuard guard;
     private final JdbcTemplate jdbcTemplate;
 
-    public SurgeryOrderService(InpOrderService inpOrderService, HisSurgeryMapper surgeryMapper,
+    public SurgeryOrderService(InpOrderService inpOrderService, OrderTemplateService orderTemplateService,
+                               HisSurgeryMapper surgeryMapper,
                                HisSurgeryApplyMapper applyMapper, HisInpOrderMapper orderMapper,
                                OrgAccessGuard guard, JdbcTemplate jdbcTemplate) {
         this.inpOrderService = inpOrderService;
+        this.orderTemplateService = orderTemplateService;
         this.surgeryMapper = surgeryMapper;
         this.applyMapper = applyMapper;
         this.orderMapper = orderMapper;
@@ -106,6 +118,107 @@ public class SurgeryOrderService {
         log.info("开立手术医嘱: id={}, surgeryId={}, applyId={}, phase={}, visitId={}",
                 o.getId(), o.getSurgeryId(), o.getSurgeryApplyId(), o.getOrderPhase(), o.getInpVisitId());
         return o;
+    }
+
+    /**
+     * 手术模板批量开嘱(P2b): 解析 his_order_template items 逐条经 addOrder 走标准开立链,
+     * 回填手术/申请单关联与阶段; 同批共享 groupNo, 开成后回写来源模板(scope_type=2→order_set_id, 否则→order_template_id)
+     * 并递增使用次数。阶段优先取模板 surgery_phase, 缺省回落入参 phase; 不一致时由 createOrder 拒绝。
+     * 个人模板仅归属医生本人; 门诊/日间经 addOrder 拒绝(与 P1 一致)。整批一个事务, 任一条失败全回滚。
+     */
+    @Transactional(rollbackFor = Exception.class)
+    public List<HisInpOrder> createFromTemplate(Long surgeryId, Long applyId, Long templateId,
+                                                Integer phase, Long proxyDoctorId, String proxyReason) {
+        if (templateId == null) {
+            throw new BizException(400, "模板ID不能为空");
+        }
+        if (surgeryId == null && applyId == null) {
+            throw new BizException(400, "手术模板套用须关联手术ID或申请单ID");
+        }
+        HisOrderTemplate tpl = orderTemplateService.getDetail(templateId).getData();
+        if (tpl.getStatus() != null && tpl.getStatus() != 1) {
+            throw new BizException(400, "模板已停用: " + tpl.getTemplateName());
+        }
+        if (tpl.getTemplateType() != null && tpl.getTemplateType() == 1
+                && !currentStaffId().equals(tpl.getDoctorId())) {
+            throw new BizException(403, "个人模板仅归属医生本人可使用");
+        }
+        if (!StringUtils.hasText(tpl.getItems())) {
+            throw new BizException(400, "模板未配置医嘱项: " + tpl.getTemplateName());
+        }
+        List<OrderTemplateItemDTO> items;
+        try {
+            items = JSON.parseArray(tpl.getItems(), OrderTemplateItemDTO.class);
+        } catch (Exception e) {
+            throw new BizException(400, "模板医嘱项解析失败: " + tpl.getTemplateName());
+        }
+        if (CollectionUtils.isEmpty(items)) {
+            throw new BizException(400, "模板未配置医嘱项: " + tpl.getTemplateName());
+        }
+        Integer resolvedPhase = tpl.getSurgeryPhase() != null ? tpl.getSurgeryPhase() : phase;
+        if (resolvedPhase == null) {
+            throw new BizException(400, "手术模板未指定阶段且调用未传阶段");
+        }
+        String groupNo = "SGRP" + System.currentTimeMillis();
+        List<HisInpOrder> created = new ArrayList<>(items.size());
+        List<Long> createdIds = new ArrayList<>(items.size());
+        for (OrderTemplateItemDTO item : items) {
+            if (item == null || !StringUtils.hasText(item.getOrderContent())) {
+                throw new BizException(400, "模板存在无效医嘱项(缺少医嘱内容): " + tpl.getTemplateName());
+            }
+            InpOrderDTO dto = new InpOrderDTO();
+            dto.setOrderType(item.getOrderType());
+            dto.setOrderCategory(item.getOrderCategory());
+            dto.setOrderContent(item.getOrderContent());
+            dto.setChargeItemId(item.getChargeItemId());
+            dto.setDrugId(item.getDrugId());
+            dto.setSpec(item.getSpec());
+            dto.setDosage(item.getDosage());
+            dto.setDosageUnit(item.getDosageUnit());
+            dto.setUsageCode(item.getUsageCode());
+            dto.setFreqCode(item.getFreqCode());
+            dto.setQuantity(item.getQuantity());
+            dto.setUnitPrice(item.getUnitPrice());
+            dto.setGroupNo(groupNo);
+            dto.setOrderPhase(resolvedPhase);
+            dto.setProxyDoctorId(proxyDoctorId);
+            dto.setProxyReason(proxyReason);
+            if (surgeryId != null) {
+                dto.setSurgeryId(surgeryId);
+            } else {
+                dto.setSurgeryApplyId(applyId);
+            }
+            HisInpOrder o = addOrder(dto);
+            created.add(o);
+            createdIds.add(o.getId());
+        }
+        boolean asSet = tpl.getScopeType() != null && tpl.getScopeType() == 2;
+        if (!createdIds.isEmpty()) {
+            orderMapper.update(null, new LambdaUpdateWrapper<HisInpOrder>()
+                    .set(asSet, HisInpOrder::getOrderSetId, templateId)
+                    .set(!asSet, HisInpOrder::getOrderTemplateId, templateId)
+                    .in(HisInpOrder::getId, createdIds));
+            for (HisInpOrder o : created) {
+                if (asSet) {
+                    o.setOrderSetId(templateId);
+                } else {
+                    o.setOrderTemplateId(templateId);
+                }
+            }
+        }
+        orderTemplateService.incrementUsage(templateId);
+        log.info("手术模板开嘱: surgeryId={}, applyId={}, templateId={}, phase={}, 条数={}, groupNo={}",
+                surgeryId, applyId, templateId, resolvedPhase, created.size(), groupNo);
+        return created;
+    }
+
+    /** 当前登录职工ID(个人模板归属校验用)。 */
+    private Long currentStaffId() {
+        LoginUser lu = UserContext.get();
+        if (lu == null || lu.getStaffId() == null) {
+            throw new BizException(401, "未登录或账号未关联职工档案");
+        }
+        return lu.getStaffId();
     }
 
     /** 发送药房: 手术类药品医嘱 0/2->1, 置后方进入发药队列; 已发药不可重复发送 */

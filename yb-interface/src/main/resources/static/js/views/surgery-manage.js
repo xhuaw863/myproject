@@ -97,6 +97,12 @@
   const FEE_CAT_OPTS = optsOf(FEE_CATEGORY);
   const ORDER_CAT_OPTS = optsOf(ORDER_CATEGORY);
   const ORDER_PHASE_OPTS = optsOf(ORDER_PHASE);
+  /* 手麻P2d: 一体化模块(1手术室 2DSA 3产科分娩 4内镜 5麻醉治疗) + 新生儿分娩方式 */
+  const MODULE_TYPE = { 1: '手术室', 2: 'DSA', 3: '产科分娩', 4: '内镜', 5: '麻醉治疗' };
+  const MODULE_OPTS = optsOf(MODULE_TYPE);
+  const BIRTH_TYPE = { 1: '顺产', 2: '剖宫产', 3: '产钳', 4: '臀助', 5: '其他' };
+  const BIRTH_TYPE_OPTS = optsOf(BIRTH_TYPE);
+  const NEWBORN_STATUS = { 1: '在院', 2: '已转科', 3: '已出院' };
   const TIME_SLOTS = (function () {
     var out = [];
     for (var h = 8; h <= 20; h++) {
@@ -202,6 +208,10 @@
   function orderStLabel(v) { return ORDER_STATUS[v] || orDash(v); }
   function orderStTag(v) { return ORDER_STATUS_TYPE[v] || 'info'; }
   function sendPharmLabel(v) { return SEND_PHARM[v] || ''; }
+  function moduleLabel(v) { return MODULE_TYPE[v || 1] || orDash(v); }
+  function birthTypeLabel(v) { return BIRTH_TYPE[v] || orDash(v); }
+  function newbornStatusLabel(v) { return NEWBORN_STATUS[v] || orDash(v); }
+  function newbornStatusTag(v) { return v === 1 ? 'success' : (v === 2 ? 'warning' : 'info'); }
 
   /* ===== 表单空白模板 ===== */
   function blankVital() {
@@ -216,6 +226,12 @@
       spec: '', dosage: '', dosageUnit: '', usageCode: null, freqCode: null, quantity: 1,
       proxyOn: false, proxyDoctorId: null, proxyReason: '' };
   }
+  /* 手麻P2d: 新生儿建档表单默认值(birthTime 预填当前, 分娩方式默认剖宫产关联分娩手术) */
+  function blankNewbornForm(surgeryId, motherInpVisitId) {
+    return { surgeryId: surgeryId || null, motherInpVisitId: motherInpVisitId || null,
+      babyName: '', babySex: null, birthTime: nowDT(), apgar1: null, apgar5: null, apgar10: null,
+      weightG: null, heightCm: null, birthType: 2, remark: '' };
+  }
 
   /* ===== 共享混入: 模板可直接使用的工具代理 + 时间段选项 ===== */
   var surgMixin = {
@@ -227,7 +243,9 @@
       feeCatLabel: feeCatLabel, feeCatColor: feeCatColor,
       vtLabel: vtLabel, dlLabel: dlLabel, dlTag: dlTag, tplLevelLabel: tplLevelLabel,
       orderCatLabel: orderCatLabel, phaseLabel: phaseLabel, phaseTag: phaseTag,
-      orderStLabel: orderStLabel, orderStTag: orderStTag, sendPharmLabel: sendPharmLabel
+      orderStLabel: orderStLabel, orderStTag: orderStTag, sendPharmLabel: sendPharmLabel,
+      moduleLabel: moduleLabel, birthTypeLabel: birthTypeLabel, newbornStatusLabel: newbornStatusLabel,
+      newbornStatusTag: newbornStatusTag
     }
   };
 
@@ -1272,6 +1290,9 @@
       '        <el-select v-model="filters.deptId" clearable filterable placeholder="科室" size="small" style="width:150px">',
       '          <el-option v-for="d in refDepts" :key="d.id" :label="d.deptName" :value="d.id"></el-option>',
       '        </el-select>',
+      '        <el-select v-model="filters.moduleType" clearable placeholder="一体化模块" size="small" style="width:130px">',
+      '          <el-option v-for="o in moduleOpts" :key="o.value" :label="o.label" :value="o.value"></el-option>',
+      '        </el-select>',
       '        <el-date-picker v-model="filters.dateRange" type="daterange" size="small" value-format="YYYY-MM-DD" range-separator="至" start-placeholder="开始日期" end-placeholder="结束日期" style="width:250px"></el-date-picker>',
       '        <el-select v-model="filters.status" clearable placeholder="状态" size="small" style="width:110px">',
       '          <el-option v-for="o in statusOpts" :key="o.value" :label="o.label" :value="o.value"></el-option>',
@@ -1285,6 +1306,7 @@
       '        <el-table-column prop="patient_name" label="患者姓名" width="92"></el-table-column>',
       '        <el-table-column prop="inp_no" label="住院号" width="120"></el-table-column>',
       '        <el-table-column prop="surgery_name" label="手术名称" min-width="160" show-overflow-tooltip></el-table-column>',
+      '        <el-table-column label="模块" width="82" align="center"><template #default="s">{{ moduleLabel(s.row.module_type) }}</template></el-table-column>',
       '        <el-table-column label="手术级别" width="82" align="center"><template #default="s">{{ levelLabel(s.row.surgery_level) }}</template></el-table-column>',
       '        <el-table-column prop="surgeon_name" label="主刀医师" width="92"></el-table-column>',
       '        <el-table-column prop="room_no" label="手术间" width="86"></el-table-column>',
@@ -1737,6 +1759,7 @@
       '          <el-descriptions-item label="时间段">{{ orDash(detail.surgery.scheduleTime) }}</el-descriptions-item>',
       '          <el-descriptions-item label="手术间">{{ orDash(detail.surgery.roomNo) }}</el-descriptions-item>',
       '          <el-descriptions-item label="科室">{{ orDash(detail.deptName) }}</el-descriptions-item>',
+      '          <el-descriptions-item label="一体化模块">{{ moduleLabel(detail.surgery.moduleType) }}</el-descriptions-item>',
       '          <el-descriptions-item label="开始时间">{{ fmtDT(detail.surgery.startTime) }}</el-descriptions-item>',
       '          <el-descriptions-item label="结束时间">{{ fmtDT(detail.surgery.endTime) }}</el-descriptions-item>',
       '        </el-descriptions>',
@@ -1753,6 +1776,7 @@
       '        <div class="surg-section-title" style="margin-top:14px">',
       '          <span>术中医嘱</span>',
       '          <el-button v-if="detail.surgery.visitType === 1" link type="primary" size="small" style="float:right;margin-top:-2px" @click="openSoDialog">+ 开立医嘱</el-button>',
+      '          <el-button v-if="detail.surgery.visitType === 1" link type="success" size="small" style="float:right;margin-top:-2px;margin-right:10px" @click="openTplDialog">套用模板</el-button>',
       '        </div>',
       '        <div v-if="detail.surgery.visitType !== 1" class="surg-info" style="margin-bottom:8px">门诊/日间手术的用药通过「手术记费」记账, 不进入住院医嘱链。</div>',
       '        <el-table v-else :data="soOrders" border size="small" v-loading="soLoading" max-height="300" empty-text="暂无手术医嘱">',
@@ -1766,6 +1790,22 @@
       '            <el-button v-if="s.row.orderCategory === 1 && s.row.drugId && s.row.sendPharmStatus === 1" link type="warning" @click="recallSoPharmacy(s.row)">撤回</el-button>',
       '            <el-button v-if="s.row.orderStatus === 1" link type="danger" @click="cancelSoOrder(s.row)">作废</el-button>',
       '          </template></el-table-column>',
+      '        </el-table>',
+      '        <div class="surg-section-title" style="margin-top:14px" v-if="detail.surgery.moduleType === 3">',
+      '          <span>新生儿管理</span>',
+      '          <el-button link type="primary" size="small" style="float:right;margin-top:-2px" @click="openNewbornDlg">+ 新生儿建档</el-button>',
+      '        </div>',
+      '        <div v-if="detail.surgery.moduleType === 3 && nbGuide && nbGuide.needRegister" class="surg-info" style="margin-bottom:8px">该分娩手术尚未登记新生儿档案(分娩完成时不自动建档), 请点击右上「新生儿建档」补录。</div>',
+      '        <el-table v-if="detail.surgery.moduleType === 3" :data="nbList" border size="small" v-loading="nbLoading" max-height="240" empty-text="暂无新生儿档案">',
+      '          <el-table-column label="姓名" min-width="100"><template #default="s">{{ orDash(s.row.baby_name) }}</template></el-table-column>',
+      '          <el-table-column label="性别" width="56" align="center"><template #default="s">{{ s.row.baby_sex === 2 ? "女" : (s.row.baby_sex === 1 ? "男" : "-") }}</template></el-table-column>',
+      '          <el-table-column label="出生时间" width="140"><template #default="s">{{ fmtDT(s.row.birth_time) }}</template></el-table-column>',
+      '          <el-table-column label="Apgar 1/5/10" width="100" align="center"><template #default="s">{{ orDash(s.row.apgar_1) }} / {{ orDash(s.row.apgar_5) }} / {{ orDash(s.row.apgar_10) }}</template></el-table-column>',
+      '          <el-table-column label="体重(g)" width="76" align="center"><template #default="s">{{ orDash(s.row.weight_g) }}</template></el-table-column>',
+      '          <el-table-column label="身长(cm)" width="76" align="center"><template #default="s">{{ orDash(s.row.height_cm) }}</template></el-table-column>',
+      '          <el-table-column label="分娩方式" width="80" align="center"><template #default="s">{{ birthTypeLabel(s.row.birth_type) }}</template></el-table-column>',
+      '          <el-table-column label="住院号" width="110"><template #default="s">{{ orDash(s.row.baby_inp_no) }}</template></el-table-column>',
+      '          <el-table-column label="状态" width="72" align="center"><template #default="s"><el-tag size="small" :type="newbornStatusTag(s.row.status)">{{ newbornStatusLabel(s.row.status) }}</el-tag></template></el-table-column>',
       '        </el-table>',
       '      </template>',
       '    </div>',
@@ -1807,6 +1847,36 @@
       '      <el-button size="small" type="primary" :loading="soSaving" @click="submitSoOrder">提交</el-button>',
       '    </template>',
       '  </el-dialog>',
+      '  <el-dialog v-model="tplDlgVisible" title="套用手术医嘱模板" width="620px" :close-on-click-modal="false" append-to-body>',
+      '    <div class="surg-info" style="margin-bottom:8px">仅列出适用场景=手术医嘱且启用的模板; 套用后按模板明细批量开立到本手术, 开立阶段可覆盖模板默认阶段。</div>',
+      '    <div style="margin-bottom:8px;font-size:13px">开立阶段: <el-radio-group v-model="tplPick.orderPhase" size="small"><el-radio-button :value="1">术前</el-radio-button><el-radio-button :value="2">术中</el-radio-button><el-radio-button :value="3">术后</el-radio-button></el-radio-group></div>',
+      '    <el-table :data="tplList" border size="small" v-loading="tplLoading" max-height="280" empty-text="暂无手术医嘱模板(请到住院医嘱模板维护新建, 适用场景=手术医嘱)">',
+      '      <el-table-column label="选择" width="56" align="center"><template #default="s"><el-button v-if="tplPick.templateId === s.row.id" link type="success">已选</el-button><el-button v-else link @click="pickTpl(s.row)">选择</el-button></template></el-table-column>',
+      '      <el-table-column label="模板名称" min-width="160" show-overflow-tooltip><template #default="s">{{ s.row.templateName }}</template></el-table-column>',
+      '      <el-table-column label="级别" width="70" align="center"><template #default="s">{{ tplLevelLabel(s.row.templateType) }}</template></el-table-column>',
+      '      <el-table-column label="默认阶段" width="80" align="center"><template #default="s">{{ s.row.surgeryPhase ? phaseLabel(s.row.surgeryPhase) : "-" }}</template></el-table-column>',
+      '      <el-table-column label="使用次数" width="76" align="center"><template #default="s">{{ orDash(s.row.usageCount) }}</template></el-table-column>',
+      '    </el-table>',
+      '    <template #footer>',
+      '      <el-button size="small" @click="tplDlgVisible = false">取消</el-button>',
+      '      <el-button size="small" type="primary" :disabled="!tplPick.templateId" :loading="tplSaving" @click="applyTemplate">套用并批量开嘱</el-button>',
+      '    </template>',
+      '  </el-dialog>',
+      '  <el-dialog v-model="nbDlgVisible" title="新生儿建档" width="560px" :close-on-click-modal="false" append-to-body>',
+      '    <el-form label-width="92px" size="small">',
+      '      <el-form-item label="姓名" required><el-input v-model="nbForm.babyName" placeholder="新生儿姓名(必填)"></el-input></el-form-item>',
+      '      <el-form-item label="性别"><el-radio-group v-model="nbForm.babySex"><el-radio-button :value="1">男</el-radio-button><el-radio-button :value="2">女</el-radio-button></el-radio-group></el-form-item>',
+      '      <el-form-item label="出生时间"><el-date-picker v-model="nbForm.birthTime" type="datetime" value-format="YYYY-MM-DD HH:mm:ss" placeholder="默认当前" style="width:200px"></el-date-picker></el-form-item>',
+      '      <el-form-item label="Apgar评分"><el-input-number v-model="nbForm.apgar1" :min="0" :max="10" controls-position="right" style="width:84px"></el-input-number><span style="margin:0 4px">/</span><el-input-number v-model="nbForm.apgar5" :min="0" :max="10" controls-position="right" style="width:84px"></el-input-number><span style="margin:0 4px">/</span><el-input-number v-model="nbForm.apgar10" :min="0" :max="10" controls-position="right" style="width:84px"></el-input-number><span style="margin-left:6px;font-size:12px;color:var(--yb-ink-3)">1分/5分/10分</span></el-form-item>',
+      '      <el-form-item label="体重/身长"><el-input-number v-model="nbForm.weightG" :min="0" :max="10000" controls-position="right" style="width:100px"></el-input-number><span style="margin:0 4px">g,</span><el-input-number v-model="nbForm.heightCm" :min="0" :max="100" controls-position="right" style="width:92px"></el-input-number><span style="margin-left:4px">cm</span></el-form-item>',
+      '      <el-form-item label="分娩方式"><el-select v-model="nbForm.birthType" style="width:140px"><el-option v-for="o in birthTypeOpts" :key="o.value" :label="o.label" :value="o.value"></el-option></el-select></el-form-item>',
+      '      <el-form-item label="备注"><el-input v-model="nbForm.remark" type="textarea" :rows="2" placeholder="选填"></el-input></el-form-item>',
+      '    </el-form>',
+      '    <template #footer>',
+      '      <el-button size="small" @click="nbDlgVisible = false">取消</el-button>',
+      '      <el-button size="small" type="primary" :loading="nbSaving" @click="submitNewborn">建档</el-button>',
+      '    </template>',
+      '  </el-dialog>',
       '</div>'
     ].join('\n'),
     data: function () {
@@ -1817,7 +1887,9 @@
         page: 1,
         size: 20,
         loading: false,
-        filters: { deptId: null, dateRange: [], status: [], kw: '' },
+        filters: { deptId: null, dateRange: [], status: [], kw: '', moduleType: null },
+        moduleOpts: MODULE_OPTS,
+        birthTypeOpts: BIRTH_TYPE_OPTS,
         refDepts: [],
         doctors: [],
         nurses: [],
@@ -1875,7 +1947,12 @@
         soPickDrugId: null, soPickChargeId: null,
         soDrugOptions: [], soChargeOptions: [], soUsageOpts: [], soFreqOpts: [],
         soDrugLoading: false, soChargeLoading: false, soDictLoaded: false,
-        soCatOpts: ORDER_CAT_OPTS
+        soCatOpts: ORDER_CAT_OPTS,
+        /* ===== 手麻P2b: 手术医嘱模板套用(apply_scene=2) ===== */
+        tplDlgVisible: false, tplSaving: false, tplList: [], tplLoading: false,
+        tplPick: { templateId: null, orderPhase: 2 },
+        /* ===== 手麻P2d: 新生儿建档(分娩联动) ===== */
+        nbGuide: null, nbList: [], nbLoading: false, nbDlgVisible: false, nbSaving: false, nbForm: blankNewbornForm()
       };
     },
     computed: {
@@ -1912,6 +1989,7 @@
         var org = HIS.currentOrgId();
         if (org) { q += '&orgId=' + org; }
         if (vm.filters.deptId) { q += '&deptId=' + vm.filters.deptId; }
+        if (vm.filters.moduleType) { q += '&moduleType=' + vm.filters.moduleType; }
         if (vm.filters.dateRange && vm.filters.dateRange.length === 2) {
           q += '&startDate=' + vm.filters.dateRange[0] + '&endDate=' + vm.filters.dateRange[1];
         }
@@ -2159,10 +2237,12 @@
         vm.detail = null;
         vm.detailLoading = true;
         vm.detailVisible = true;
+        vm.nbGuide = null; vm.nbList = [];
         HIS.get('/api/his/surgery/' + id).then(function (d) {
           vm.detail = d || null;
           vm.detailLoading = false;
           vm.loadSurgeryOrders();
+          if (d && d.surgery && Number(d.surgery.moduleType) === 3) { vm.loadNewbornGuide(d.surgery); }
         }).catch(function (e) { vm.detailLoading = false; HIS.notifyError(e); });
       },
       /* ===== 手麻P1: 术中医嘱区方法 ===== */
@@ -2286,6 +2366,86 @@
           .then(function () { return HIS.put('/api/his/inp/order/' + HIS.idParam(row.id) + '/cancel'); })
           .then(function () { HIS.notifySuccess && HIS.notifySuccess('已作废'); vm.loadSurgeryOrders(); })
           .catch(function (e) { if (!isCancel(e)) { HIS.notifyError(e); } });
+      },
+      /* ===== 手麻P2b: 手术医嘱模板套用 ===== */
+      openTplDialog: function () {
+        var vm = this;
+        vm.tplPick = { templateId: null, orderPhase: 2 };
+        vm.tplDlgVisible = true;
+        vm.tplLoading = true;
+        HIS.get('/api/his/inp/order-template/list?page=1&size=200&applyScene=2&status=1')
+          .then(function (d) { vm.tplList = (d && d.records) || []; })
+          .catch(function (e) { vm.tplList = []; HIS.notifyError(e); })
+          .finally(function () { vm.tplLoading = false; });
+      },
+      pickTpl: function (row) {
+        var vm = this;
+        vm.tplPick.templateId = row.id;
+        if (row.surgeryPhase) { vm.tplPick.orderPhase = Number(row.surgeryPhase); }
+      },
+      applyTemplate: function () {
+        var vm = this;
+        var s = vm.detail && vm.detail.surgery;
+        if (!s || !vm.tplPick.templateId) { return; }
+        vm.tplSaving = true;
+        HIS.post('/api/his/surgery/' + HIS.idParam(s.id) + '/order/from-template',
+          { templateId: vm.tplPick.templateId, orderPhase: Number(vm.tplPick.orderPhase) })
+          .then(function (list) {
+            HIS.notifySuccess && HIS.notifySuccess('模板套用完成, 共开立 ' + ((list && list.length) || 0) + ' 条医嘱');
+            vm.tplDlgVisible = false;
+            vm.loadSurgeryOrders();
+          })
+          .catch(function (e) { HIS.notifyError(e); })
+          .finally(function () { vm.tplSaving = false; });
+      },
+      /* ===== 手麻P2d: 新生儿建档(分娩联动) ===== */
+      loadNewbornGuide: function (surgery) {
+        var vm = this;
+        vm.nbLoading = true;
+        HIS.get('/api/his/newborn/guide/' + HIS.idParam(surgery.id))
+          .then(function (g) {
+            vm.nbGuide = g || null;
+            var mid = (g && g.motherInpVisitId) || surgery.inpVisitId;
+            if (mid) {
+              return HIS.get('/api/his/newborn/list?motherInpVisitId=' + HIS.idParam(mid));
+            }
+            vm.nbList = [];
+            return null;
+          })
+          .then(function (l) { if (l) { vm.nbList = l; } })
+          .catch(function (e) { vm.nbList = []; HIS.notifyError(e); })
+          .finally(function () { vm.nbLoading = false; });
+      },
+      openNewbornDlg: function () {
+        var vm = this;
+        var s = vm.detail && vm.detail.surgery;
+        if (!s) { return; }
+        vm.nbForm = blankNewbornForm(s.id, (vm.nbGuide && vm.nbGuide.motherInpVisitId) || s.inpVisitId);
+        vm.nbDlgVisible = true;
+      },
+      submitNewborn: function () {
+        var vm = this;
+        var f = vm.nbForm;
+        if (!f.motherInpVisitId) { HIS.notifyError('该手术无住院就诊标识, 无法新生儿建档'); return; }
+        if (!f.babyName || !String(f.babyName).trim()) { HIS.notifyError('请填写新生儿姓名'); return; }
+        vm.nbSaving = true;
+        HIS.post('/api/his/newborn/register', {
+          motherInpVisitId: f.motherInpVisitId,
+          surgeryId: f.surgeryId,
+          babyName: String(f.babyName).trim(),
+          babySex: f.babySex,
+          birthTime: f.birthTime || null,
+          apgar1: f.apgar1, apgar5: f.apgar5, apgar10: f.apgar10,
+          weightG: f.weightG, heightCm: f.heightCm,
+          birthType: f.birthType, remark: f.remark || null
+        })
+          .then(function () {
+            HIS.notifySuccess && HIS.notifySuccess('新生儿建档完成');
+            vm.nbDlgVisible = false;
+            vm.loadNewbornGuide(vm.detail.surgery);
+          })
+          .catch(function (e) { HIS.notifyError(e); })
+          .finally(function () { vm.nbSaving = false; });
       },
       openAne: function (id) { this.aneSid = id; this.aneVisible = true; },
       openFee: function (id) { this.feeSid = id; this.feeVisible = true; },

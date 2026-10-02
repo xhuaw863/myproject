@@ -14,6 +14,7 @@ import com.yb.hi.framework.tenant.TenantContext;
 import com.yb.hi.framework.tenant.UserContext;
 import com.yb.hi.mapper.inpatient.HisSurgeryApplyMapper;
 import com.yb.hi.mapper.inpatient.HisSurgeryNotifyMapper;
+import com.yb.hi.platform.notify.SmsNotifyGateway;
 import com.yb.hi.platform.service.OrgAccessGuard;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -48,15 +49,17 @@ public class SurgeryApplyService {
     private final SurgeryAuthRuleService authRuleService;
     private final OrgAccessGuard guard;
     private final JdbcTemplate jdbcTemplate;
+    private final SmsNotifyGateway notifyGateway;
 
     public SurgeryApplyService(HisSurgeryApplyMapper applyMapper, HisSurgeryNotifyMapper notifyMapper,
                                SurgeryAuthRuleService authRuleService, OrgAccessGuard guard,
-                               JdbcTemplate jdbcTemplate) {
+                               JdbcTemplate jdbcTemplate, SmsNotifyGateway notifyGateway) {
         this.applyMapper = applyMapper;
         this.notifyMapper = notifyMapper;
         this.authRuleService = authRuleService;
         this.guard = guard;
         this.jdbcTemplate = jdbcTemplate;
+        this.notifyGateway = notifyGateway;
     }
 
     /* ==================== 查询 ==================== */
@@ -372,8 +375,8 @@ public class SurgeryApplyService {
 
     /* ==================== 通知管理(规范2.2.2.3.7.6) ==================== */
 
-    /** 通知分页: status/notifyType 可选(1待通知集中管理批量补发) */
-    public IPage<Map<String, Object>> notifyPage(Integer status, Integer notifyType, int page, int size) {
+    /** 通知分页: status/notifyType/channel 可选(1待通知集中管理批量补发) */
+    public IPage<Map<String, Object>> notifyPage(Integer status, Integer notifyType, Integer channel, int page, int size) {
         long p = page < 1 ? 1 : page;
         long s = size < 1 ? 20 : Math.min(size, 200);
         StringBuilder where = new StringBuilder(
@@ -393,6 +396,10 @@ public class SurgeryApplyService {
             where.append(" AND n.notify_type = ?");
             args.add(notifyType);
         }
+        if (channel != null) {
+            where.append(" AND n.channel = ?");
+            args.add(channel);
+        }
         Long total = jdbcTemplate.queryForObject("SELECT COUNT(*)" + where, Long.class, args.toArray());
         long cnt = total == null ? 0L : total;
         List<Object> dataArgs = new ArrayList<>(args);
@@ -401,7 +408,8 @@ public class SurgeryApplyService {
         List<Map<String, Object>> records = cnt == 0 ? new ArrayList<>()
                 : jdbcTemplate.queryForList(
                 "SELECT n.id, n.apply_id, n.surgery_id, n.patient_name, n.phone, n.notify_type, n.channel,"
-                        + " n.content, n.status, n.reply_content, n.send_by, n.send_time, n.create_time"
+                        + " n.content, n.status, n.reply_content, n.send_by, n.send_time,"
+                        + " n.retry_count, n.gateway_msg_id, n.create_time"
                         + where + " ORDER BY n.id DESC LIMIT ?, ?",
                 dataArgs.toArray());
         Page<Map<String, Object>> result = new Page<>(p, s, cnt);
@@ -409,7 +417,10 @@ public class SurgeryApplyService {
         return result;
     }
 
-    /** 批量发送通知(模拟: 置状态2+留痕, 真实短信通道待接) */
+    /**
+     * 批量发送通知: 置状态2+留痕; 电话(2)/诊间(3)仅登记不真实下发, 其余渠道(短信1/自助机4/APP5/公众号6)
+     * 经 notifyGateway 下发, Noop 恒成功(无回执), Http 回填 gateway_msg_id。每次下发 retry_count+1。
+     */
     @Transactional(rollbackFor = Exception.class)
     public int notifySend(List<Long> ids) {
         if (ids == null || ids.isEmpty()) {
@@ -418,16 +429,137 @@ public class SurgeryApplyService {
         LoginUser lu = requireLogin();
         int sent = 0;
         for (Long id : ids) {
-            sent += notifyMapper.update(null, new LambdaUpdateWrapper<HisSurgeryNotify>()
-                    .set(HisSurgeryNotify::getStatus, 2)
-                    .set(HisSurgeryNotify::getSendBy, displayName(lu))
-                    .set(HisSurgeryNotify::getSendTime, LocalDateTime.now())
-                    .set(HisSurgeryNotify::getUpdateTime, LocalDateTime.now())
-                    .eq(HisSurgeryNotify::getId, id)
-                    .eq(HisSurgeryNotify::getStatus, 1));
+            HisSurgeryNotify n = notifyMapper.selectById(id);
+            if (n == null || !Integer.valueOf(1).equals(n.getStatus())) {
+                continue;
+            }
+            Integer ch = n.getChannel();
+            if (needGateway(ch)) {
+                SmsNotifyGateway.Result r = notifyGateway.send(n.getPhone(), n.getContent());
+                if (!r.isSuccess()) {
+                    log.warn("手术通知下发失败: id={}, channel={}, err={}", id, ch, r.getError());
+                    continue;
+                }
+                n.setGatewayMsgId(r.getMsgId());
+            }
+            n.setStatus(2);
+            n.setRetryCount((n.getRetryCount() == null ? 0 : n.getRetryCount()) + 1);
+            n.setSendBy(displayName(lu));
+            n.setSendTime(LocalDateTime.now());
+            notifyMapper.updateById(n);
+            sent++;
         }
-        log.info("手术通知批量发送(模拟): 请求={}条, 实际={}条", ids.size(), sent);
+        log.info("手术通知批量发送: 请求={}条, 实际={}条", ids.size(), sent);
         return sent;
+    }
+
+    /** 单条重发(失败或需再触达): 不校验原状态, 走网关后 retry_count+1 并置已通知。 */
+    @Transactional(rollbackFor = Exception.class)
+    public HisSurgeryNotify notifyResend(Long id) {
+        if (id == null) {
+            throw new BizException(400, "通知ID不能为空");
+        }
+        HisSurgeryNotify n = notifyMapper.selectById(id);
+        if (n == null) {
+            throw new BizException(404, "通知记录不存在");
+        }
+        LoginUser lu = requireLogin();
+        Integer ch = n.getChannel();
+        if (needGateway(ch)) {
+            SmsNotifyGateway.Result r = notifyGateway.send(n.getPhone(), n.getContent());
+            if (!r.isSuccess()) {
+                throw new BizException("下发失败: " + r.getError());
+            }
+            n.setGatewayMsgId(r.getMsgId());
+        }
+        n.setStatus(2);
+        n.setRetryCount((n.getRetryCount() == null ? 0 : n.getRetryCount()) + 1);
+        n.setSendBy(displayName(lu));
+        n.setSendTime(LocalDateTime.now());
+        notifyMapper.updateById(n);
+        return notifyMapper.selectById(id);
+    }
+
+    /**
+     * 生成术前提醒(P2c, 规范2.2.2.3.7.6): 对已安排(status=4)且排期在 [今天, 今天+beforeHours小时对应日] 的手术,
+     * 逐台产 notify_type=3 记录; 去重: 同 surgery_id 已存在未发送(type3,status=1)则跳过。返回新增条数。
+     */
+    @Transactional(rollbackFor = Exception.class)
+    public int generatePreOpReminders(int beforeHours) {
+        int hours = beforeHours <= 0 ? 24 : Math.min(beforeHours, 168);
+        LocalDate today = LocalDate.now();
+        LocalDate horizon = today.plusDays((long) Math.ceil(hours / 24.0));
+        List<Object> args = new ArrayList<>();
+        args.add(tenantId());
+        Long scope = guard.scopeOrgId(null);
+        String orgSql = "";
+        if (scope != null) {
+            orgSql = " AND s.org_id = ?";
+            args.add(scope);
+        }
+        args.add(today);
+        args.add(horizon);
+        List<Map<String, Object>> rows = jdbcTemplate.queryForList(
+                "SELECT s.id surgery_id, s.org_id, s.apply_id, s.schedule_date, s.schedule_time, s.surgery_name"
+                        + " FROM his_surgery s WHERE s.deleted = 0 AND s.tenant_id = ?" + orgSql
+                        + " AND s.status = 4 AND s.schedule_date BETWEEN ? AND ?"
+                        + " AND NOT EXISTS (SELECT 1 FROM his_surgery_notify n WHERE n.deleted = 0"
+                        + " AND n.surgery_id = s.id AND n.notify_type = 3 AND n.status = 1)"
+                        + " ORDER BY s.schedule_date", args.toArray());
+        int created = 0;
+        for (Map<String, Object> row : rows) {
+            Long surgeryId = toLong(row.get("surgery_id"));
+            String pname = str(jdbcTemplate.queryForObject(
+                    "SELECT COALESCE(p.name, '') FROM his_surgery s LEFT JOIN his_inp_visit v ON v.id = s.inp_visit_id AND v.deleted = 0"
+                            + " LEFT JOIN his_patient p ON p.id = v.patient_id AND p.deleted = 0 WHERE s.id = ? AND s.deleted = 0",
+                    String.class, surgeryId));
+            String phone = str(jdbcTemplate.queryForObject(
+                    "SELECT COALESCE(p.phone, '') FROM his_surgery s LEFT JOIN his_inp_visit v ON v.id = s.inp_visit_id AND v.deleted = 0"
+                            + " LEFT JOIN his_patient p ON p.id = v.patient_id AND p.deleted = 0 WHERE s.id = ? AND s.deleted = 0",
+                    String.class, surgeryId));
+            String content = "术前提醒: " + str(row.get("surgery_name")) + " 将于 "
+                    + str(row.get("schedule_date")) + " " + str(row.get("schedule_time")) + " 进行, 请提前做好准备";
+            // 直接按手术自身 org_id 落库(不依赖登录上下文), 使定时任务线程(无 UserContext)也可生成提醒
+            insertNotify(toLong(row.get("org_id")), toLong(row.get("apply_id")), surgeryId,
+                    pname, phone, 3, content, 1);
+            created++;
+        }
+        log.info("术前提醒生成: horizon={}天, 新增={}条", hours, created);
+        return created;
+    }
+
+    /** 是否需经真实网关下发(电话/诊间为线下登记, 不走网关)。 */
+    private static boolean needGateway(Integer channel) {
+        return channel == null || (channel != 2 && channel != 3);
+    }
+
+    /** 建通知(默认渠道短信): 供 SurgeryService 联动调用 */
+    public void createNotify(Long applyId, Long surgeryId, String patientName, String phone,
+                             int notifyType, String content) {
+        createNotify(applyId, surgeryId, patientName, phone, notifyType, content, 1);
+    }
+
+    /** 建通知(指定渠道)。 */
+    public void createNotify(Long applyId, Long surgeryId, String patientName, String phone,
+                             int notifyType, String content, Integer channel) {
+        insertNotify(guard.currentOrgId(), applyId, surgeryId, patientName, phone, notifyType, content, channel);
+    }
+
+    /** 通知落库(显式 orgId, 供登录联动与无上下文定时任务共用): 默认渠道短信(1)、状态1待通知、retry 0。 */
+    private void insertNotify(Long orgId, Long applyId, Long surgeryId, String patientName, String phone,
+                              int notifyType, String content, Integer channel) {
+        HisSurgeryNotify n = new HisSurgeryNotify();
+        n.setOrgId(orgId);
+        n.setApplyId(applyId);
+        n.setSurgeryId(surgeryId);
+        n.setPatientName(patientName);
+        n.setPhone(phone);
+        n.setNotifyType(notifyType);
+        n.setChannel(channel != null ? channel : 1);
+        n.setContent(content);
+        n.setRetryCount(0);
+        n.setStatus(1);
+        notifyMapper.insert(n);
     }
 
     /** 电话通知登记 / 患者回复登记: 置状态3并记录回复内容 */
@@ -449,22 +581,6 @@ public class SurgeryApplyService {
         }
         notifyMapper.updateById(n);
         return notifyMapper.selectById(id);
-    }
-
-    /** 建通知(供 SurgeryService 联动调用) */
-    public void createNotify(Long applyId, Long surgeryId, String patientName, String phone,
-                             int notifyType, String content) {
-        HisSurgeryNotify n = new HisSurgeryNotify();
-        n.setOrgId(guard.currentOrgId());
-        n.setApplyId(applyId);
-        n.setSurgeryId(surgeryId);
-        n.setPatientName(patientName);
-        n.setPhone(phone);
-        n.setNotifyType(notifyType);
-        n.setChannel(1);
-        n.setContent(content);
-        n.setStatus(1);
-        notifyMapper.insert(n);
     }
 
     /* ==================== 校验 / 工具 ==================== */

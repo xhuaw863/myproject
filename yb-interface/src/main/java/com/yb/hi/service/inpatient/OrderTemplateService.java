@@ -36,9 +36,10 @@ public class OrderTemplateService {
         this.guard = guard;
     }
 
-    /** 模板分页(templateType/scopeType/deptId/doctorId/status/关键字 可选, 使用热度倒序) */
+    /** 模板分页(templateType/scopeType/deptId/doctorId/status/applyScene/surgeryPhase/关键字 可选, 使用热度倒序) */
     public R<IPage<HisOrderTemplate>> list(Integer templateType, Integer scopeType, Long deptId,
-                                           Long doctorId, Integer status, String keyword, Page<HisOrderTemplate> page) {
+                                           Long doctorId, Integer status, String keyword,
+                                           Integer applyScene, Integer surgeryPhase, Page<HisOrderTemplate> page) {
         Page<HisOrderTemplate> p = page != null ? page : new Page<>(1, 10);
         LambdaQueryWrapper<HisOrderTemplate> qw = new LambdaQueryWrapper<HisOrderTemplate>()
                 // 机构隔离: 仅本机构可见(含个人/科室/全院三级, 全院=本机构全院, 不跨机构共享; 与路径模板同语义)
@@ -60,6 +61,13 @@ public class OrderTemplateService {
         if (status != null) {
             // 开嘱侧选择器传 status=1: 停用模板不应出现在模板/套餐引用列表
             qw.eq(HisOrderTemplate::getStatus, status);
+        }
+        if (applyScene != null) {
+            // 手术模板选择器传 applyScene=2; 普通住院开嘱传 1 或空
+            qw.eq(HisOrderTemplate::getApplyScene, applyScene);
+        }
+        if (surgeryPhase != null) {
+            qw.eq(HisOrderTemplate::getSurgeryPhase, surgeryPhase);
         }
         if (StringUtils.hasText(keyword)) {
             qw.like(HisOrderTemplate::getTemplateName, keyword);
@@ -97,6 +105,8 @@ public class OrderTemplateService {
             t.setItems(JSON.toJSONString(dto.getItems()));
         }
         t.setDiseaseCode(dto.getDiseaseCode());
+        t.setApplyScene(dto.getApplyScene() != null ? dto.getApplyScene() : 1);
+        t.setSurgeryPhase(dto.getSurgeryPhase());
         t.setUsageCount(0);
         t.setStatus(dto.getStatus() != null ? dto.getStatus() : 1);
         templateMapper.insert(t);
@@ -133,6 +143,12 @@ public class OrderTemplateService {
         }
         if (dto.getDiseaseCode() != null) {
             exist.setDiseaseCode(dto.getDiseaseCode());
+        }
+        if (dto.getApplyScene() != null) {
+            exist.setApplyScene(dto.getApplyScene());
+        }
+        if (dto.getSurgeryPhase() != null) {
+            exist.setSurgeryPhase(dto.getSurgeryPhase());
         }
         if (dto.getStatus() != null) {
             exist.setStatus(dto.getStatus());

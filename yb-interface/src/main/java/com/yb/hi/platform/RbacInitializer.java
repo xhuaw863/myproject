@@ -496,7 +496,9 @@ public class RbacInitializer implements ApplicationRunner {
                 // 临床路径/手术麻醉(2026-09 集成): 路径模板管理 + 手术管理 + 麻醉记录; 手麻P0: 手术申请管理
                 "pathway-template", "surgery-manage", "surgery-apply", "anesthesia-record",
                 // 住院报表(2026-09 报表/打印模块): 报表中心(只读)
-                "inp-report"});
+                "inp-report",
+                // 手麻P2: 手术统计报表(只读)
+                "surgery-report"});
         grants.put(Roles.PHARMACIST, new String[]{"dashboard", "dispense-todo", "dispense", "drug-return", "pharmacy-def", "pharmacy-rpt", "wh-stock", "wh-in", "wh-out", "warehouse-def", "warehouse-rpt", "wh-check", "req-mgr", "trf-mgr", "price-adjust", "stock-ledger", "trace-code", "price-mgr", "pharmacy-window", "window-workstation", "window-dept-rule", "pharmacy-cross", "rx-audit", "supplier-mgr", "purchase-rule", "purchase-plan", "purchase-order", "stock-accept", "supplier-pay", "payable-rpt", "drug-maint", "maint-template", "month-end",
                 // 住院药师站(T41 审核 + P4 发药增强)
                 "pharm-station", "inp-dispense-work", "inp-discharge-pickup", "inp-dispense-history"});
@@ -568,6 +570,8 @@ public class RbacInitializer implements ApplicationRunner {
                 "pathway-template", "surgery-manage", "surgery-apply", "anesthesia-record",
                 // 住院报表(2026-09 报表/打印模块): 报表中心(只读)
                 "inp-report",
+                // 手麻P2: 手术统计报表(只读)
+                "surgery-report",
                 // 住院危急值闭环(T41): 危急值管理(确认/处置/关闭)
                 "critical-value"});
         grants.put(Roles.NURSE, new String[]{"doctor-ws", "doctor-worklog", "nurse-pending", "nurse-skin-test", "nurse-infusion", "nurse-allergy", "nurse-exec-log",
@@ -1880,7 +1884,9 @@ public class RbacInitializer implements ApplicationRunner {
         ensureChildMenu(menuIds, "surgery-group", "surgery-manage", "手术管理", "SurgeryManage");
         ensureChildMenu(menuIds, "surgery-group", "surgery-apply", "手术申请管理", "SurgeryApply");
         ensureChildMenu(menuIds, "surgery-group", "anesthesia-record", "麻醉记录", "AnesthesiaRecord");
-        ensureChildMenu(menuIds, "surgery-group", "surgery-fee", "手麻记费", "SurgeryFee");
+                ensureChildMenu(menuIds, "surgery-group", "surgery-fee", "手麻记费", "SurgeryFee");
+                // 手麻P2: 手术统计报表(手术量/麻醉/时长/费用/质量/KPI 六类只读)
+                ensureChildMenu(menuIds, "surgery-group", "surgery-report", "手术统计报表", "SurgeryReport");
         // 住院报表(2026-09 报表/打印模块): 报表中心/打印管理
         ensureDirMenu(menuIds, "inp-report-group", "住院报表");
         ensureChildMenu(menuIds, "inp-report-group", "inp-report", "报表中心", "InpReportCenter");

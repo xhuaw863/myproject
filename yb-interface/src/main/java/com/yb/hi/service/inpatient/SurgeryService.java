@@ -78,7 +78,7 @@ public class SurgeryService {
      */
     public IPage<Map<String, Object>> listSurgeries(Long orgId, Long deptId, LocalDate startDate,
                                                     LocalDate endDate, String statuses,
-                                                    Integer visitType, int page, int size) {
+                                                    Integer visitType, Integer moduleType, int page, int size) {
         long p = safePage(page);
         long s = safeSize(size);
 
@@ -123,6 +123,10 @@ public class SurgeryService {
         if (visitType != null) {
             where.append(" AND IFNULL(s.visit_type, 1) = ?");
             args.add(visitType);
+        }
+        if (moduleType != null) {
+            where.append(" AND IFNULL(s.module_type, 1) = ?");
+            args.add(moduleType);
         }
 
         Long total = jdbcTemplate.queryForObject("SELECT COUNT(*)" + where, Long.class, args.toArray());
@@ -226,6 +230,8 @@ public class SurgeryService {
         s.setDeptId(dto.getDeptId());
         s.setAsaGrade(dto.getAsaGrade());
         s.setIncisionType(dto.getIncisionType());
+        // 一体化模块归类(P2d): 缺省1手术室
+        s.setModuleType(dto.getModuleType() != null ? dto.getModuleType() : 1);
         // 三级及以上手术需上级审批: 待审(1)前置; 一/二级无需审批(0)
         s.setApprovalStatus(dto.getSurgeryLevel() != null && dto.getSurgeryLevel() >= 3 ? 1 : 0);
         s.setStatus(1);
@@ -457,7 +463,7 @@ public class SurgeryService {
         s.setInpVisitId(a.getInpVisitId());
         s.setVisitId(a.getVisitId());
         s.setDeadlineType(a.getDeadlineType());
-        s.setModuleType(1);
+        s.setModuleType(dto.getModuleType() != null ? dto.getModuleType() : 1);
         s.setSurgeryCode(a.getSurgeryCode());
         s.setSurgeryName(a.getSurgeryName());
         s.setSurgeryLevel(a.getSurgeryLevel());
@@ -505,7 +511,7 @@ public class SurgeryService {
         s.setInpVisitId(visitType == 1 ? dto.getInpVisitId() : null);
         s.setVisitId(visitType == 1 ? null : dto.getVisitId());
         s.setDeadlineType(3);
-        s.setModuleType(1);
+        s.setModuleType(dto.getModuleType() != null ? dto.getModuleType() : 1);
         s.setSurgeryCode(trimOrNull(dto.getSurgeryCode()));
         s.setSurgeryName(dto.getSurgeryName().trim());
         s.setSurgeryLevel(dto.getSurgeryLevel());
@@ -760,7 +766,7 @@ public class SurgeryService {
     }
 
     /** 手术排程板: 指定日期(默认今日)按手术间分组的占用视图(含门诊/日间, 状态<>6) */
-    public Map<String, Object> roomBoard(Long orgId, LocalDate date) {
+    public Map<String, Object> roomBoard(Long orgId, LocalDate date, Integer moduleType) {
         LocalDate day = date == null ? LocalDate.now() : date;
         StringBuilder sql = new StringBuilder(
                 "SELECT s.id, s.apply_id, IFNULL(s.visit_type,1) visit_type, s.schedule_time, s.room_no, s.status, s.register_time,"
@@ -781,6 +787,10 @@ public class SurgeryService {
         if (orgId != null) {
             sql.append(" AND s.org_id = ?");
             args.add(orgId);
+        }
+        if (moduleType != null) {
+            sql.append(" AND IFNULL(s.module_type, 1) = ?");
+            args.add(moduleType);
         }
         sql.append(" ORDER BY s.schedule_time, s.id");
         List<Map<String, Object>> rows = jdbcTemplate.queryForList(sql.toString(), args.toArray());

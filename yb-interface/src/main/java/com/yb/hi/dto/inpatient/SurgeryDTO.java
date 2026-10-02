@@ -36,4 +36,6 @@ public class SurgeryDTO {
     private Integer asaGrade;
     /** 切口类型: 1清洁 2清洁污染 3污染 4感染 */
     private Integer incisionType;
+    /** 一体化模块: 1手术室 2DSA 3产科分娩 4内镜 5麻醉治疗(缺省1) */
+    private Integer moduleType;
 }

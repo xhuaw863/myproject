@@ -90,20 +90,33 @@ public class SurgeryApplyController {
 
     /* ==================== 通知管理(规范2.2.2.3.7.6) ==================== */
 
-    /** 通知分页(status: 1待通知 2已通知 3已回复; notifyType: 1预约 2变动 3术前提醒) */
+    /** 通知分页(status: 1待通知 2已通知 3已回复; notifyType: 1预约 2变动 3术前提醒; channel: 1短信 2电话 3诊间 4自助机 5APP 6公众号) */
     @GetMapping("/notify/list")
     public R<IPage<Map<String, Object>>> notifyList(
             @RequestParam(required = false) Integer status,
             @RequestParam(required = false) Integer notifyType,
+            @RequestParam(required = false) Integer channel,
             @RequestParam(defaultValue = "1") int page,
             @RequestParam(defaultValue = "20") int size) {
-        return R.ok(applyService.notifyPage(status, notifyType, page, size));
+        return R.ok(applyService.notifyPage(status, notifyType, channel, page, size));
     }
 
-    /** 批量发送通知(模拟通道: 仅置状态留痕) */
+    /** 批量发送通知(渠道经网关下发: 电话/诊间仅留痕, 其余走 Noop/Http 网关) */
     @PutMapping("/notify/send")
     public R<Integer> notifySend(@RequestBody List<Long> ids) {
         return R.ok(applyService.notifySend(ids));
+    }
+
+    /** 单条重发(失败或需再触达): 走网关后 retry_count+1 并置已通知 */
+    @PostMapping("/notify/{id}/resend")
+    public R<HisSurgeryNotify> notifyResend(@PathVariable Long id) {
+        return R.ok(applyService.notifyResend(id));
+    }
+
+    /** 术前提醒批量生成(手动触发, 幂等去重): 对已安排且临近排期手术产 notify_type=3 记录, 返回新增条数 */
+    @PostMapping("/notify/pre-op")
+    public R<Integer> notifyPreOp(@RequestParam(defaultValue = "24") int beforeHours) {
+        return R.ok(applyService.generatePreOpReminders(beforeHours));
     }
 
     /** 电话通知/患者回复登记: 置已回复并记录回复内容(channel 可改2电话) */

@@ -89,6 +89,38 @@ public class SurgeryFeeService {
 
     /* ==================== 查询 / 汇总 ==================== */
 
+    /** 一体化模块(P2d) -> 推荐费用类别默认可见集(不强制, 供前端记账预置): key=module_type(1手术室 2DSA 3产科分娩 4内镜 5麻醉治疗) */
+    private static final Map<Integer, int[]> MODULE_FEE_DEFAULTS = new LinkedHashMap<>();
+
+    static {
+        MODULE_FEE_DEFAULTS.put(1, new int[]{1, 2, 3, 4, 5, 6}); // 手术室: 全类别
+        MODULE_FEE_DEFAULTS.put(2, new int[]{1, 3, 4, 6});        // DSA: 手术/监测/耗材/其他
+        MODULE_FEE_DEFAULTS.put(3, new int[]{1, 4, 5, 6});        // 产科分娩: 手术/耗材/药品/其他
+        MODULE_FEE_DEFAULTS.put(4, new int[]{1, 3, 4, 6});        // 内镜: 手术/监测/耗材/其他
+        MODULE_FEE_DEFAULTS.put(5, new int[]{2, 3, 5, 6});        // 麻醉治疗: 麻醉/监测/药品/其他
+    }
+
+    /**
+     * 按手术的 module_type 返回推荐费用类别默认归类与可见集(P2d, 不强制): {moduleType, defaultCategory, categories:[{feeCategory,feeCategoryName}]}。
+     */
+    public Map<String, Object> defaultFeeCategories(Long surgeryId) {
+        HisSurgery s = requireSurgery(surgeryId);
+        Integer moduleType = s.getModuleType() == null ? 1 : s.getModuleType();
+        int[] visible = MODULE_FEE_DEFAULTS.getOrDefault(moduleType, new int[]{1, 2, 3, 4, 5, 6});
+        List<Map<String, Object>> categories = new ArrayList<>();
+        for (int cat : visible) {
+            Map<String, Object> m = new LinkedHashMap<>();
+            m.put("feeCategory", cat);
+            m.put("feeCategoryName", FEE_CATEGORY_NAMES.getOrDefault(cat, "其他"));
+            categories.add(m);
+        }
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("moduleType", moduleType);
+        result.put("defaultCategory", visible.length > 0 ? visible[0] : 6);
+        result.put("categories", categories);
+        return result;
+    }
+
     /** 手术费用明细列表(含已退费行, status 标识 1正常 2退费; 最近的在前) */
     public List<HisSurgeryFee> listFees(Long surgeryId) {
         requireSurgery(surgeryId);

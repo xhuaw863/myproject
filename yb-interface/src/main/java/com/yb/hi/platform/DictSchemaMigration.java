@@ -426,6 +426,8 @@ public class DictSchemaMigration implements ApplicationRunner {
             // 住院模型增强: 15 张新表(过敏/知情同意/会诊/转科转床/费用预警/医嘱模板/护理量表/病历模板/质控/宏变量/日清单/打印模板/报表快照)
             // + 10 张存量表扩展列(幂等, 新模块非启动关键路径)
             ensureInpatientEnhancementTables(conn);
+            // 手麻P2: 医嘱模板手术场景扩展列 + 通知渠道下发展开列 + 新生儿建档新表(依赖 his_order_template 已建, 故置于增强表之后; 幂等)
+            ensureSurgeryP2Tables(conn);
             // UI升级(住院看板/通知角标): his_inp_notification 住院通知表(幂等, 新模块非启动关键路径)
             ensureUIEnhancementTables(conn);
             // P4 住院发药增强: 住院发药记录/病区暂存冲抵台账/出院带药取药二次核发 3 表 + his_drug_return.keep_ward_flag + his_inp_order.dispense_status 补列(幂等, 新模块非启动关键路径)
@@ -3938,6 +3940,56 @@ public class DictSchemaMigration implements ApplicationRunner {
         addColumnIfNotExists(conn, "his_inp_order", "proxy_doctor_id", "BIGINT DEFAULT NULL COMMENT '代开目标医生ID(his_staff.id, 权限按其口径校验; 实际开单人记 create_by)'");
         addColumnIfNotExists(conn, "his_inp_order", "proxy_reason", "VARCHAR(255) DEFAULT NULL COMMENT '代开原因留痕'");
         addColumnIfNotExists(conn, "his_inp_order", "send_pharm_status", "TINYINT DEFAULT NULL COMMENT '手术类药品医嘱发送药房闸门:0未发送 1已发送 2已撤回(普通医嘱为空自动入队)'");
+    }
+
+    /**
+     * 手麻 P2 幂等迁移:
+     * (P2b) his_order_template 补 apply_scene/surgery_phase 两列, 承接手术医嘱模板(不新建表);
+     * (P2c) his_surgery_notify 补 retry_count/gateway_msg_id 两列, 承接多渠道下发与真实网关回执;
+     * (P2d) 新建 his_newborn 新生儿建档表(产科分娩一体化)。
+     * 依赖 his_order_template(ensureInpatientEnhancementTables) 与 his_surgery_notify(ensureSurgeryApplyTables) 已建,
+     * addColumnIfNotExists 内部 tableExists 兜底, 故必须在两者之后调用。
+     */
+    private void ensureSurgeryP2Tables(Connection conn) throws Exception {
+        /* P2b: 医嘱模板手术场景扩展(apply_scene=2 手术医嘱模板, surgery_phase 目标阶段) */
+        addColumnIfNotExists(conn, "his_order_template", "apply_scene",
+                "TINYINT DEFAULT 1 COMMENT '适用场景:1普通住院 2手术医嘱(P2)'");
+        addColumnIfNotExists(conn, "his_order_template", "surgery_phase",
+                "TINYINT DEFAULT NULL COMMENT '手术模板目标阶段:1术前 2术中 3术后(apply_scene=2 时有值)'");
+        /* P2c: 通知渠道下发扩展(重试次数 + 真实网关回执ID), channel 语义扩为 1短信 2电话 3诊间 4自助机 5APP 6公众号 */
+        addColumnIfNotExists(conn, "his_surgery_notify", "retry_count",
+                "INT DEFAULT 0 COMMENT '通知下发重试次数'");
+        addColumnIfNotExists(conn, "his_surgery_notify", "gateway_msg_id",
+                "VARCHAR(120) DEFAULT NULL COMMENT '短信/APP网关回执ID(真实通道回填)'");
+        /* P2d: 新生儿建档表 */
+        try (Statement st = conn.createStatement()) {
+            st.executeUpdate("CREATE TABLE IF NOT EXISTS his_newborn ("
+                    + "id BIGINT NOT NULL COMMENT '主键',"
+                    + "tenant_id BIGINT NOT NULL COMMENT '租户ID',"
+                    + "org_id BIGINT NOT NULL COMMENT '机构ID',"
+                    + "mother_inp_visit_id BIGINT NOT NULL COMMENT '母亲住院就诊ID(his_inp_visit.id)',"
+                    + "surgery_id BIGINT DEFAULT NULL COMMENT '分娩手术ID(his_surgery.id, 剖宫产可关联)',"
+                    + "baby_patient_id BIGINT DEFAULT NULL COMMENT '新生儿建档患者ID(his_patient.id)',"
+                    + "baby_inp_visit_id BIGINT DEFAULT NULL COMMENT '新生儿住院就诊ID(his_inp_visit.id)',"
+                    + "baby_name VARCHAR(50) DEFAULT NULL COMMENT '新生儿姓名',"
+                    + "baby_sex TINYINT DEFAULT NULL COMMENT '性别:1男 2女',"
+                    + "birth_time DATETIME DEFAULT NULL COMMENT '出生时间',"
+                    + "apgar_1 INT DEFAULT NULL COMMENT 'Apgar 1分钟评分',"
+                    + "apgar_5 INT DEFAULT NULL COMMENT 'Apgar 5分钟评分',"
+                    + "apgar_10 INT DEFAULT NULL COMMENT 'Apgar 10分钟评分',"
+                    + "weight_g INT DEFAULT NULL COMMENT '出生体重(克)',"
+                    + "height_cm DECIMAL(5,1) DEFAULT NULL COMMENT '身长(厘米)',"
+                    + "birth_type TINYINT DEFAULT 1 COMMENT '分娩方式:1顺产 2剖宫产 3产钳 4臀助 5其他',"
+                    + "status TINYINT DEFAULT 1 COMMENT '状态:1在绑 2已转科 3已出院',"
+                    + "remark VARCHAR(500) DEFAULT NULL COMMENT '备注',"
+                    + "create_by VARCHAR(64) DEFAULT NULL, create_time DATETIME DEFAULT NULL,"
+                    + "update_by VARCHAR(64) DEFAULT NULL, update_time DATETIME DEFAULT NULL, deleted TINYINT DEFAULT 0,"
+                    + "PRIMARY KEY (id),"
+                    + "KEY idx_mother (mother_inp_visit_id),"
+                    + "KEY idx_surgery (surgery_id),"
+                    + "KEY idx_baby_visit (baby_inp_visit_id)"
+                    + ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='新生儿建档(P2d 产科分娩一体化)'");
+        }
     }
 
     /**

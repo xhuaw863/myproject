@@ -39,6 +39,12 @@ public class SurgeryFeeController {
         return R.ok(surgeryFeeService.listFees(surgeryId));
     }
 
+    /** 按手术 module_type 返回推荐费用类别默认归类与可见集(P2d, 一体化分流, 不强制) */
+    @GetMapping("/default-categories/{surgeryId}")
+    public R<Map<String, Object>> defaultCategories(@PathVariable Long surgeryId) {
+        return R.ok(surgeryFeeService.defaultFeeCategories(surgeryId));
+    }
+
     /** 添加费用项(his_surgery_fee + his_inp_charge_detail 双写, 回写 surgery_id) */
     @PostMapping
     public R<HisSurgeryFee> add(@RequestBody SurgeryFeeDTO dto) {

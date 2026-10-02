@@ -31,7 +31,7 @@ public class OrderTemplateController {
         this.orderTemplateService = orderTemplateService;
     }
 
-    /** 模板分页(templateType/scopeType/deptId/doctorId/status/keyword 可选) */
+    /** 模板分页(templateType/scopeType/deptId/doctorId/status/applyScene/surgeryPhase/keyword 可选) */
     @GetMapping("/list")
     public R<IPage<HisOrderTemplate>> list(@RequestParam(required = false) Integer templateType,
                                            @RequestParam(required = false) Integer scopeType,
@@ -39,10 +39,12 @@ public class OrderTemplateController {
                                            @RequestParam(required = false) Long doctorId,
                                            @RequestParam(required = false) Integer status,
                                            @RequestParam(required = false) String keyword,
+                                           @RequestParam(required = false) Integer applyScene,
+                                           @RequestParam(required = false) Integer surgeryPhase,
                                            @RequestParam(defaultValue = "1") long page,
                                            @RequestParam(defaultValue = "10") long size) {
         return orderTemplateService.list(templateType, scopeType, deptId, doctorId, status, keyword,
-                new Page<>(Math.max(page, 1), Math.min(Math.max(size, 1), 200)));
+                applyScene, surgeryPhase, new Page<>(Math.max(page, 1), Math.min(Math.max(size, 1), 200)));
     }
 
     /** 模板详情 */

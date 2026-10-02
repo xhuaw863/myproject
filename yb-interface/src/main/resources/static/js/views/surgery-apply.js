@@ -25,7 +25,9 @@
   const NOTIFY_TYPE = { 1: '预约成功', 2: '安排变动', 3: '术前提醒' };
   const NOTIFY_STATUS = { 1: '待通知', 2: '已通知', 3: '已回复' };
   const NOTIFY_STATUS_TYPE = { 1: 'warning', 2: 'primary', 3: 'success' };
-  const NOTIFY_CHANNEL = { 1: '短信', 2: '电话', 3: '站内' };
+  /* 手麻P2c: 渠道扩展 4自助机 5APP 6公众号(对齐后端 notifyPage channel 口径) */
+  const NOTIFY_CHANNEL = { 1: '短信', 2: '电话', 3: '诊间', 4: '自助机', 5: 'APP', 6: '公众号' };
+  const NOTIFY_CHANNEL_OPTS = optsOf(NOTIFY_CHANNEL);
 
   function optsOf(map) {
     return Object.keys(map).map(function (k) { return { value: Number(k), label: map[k] }; });
@@ -135,9 +137,15 @@
       '        <el-select v-model="nFilters.notifyType" clearable placeholder="通知类型" size="small" style="width:120px" @change="nSearch">',
       '          <el-option v-for="o in notifyTypeOpts" :key="o.value" :label="o.label" :value="o.value"></el-option>',
       '        </el-select>',
+      '        <el-select v-model="nFilters.channel" clearable placeholder="发送渠道" size="small" style="width:120px" @change="nSearch">',
+      '          <el-option v-for="o in notifyChannelOpts" :key="o.value" :label="o.label" :value="o.value"></el-option>',
+      '        </el-select>',
       '        <el-button type="primary" size="small" @click="nSearch">查询</el-button>',
       '        <el-button type="success" size="small" :disabled="!nSel.length" @click="doSend">批量发送({{ nSel.length }})</el-button>',
-      '        <span style="font-size:12px;color:var(--yb-ink-3)">短信通道未接入, "发送"为状态留痕(模拟)</span>',
+      '        <el-input-number v-model="preopHours" :min="1" :max="168" size="small" controls-position="right" style="width:110px"></el-input-number>',
+      '        <span style="font-size:12px;color:var(--yb-ink-3)">小时前</span>',
+      '        <el-button size="small" plain :loading="preopLoading" @click="doPreOp">生成术前提醒</el-button>',
+      '        <span style="font-size:12px;color:var(--yb-ink-3)">短信/APP等经网关下发(未配真实网关时 Noop 不阻断)</span>',
       '      </div>',
       '      <el-table :data="nRows" border size="small" v-loading="nLoading" @selection-change="function (v) { nSel = v; }" max-height="calc(100vh - 268px)">',
       '        <el-table-column type="selection" width="42" :selectable="function (r) { return r.status === 1; }"></el-table-column>',
@@ -145,14 +153,15 @@
       '        <el-table-column prop="patient_name" label="患者" width="86"></el-table-column>',
       '        <el-table-column prop="phone" label="电话" width="116"><template #default="s">{{ orDash(s.row.phone) }}</template></el-table-column>',
       '        <el-table-column label="类型" width="90" align="center"><template #default="s">{{ ntLabel(s.row.notify_type) }}</template></el-table-column>',
-      '        <el-table-column label="渠道" width="70" align="center"><template #default="s">{{ chLabel(s.row.channel) }}</template></el-table-column>',
+      '        <el-table-column label="渠道" width="88" align="center"><template #default="s">{{ chLabel(s.row.channel) }}<span v-if="s.row.retry_count > 0" style="color:var(--yb-warning)"> ↻{{ s.row.retry_count }}</span></template></el-table-column>',
       '        <el-table-column prop="content" label="通知内容" min-width="240" show-overflow-tooltip></el-table-column>',
       '        <el-table-column label="状态" width="84" align="center"><template #default="s"><el-tag size="small" :type="nsTag(s.row.status)">{{ nsLabel(s.row.status) }}</el-tag></template></el-table-column>',
       '        <el-table-column prop="reply_content" label="患者回复" width="140" show-overflow-tooltip><template #default="s">{{ orDash(s.row.reply_content) }}</template></el-table-column>',
       '        <el-table-column label="发送人/时间" width="150"><template #default="s">{{ orDash(s.row.send_by) }} {{ s.row.send_time ? fmtDT(s.row.send_time) : "" }}</template></el-table-column>',
-      '        <el-table-column label="操作" width="110" fixed="right"><template #default="s">',
+      '        <el-table-column label="操作" width="160" fixed="right"><template #default="s">',
       '          <el-button v-if="s.row.status !== 3" link type="primary" @click="doReply(s.row)">回复登记</el-button>',
-      '          <span v-else style="font-size:12px;color:var(--yb-ink-3)">已回复</span>',
+      '          <el-button v-if="s.row.status !== 1" link type="warning" @click="doResend(s.row)">重发</el-button>',
+      '          <span v-if="s.row.status === 3" style="font-size:12px;color:var(--yb-ink-3)">已回复</span>',
       '        </template></el-table-column>',
       '      </el-table>',
       '      <el-pagination style="margin-top:12px;justify-content:flex-end;" background layout="total, prev, pager, next"',
@@ -284,8 +293,9 @@
         preOpOrders: [],
         /* 通知管理 */
         nRows: [], nTotal: 0, nP: 1, nSize: 20, nLoading: false, nSel: [], pendingNotify: 0,
-        nFilters: { status: 1, notifyType: null },
-        notifyStatusOpts: NOTIFY_STATUS_OPTS, notifyTypeOpts: NOTIFY_TYPE_OPTS
+        nFilters: { status: 1, notifyType: null, channel: null },
+        notifyStatusOpts: NOTIFY_STATUS_OPTS, notifyTypeOpts: NOTIFY_TYPE_OPTS, notifyChannelOpts: NOTIFY_CHANNEL_OPTS,
+        preopHours: 24, preopLoading: false
       };
     },
     computed: {
@@ -493,6 +503,7 @@
         var q = '/api/his/surgery-apply/notify/list?page=' + vm.nP + '&size=' + vm.nSize;
         if (vm.nFilters.status !== null && vm.nFilters.status !== '') { q += '&status=' + vm.nFilters.status; }
         if (vm.nFilters.notifyType) { q += '&notifyType=' + vm.nFilters.notifyType; }
+        if (vm.nFilters.channel) { q += '&channel=' + vm.nFilters.channel; }
         HIS.get(q).then(function (d) {
           vm.nRows = (d && d.records) || [];
           vm.nTotal = (d && d.total) || 0;
@@ -505,10 +516,27 @@
       doSend: function () {
         var vm = this;
         var ids = vm.nSel.map(function (r) { return r.id; });
-        confirmBox('确认批量发送 ' + ids.length + ' 条通知？(短信通道未接入, 仅状态留痕)', '批量发送')
+        confirmBox('确认经通知网关批量发送 ' + ids.length + ' 条通知？(短信/自助机/APP/公众号走网关下发, 电话/诊间仅留痕)', '批量发送')
           .then(function () { return HIS.put('/api/his/surgery-apply/notify/send', ids); })
           .then(function (n) { HIS.notifySuccess('已发送 ' + n + ' 条'); vm.nLoad(); })
           .catch(function (e) { if (!isCancel(e)) { HIS.notifyError(e); } });
+      },
+      /* 手麻P2c: 单条重发(失败或需再触达), 走网关后 retry_count+1 */
+      doResend: function (row) {
+        var vm = this;
+        confirmBox('确认重发该通知【' + row.patient_name + ' · ' + (NOTIFY_CHANNEL[row.channel] || '短信') + '】？', '单条重发')
+          .then(function () { return HIS.post('/api/his/surgery-apply/notify/' + row.id + '/resend'); })
+          .then(function () { HIS.notifySuccess('已重发'); vm.nLoad(); })
+          .catch(function (e) { if (!isCancel(e)) { HIS.notifyError(e); } });
+      },
+      /* 手麻P2c: 手动批量生成术前提醒(幂等去重), 对已安排且临近排期手术产 notify_type=3 记录 */
+      doPreOp: function () {
+        var vm = this;
+        vm.preopLoading = true;
+        HIS.post('/api/his/surgery-apply/notify/pre-op?beforeHours=' + (vm.preopHours || 24)).then(function (n) {
+          HIS.notifySuccess('已生成 ' + (n || 0) + ' 条术前提醒(未来 ' + (vm.preopHours || 24) + ' 小时内排期, 已去重)');
+          vm.nFilters.status = 1; vm.nP = 1; vm.nLoad();
+        }).catch(function (e) { HIS.notifyError(e); }).finally(function () { vm.preopLoading = false; });
       },
       doReply: function (row) {
         var vm = this;

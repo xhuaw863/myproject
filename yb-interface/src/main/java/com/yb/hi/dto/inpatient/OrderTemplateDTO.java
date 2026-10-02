@@ -24,6 +24,10 @@ public class OrderTemplateDTO {
     private List<OrderTemplateItemDTO> items;
     /** 适用病种编码 */
     private String diseaseCode;
+    /** 适用场景: 1普通住院 2手术医嘱(P2b) */
+    private Integer applyScene;
+    /** 手术模板目标阶段: 1术前 2术中 3术后(apply_scene=2 时有值) */
+    private Integer surgeryPhase;
     /** 状态: 1启用 0停用 */
     private Integer status;
 }

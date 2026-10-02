@@ -239,7 +239,8 @@
         { key: 'surgery-manage', label: '手术管理', comp: 'SurgeryManage' },
         { key: 'surgery-apply', label: '手术申请管理', comp: 'SurgeryApply' },
         { key: 'anesthesia-record', label: '麻醉记录', comp: 'AnesthesiaRecord' },
-        { key: 'surgery-fee', label: '手麻记费', comp: 'SurgeryFee' }
+        { key: 'surgery-fee', label: '手麻记费', comp: 'SurgeryFee' },
+        { key: 'surgery-report', label: '手术统计报表', comp: 'SurgeryReport' }
       ]
     },
     /* 住院报表(2026-09 报表/打印模块, 与 RbacInitializer 动态菜单同 key 同名):

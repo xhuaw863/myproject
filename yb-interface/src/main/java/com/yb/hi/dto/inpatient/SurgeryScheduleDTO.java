@@ -33,6 +33,8 @@ public class SurgeryScheduleDTO {
     private Integer surgeryLevel;
     /** 手术时限: 1择期 2限期 3急诊 */
     private Integer deadlineType;
+    /** 一体化模块: 1手术室 2DSA 3产科分娩 4内镜 5麻醉治疗(缺省1) */
+    private Integer moduleType;
     /** 拟麻醉方式 */
     private Integer anesthesiaType;
     /** 主刀医师ID */
