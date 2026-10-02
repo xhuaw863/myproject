@@ -2088,20 +2088,59 @@
   /* 数量去尾零(2.000 -> 2) */
   function qtyFmt(v) { var n = Number(v) || 0; return String(parseFloat(n.toFixed(3))); }
 
+  /* 费用清单同屏工作台样式(独立 id, 不与既有 inp-style* 冲突) */
+  (function ensureInpChargeStyles() {
+    if (document.getElementById('inp-style-charge')) { return; }
+    var st = document.createElement('style');
+    st.id = 'inp-style-charge';
+    st.textContent = [
+      '.inp-charge-list { display:flex; gap:12px; align-items:flex-start; }',
+      '.inp-charge-list .cl-l { width:300px; flex:none; display:flex; flex-direction:column; border:1px solid var(--yb-border); border-radius:var(--yb-r-md); background:var(--yb-surface); max-height:calc(100vh - 120px); }',
+      '.inp-charge-list .cl-lhead { display:flex; align-items:center; justify-content:space-between; padding:10px 12px 0; }',
+      '.inp-charge-list .cl-lsub { padding:4px 12px 8px; font-size:12px; color:var(--yb-ink-4); border-bottom:1px solid var(--yb-border-light); }',
+      '.inp-charge-list .cl-list { flex:1; min-height:0; overflow-y:auto; padding:8px; }',
+      '.inp-charge-list .cl-p { border:1px solid var(--yb-border-light); border-radius:var(--yb-r-md); padding:8px 10px; margin-bottom:8px; cursor:pointer; transition:box-shadow var(--yb-dur) var(--yb-ease), border-color var(--yb-dur) var(--yb-ease), background var(--yb-dur) var(--yb-ease); }',
+      '.inp-charge-list .cl-p:hover { box-shadow:var(--yb-sh-1); }',
+      '.inp-charge-list .cl-p.is-on { border-color:var(--yb-brand); background:var(--yb-info-light); box-shadow:0 0 0 2px rgba(26,92,158,.14); }',
+      '.inp-charge-list .cl-p .p-top { display:flex; align-items:center; justify-content:space-between; gap:6px; }',
+      '.inp-charge-list .cl-p .p-name { font-weight:600; color:var(--yb-ink-1); font-size:14px; }',
+      '.inp-charge-list .cl-p .p-meta { font-size:12px; color:var(--yb-ink-3); margin-top:3px; }',
+      '.inp-charge-list .cl-p .p-bal { font-size:12px; color:var(--yb-ink-3); margin-top:4px; }',
+      '.inp-charge-list .cl-pempty { text-align:center; color:var(--yb-ink-4); font-size:13px; padding:24px 0; }',
+      '.inp-charge-list .cl-r { flex:1; min-width:0; }',
+      '@media (max-width: 960px) { .inp-charge-list { flex-direction:column; } .inp-charge-list .cl-l { width:auto; max-height:320px; } }'
+    ].join('\n');
+    document.head.appendChild(st);
+  })();
+
   /* ========================================================================
-   * 5. InpChargeList 费用清单(明细分页 + 类别饼图 + 汇总 + 手动补录)
+   * 5. InpChargeList 费用清单(同屏: 左侧患者列表 · 右侧明细分页/类别饼图/汇总/趋势/待审核/日清单)
    * ====================================================================== */
   HIS.views.InpChargeList = {
     mixins: [listMixin, pageMixin],
     components: Object.assign({}, INP_ICONS),
     template: [
       '<div class="inp-charge-list">',
+      /* ===== 左栏: 患者列表(搜索 + 点击即查询, 跨页签共享所选患者) ===== */
+      '  <div class="cl-l">',
+      '    <div class="cl-lhead"><div class="inp-section-title" style="margin:0">患者</div><el-button size="small" text :loading="listLoading" @click="loadVisits">刷新</el-button></div>',
+      '    <el-input v-model="search" size="small" placeholder="住院号 / 姓名" clearable suffix-icon="Search" style="margin:8px 10px 0"></el-input>',
+      '    <div class="cl-lsub">共 {{ filteredVisits.length }} 人 · 点击选择即查询费用</div>',
+      '    <div class="cl-list" v-loading="listLoading">',
+      '      <div v-for="v in filteredVisits" :key="v.id" class="cl-p" :class="{ \'is-on\': isPicked(v) }" @click="selectVisit(v)">',
+      '        <div class="p-top"><span class="p-name">{{ v.patient_name }}</span><el-tag :type="statusTagType(v.visit_status)" size="small">{{ statusText(v.visit_status) }}</el-tag></div>',
+      '        <div class="p-meta">{{ v.inp_no }} · {{ v.ward_name }} {{ v.bed_no }}床</div>',
+      '        <div class="p-bal">累计费用 <b class="inp-money">¥{{ money(v.total_cost) }}</b></div>',
+      '      </div>',
+      '      <div v-if="!filteredVisits.length" class="cl-pempty">暂无患者</div>',
+      '    </div>',
+      '  </div>',
+      /* ===== 右栏: 明细/待审核/日清单页签 ===== */
+      '  <div class="cl-r">',
       '  <el-tabs v-model="activeTab" @tab-change="onTabChange">',
       '    <el-tab-pane label="费用明细" name="detail">',
       '  <div class="toolbar">',
-      '    <el-select v-model="visitId" filterable placeholder="选择患者(住院号/姓名)" style="width:300px" @change="onPickVisit">',
-      '      <el-option v-for="v in visits" :key="v.id" :label="visitLabel(v)" :value="v.id"></el-option>',
-      '    </el-select>',
+      '    <span style="color:var(--yb-ink-2);font-size:13px;font-weight:600">{{ pickedVisit ? (pickedVisit.patient_name + " · " + pickedVisit.inp_no) : "← 请从左侧选择患者" }}</span>',
       '    <el-date-picker v-model="dateRange" type="daterange" value-format="YYYY-MM-DD" range-separator="至" start-placeholder="开始日期" end-placeholder="结束日期" style="width:250px" @change="onQuery"></el-date-picker>',
       '    <el-select v-model="feeType" placeholder="费用类别" clearable style="width:130px" @change="onQuery">',
       '      <el-option v-for="f in feeTypeOptions" :key="f.v" :label="f.l" :value="f.v"></el-option>',
@@ -2221,6 +2260,7 @@
       '      </template>',
       '    </el-tab-pane>',
       '  </el-tabs>',
+      '  </div>',
       /* ---- 手动补录对话框 ---- */
       '  <el-dialog v-model="addVisible" title="手动补录费用" width="480px">',
       '    <el-form :model="addForm" label-width="82px">',
@@ -2243,7 +2283,7 @@
     ].join('\n'),
     data: function () {
       return {
-        visits: [], visitId: null, dateRange: null, feeType: null,
+        visits: [], visitId: null, picked: null, search: '', listLoading: false, dateRange: null, feeType: null,
         trendDates: [], trendValues: [], trendLoading: false,
         rows: [], total: 0, page: 1, size: 20, loading: false,
         summaryObj: { items: [], totalAmount: 0 },
@@ -2260,6 +2300,16 @@
     },
     computed: {
       ic: function () { return INP_ICONS; },
+      pickedVisit: function () {
+        if (!this.visitId) { return null; }
+        for (var i = 0; i < this.visits.length; i++) { if (HIS.sameId(this.visits[i].id, this.visitId)) { return this.visits[i]; } }
+        return this.picked;
+      },
+      filteredVisits: function () {
+        var s = (this.search || '').trim().toLowerCase();
+        if (!s) { return this.visits; }
+        return this.visits.filter(function (v) { return String(v.inp_no || '').toLowerCase().indexOf(s) >= 0 || String(v.patient_name || '').toLowerCase().indexOf(s) >= 0; });
+      },
       summaryItems: function () { return (this.summaryObj && this.summaryObj.items) || []; },
       /* 日清单明细(items 后端为 JSON 字符串, 兼容已解析数组) */
       billItems: function () {
@@ -2279,7 +2329,17 @@
       visitLabel: visitLabelOf,
       loadVisits: function () {
         var vm = this;
-        fetchVisits().then(function (list) { vm.visits = list; }).catch(HIS.notifyError);
+        vm.listLoading = true;
+        fetchVisits().then(function (list) { vm.visits = list || []; }).catch(HIS.notifyError).finally(function () { vm.listLoading = false; });
+      },
+      statusText: statusLabel, statusTagType: statusTag,
+      isPicked: function (v) { return this.visitId != null && HIS.sameId(v.id, this.visitId); },
+      /* 点选患者: 记录快照并按当前页签刷新(明细/汇总/趋势/预警) */
+      selectVisit: function (v) {
+        var vm = this;
+        if (HIS.sameId(vm.visitId, v.id)) { return; }
+        vm.visitId = v.id; vm.picked = v;
+        vm.onPickVisit();
       },
       onPickVisit: function () {
         this.onQuery();
