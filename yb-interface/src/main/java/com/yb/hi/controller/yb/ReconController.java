@@ -5,6 +5,7 @@ import com.baomidou.mybatisplus.core.toolkit.Wrappers;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.yb.hi.entity.yb.HisReconDiff;
 import com.yb.hi.entity.yb.HisReconTask;
+import com.yb.hi.framework.common.BizException;
 import com.yb.hi.framework.common.R;
 import com.yb.hi.framework.tenant.TenantContext;
 import com.yb.hi.mapper.yb.HisReconDiffMapper;
@@ -107,6 +108,25 @@ public class ReconController {
         diff.setHandleTime(LocalDateTime.now());
         reconDiffMapper.updateById(diff);
         return R.ok("已处置");
+    }
+
+    /** 差异人工确认冲正(2601): 撤平台侧多记/幽灵结算; body 可选 oinfno(默认2207)/memo。受理后仍需 force 重对复核 */
+    @PostMapping("/diff/{id}/reverse")
+    public R<Map<String, Object>> reverseDiff(@PathVariable Long id,
+                                              @RequestBody(required = false) Map<String, Object> body) {
+        Long tenantId = TenantContext.get();
+        if (tenantId == null) {
+            return R.fail(403, "无租户上下文");
+        }
+        String oinfno = body == null || body.get("oinfno") == null ? null : String.valueOf(body.get("oinfno"));
+        String memo = body == null || body.get("memo") == null ? null : String.valueOf(body.get("memo"));
+        try {
+            return R.ok(reconService.reverseDiff(tenantId, id, oinfno, memo));
+        } catch (BizException e) {
+            return R.fail(400, e.getMessage());
+        } catch (Exception e) {
+            return R.fail(500, "冲正执行失败: " + e.getMessage());
+        }
     }
 
     private LocalDate parseDate(String d) {

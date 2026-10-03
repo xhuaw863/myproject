@@ -7,8 +7,11 @@ import com.yb.hi.config.YbConfig;
 import com.yb.hi.dto.FileUploadReq;
 import com.yb.hi.dto.ReconDetailReq;
 import com.yb.hi.dto.ReconTotalReq;
+import com.yb.hi.dto.ReverseReq;
 import com.yb.hi.entity.yb.HisReconDiff;
 import com.yb.hi.entity.yb.HisReconTask;
+import com.yb.hi.entity.yb.HisYbTxnLog;
+import com.yb.hi.framework.common.BizException;
 import com.yb.hi.framework.tenant.TenantContext;
 import com.yb.hi.mapper.yb.HisReconDiffMapper;
 import com.yb.hi.mapper.yb.HisReconTaskMapper;
@@ -22,6 +25,8 @@ import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.util.Arrays;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.zip.ZipEntry;
@@ -43,6 +48,10 @@ public class ReconService {
     /** 表200/201 行级退费结算标志(3位): 正常/退费(字典值待与平台确认, 按通用口径占位) */
     private static final String ROW_FLAG_NORMAL = "000";
     private static final String ROW_FLAG_REFUND = "001";
+
+    /** 2601 可冲正原交易白名单(规范 5.2.7.1 原文清单) */
+    private static final java.util.Set<String> REVERSABLE_OINFNO = new java.util.HashSet<>(Arrays.asList(
+            "2102", "2103", "2207", "2208", "2304", "2305", "2401", "2304A", "2102A"));
 
     private final JdbcTemplate jdbcTemplate;
     private final OutpatientService outpatientService;
@@ -395,6 +404,101 @@ public class ReconService {
                         + " AND recon_type = 'DETAIL' AND deleted = 0",
                 Integer.class, tenantId, d);
         return diff != null && diff > 0 && (detail == null || detail == 0);
+    }
+
+    /**
+     * 2601 冲正人工确认处置(设计§3.4/场景6): 针对 3202 差异行携带原交易 msgid 的平台侧多记/幽灵结算。
+     * 守卫链: 差异未平账 + msgid 存在 + oinfno 在规范可冲正清单 + 原交易出站日志存在且 SUCCESS(未重复冲正)。
+     * 结果三分: SUCCESS → 原交易日志置 REVERSED + 本地留存反向冲销行(status='0', 与 2208 撤销同口径使净额口径归零)
+     *           + 差异置已平账(2); UNKNOWN → 本地零变更, 待对账复核后再操作(防双重冲正); FAIL → 原样返回平台拒绝。
+     * 规范红线: 2601 输出无节点, 冲正生效必须以 3201/3202 force 重对复核, 调用成功≠平台侧已取消。
+     */
+    public Map<String, Object> reverseDiff(Long tenantId, Long diffId, String oinfnoHint, String memo) {
+        TenantContext.set(tenantId);
+        try {
+            HisReconDiff diff = reconDiffMapper.selectById(diffId);
+            if (diff == null) {
+                throw new BizException("对账差异记录不存在");
+            }
+            if (diff.getStatus() != null && diff.getStatus() == 2) {
+                throw new BizException("该差异已平账, 无需重复冲正");
+            }
+            String omsgid = diff.getMsgid();
+            if (omsgid == null || omsgid.isEmpty()) {
+                throw new BizException("该差异无原交易报文ID(平台侧无此结算流水, 属机构侧多记), 不适用冲正; 请修正数据后 force 重对");
+            }
+            String oinfno = oinfnoHint == null || oinfnoHint.trim().isEmpty() ? "2207" : oinfnoHint.trim();
+            if (!REVERSABLE_OINFNO.contains(oinfno)) {
+                throw new BizException("交易 " + oinfno + " 不在可冲正清单(规范5.2.7.1: 2102/2103/2207/2208/2304/2305/2401/2304A/2102A)");
+            }
+            List<Map<String, Object>> txns = jdbcTemplate.queryForList(
+                    "SELECT id, status, psn_no FROM his_yb_txn_log"
+                            + " WHERE tenant_id = ? AND infno = ? AND msgid = ? AND deleted = 0"
+                            + " ORDER BY id DESC LIMIT 1",
+                    tenantId, oinfno, omsgid);
+            if (txns.isEmpty()) {
+                throw new BizException("未找到原交易日志(infno=" + oinfno + "), 无法冲正; omsgid 必须取本院出站交易的持久化 msgid");
+            }
+            Map<String, Object> txn = txns.get(0);
+            String txnStatus = str(txn.get("status"));
+            if (HisYbTxnLog.ST_REVERSED.equals(txnStatus)) {
+                throw new BizException("原交易已冲正(交易日志 REVERSED), 请勿重复发起");
+            }
+            if (!HisYbTxnLog.ST_SUCCESS.equals(txnStatus)) {
+                throw new BizException("原交易状态为 " + txnStatus + ", 仅成功(SUCCESS)交易可冲正");
+            }
+            ReverseReq req = new ReverseReq();
+            req.setPsnNo(diff.getPsnNo() == null || diff.getPsnNo().isEmpty() ? str(txn.get("psn_no")) : diff.getPsnNo());
+            req.setOmsgid(omsgid);
+            req.setOinfno(oinfno);
+            YbResponse resp = outpatientService.reverse(req);
+            Map<String, Object> out = new LinkedHashMap<>();
+            out.put("omsgid", omsgid);
+            out.put("oinfno", oinfno);
+            if (resp == null || resp.isUnknown()) {
+                out.put("reversed", false);
+                out.put("unknown", true);
+                out.put("msg", "冲正结果未知: 平台侧状态待 3201/3202 对账复核后确认, 勿直接重复冲正");
+                log.warn("【冲正告警】2601 UNKNOWN: tenantId={}, omsgid={}", tenantId, omsgid);
+                return out;
+            }
+            if (!resp.isSuccess()) {
+                out.put("reversed", false);
+                out.put("unknown", false);
+                out.put("msg", "冲正被平台拒绝: " + resp.getErrMsg());
+                return out;
+            }
+            // 受理成功: 原交易日志置 REVERSED(防重复发起的幂等凭据)
+            jdbcTemplate.update("UPDATE his_yb_txn_log SET status = ? WHERE id = ?",
+                    HisYbTxnLog.ST_REVERSED, ((Number) txn.get("id")).longValue());
+            // 本地结算留存仍存在未冲销的 '1' 行时, 补写同流水反向 '0' 行(与 2208 撤销同口径): 使 3201 本地净额口径归零;
+            // 幽灵结算(本地无 '1' 行)无需补录, 仅平平台侧多记
+            boolean offsetLocal = false;
+            if (diff.getSetlId() != null && !diff.getSetlId().isEmpty()) {
+                offsetLocal = jdbcTemplate.update(
+                        "INSERT INTO setl_record (tenant_id, setl_id, mdtrt_id, psn_no, psn_name, insutype, med_type, biz_type,"
+                                + " infno, setl_time, medfee_sumamt, fund_pay_sumamt, psn_part_amt, acct_pay, psn_cash_pay,"
+                                + " status, setlinfo_json, crte_time)"
+                                + " SELECT tenant_id, setl_id, mdtrt_id, psn_no, psn_name, insutype, med_type, biz_type,"
+                                + " '2601', setl_time, medfee_sumamt, fund_pay_sumamt, psn_part_amt, acct_pay, psn_cash_pay,"
+                                + " '0', setlinfo_json, NOW() FROM setl_record"
+                                + " WHERE tenant_id = ? AND setl_id = ? AND status = '1'",
+                        tenantId, diff.getSetlId()) > 0;
+            }
+            diff.setStatus(2);
+            diff.setHandleMemo((memo == null ? "" : memo + " | ") + "2601冲正已受理(omsgid=" + omsgid + "), 待对账复核");
+            diff.setHandleTime(LocalDateTime.now());
+            reconDiffMapper.updateById(diff);
+            out.put("reversed", true);
+            out.put("unknown", false);
+            out.put("offsetLocal", offsetLocal);
+            out.put("msg", "冲正已受理, 原交易置 REVERSED; 请及时 force 重对复核(规范: 2601 无输出, 对账平才算生效)");
+            log.info("2601 冲正受理: tenantId={}, diffId={}, oinfno={}, omsgid={}, 本地冲销行={}",
+                    tenantId, diffId, oinfno, omsgid, offsetLocal);
+            return out;
+        } finally {
+            TenantContext.clear();
+        }
     }
 
     private String nvlCfg(String v) {

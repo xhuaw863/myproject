@@ -233,4 +233,16 @@ public class OutpatientService {
         input.put("data", rows);
         return ybHttpClient.call("3302", input, null);
     }
+
+    /**
+     * 【2601】冲正(规范 5.2.7.1, 表仅 psn_no/omsgid/oinfno 三字段)
+     * 输入节点: data(单行); 输出: 无节点(infcode=0 即受理成功)。
+     * 规范红绳: 冲正后平台侧原交易取消, 本地不依赖回执终态——须由调用方以 3201/3202 对账复核(设计§3.4)。
+     */
+    public YbResponse reverse(ReverseReq req) {
+        log.info("冲正2601: oinfno={}, omsgid={}", req.getOinfno(), req.getOmsgid());
+        Map<String, Object> input = new LinkedHashMap<>();
+        input.put("data", req);
+        return ybHttpClient.call("2601", input, null);
+    }
 }
