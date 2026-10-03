@@ -1050,7 +1050,7 @@
               </el-input>
             </el-form-item>
             <div class="cp-form-grid">
-              <el-form-item label="数量"><el-input-number v-model="taskForm.quantity" :min="0.01" :step="1" :precision="2" controls-position="right" style="width:150px"></el-input-number></el-form-item>
+              <el-form-item label="数量"><el-input-number v-model="taskForm.quantity" :min="0.01" :step="1" :precision="4" controls-position="right" style="width:150px"></el-input-number></el-form-item>
               <el-form-item label="是否必做">
                 <el-switch v-model="taskForm.isMandatory" :active-value="1" :inactive-value="0" active-text="必做" inactive-text="可选"></el-switch>
                 <span class="cp-dim" style="margin-left:8px">必做任务自动转医嘱</span>

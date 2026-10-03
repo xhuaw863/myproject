@@ -140,7 +140,7 @@ CREATE TABLE his_charge_item (
     item_cat         VARCHAR(255) DEFAULT NULL COMMENT '细分类别(msi_hb/cat_name 含分类路径)',
     spec             VARCHAR(200) DEFAULT NULL COMMENT '规格',
     unit             VARCHAR(30)  DEFAULT NULL COMMENT '单位',
-    price            DECIMAL(12,4) DEFAULT 0.0000 COMMENT '单价',
+    price            DECIMAL(16,6) DEFAULT 0.0000 COMMENT '单价',
     med_list_codg    VARCHAR(50)  DEFAULT NULL COMMENT '医保医疗目录编码(对照)',
     medins_list_codg VARCHAR(50)  DEFAULT NULL COMMENT '医保机构目录编码(对照)',
     med_chrgitm_type VARCHAR(10)  DEFAULT NULL COMMENT '医疗收费项目类别:01-药品 02-诊疗 03-耗材',

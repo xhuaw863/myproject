@@ -85,7 +85,7 @@ class ChargeYbFlowIT {
     @Test
     @DisplayName("A: 接诊未收费 → 2204费用明细/2206预结算/2207结算成功 → 终态落账(金额守恒+setl_id)")
     void chargeSettleSuccess() {
-        long visitId = seedChargeableVisit(new BigDecimal("100.00"), 1);
+        long visitId = seedChargeableVisit(new BigDecimal("100.00"), BigDecimal.ONE);
 
         ChargeReq req = new ChargeReq();
         req.setVisitId(visitId);
@@ -126,7 +126,7 @@ class ChargeYbFlowIT {
     @Test
     @DisplayName("B: 2207 UNKNOWN 留中间态→BIZ_CHARGE 补偿→CompTaskSweeper 平台未受理复位→重收收敛终态")
     void unknownSettleCompensate() {
-        long visitId = seedChargeableVisit(new BigDecimal("200.00"), 1);
+        long visitId = seedChargeableVisit(new BigDecimal("200.00"), BigDecimal.ONE);
 
         // 注入 2207 UNKNOWN(模拟网络超时): 结算应以补偿提示抛出, 单据留中间态挂起, 本地绝不置已收费
         System.setProperty("yb.mock.unknown.2207", "true");
@@ -201,7 +201,7 @@ class ChargeYbFlowIT {
     @Test
     @DisplayName("C: 结算成功 → 2208 全额退费 → 原单已退费/yb撤销、退费单已收费、就诊转已退费")
     void refundCancelSettleSuccess() {
-        long visitId = seedChargeableVisit(new BigDecimal("100.00"), 1);
+        long visitId = seedChargeableVisit(new BigDecimal("100.00"), BigDecimal.ONE);
         HisChargeBill origin = chargeOk(visitId);
         Long originId = origin.getId();
 
@@ -233,7 +233,7 @@ class ChargeYbFlowIT {
     @Test
     @DisplayName("D: 结算成功(qty=2) → 部分退 1 → 全撤重结 → 原单实收 = 部分退费 + 重结收费(金额守恒)")
     void partialRefundRebuildAmountConservation() {
-        long visitId = seedChargeableVisit(new BigDecimal("100.00"), 2);
+        long visitId = seedChargeableVisit(new BigDecimal("100.00"), new BigDecimal("2"));
         HisChargeBill origin = chargeOk(visitId);
         Long originId = origin.getId();
         Long billItemId = jdbc.queryForObject(
@@ -290,6 +290,45 @@ class ChargeYbFlowIT {
         return u;
     }
 
+    /* ==================== 用例E: 医保原生精度(单价16,6/数量16,4/金额16,2 全链路不截断) ==================== */
+
+    @Test
+    @DisplayName("E: 精度规范-单价6位/数量4位/金额2位 从开单到2204上报全链路不截断")
+    void feePrecisionSixFourTwoEndToEnd() {
+        // 0.123456 × 1.2345 = 0.152406... → 金额 HALF_UP 2位 = 0.15
+        long visitId = seedChargeableVisit(new BigDecimal("0.123456"), new BigDecimal("1.2345"));
+
+        // 1) 处方明细落库: 6/4/2 原精度保留(列宽医保规范后不得被截断)
+        Map<String, Object> pi = jdbc.queryForMap(
+                "SELECT price, quantity, amount FROM his_prescription_item WHERE tenant_id=? AND deleted=0 ORDER BY id DESC LIMIT 1",
+                IT_TENANT);
+        assertEquals(0, new BigDecimal("0.123456").compareTo(bd(pi.get("price"))), "处方单价6位不得截断");
+        assertEquals(0, new BigDecimal("1.2345").compareTo(bd(pi.get("quantity"))), "处方数量4位不得截断");
+        assertEquals(0, new BigDecimal("0.15").compareTo(bd(pi.get("amount"))), "金额 HALF_UP 2位=0.15");
+
+        // 2) 医保结算成功: 收费单总额=0.15, 明细快照保留原精度, 金额守恒
+        HisChargeBill bill = chargeOk(visitId);
+        assertEquals(0, new BigDecimal("0.15").compareTo(bd(bill.getTotalAmount())), "结算总额=0.15");
+        Map<String, Object> bi = jdbc.queryForMap(
+                "SELECT price, qty, amount FROM his_charge_bill_item WHERE bill_id=? AND tenant_id=? AND deleted=0 LIMIT 1",
+                bill.getId(), IT_TENANT);
+        assertEquals(0, new BigDecimal("0.123456").compareTo(bd(bi.get("price"))), "收费明细单价6位不得截断");
+        assertEquals(0, new BigDecimal("1.2345").compareTo(bd(bi.get("qty"))), "收费明细数量4位不得截断");
+        Map<String, Object> fb = jdbc.queryForMap(
+                "SELECT fund_pay, acct_pay, self_pay FROM his_charge_bill WHERE id=? AND tenant_id=?", bill.getId(), IT_TENANT);
+        assertEquals(0, bill.getTotalAmount().compareTo(bd(fb.get("fund_pay")).add(bd(fb.get("acct_pay"))).add(bd(fb.get("self_pay")))),
+                "金额守恒: total=fund+acct+self");
+
+        // 3) 2204 上报报文钉死: txn_log.input_json 按原精度携带 pric/cnt, 金额 2 位
+        String inputJson = jdbc.queryForObject(
+                "SELECT input_json FROM his_yb_txn_log WHERE tenant_id=? AND infno='2204' AND deleted=0 ORDER BY id DESC LIMIT 1",
+                String.class, IT_TENANT);
+        assertNotNull(inputJson, "2204 交易应落医保交易日志");
+        assertTrue(inputJson.contains("0.123456"), "2204 上报 pric 保留 6 位单价: " + inputJson);
+        assertTrue(inputJson.contains("1.2345"), "2204 上报 cnt 保留 4 位数量");
+        assertTrue(inputJson.contains("0.15"), "2204 上报金额 2 位");
+    }
+
     private long nid() {
         return seq.incrementAndGet();
     }
@@ -298,8 +337,9 @@ class ChargeYbFlowIT {
      * 造一个"已接诊未收费、可医保结算"的门诊就诊:
      * 患者+参保+科室+医生+挂号凭证+就诊(visit_status=3, charge_status=0, mdtrt_id/psn_no)+处方+一条医保药品明细。
      */
-    private long seedChargeableVisit(BigDecimal unitPrice, int qty) {
-        BigDecimal amount = unitPrice.multiply(BigDecimal.valueOf(qty));
+    private long seedChargeableVisit(BigDecimal unitPrice, BigDecimal qty) {
+        // 金额口径与生产划价一致: 单价×数量 HALF_UP 2位(医保规范 det_item_fee_sumamt 16,2)
+        BigDecimal amount = unitPrice.multiply(qty).setScale(2, java.math.RoundingMode.HALF_UP);
         long patientId = nid();
         jdbc.update("INSERT INTO his_patient (id, tenant_id, patient_no, name, gender, age, id_card, deleted)"
                         + " VALUES (?,?,?,?,?,?,?,0)",
@@ -331,7 +371,7 @@ class ChargeYbFlowIT {
         jdbc.update("INSERT INTO his_prescription_item (id, tenant_id, prescription_id, item_code, item_name,"
                         + " unit, quantity, price, amount, med_list_codg, deleted)"
                         + " VALUES (?,?,?,?,?,?,?,?,?,?,0)",
-                nid(), IT_TENANT, rxId, "DC" + rxId, "IT医保药品", "盒", BigDecimal.valueOf(qty), unitPrice, amount, "MLC0001");
+                nid(), IT_TENANT, rxId, "DC" + rxId, "IT医保药品", "盒", qty, unitPrice, amount, "MLC0001");
         return visitId;
     }
 

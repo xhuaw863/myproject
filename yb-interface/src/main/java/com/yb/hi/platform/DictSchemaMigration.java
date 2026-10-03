@@ -210,9 +210,9 @@ public class DictSchemaMigration implements ApplicationRunner {
                 /* ---------- 用户账号: 授权科室范围(数据权限, 空=仅主属科室) ---------- */
                 {"sys_user", "dept_scope", "VARCHAR(500) NULL COMMENT '授权科室范围(逗号分隔dept_id, 空=仅主属科室)'"},
                 /* ---------- 医共体统一目录: 收费项目升级(牵头机构统一定义一二三级分级价格 + 标准溯源) ---------- */
-                {"his_charge_item", "price_l1", "DECIMAL(12,4) NULL COMMENT '一级机构价格(牵头机构统一定义)'"},
-                {"his_charge_item", "price_l2", "DECIMAL(12,4) NULL COMMENT '二级机构价格(牵头机构统一定义)'"},
-                {"his_charge_item", "price_l3", "DECIMAL(12,4) NULL COMMENT '三级机构价格(牵头机构统一定义)'"},
+                {"his_charge_item", "price_l1", "DECIMAL(16,6) NULL COMMENT '一级机构价格(牵头机构统一定义, 医保规范16,6)'"},
+                {"his_charge_item", "price_l2", "DECIMAL(16,6) NULL COMMENT '二级机构价格(牵头机构统一定义, 医保规范16,6)'"},
+                {"his_charge_item", "price_l3", "DECIMAL(16,6) NULL COMMENT '三级机构价格(牵头机构统一定义, 医保规范16,6)'"},
                 {"his_charge_item", "nat_item_code", "VARCHAR(32) NULL COMMENT '全国医疗服务项目编码(std_msi_nat/msi_hb.item_code)'"},
                 {"his_charge_item", "loc_item_code", "VARCHAR(32) NULL COMMENT '湖北地方项目编码(std_med_service.loc_item_code)'"},
                 {"his_charge_item", "item_content", "VARCHAR(2000) NULL COMMENT '项目内涵'"},
@@ -1729,8 +1729,8 @@ public class DictSchemaMigration implements ApplicationRunner {
                     + "pack_unit VARCHAR(20) NULL COMMENT '采购/大包装单位(盒/瓶/箱, 药库记账单位)',"
                     + "pack_ratio INT NULL COMMENT '包装换算比(大包装→最小单位, 如24粒/盒)',"
                     + "round_rule TINYINT NULL DEFAULT 1 COMMENT '发药取整规则:1向上 2向下 3四舍五入',"
-                    + "purchase_price DECIMAL(12,4) NULL COMMENT '进货价(最小单位)',"
-                    + "retail_price DECIMAL(12,4) NULL COMMENT '零售价(最小单位)',"
+                    + "purchase_price DECIMAL(16,6) NULL COMMENT '进货价(最小单位)',"
+                    + "retail_price DECIMAL(16,6) NULL COMMENT '零售价(最小单位)',"
                     + "zero_margin TINYINT NULL DEFAULT 1 COMMENT '零差率标志:1是 0否',"
                     + "drug_class VARCHAR(30) NULL COMMENT '药品管理类别编码(cv_code:drug_class 一般/麻醉/精一/精二/毒性/放射/易制毒)',"
                     + "drug_class_name VARCHAR(50) NULL COMMENT '药品管理类别名称(字典回填)',"
@@ -1745,7 +1745,7 @@ public class DictSchemaMigration implements ApplicationRunner {
                     + "storage_cond VARCHAR(30) NULL COMMENT '储存条件编码(cv_code:storage_cond)',"
                     + "storage_cond_name VARCHAR(50) NULL COMMENT '储存条件名称(字典回填)',"
                     + "storage_cond_src VARCHAR(50) NULL COMMENT '储存条件来源标识',"
-                    + "max_qty_once DECIMAL(12,2) NULL COMMENT '单次处方最大量(最小单位, 管制药品)',"
+                    + "max_qty_once DECIMAL(16,4) NULL COMMENT '单次处方最大量(最小单位, 管制药品)',"
                     + "status TINYINT NULL DEFAULT 1 COMMENT '状态:1启用 0停用',"
                     + "eff_date DATE NULL COMMENT '生效日期',"
                     + "end_date DATE NULL COMMENT '作废日期',"
@@ -1776,8 +1776,8 @@ public class DictSchemaMigration implements ApplicationRunner {
                     + "min_unit VARCHAR(20) NULL COMMENT '最小计价单位(个/套)',"
                     + "pack_unit VARCHAR(20) NULL COMMENT '采购单位(盒/包)',"
                     + "pack_ratio INT NULL COMMENT '包装换算比(采购单位→最小单位)',"
-                    + "purchase_price DECIMAL(12,4) NULL COMMENT '进货价(最小单位)',"
-                    + "charge_price DECIMAL(12,4) NULL COMMENT '收费价(单独收费项)',"
+                    + "purchase_price DECIMAL(16,6) NULL COMMENT '进货价(最小单位)',"
+                    + "charge_price DECIMAL(16,6) NULL COMMENT '收费价(单独收费项)',"
                     + "charge_flag TINYINT NULL DEFAULT 1 COMMENT '收费方式:1单独收费 0包含性(不单独收费)',"
                     + "chrgitm_lv VARCHAR(20) NULL COMMENT '甲乙丙类编码(cv_code:chrgitm_lv)',"
                     + "chrgitm_lv_name VARCHAR(50) NULL COMMENT '甲乙丙类名称(字典回填)',"
@@ -1809,8 +1809,8 @@ public class DictSchemaMigration implements ApplicationRunner {
                     + "price_field VARCHAR(30) NULL COMMENT '调价字段:price_l1/l2/l3或purchase_price/retail_price/charge_price',"
                     + "price_label VARCHAR(50) NULL COMMENT '调价字段中文名',"
                     + "org_level TINYINT NULL COMMENT '收费项目价格档次:1/2/3(药耗为空)',"
-                    + "old_price DECIMAL(12,4) NULL COMMENT '原价',"
-                    + "new_price DECIMAL(12,4) NULL COMMENT '新价',"
+                    + "old_price DECIMAL(16,6) NULL COMMENT '原价',"
+                    + "new_price DECIMAL(16,6) NULL COMMENT '新价',"
                     + "adjust_doc_no VARCHAR(100) NULL COMMENT '调价文号',"
                     + "eff_date DATE NULL COMMENT '生效日期',"
                     + "reason VARCHAR(500) NULL COMMENT '调价原因',"
@@ -2065,7 +2065,7 @@ public class DictSchemaMigration implements ApplicationRunner {
                     + "manufacturer VARCHAR(200) DEFAULT NULL COMMENT '生产厂家',"
                     + "qty DECIMAL(12,2) NOT NULL DEFAULT 0 COMMENT '库存数量',"
                     + "cost_price DECIMAL(12,4) DEFAULT NULL COMMENT '进价',"
-                    + "retail_price DECIMAL(12,4) DEFAULT NULL COMMENT '零售价',"
+                    + "retail_price DECIMAL(16,6) DEFAULT NULL COMMENT '零售价(医保规范16,6)',"
                     + "prod_date DATE DEFAULT NULL COMMENT '生产日期',"
                     + "exp_date DATE DEFAULT NULL COMMENT '有效期',"
                     + "warn_qty DECIMAL(12,2) DEFAULT 10 COMMENT '预警量',"
@@ -2111,7 +2111,7 @@ public class DictSchemaMigration implements ApplicationRunner {
                     + "manufacturer VARCHAR(200) DEFAULT NULL COMMENT '生产厂家',"
                     + "qty DECIMAL(12,2) NOT NULL COMMENT '数量',"
                     + "cost_price DECIMAL(12,4) DEFAULT NULL COMMENT '进价',"
-                    + "retail_price DECIMAL(12,4) DEFAULT NULL COMMENT '零售价',"
+                    + "retail_price DECIMAL(16,6) DEFAULT NULL COMMENT '零售价(医保规范16,6)',"
                     + "prod_date DATE DEFAULT NULL COMMENT '生产日期',"
                     + "exp_date DATE DEFAULT NULL COMMENT '有效期',"
                     + "amount DECIMAL(12,2) DEFAULT NULL COMMENT '小计金额',"
@@ -2155,7 +2155,7 @@ public class DictSchemaMigration implements ApplicationRunner {
                     + "batch_no VARCHAR(50) DEFAULT NULL COMMENT '批次号',"
                     + "qty DECIMAL(12,2) NOT NULL COMMENT '数量',"
                     + "cost_price DECIMAL(12,4) DEFAULT NULL COMMENT '进价',"
-                    + "retail_price DECIMAL(12,4) DEFAULT NULL COMMENT '零售价',"
+                    + "retail_price DECIMAL(16,6) DEFAULT NULL COMMENT '零售价(医保规范16,6)',"
                     + "amount DECIMAL(12,2) DEFAULT NULL COMMENT '小计金额',"
                     + "create_by VARCHAR(50) DEFAULT NULL, create_time DATETIME DEFAULT NULL,"
                     + "update_by VARCHAR(50) DEFAULT NULL, update_time DATETIME DEFAULT NULL, deleted TINYINT DEFAULT 0,"
@@ -2236,7 +2236,7 @@ public class DictSchemaMigration implements ApplicationRunner {
                     + "patient_id BIGINT DEFAULT NULL COMMENT '患者ID',"
                     + "patient_name VARCHAR(50) DEFAULT NULL COMMENT '患者姓名',"
                     + "bill_type TINYINT DEFAULT 1 COMMENT '单据类型:1门诊收费 2门诊退费',"
-                    + "total_amount DECIMAL(12,2) DEFAULT 0 COMMENT '总金额',"
+                    + "total_amount DECIMAL(16,2) DEFAULT 0 COMMENT '总金额',"
                     + "self_pay DECIMAL(12,2) DEFAULT 0 COMMENT '自付金额',"
                     + "fund_pay DECIMAL(12,2) DEFAULT 0 COMMENT '基金支付',"
                     + "cash_pay DECIMAL(12,2) DEFAULT 0 COMMENT '现金支付',"
@@ -2266,9 +2266,9 @@ public class DictSchemaMigration implements ApplicationRunner {
                     + "item_code VARCHAR(50) DEFAULT NULL COMMENT '项目编码',"
                     + "item_name VARCHAR(200) NOT NULL COMMENT '项目名称',"
                     + "spec VARCHAR(200) DEFAULT NULL COMMENT '规格',"
-                    + "qty DECIMAL(12,2) NOT NULL COMMENT '数量',"
-                    + "price DECIMAL(12,4) NOT NULL COMMENT '单价',"
-                    + "amount DECIMAL(12,2) NOT NULL COMMENT '金额',"
+                    + "qty DECIMAL(16,4) NOT NULL COMMENT '数量',"
+                    + "price DECIMAL(16,6) NOT NULL COMMENT '单价',"
+                    + "amount DECIMAL(16,2) NOT NULL COMMENT '金额',"
                     + "med_list_codg VARCHAR(50) DEFAULT NULL COMMENT '医保编码',"
                     + "med_list_name VARCHAR(200) DEFAULT NULL COMMENT '医保名称',"
                     + "ratio DECIMAL(5,4) DEFAULT 0 COMMENT '自付比例',"
@@ -2635,7 +2635,7 @@ public class DictSchemaMigration implements ApplicationRunner {
                     + "receive_time DATETIME DEFAULT NULL COMMENT '收货时间',"
                     + "stock_out_id BIGINT DEFAULT NULL COMMENT '发货出库单ID(his_stock_out.id)',"
                     + "stock_in_id BIGINT DEFAULT NULL COMMENT '收货入库单ID(his_stock_in.id)',"
-                    + "total_amount DECIMAL(12,2) DEFAULT 0 COMMENT '请领金额合计',"
+                    + "total_amount DECIMAL(16,2) DEFAULT 0 COMMENT '请领金额合计',"
                     + "remark VARCHAR(500) DEFAULT NULL COMMENT '备注',"
                     + "create_by VARCHAR(50) DEFAULT NULL, create_time DATETIME DEFAULT NULL,"
                     + "update_by VARCHAR(50) DEFAULT NULL, update_time DATETIME DEFAULT NULL, deleted TINYINT DEFAULT 0,"
@@ -2653,11 +2653,11 @@ public class DictSchemaMigration implements ApplicationRunner {
                     + "drug_name VARCHAR(200) DEFAULT NULL COMMENT '药品名称(快照)',"
                     + "spec VARCHAR(200) DEFAULT NULL COMMENT '规格(快照)',"
                     + "batch_no VARCHAR(50) DEFAULT NULL COMMENT '批次号(发货回填, 空=请领时不指定)',"
-                    + "qty_apply DECIMAL(12,2) DEFAULT 0 COMMENT '请领数量',"
-                    + "qty_approved DECIMAL(12,2) DEFAULT NULL COMMENT '审核(发货)数量',"
-                    + "qty_received DECIMAL(12,2) DEFAULT NULL COMMENT '实收数量',"
-                    + "retail_price DECIMAL(12,4) DEFAULT NULL COMMENT '零售价(快照)',"
-                    + "amount DECIMAL(12,2) DEFAULT NULL COMMENT '小计金额',"
+                    + "qty_apply DECIMAL(16,4) DEFAULT 0 COMMENT '请领数量',"
+                    + "qty_approved DECIMAL(16,4) DEFAULT NULL COMMENT '审核(发货)数量',"
+                    + "qty_received DECIMAL(16,4) DEFAULT NULL COMMENT '实收数量',"
+                    + "retail_price DECIMAL(16,6) DEFAULT NULL COMMENT '零售价(快照)',"
+                    + "amount DECIMAL(16,2) DEFAULT NULL COMMENT '小计金额',"
                     + "remark VARCHAR(500) DEFAULT NULL COMMENT '备注',"
                     + "create_time DATETIME DEFAULT NULL, update_time DATETIME DEFAULT NULL, deleted TINYINT DEFAULT 0,"
                     + "PRIMARY KEY (id),"
@@ -2699,7 +2699,7 @@ public class DictSchemaMigration implements ApplicationRunner {
                     + "batch_no VARCHAR(50) DEFAULT NULL COMMENT '批次号(随行调拨)',"
                     + "qty DECIMAL(12,2) DEFAULT 0 COMMENT '调拨数量',"
                     + "cost_price DECIMAL(12,4) DEFAULT NULL COMMENT '进价(快照)',"
-                    + "retail_price DECIMAL(12,4) DEFAULT NULL COMMENT '零售价(快照)',"
+                    + "retail_price DECIMAL(16,6) DEFAULT NULL COMMENT '零售价(快照, 医保规范16,6)',"
                     + "amount DECIMAL(12,2) DEFAULT NULL COMMENT '小计金额',"
                     + "create_time DATETIME DEFAULT NULL, update_time DATETIME DEFAULT NULL, deleted TINYINT DEFAULT 0,"
                     + "PRIMARY KEY (id),"
@@ -3509,7 +3509,7 @@ public class DictSchemaMigration implements ApplicationRunner {
                     + "status TINYINT DEFAULT 0 COMMENT '状态:0空床 1占用 2停用',"
                     + "patient_id BIGINT DEFAULT NULL COMMENT '当前患者ID(his_patient.id)',"
                     + "inp_visit_id BIGINT DEFAULT NULL COMMENT '当前住院就诊ID(his_inp_visit.id)',"
-                    + "daily_price DECIMAL(10,2) DEFAULT 0 COMMENT '床位日费用',"
+                    + "daily_price DECIMAL(16,6) DEFAULT 0 COMMENT '床位日费用',"
                     + "create_by VARCHAR(50) DEFAULT NULL, create_time DATETIME DEFAULT NULL,"
                     + "update_by VARCHAR(50) DEFAULT NULL, update_time DATETIME DEFAULT NULL, deleted TINYINT DEFAULT 0,"
                     + "PRIMARY KEY (id),"
@@ -3614,8 +3614,8 @@ public class DictSchemaMigration implements ApplicationRunner {
                     + "stop_doctor_id BIGINT DEFAULT NULL COMMENT '停嘱医生ID(his_staff.id)',"
                     + "stop_nurse_id BIGINT DEFAULT NULL COMMENT '停嘱护士确认ID(his_staff.id)',"
                     + "group_no VARCHAR(30) DEFAULT NULL COMMENT '成组医嘱号',"
-                    + "quantity DECIMAL(10,2) DEFAULT NULL COMMENT '数量',"
-                    + "unit_price DECIMAL(10,2) DEFAULT NULL COMMENT '单价',"
+                    + "quantity DECIMAL(16,4) DEFAULT NULL COMMENT '数量',"
+                    + "unit_price DECIMAL(16,6) DEFAULT NULL COMMENT '单价',"
                     + "create_by VARCHAR(50) DEFAULT NULL, create_time DATETIME DEFAULT NULL,"
                     + "update_by VARCHAR(50) DEFAULT NULL, update_time DATETIME DEFAULT NULL, deleted TINYINT DEFAULT 0,"
                     + "PRIMARY KEY (id),"
@@ -3652,9 +3652,9 @@ public class DictSchemaMigration implements ApplicationRunner {
                     + "charge_item_id BIGINT DEFAULT NULL COMMENT '收费项目ID',"
                     + "item_name VARCHAR(200) NOT NULL COMMENT '项目名称',"
                     + "item_code VARCHAR(50) DEFAULT NULL COMMENT '项目编码',"
-                    + "quantity DECIMAL(10,2) DEFAULT 1 COMMENT '数量',"
-                    + "unit_price DECIMAL(10,2) NOT NULL COMMENT '单价',"
-                    + "amount DECIMAL(12,2) NOT NULL COMMENT '金额',"
+                    + "quantity DECIMAL(16,4) DEFAULT 1 COMMENT '数量',"
+                    + "unit_price DECIMAL(16,6) NOT NULL COMMENT '单价',"
+                    + "amount DECIMAL(16,2) NOT NULL COMMENT '金额',"
                     + "charge_date DATE DEFAULT NULL COMMENT '记账日期',"
                     + "order_id BIGINT DEFAULT NULL COMMENT '关联医嘱ID(his_inp_order.id)',"
                     + "fee_type TINYINT DEFAULT NULL COMMENT '费用类别:1西药 2中药 3检查 4检验 5治疗 6护理 7材料 8床位 9其他',"
@@ -3833,8 +3833,8 @@ public class DictSchemaMigration implements ApplicationRunner {
                     + "dosage_unit VARCHAR(20) DEFAULT NULL COMMENT '剂量单位',"
                     + "usage_code VARCHAR(20) DEFAULT NULL COMMENT '用法编码',"
                     + "freq_code VARCHAR(20) DEFAULT NULL COMMENT '频次编码',"
-                    + "quantity DECIMAL(10,2) DEFAULT NULL COMMENT '数量',"
-                    + "unit_price DECIMAL(10,2) DEFAULT NULL COMMENT '单价',"
+                    + "quantity DECIMAL(16,4) DEFAULT NULL COMMENT '数量',"
+                    + "unit_price DECIMAL(16,6) DEFAULT NULL COMMENT '单价',"
                     + "is_mandatory TINYINT DEFAULT 1 COMMENT '是否必做:1必做 0可选',"
                     + "sort_no INT DEFAULT 0 COMMENT '排序号',"
                     + "create_by VARCHAR(64) DEFAULT NULL, create_time DATETIME DEFAULT NULL,"
@@ -3956,9 +3956,9 @@ public class DictSchemaMigration implements ApplicationRunner {
                     + "item_name VARCHAR(200) NOT NULL COMMENT '项目名称',"
                     + "item_code VARCHAR(50) DEFAULT NULL COMMENT '项目编码',"
                     + "fee_category TINYINT DEFAULT NULL COMMENT '费用分类:1手术费 2麻醉费 3监测费 4耗材费 5药品费 6其他',"
-                    + "quantity DECIMAL(10,2) DEFAULT 1 COMMENT '数量',"
-                    + "unit_price DECIMAL(10,2) NOT NULL COMMENT '单价',"
-                    + "amount DECIMAL(12,2) NOT NULL COMMENT '金额',"
+                    + "quantity DECIMAL(16,4) DEFAULT 1 COMMENT '数量',"
+                    + "unit_price DECIMAL(16,6) NOT NULL COMMENT '单价',"
+                    + "amount DECIMAL(16,2) NOT NULL COMMENT '金额',"
                     + "charge_time DATETIME DEFAULT NULL COMMENT '记账时间',"
                     + "auto_flag TINYINT DEFAULT 0 COMMENT '自动计时:1是 0手动',"
                     + "duration_minutes INT DEFAULT NULL COMMENT '计时分钟数',"
@@ -3980,9 +3980,9 @@ public class DictSchemaMigration implements ApplicationRunner {
                     + "material_code VARCHAR(50) DEFAULT NULL COMMENT '耗材编码',"
                     + "spec VARCHAR(100) DEFAULT NULL COMMENT '规格',"
                     + "batch_no VARCHAR(50) DEFAULT NULL COMMENT '批号',"
-                    + "quantity DECIMAL(10,2) DEFAULT 1 COMMENT '数量',"
-                    + "unit_price DECIMAL(10,2) DEFAULT NULL COMMENT '单价',"
-                    + "amount DECIMAL(12,2) DEFAULT NULL COMMENT '金额',"
+                    + "quantity DECIMAL(16,4) DEFAULT 1 COMMENT '数量',"
+                    + "unit_price DECIMAL(16,6) DEFAULT NULL COMMENT '单价',"
+                    + "amount DECIMAL(16,2) DEFAULT NULL COMMENT '金额',"
                     + "supplier VARCHAR(200) DEFAULT NULL COMMENT '供应商',"
                     + "create_by VARCHAR(64) DEFAULT NULL, create_time DATETIME DEFAULT NULL,"
                     + "update_by VARCHAR(64) DEFAULT NULL, update_time DATETIME DEFAULT NULL, deleted TINYINT DEFAULT 0,"
@@ -4089,9 +4089,9 @@ public class DictSchemaMigration implements ApplicationRunner {
                     + "item_name VARCHAR(200) NOT NULL COMMENT '项目名称',"
                     + "item_code VARCHAR(50) DEFAULT NULL COMMENT '项目编码',"
                     + "fee_category TINYINT DEFAULT 1 COMMENT '费用分类:1手术费 2麻醉费 3监测费 4耗材费 5药品费 6其他',"
-                    + "quantity DECIMAL(10,2) DEFAULT 1 COMMENT '数量',"
-                    + "unit_price DECIMAL(10,2) DEFAULT NULL COMMENT '单价',"
-                    + "amount DECIMAL(12,2) DEFAULT NULL COMMENT '金额',"
+                    + "quantity DECIMAL(16,4) DEFAULT 1 COMMENT '数量',"
+                    + "unit_price DECIMAL(16,6) DEFAULT NULL COMMENT '单价',"
+                    + "amount DECIMAL(16,2) DEFAULT NULL COMMENT '金额',"
                     + "create_by VARCHAR(64) DEFAULT NULL, create_time DATETIME DEFAULT NULL,"
                     + "update_by VARCHAR(64) DEFAULT NULL, update_time DATETIME DEFAULT NULL, deleted TINYINT DEFAULT 0,"
                     + "PRIMARY KEY (id),"
@@ -4387,8 +4387,8 @@ public class DictSchemaMigration implements ApplicationRunner {
         addColumnIfNotExists(conn, "his_inp_order", "double_check_flag", "TINYINT DEFAULT 0 COMMENT '需双人核对:1是 0否'");
         addColumnIfNotExists(conn, "his_inp_order", "rational_check_result", "TEXT NULL COMMENT '合理用药审查结果JSON'");
         /* his_inp_charge_detail +4: 限额管控与超标审批 */
-        addColumnIfNotExists(conn, "his_inp_charge_detail", "daily_limit", "DECIMAL(12,2) DEFAULT NULL COMMENT '日限额'");
-        addColumnIfNotExists(conn, "his_inp_charge_detail", "total_limit", "DECIMAL(12,2) DEFAULT NULL COMMENT '总限额'");
+        addColumnIfNotExists(conn, "his_inp_charge_detail", "daily_limit", "DECIMAL(16,2) DEFAULT NULL COMMENT '日限额'");
+        addColumnIfNotExists(conn, "his_inp_charge_detail", "total_limit", "DECIMAL(16,2) DEFAULT NULL COMMENT '总限额'");
         addColumnIfNotExists(conn, "his_inp_charge_detail", "approval_status", "INT DEFAULT 1 COMMENT '审核状态:1待审 2通过 3拒绝'");
         addColumnIfNotExists(conn, "his_inp_charge_detail", "limit_override_reason", "VARCHAR(200) DEFAULT NULL COMMENT '超标原因'");
         /* his_inp_medical_record +7: 结构化模板/时限质控/上级医师查房 */
@@ -5576,7 +5576,7 @@ public class DictSchemaMigration implements ApplicationRunner {
                     + "org_id BIGINT NOT NULL COMMENT '机构ID',"
                     + "pharmacy_id BIGINT NOT NULL COMMENT '药房ID(his_pharmacy_def.id)',"
                     + "drug_catalog_id BIGINT NOT NULL COMMENT '医共体药品目录ID(his_drug_catalog.id)',"
-                    + "retail_price DECIMAL(12,6) NOT NULL COMMENT '药房零售价(最小单位, 覆盖目录价)',"
+                    + "retail_price DECIMAL(16,6) NOT NULL COMMENT '药房零售价(最小单位, 覆盖目录价)',"
                     + "create_by VARCHAR(50) DEFAULT NULL, create_time DATETIME DEFAULT NULL,"
                     + "update_by VARCHAR(50) DEFAULT NULL, update_time DATETIME DEFAULT NULL, deleted TINYINT DEFAULT 0,"
                     + "PRIMARY KEY (id),"
@@ -5945,7 +5945,7 @@ public class DictSchemaMigration implements ApplicationRunner {
                     + "dim_type VARCHAR(30) NOT NULL COMMENT '加收维度: part/index/consult/herb_process',"
                     + "dim_threshold INT NOT NULL DEFAULT 1 COMMENT '触发阈值',"
                     + "calc_mode VARCHAR(20) NOT NULL DEFAULT 'fixed' COMMENT '计价方式: fixed/formula',"
-                    + "unit_price DECIMAL(12,2) DEFAULT NULL COMMENT '加收单位价格',"
+                    + "unit_price DECIMAL(16,6) DEFAULT NULL COMMENT '加收单位价格',"
                     + "formula VARCHAR(500) DEFAULT NULL COMMENT '计费公式(formula模式)',"
                     + "addon_item_code VARCHAR(50) DEFAULT NULL COMMENT '加收项编码',"
                     + "addon_item_name VARCHAR(200) DEFAULT NULL COMMENT '加收项名称',"
@@ -6051,7 +6051,7 @@ public class DictSchemaMigration implements ApplicationRunner {
         addColumnIfNotExists(conn, "his_charge_bill", "yb_status", "TINYINT NOT NULL DEFAULT 0 COMMENT '医保结算状态:0未结算 1结算中 2已结算 3撤销中 4已撤销 9冲正中'");
         addColumnIfNotExists(conn, "his_charge_bill", "origin_bill_id", "BIGINT DEFAULT NULL COMMENT '退费关联原单ID(退费单指向原收费单)'");
         addColumnIfNotExists(conn, "his_charge_bill", "invoice_no", "VARCHAR(50) DEFAULT NULL COMMENT '发票号'");
-        addColumnIfNotExists(conn, "his_charge_bill_item", "refunded_qty", "DECIMAL(12,4) DEFAULT 0 COMMENT '已退数量(部分退费追踪)'");
+        addColumnIfNotExists(conn, "his_charge_bill_item", "refunded_qty", "DECIMAL(16,4) DEFAULT 0 COMMENT '已退数量(部分退费追踪)'");
         /* ---------- 护士站/治疗/医技三模块基座: his_order 执行状态/执行科室/收费标志(实体已映射, 关键段双保险) ---------- */
         addColumnIfNotExists(conn, "his_order", "exec_status", "TINYINT DEFAULT 0 COMMENT '执行状态:0未执行 1已执行'");
         addColumnIfNotExists(conn, "his_order", "exec_dept_id", "BIGINT DEFAULT NULL COMMENT '执行科室ID(his_dept.id)'");
