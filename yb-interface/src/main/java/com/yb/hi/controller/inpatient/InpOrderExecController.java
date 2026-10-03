@@ -1,7 +1,12 @@
 package com.yb.hi.controller.inpatient;
 
 import com.baomidou.mybatisplus.core.metadata.IPage;
+import com.yb.hi.framework.common.BizException;
 import com.yb.hi.framework.common.R;
+import com.yb.hi.framework.tenant.LoginUser;
+import com.yb.hi.framework.tenant.UserContext;
+import com.yb.hi.platform.InpLongOrderChargeSweeper;
+import com.yb.hi.platform.service.OrgAccessGuard;
 import com.yb.hi.service.inpatient.InpOrderExecService;
 import org.springframework.format.annotation.DateTimeFormat;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -25,9 +30,14 @@ import java.util.Map;
 public class InpOrderExecController {
 
     private final InpOrderExecService execService;
+    private final InpLongOrderChargeSweeper longOrderChargeSweeper;
+    private final OrgAccessGuard guard;
 
-    public InpOrderExecController(InpOrderExecService execService) {
+    public InpOrderExecController(InpOrderExecService execService,
+                                  InpLongOrderChargeSweeper longOrderChargeSweeper, OrgAccessGuard guard) {
         this.execService = execService;
+        this.longOrderChargeSweeper = longOrderChargeSweeper;
+        this.guard = guard;
     }
 
     /** 待审核医嘱列表(order_status=1): JOIN 患者/床位/开嘱医生, 开立时间正序, 分页。 */
@@ -80,5 +90,24 @@ public class InpOrderExecController {
     public R<Map<String, Object>> cancelExec(@RequestParam Long execId,
                                              @RequestParam String remark) {
         return R.ok(execService.cancelExec(execId, remark, InpNurseController.currentNurseId()));
+    }
+
+    /**
+     * S-4(2026-10-03 安全审计): 长期医嘱逐日记账手动补记。
+     * 触发定时任务同款回填逻辑, 为活动长期医嘱(order_type=1, 单价非空, 频次非prn)
+     * 在 [开始日..min(停嘱日,记账日)] 内逐日补生成缺失费用明细(按 order_id+charge_date 幂等)。
+     * 仅牵头机构管理员可操作(requireLeadWrite); 补记范围按登录租户收敛, 禁止跨租户。
+     * date 缺省当天。
+     */
+    @PostMapping("/post-daily-charge")
+    public R<Map<String, Object>> postDailyCharge(
+            @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate date) {
+        guard.requireLeadWrite();
+        LoginUser lu = UserContext.get();
+        if (lu == null || lu.getTenantId() == null) {
+            throw new BizException(401, "未登录或缺少租户上下文, 无法补记长期医嘱费用");
+        }
+        LocalDate day = date == null ? LocalDate.now() : date;
+        return R.ok(longOrderChargeSweeper.postForDate(day, lu.getTenantId()));
     }
 }

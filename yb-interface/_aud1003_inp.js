@@ -91,6 +91,15 @@ const near = (a, b, eps) => Math.abs(Number(a) - Number(b)) <= (eps == null ? 0.
     step('06b-批量执行(1->2)', execOk.code === 0, { code: execOk.code, msg: execOk.msg, data: execOk.data });
   } else step('06b-批量执行(1->2)', false, { skipped: '无计划' });
 
+  // 06c S-4: 长期医嘱逐日记账 —— 手动触发定时任务同款回填, 活动长期医嘱应生成当日费用明细(此例 qd×30=30元)
+  const pc = await call(tk, '/api/his/inp/order-exec/post-daily-charge', 'POST');
+  const cl2 = await call(tk, '/api/his/inp/settle/charge/list?inpVisitId=' + visitId + '&page=1&size=50');
+  const chg2 = (cl2.data && cl2.data.records) || [];
+  const longChg = chg2.find(c => String(c.orderId) === String(longOrderId));
+  const sum2 = chg2.reduce((s, c) => s + Number(c.amount), 0);
+  step('06c-S4长期医嘱逐日记账(当日30元, 与临时合计50)', pc.code === 0 && !!longChg && near(Number(longChg.amount), 30.00) && near(sum2, 50.00),
+    { code: pc.code, msg: pc.msg, posted: pc.data && pc.data.posted, longAmount: longChg && Number(longChg.amount), sum: sum2 });
+
   // 07 预交金缴纳 100 -> 余额
   const dp = await call(tk, '/api/his/inp/deposit', 'POST', { inpVisitId: visitId, amount: 100.00, payType: 'cash', direction: 1, remark: '审计闭环预交' });
   const bal = await call(tk, '/api/his/inp/deposit/balance/' + visitId);
