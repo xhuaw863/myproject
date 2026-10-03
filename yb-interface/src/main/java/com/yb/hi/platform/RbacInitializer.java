@@ -120,6 +120,7 @@ public class RbacInitializer implements ApplicationRunner {
             ensureRxAuditMenu(menuIds);
             ensurePurchaseMenus(menuIds);
             regroupWarehouseMenus(menuIds);
+            consolidatePharmacyMenus(menuIds);
             migrateDictMapToCatalogMap();
             ensureBasedataMenuUnderPlatform();
             ensureDiagMapMenu(menuIds);
@@ -225,23 +226,33 @@ public class RbacInitializer implements ApplicationRunner {
         ids.put("emr-quality-board", menuK("emr-quality-board", "质控评分看板", "EmrQualityBoard", null, gEmrQ, ++sort[0]));
         // 药房(2026-09 P1d 交付: 待发药/调剂发药/退药前端已上线; P2 药房管理/药房统计上线)
         long g7 = dir("pharmacy", "药房系统", 0L, ++sort[0]);
-        ids.put("dispense-todo", menuK("dispense-todo", "待发药", "DispenseTodo", null, g7, ++sort[0]));
-        ids.put("dispense", menuK("dispense", "调剂发药", "DispenseRecord", null, g7, ++sort[0]));
-        ids.put("drug-return", menuK("drug-return", "退药", "DrugReturn", null, g7, ++sort[0]));
-        ids.put("pharmacy-def", menuK("pharmacy-def", "药房管理", "PharmacyDef", null, g7, ++sort[0]));
-        ids.put("pharmacy-rpt", menuK("pharmacy-rpt", "药房统计", "PharmacyReport", null, g7, ++sort[0]));
-        // 药房药库协同二期(2026-09): 请领/调拨/调价/进销存台账/医保追溯码
-        ids.put("req-mgr", menuK("req-mgr", "药品请领", "RequisitionManage", null, g7, ++sort[0]));
-        ids.put("trace-code", menuK("trace-code", "药品追溯码", "TraceCodeManage", null, g7, ++sort[0]));
-        // 三期(药房维度定价): 药房定价覆盖价维护, 未覆盖回落目录零售价
-        ids.put("price-mgr", menuK("price-mgr", "药房定价", "PharmacyPriceManage", null, g7, ++sort[0]));
-        // P1 发药窗口子系统: 窗口维护/工作站/科室定向/跨药房配置
-        ids.put("pharmacy-window", menuK("pharmacy-window", "发药窗口", "PharmacyWindowManage", null, g7, ++sort[0]));
-        ids.put("window-workstation", menuK("window-workstation", "发药工作站", "WindowWorkstation", null, g7, ++sort[0]));
-        ids.put("window-dept-rule", menuK("window-dept-rule", "科室定向窗口", "WindowDeptRule", null, g7, ++sort[0]));
-        ids.put("pharmacy-cross", menuK("pharmacy-cross", "跨药房配置", "PharmacyCrossConfig", null, g7, ++sort[0]));
-        // P2 门诊处方审核: 审方工作台(待审队列/批量通过/驳回留因/自动审核)
-        ids.put("rx-audit", menuK("rx-audit", "处方审核", "OutpRxAudit", null, g7, ++sort[0]));
+        // 药房系统按业务域分组(2026-11 整合: 门诊发药/住院发药/药房运营与追溯/统计查询; 对齐药库五域做法;
+        // 原独立顶级"住院药师站"(inp-pharm-group)4 项并入"住院发药"子域, 存量库由 consolidatePharmacyMenus 迁移)
+        long gPhOutp = dir("ph-outp", "门诊发药", g7, ++sort[0]);
+        ids.put("dispense-todo", menuK("dispense-todo", "待发药", "DispenseTodo", null, gPhOutp, ++sort[0]));
+        ids.put("window-workstation", menuK("window-workstation", "发药工作站", "WindowWorkstation", null, gPhOutp, ++sort[0]));
+        ids.put("dispense", menuK("dispense", "调剂发药", "DispenseRecord", null, gPhOutp, ++sort[0]));
+        ids.put("rx-audit", menuK("rx-audit", "处方审核", "OutpRxAudit", null, gPhOutp, ++sort[0]));
+        ids.put("drug-return", menuK("drug-return", "退药", "DrugReturn", null, gPhOutp, ++sort[0]));
+        long gPhInp = dir("ph-inp", "住院发药", g7, ++sort[0]);
+        ids.put("pharm-station", menuK("pharm-station", "药师审核", "pharm-station", null, gPhInp, ++sort[0]));
+        ids.put("inp-dispense-work", menuK("inp-dispense-work", "住院发药工作台", "InpDispenseWork", null, gPhInp, ++sort[0]));
+        ids.put("inp-discharge-pickup", menuK("inp-discharge-pickup", "出院带药核发", "InpDischargePickup", null, gPhInp, ++sort[0]));
+        ids.put("inp-dispense-history", menuK("inp-dispense-history", "住院发药历史", "InpDispenseHistory", null, gPhInp, ++sort[0]));
+        long gPhOps = dir("ph-ops", "药房运营与追溯", g7, ++sort[0]);
+        ids.put("pharmacy-def", menuK("pharmacy-def", "药房管理", "PharmacyDef", null, gPhOps, ++sort[0]));
+        ids.put("price-mgr", menuK("price-mgr", "药房定价", "PharmacyPriceManage", null, gPhOps, ++sort[0]));
+        ids.put("req-mgr", menuK("req-mgr", "药品请领", "RequisitionManage", null, gPhOps, ++sort[0]));
+        ids.put("pharmacy-window", menuK("pharmacy-window", "发药窗口", "PharmacyWindowManage", null, gPhOps, ++sort[0]));
+        ids.put("window-dept-rule", menuK("window-dept-rule", "科室定向窗口", "WindowDeptRule", null, gPhOps, ++sort[0]));
+        ids.put("pharmacy-cross", menuK("pharmacy-cross", "跨药房配置", "PharmacyCrossConfig", null, gPhOps, ++sort[0]));
+        ids.put("trace-code", menuK("trace-code", "药品追溯码", "TraceCodeManage", null, gPhOps, ++sort[0]));
+        long gPhStat = dir("ph-stat", "统计查询", g7, ++sort[0]);
+        ids.put("pharmacy-rpt", menuK("pharmacy-rpt", "药房统计", "PharmacyReport", null, gPhStat, ++sort[0]));
+        // 统计查询增强(2026-11): 药品消耗分析/医保合规分析/处方与退药质量, 只读聚合 + EasyExcel 导出
+        ids.put("stat-usage", menuK("stat-usage", "药品消耗分析", "PharmacyUsageStat", null, gPhStat, ++sort[0]));
+        ids.put("stat-yb", menuK("stat-yb", "医保合规分析", "PharmacyYbStat", null, gPhStat, ++sort[0]));
+        ids.put("stat-quality", menuK("stat-quality", "处方与退药质量", "PharmacyQualityStat", null, gPhStat, ++sort[0]));
         // 药库(采购入库/出库管理/库存流水已上线; P2 药品目录/盘点绑定组件, 药库管理/药库统计上线)
         long g8 = dir("warehouse", "药库系统", 0L, ++sort[0]);
         // 药库系统按业务域分组(2026-10 整合: 采购/库存作业/财务结算/账簿统计/养护管理; 采购入库与增强版去重, 账簿查询并入进销存台账)
@@ -337,7 +348,7 @@ public class RbacInitializer implements ApplicationRunner {
 
     /** 因“目录合并”而下线(非功能下线)的目录 key: pruneRetiredMenus 与各合并迁移走的都是逻辑删除,
      *  行作墓碑留在表内; 而 uk_menu_key 是物理唯一索引, 墓碑会阻塞同名 key 将来复活。 */
-    private static final String[] MERGED_AWAY_DIR_KEYS = {"charge", "report", "system"};
+    private static final String[] MERGED_AWAY_DIR_KEYS = {"charge", "report", "system", "inp-pharm-group"};
 
     /**
      * 物理清除已下线菜单/已合并目录留下的逻辑删除墓碑(deleted=1)。
@@ -501,7 +512,9 @@ public class RbacInitializer implements ApplicationRunner {
                 "surgery-report"});
         grants.put(Roles.PHARMACIST, new String[]{"dashboard", "dispense-todo", "dispense", "drug-return", "pharmacy-def", "pharmacy-rpt", "wh-stock", "wh-in", "wh-out", "warehouse-def", "warehouse-rpt", "wh-check", "req-mgr", "trf-mgr", "price-adjust", "stock-ledger", "trace-code", "price-mgr", "pharmacy-window", "window-workstation", "window-dept-rule", "pharmacy-cross", "rx-audit", "supplier-mgr", "purchase-rule", "purchase-plan", "purchase-order", "stock-accept", "supplier-pay", "payable-rpt", "drug-maint", "maint-template", "month-end",
                 // 住院药师站(T41 审核 + P4 发药增强)
-                "pharm-station", "inp-dispense-work", "inp-discharge-pickup", "inp-dispense-history"});
+                "pharm-station", "inp-dispense-work", "inp-discharge-pickup", "inp-dispense-history",
+                // 统计查询增强(2026-11): 药品消耗分析/医保合规分析/处方与退药质量
+                "stat-usage", "stat-yb", "stat-quality"});
         grants.put(Roles.CASHIER, new String[]{"dashboard", "charge-ws", "charge-todo", "charge-setl", "charge-refund", "invoice-mgr", "charge-rpt", "rpt-setl", "rpt-daily",
                 // 住院登记结算(2026-09 住院模块): 入院登记/在院患者/床位/预交金/费用清单/出院结算/住院日报
                 "inp-admission", "inp-patient-list", "inp-bed-manage", "inp-deposit", "inp-charge-list", "inp-settle", "inp-daily-summary",
@@ -554,7 +567,9 @@ public class RbacInitializer implements ApplicationRunner {
                 // 付款处理/应付账款(批次C)
                 "supplier-pay", "payable-rpt",
                 // 养护/模板/月结/账簿(批次D)
-                "drug-maint", "maint-template", "month-end"});
+                "drug-maint", "maint-template", "month-end",
+                // 统计查询增强(2026-11): 药品消耗分析/医保合规分析/处方与退药质量
+                "stat-usage", "stat-yb", "stat-quality"});
         grants.put(Roles.CASHIER, new String[]{"rpt-setl", "rpt-daily", "invoice-mgr", "charge-rpt", "charge-ws",
                 // 住院登记结算(2026-09 住院模块)
                 "inp-admission", "inp-patient-list", "inp-bed-manage", "inp-deposit", "inp-charge-list", "inp-settle", "inp-daily-summary",
@@ -1779,6 +1794,128 @@ public class RbacInitializer implements ApplicationRunner {
         return dir.getId();
     }
 
+    /**
+     * 幂等将药房系统(g7/pharmacy)平铺叶子按业务域重挂到 4 个子目录(2026-11 整合): 门诊发药/住院发药/
+     * 药房运营与追溯/统计查询。先建子目录(含碑复活防 uk_menu_key), 再按 key 将叶子 parent_id 改到对应
+     * 子目录(sort_no 续接), 仅改 parent_id/sort_no 不改菜单 id 故 sys_role_menu 授权天然保持; 子目录靠
+     * treeByIds 自动补祖先无需显式授权(与 regroupWarehouseMenus 同构)。住院 4 项由原独立顶级目录
+     * inp-pharm-group 迁入 ph-inp; 统计查询新增 stat-usage/stat-yb/stat-quality 三叶子(缺失则补种并回填
+     * menuIds)。迁移完成后 inp-pharm-group 子项清空则软删(其 key 已入 MERGED_AWAY_DIR_KEYS 由清墓碑)。
+     * 全程判存幂等, 对新库(seedMenus 已分组)为无害空转。
+     */
+    private void consolidatePharmacyMenus(Map<String, Long> menuIds) {
+        SysMenu ph = menuMapper.selectOne(new QueryWrapper<SysMenu>().eq("menu_key", "pharmacy").last("LIMIT 1"));
+        if (ph == null) {
+            return;
+        }
+        // 子域目录: {key, 名称}
+        String[][] dirs = {
+                {"ph-outp", "门诊发药"},
+                {"ph-inp", "住院发药"},
+                {"ph-ops", "药房运营与追溯"},
+                {"ph-stat", "统计查询"},
+        };
+        // 叶子: {key, 名称, comp, 目标子域key}
+        String[][] leaves = {
+                {"dispense-todo", "待发药", "DispenseTodo", "ph-outp"},
+                {"window-workstation", "发药工作站", "WindowWorkstation", "ph-outp"},
+                {"dispense", "调剂发药", "DispenseRecord", "ph-outp"},
+                {"rx-audit", "处方审核", "OutpRxAudit", "ph-outp"},
+                {"drug-return", "退药", "DrugReturn", "ph-outp"},
+                {"pharm-station", "药师审核", "pharm-station", "ph-inp"},
+                {"inp-dispense-work", "住院发药工作台", "InpDispenseWork", "ph-inp"},
+                {"inp-discharge-pickup", "出院带药核发", "InpDischargePickup", "ph-inp"},
+                {"inp-dispense-history", "住院发药历史", "InpDispenseHistory", "ph-inp"},
+                {"pharmacy-def", "药房管理", "PharmacyDef", "ph-ops"},
+                {"price-mgr", "药房定价", "PharmacyPriceManage", "ph-ops"},
+                {"req-mgr", "药品请领", "RequisitionManage", "ph-ops"},
+                {"pharmacy-window", "发药窗口", "PharmacyWindowManage", "ph-ops"},
+                {"window-dept-rule", "科室定向窗口", "WindowDeptRule", "ph-ops"},
+                {"pharmacy-cross", "跨药房配置", "PharmacyCrossConfig", "ph-ops"},
+                {"trace-code", "药品追溯码", "TraceCodeManage", "ph-ops"},
+                {"pharmacy-rpt", "药房统计", "PharmacyReport", "ph-stat"},
+                {"stat-usage", "药品消耗分析", "PharmacyUsageStat", "ph-stat"},
+                {"stat-yb", "医保合规分析", "PharmacyYbStat", "ph-stat"},
+                {"stat-quality", "处方与退药质量", "PharmacyQualityStat", "ph-stat"},
+        };
+        Map<String, Long> dirIds = new java.util.LinkedHashMap<>();
+        for (String[] g : dirs) {
+            Long id = ensurePharmacySubDir(g[0], g[1], ph.getId());
+            if (id != null) {
+                dirIds.put(g[0], id);
+                menuIds.put(g[0], id);
+            }
+        }
+        for (String[] lv : leaves) {
+            Long dirId = dirIds.get(lv[3]);
+            if (dirId == null) {
+                continue;
+            }
+            SysMenu leaf = menuMapper.selectOne(new QueryWrapper<SysMenu>().eq("menu_key", lv[0]).last("LIMIT 1"));
+            if (leaf == null) {
+                leaf = new SysMenu();
+                leaf.setParentId(dirId);
+                leaf.setMenuKey(lv[0]);
+                leaf.setMenuName(lv[1]);
+                leaf.setMenuType(2);
+                leaf.setComp(lv[2]);
+                leaf.setSortNo(maxSortUnder(dirId) + 1);
+                leaf.setVisible(1);
+                leaf.setStatus(1);
+                menuMapper.insert(leaf);
+                log.info("药房菜单「{}」已新建挂到子目录「{}」", lv[1], lv[3]);
+            } else if (!dirId.equals(leaf.getParentId())) {
+                leaf.setParentId(dirId);
+                leaf.setSortNo(maxSortUnder(dirId) + 1);
+                menuMapper.updateById(leaf);
+                log.info("药房菜单「{}」已重挂到子目录「{}」", leaf.getMenuName(), lv[3]);
+            }
+            menuIds.put(lv[0], leaf.getId());
+        }
+        // 迁空后软删独立顶级目录 inp-pharm-group(住院 4 项已并入 ph-inp)
+        SysMenu inpPharm = menuMapper.selectOne(new QueryWrapper<SysMenu>().eq("menu_key", "inp-pharm-group").last("LIMIT 1"));
+        if (inpPharm != null) {
+            Long remaining = menuMapper.selectCount(new QueryWrapper<SysMenu>().eq("parent_id", inpPharm.getId()));
+            if (remaining == null || remaining == 0L) {
+                roleMenuMapper.delete(new QueryWrapper<SysRoleMenu>().eq("menu_id", inpPharm.getId()));
+                menuMapper.deleteById(inpPharm.getId());
+                log.info("住院药师站顶级目录已软删(4项并入药房系统/住院发药): inp-pharm-group");
+            }
+        }
+    }
+
+    /** 幂等确保 pharmacy 下的子目录存在(menu_type=1, parent_id=phId): 先复活同 key 碑行防 uk_menu_key 冲突, 不存在则新建, 返回其 id */
+    private Long ensurePharmacySubDir(String key, String name, Long parentId) {
+        try (Connection conn = dataSource.getConnection(); Statement st = conn.createStatement()) {
+            st.executeUpdate("UPDATE sys_menu SET deleted = 0 WHERE menu_key = '" + key + "' AND deleted = 1");
+        } catch (Exception e) {
+            log.warn("{} 碑行复活跳过: {}", key, e.getMessage());
+        }
+        SysMenu dir = menuMapper.selectOne(new QueryWrapper<SysMenu>().eq("menu_key", key).last("LIMIT 1"));
+        if (dir == null) {
+            dir = new SysMenu();
+            dir.setParentId(parentId);
+            dir.setMenuKey(key);
+            dir.setMenuName(name);
+            dir.setMenuType(1);
+            dir.setSortNo(maxSortUnder(parentId) + 1);
+            dir.setVisible(1);
+            dir.setStatus(1);
+            menuMapper.insert(dir);
+            log.info("药房子目录「{}」已新建({})", name, key);
+        }
+        return dir.getId();
+    }
+
+    /** 指定父目录下现有子项的最大 sort_no(无子项返回 0), 供新建/重挂叶子续接排序 */
+    private int maxSortUnder(Long parentId) {
+        int max = 0;
+        for (SysMenu c : menuMapper.selectList(new QueryWrapper<SysMenu>().eq("parent_id", parentId))) {
+            max = Math.max(max, c.getSortNo() == null ? 0 : c.getSortNo());
+        }
+        return max;
+    }
+
     /* ===================== 3c. 护士站/治疗/医技三模块基座菜单(2026-09) ===================== */
 
     /**
@@ -1891,14 +2028,11 @@ public class RbacInitializer implements ApplicationRunner {
         ensureDirMenu(menuIds, "inp-report-group", "住院报表");
         ensureChildMenu(menuIds, "inp-report-group", "inp-report", "报表中心", "InpReportCenter");
         ensureChildMenu(menuIds, "inp-report-group", "inp-print", "打印管理", "InpPrintCenter");
-        // T41(与 app.js 静态兑底菜单同 key 同名): 药师审核/危急值管理/PDA扫码/移动护理;
-        // comp 用 HIS.views 注册键(critical-value.js/pharm-station.js 注册键为小写短横线, 与此处一致)
-        ensureDirMenu(menuIds, "inp-pharm-group", "住院药师站");
-        ensureChildMenu(menuIds, "inp-pharm-group", "pharm-station", "药师审核", "pharm-station");
-        // P4 住院发药增强(与 app.js 静态兑底菜单同 key 同名): 发药工作台/出院带药取药核发/历史发药查询
-        ensureChildMenu(menuIds, "inp-pharm-group", "inp-dispense-work", "住院发药工作台", "InpDispenseWork");
-        ensureChildMenu(menuIds, "inp-pharm-group", "inp-discharge-pickup", "出院带药核发", "InpDischargePickup");
-        ensureChildMenu(menuIds, "inp-pharm-group", "inp-dispense-history", "住院发药历史", "InpDispenseHistory");
+        // T41(与 app.js 静态兑底菜单同 key 同名): 危急值管理/PDA扫码/移动护理;
+        // comp 用 HIS.views 注册键(critical-value.js 注册键为小写短横线, 与此处一致)
+        // 住院药师站 4 项(pharm-station/inp-dispense-work/inp-discharge-pickup/inp-dispense-history)已并入
+        // "药房系统/住院发药"(ph-inp)子域(2026-11 药房整合): 新库由 seedMenus 直接种子, 存量库由
+        // consolidatePharmacyMenus 重挂 parent_id 并软删 inp-pharm-group 顶级目录; 此处不再种植独立目录。
         ensureDirMenu(menuIds, "critical-value-group", "危急值闭环");
         ensureChildMenu(menuIds, "critical-value-group", "critical-value", "危急值管理", "critical-value");
         ensureDirMenu(menuIds, "mobile-nurse-group", "移动护理");

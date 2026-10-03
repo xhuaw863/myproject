@@ -102,19 +102,30 @@
     },
     {
       group: '药房系统', children: [
+        /* 门诊发药 */
         { key: 'dispense-todo', label: '待发药', comp: 'DispenseTodo' },
-        { key: 'dispense', label: '调剂发药', comp: 'DispenseRecord' },
-        { key: 'drug-return', label: '退药', comp: 'DrugReturn' },
-        { key: 'pharmacy-def', label: '药房管理', comp: 'PharmacyDef' },
-        { key: 'pharmacy-rpt', label: '药房统计', comp: 'PharmacyReport' },
-        { key: 'req-mgr', label: '药品请领', comp: 'RequisitionManage' },
-        { key: 'trace-code', label: '药品追溯码', comp: 'TraceCodeManage' },
-        { key: 'price-mgr', label: '药房定价', comp: 'PharmacyPriceManage' },
-        { key: 'pharmacy-window', label: '发药窗口', comp: 'PharmacyWindowManage' },
         { key: 'window-workstation', label: '发药工作站', comp: 'WindowWorkstation' },
+        { key: 'dispense', label: '调剂发药', comp: 'DispenseRecord' },
+        { key: 'rx-audit', label: '处方审核', comp: 'OutpRxAudit' },
+        { key: 'drug-return', label: '退药', comp: 'DrugReturn' },
+        /* 住院发药(原"住院药师站"顶级目录并入药房系统, 与动态菜单 ph-inp 同 key 同名) */
+        { key: 'pharm-station', label: '药师审核', comp: 'pharm-station' },
+        { key: 'inp-dispense-work', label: '住院发药工作台', comp: 'InpDispenseWork' },
+        { key: 'inp-discharge-pickup', label: '出院带药核发', comp: 'InpDischargePickup' },
+        { key: 'inp-dispense-history', label: '住院发药历史', comp: 'InpDispenseHistory' },
+        /* 药房运营与追溯 */
+        { key: 'pharmacy-def', label: '药房管理', comp: 'PharmacyDef' },
+        { key: 'price-mgr', label: '药房定价', comp: 'PharmacyPriceManage' },
+        { key: 'req-mgr', label: '药品请领', comp: 'RequisitionManage' },
+        { key: 'pharmacy-window', label: '发药窗口', comp: 'PharmacyWindowManage' },
         { key: 'window-dept-rule', label: '科室定向窗口', comp: 'WindowDeptRule' },
         { key: 'pharmacy-cross', label: '跨药房配置', comp: 'PharmacyCrossConfig' },
-        { key: 'rx-audit', label: '处方审核', comp: 'OutpRxAudit' }
+        { key: 'trace-code', label: '药品追溯码', comp: 'TraceCodeManage' },
+        /* 统计查询 */
+        { key: 'pharmacy-rpt', label: '药房统计', comp: 'PharmacyReport' },
+        { key: 'stat-usage', label: '药品消耗分析', comp: 'PharmacyUsageStat' },
+        { key: 'stat-yb', label: '医保合规分析', comp: 'PharmacyYbStat' },
+        { key: 'stat-quality', label: '处方与退药质量', comp: 'PharmacyQualityStat' }
       ]
     },
     {
@@ -216,16 +227,9 @@
         { key: 'critical-value', label: '危急值管理', comp: 'critical-value' }
       ]
     },
-    /* 住院药师站(T35审核 + P4发药增强, 与 RbacInitializer 动态菜单同 key 同名):
-     * 药品医嘱审方(pharm-station.js) + 住院发药工作台/出院带药核发/历史发药查询(inpatient.js) */
-    {
-      group: '住院药师站', children: [
-        { key: 'pharm-station', label: '药师审核', comp: 'pharm-station' },
-        { key: 'inp-dispense-work', label: '住院发药工作台', comp: 'InpDispenseWork' },
-        { key: 'inp-discharge-pickup', label: '出院带药核发', comp: 'InpDischargePickup' },
-        { key: 'inp-dispense-history', label: '住院发药历史', comp: 'InpDispenseHistory' }
-      ]
-    },
+    /* 住院药师站(T35审核 + P4发药增强)已于 2026-11 药房整合并入"药房系统"分组(见上),
+     * 独立顶级目录 inp-pharm-group 废弃; pharm-station/inp-dispense-work/inp-discharge-pickup/inp-dispense-history
+     * 四条静态兑底入口现列于"药房系统"组下, 与 RbacInitializer 动态菜单 ph-inp 子域同 key 同名。 */
     /* 临床路径与手术麻醉(2026-09 集成, 与 RbacInitializer 动态菜单同 key 同名):
      * 路径模板管理(clinical-pathway.js)/手术管理·麻醉记录·手麻记费(surgery-manage.js);
      * 手麻P0: 手术申请管理含通知管理(surgery-apply.js) */
