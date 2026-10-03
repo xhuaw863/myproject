@@ -4,6 +4,7 @@ import com.alibaba.excel.EasyExcel;
 import com.yb.hi.entity.basedata.HisStaff;
 import com.yb.hi.entity.basedata.HisStaffRxAuth;
 import com.yb.hi.framework.common.R;
+import com.yb.hi.platform.ExportGuard;
 import com.yb.hi.platform.service.OrgAccessGuard;
 import com.yb.hi.service.basedata.HisStaffRxAuthService;
 import com.yb.hi.service.basedata.HisStaffService;
@@ -65,6 +66,7 @@ public class HisStaffController {
         resp.setCharacterEncoding("UTF-8");
         resp.setHeader("Content-Disposition", "attachment; filename=\"" + enc + "\"; filename*=UTF-8''" + enc);
         resp.setHeader("Access-Control-Expose-Headers", "Content-Disposition");
+        ExportGuard.checkRows((java.util.Collection<?>) data.get("rows"), "职工");
         EasyExcel.write(resp.getOutputStream())
                 .head((List<List<String>>) data.get("head"))
                 .sheet("职工")

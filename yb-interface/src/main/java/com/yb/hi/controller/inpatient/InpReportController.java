@@ -5,6 +5,7 @@ import com.alibaba.excel.ExcelWriter;
 import com.alibaba.excel.write.metadata.WriteSheet;
 import com.yb.hi.dto.inpatient.ReportQueryDTO;
 import com.yb.hi.framework.common.R;
+import com.yb.hi.platform.ExportGuard;
 import com.yb.hi.platform.service.OrgAccessGuard;
 import com.yb.hi.service.inpatient.InpReportService;
 import org.springframework.format.annotation.DateTimeFormat;
@@ -211,6 +212,12 @@ public class InpReportController {
         resp.setCharacterEncoding("UTF-8");
         resp.setHeader("Content-Disposition", "attachment; filename=\"" + enc + "\"; filename*=UTF-8''" + enc);
         resp.setHeader("Access-Control-Expose-Headers", "Content-Disposition");
+        int totalRows = 0;
+        for (Map<String, Object> sh : sheets) {
+            Object rs = sh.get("rows");
+            totalRows += rs instanceof java.util.Collection ? ((java.util.Collection<?>) rs).size() : 0;
+        }
+        ExportGuard.checkRows(totalRows, "住院报表");
         ExcelWriter writer = EasyExcel.write(resp.getOutputStream()).build();
         try {
             for (int i = 0; i < sheets.size(); i++) {

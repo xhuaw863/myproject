@@ -10,6 +10,7 @@ import com.yb.hi.entity.cashier.HisDailySettle;
 import com.yb.hi.entity.cashier.HisInvoice;
 import com.yb.hi.entity.cashier.HisInvoicePool;
 import com.yb.hi.framework.common.R;
+import com.yb.hi.platform.ExportGuard;
 import com.yb.hi.platform.service.OrgAccessGuard;
 import com.yb.hi.service.cashier.CashierService;
 import com.yb.hi.service.cashier.InvoiceService;
@@ -192,6 +193,7 @@ public class CashierController {
         resp.setCharacterEncoding("UTF-8");
         resp.setHeader("Content-Disposition", "attachment; filename=\"" + enc + "\"; filename*=UTF-8''" + enc);
         resp.setHeader("Access-Control-Expose-Headers", "Content-Disposition");
+        ExportGuard.checkRows((java.util.Collection<?>) data.get("rows"), "收费记录");
         EasyExcel.write(resp.getOutputStream())
                 .head((List<List<String>>) data.get("head"))
                 .sheet("收费记录")
@@ -212,6 +214,7 @@ public class CashierController {
         resp.setCharacterEncoding("UTF-8");
         resp.setHeader("Content-Disposition", "attachment; filename=\"" + enc + "\"; filename*=UTF-8''" + enc);
         resp.setHeader("Access-Control-Expose-Headers", "Content-Disposition");
+        ExportGuard.checkRows((java.util.Collection<?>) data.get("rows"), "发票记录");
         EasyExcel.write(resp.getOutputStream())
                 .head((List<List<String>>) data.get("head"))
                 .sheet("发票记录")

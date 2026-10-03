@@ -17,6 +17,7 @@ public class WebMvcConfig implements WebMvcConfigurer {
 
     private final AuthInterceptor authInterceptor;
     private final BizRoleInterceptor bizRoleInterceptor;
+    private final ExportGuardInterceptor exportGuardInterceptor;
 
     @Value("${his.upload.path:./data/upload/}")
     private String uploadPath;
@@ -24,9 +25,11 @@ public class WebMvcConfig implements WebMvcConfigurer {
     @Value("${his.upload.url-prefix:/uploads/}")
     private String urlPrefix;
 
-    public WebMvcConfig(AuthInterceptor authInterceptor, BizRoleInterceptor bizRoleInterceptor) {
+    public WebMvcConfig(AuthInterceptor authInterceptor, BizRoleInterceptor bizRoleInterceptor,
+                        ExportGuardInterceptor exportGuardInterceptor) {
         this.authInterceptor = authInterceptor;
         this.bizRoleInterceptor = bizRoleInterceptor;
+        this.exportGuardInterceptor = exportGuardInterceptor;
     }
 
     @Override
@@ -38,6 +41,12 @@ public class WebMvcConfig implements WebMvcConfigurer {
                 );
         // 业务模块写操作角色网关(读不拦截, 数据隔离在数据层; 见 BizRoleInterceptor)
         registry.addInterceptor(bizRoleInterceptor)
+                .addPathPatterns("/api/**")
+                .excludePathPatterns(
+                        "/api/auth/login"
+                );
+        // 导出防护闸: URL 含 export 的端点限流+并发(须在鉴权后取 UserContext; 见 ExportGuardInterceptor)
+        registry.addInterceptor(exportGuardInterceptor)
                 .addPathPatterns("/api/**")
                 .excludePathPatterns(
                         "/api/auth/login"

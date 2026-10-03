@@ -6,6 +6,7 @@ import com.yb.hi.framework.common.R;
 import com.yb.hi.framework.common.Roles;
 import com.yb.hi.framework.tenant.LoginUser;
 import com.yb.hi.framework.tenant.UserContext;
+import com.yb.hi.platform.ExportGuard;
 import com.yb.hi.platform.dto.MenuNode;
 import com.yb.hi.platform.dto.MenuSaveReq;
 import com.yb.hi.platform.service.SysMenuService;
@@ -51,6 +52,7 @@ public class SysMenuController {
         resp.setCharacterEncoding("UTF-8");
         resp.setHeader("Content-Disposition", "attachment; filename=\"" + enc + "\"; filename*=UTF-8''" + enc);
         resp.setHeader("Access-Control-Expose-Headers", "Content-Disposition");
+        ExportGuard.checkRows((java.util.Collection<?>) data.get("rows"), "菜单");
         EasyExcel.write(resp.getOutputStream())
                 .head((List<List<String>>) data.get("head"))
                 .sheet("菜单")

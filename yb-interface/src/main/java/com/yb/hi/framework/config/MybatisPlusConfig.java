@@ -72,8 +72,10 @@ public class MybatisPlusConfig {
             }
         }));
 
-        // 分页插件
-        interceptor.addInnerInterceptor(new PaginationInnerInterceptor(DbType.MYSQL));
+        // 分页插件: maxLimit 钉顶, 防前端/调用方传超大 size 退化为全量拉取(导出防护 e3)
+        PaginationInnerInterceptor pagination = new PaginationInnerInterceptor(DbType.MYSQL);
+        pagination.setMaxLimit(20000L);
+        interceptor.addInnerInterceptor(pagination);
         return interceptor;
     }
 }

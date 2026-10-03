@@ -5,6 +5,7 @@ import com.alibaba.excel.ExcelWriter;
 import com.alibaba.excel.write.metadata.WriteSheet;
 import com.baomidou.mybatisplus.core.metadata.IPage;
 import com.yb.hi.framework.common.R;
+import com.yb.hi.platform.ExportGuard;
 import com.yb.hi.platform.service.OrgAccessGuard;
 import com.yb.hi.service.report.ReportService;
 import org.springframework.web.bind.annotation.*;
@@ -141,6 +142,7 @@ public class ReportController {
         resp.setCharacterEncoding("UTF-8");
         resp.setHeader("Content-Disposition", "attachment; filename=\"" + enc + "\"; filename*=UTF-8''" + enc);
         resp.setHeader("Access-Control-Expose-Headers", "Content-Disposition");
+        ExportGuard.checkRows((java.util.Collection<?>) data.get("rows"), "结算记录");
         EasyExcel.write(resp.getOutputStream())
                 .head((List<List<String>>) data.get("head"))
                 .sheet("结算记录")
@@ -164,6 +166,8 @@ public class ReportController {
         resp.setHeader("Content-Disposition", "attachment; filename=\"" + enc + "\"; filename*=UTF-8''" + enc);
         resp.setHeader("Access-Control-Expose-Headers", "Content-Disposition");
         // 双Sheet须用 ExcelWriter 模式(链式 doWrite 仅支持单Sheet)
+        ExportGuard.checkRows((java.util.Collection<?>) data.get("summaryRows"), "医生工作日志");
+        ExportGuard.checkRows((java.util.Collection<?>) data.get("detailRows"), "医生工作日志-接诊明细");
         ExcelWriter writer = EasyExcel.write(resp.getOutputStream()).build();
         try {
             WriteSheet sheet1 = EasyExcel.writerSheet(0, "工作量汇总")
@@ -280,6 +284,12 @@ public class ReportController {
         resp.setHeader("Content-Disposition", "attachment; filename=\"" + enc + "\"; filename*=UTF-8''" + enc);
         resp.setHeader("Access-Control-Expose-Headers", "Content-Disposition");
         List<Map<String, Object>> sheets = (List<Map<String, Object>>) data.get("sheets");
+        int totalRows = 0;
+        for (Map<String, Object> sh : sheets) {
+            Object rs = sh.get("rows");
+            totalRows += rs instanceof java.util.Collection ? ((java.util.Collection<?>) rs).size() : 0;
+        }
+        ExportGuard.checkRows(totalRows, "统计报表");
         ExcelWriter writer = EasyExcel.write(resp.getOutputStream()).build();
         try {
             for (int i = 0; i < sheets.size(); i++) {

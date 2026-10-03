@@ -4,6 +4,7 @@ import com.alibaba.excel.EasyExcel;
 import com.alibaba.excel.ExcelWriter;
 import com.alibaba.excel.write.metadata.WriteSheet;
 import com.yb.hi.framework.common.R;
+import com.yb.hi.platform.ExportGuard;
 import com.yb.hi.platform.service.OrgAccessGuard;
 import com.yb.hi.service.pharmacy.PharmacyStatService;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -134,6 +135,12 @@ public class PharmacyStatController {
         resp.setHeader("Content-Disposition", "attachment; filename=\"" + enc + "\"; filename*=UTF-8''" + enc);
         resp.setHeader("Access-Control-Expose-Headers", "Content-Disposition");
         List<Map<String, Object>> sheets = (List<Map<String, Object>>) data.get("sheets");
+        int totalRows = 0;
+        for (Map<String, Object> sh : sheets) {
+            Object rs = sh.get("rows");
+            totalRows += rs instanceof java.util.Collection ? ((java.util.Collection<?>) rs).size() : 0;
+        }
+        ExportGuard.checkRows(totalRows, "药房统计报表");
         ExcelWriter writer = EasyExcel.write(resp.getOutputStream()).build();
         try {
             for (int i = 0; i < sheets.size(); i++) {

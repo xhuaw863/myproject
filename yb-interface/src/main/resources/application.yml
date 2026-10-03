@@ -22,7 +22,8 @@ spring:
           no-cache: true
   datasource:
     driver-class-name: com.mysql.cj.jdbc.Driver
-    url: jdbc:mysql://localhost:3306/yb_interface?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai&useSSL=false&allowPublicKeyRetrieval=true&rewriteBatchedStatements=true
+    # sessionVariables=max_execution_time=60000: 会话级 SELECT 超时 60s(MySQL 8.0 仅约束只读查询, 不伤 DDL/DML), 防失控大查询拖垮库(导出防护 e3)
+    url: jdbc:mysql://localhost:3306/yb_interface?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai&useSSL=false&allowPublicKeyRetrieval=true&rewriteBatchedStatements=true&sessionVariables=max_execution_time=60000
     username: root
     # 数据库口令经环境变量注入(生产严禁使用默认值): DB_PASSWORD
     password: ${DB_PASSWORD:bsoft}

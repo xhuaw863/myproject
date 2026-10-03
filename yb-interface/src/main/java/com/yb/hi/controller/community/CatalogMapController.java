@@ -9,6 +9,7 @@ import com.yb.hi.dto.community.CatalogMapEffReq;
 import com.yb.hi.entity.community.HisYbMapLog;
 import com.yb.hi.framework.common.BizException;
 import com.yb.hi.framework.common.R;
+import com.yb.hi.platform.ExportGuard;
 import com.yb.hi.platform.service.OrgAccessGuard;
 import com.yb.hi.service.community.CatalogMapService;
 import org.springframework.format.annotation.DateTimeFormat;
@@ -74,6 +75,7 @@ public class CatalogMapController {
         List<List<String>> head = (List<List<String>>) data.get("head");
         @SuppressWarnings("unchecked")
         List<List<Object>> rows = (List<List<Object>>) data.get("rows");
+        ExportGuard.checkRows(rows, "目录对照");
         EasyExcel.write(resp.getOutputStream()).head(head).sheet("对照结果").doWrite(rows);
     }
 

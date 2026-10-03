@@ -11,6 +11,7 @@ import com.yb.hi.framework.common.R;
 import com.yb.hi.framework.common.Roles;
 import com.yb.hi.framework.tenant.LoginUser;
 import com.yb.hi.framework.tenant.UserContext;
+import com.yb.hi.platform.ExportGuard;
 import com.yb.hi.service.community.OrgCatalogService;
 import org.springframework.web.bind.annotation.*;
 
@@ -61,6 +62,7 @@ public class OrgCatalogController {
         resp.setHeader("Access-Control-Expose-Headers", "Content-Disposition");
         List<List<String>> head = (List<List<String>>) data.get("head");
         List<List<Object>> rows = (List<List<Object>>) data.get("rows");
+        ExportGuard.checkRows(rows, "机构目录选用");
         EasyExcel.write(resp.getOutputStream()).head(head).sheet("机构目录选用").doWrite(rows);
     }
 

@@ -2,6 +2,7 @@ package com.yb.hi.controller.mr;
 
 import com.alibaba.excel.EasyExcel;
 import com.yb.hi.framework.common.R;
+import com.yb.hi.platform.ExportGuard;
 import com.yb.hi.service.mr.MrReportService;
 import org.springframework.web.bind.annotation.*;
 
@@ -55,6 +56,7 @@ public class MrReportController {
         resp.setCharacterEncoding("UTF-8");
         resp.setHeader("Content-Disposition", "attachment; filename=\"" + enc + "\"; filename*=UTF-8''" + enc);
         resp.setHeader("Access-Control-Expose-Headers", "Content-Disposition");
+        ExportGuard.checkRows((java.util.Collection<?>) data.get("rows"), title);
         EasyExcel.write(resp.getOutputStream())
                 .head((List<List<String>>) data.get("head"))
                 .sheet(title)
