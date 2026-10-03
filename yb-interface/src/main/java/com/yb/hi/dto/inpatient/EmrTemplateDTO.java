@@ -25,6 +25,18 @@ public class EmrTemplateDTO {
     private List<Map<String, Object>> rawFields;
     /** 布局定义JSON(分节/栅格, 设计器产出) */
     private String layout;
+    /** 父模板ID(三级继承: 科室挂全院, 个人挂科室/全院; 新建时防成环校验) */
+    private Long parentTemplateId;
+    /** 模板层级: 0全院 1科室 2个人(新建时缺省按 ownerScope 推导) */
+    private Integer scopeLevel;
+    /** 母板锁定章节key列表JSON字符串数组(空白串=清空锁定) */
+    private String lockedSections;
+    /** Tiptap ProseMirror JSON文档(type=doc) */
+    private String document;
+    /** 打印格式脚本 */
+    private String printScript;
+    /** 关联数据集ID(his_emr_dataset.id) */
+    private Long datasetId;
     /** 适用范围:1住院 2门诊 */
     private Integer scope;
     /** 模板归属层级:personal(个人)/dept(科室)/global(全院), 仅新建时生效 */

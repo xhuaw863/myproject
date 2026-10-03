@@ -75,11 +75,21 @@
         { key: 'emr-designer', label: '病历模板设计器', comp: 'EmrTemplateDesigner' }
       ]
     },
+    /* 病历数据集管理(P1a-2, 注册键 emr-dataset 与 comp 同值): 章节/小节/数据元三级结构维护;
+     * RbacInitializer 已补种(ensureEmrQualityMenus 挂 emr-quality 目录, 同 key 同名, 管理职能 all_menus 可见) */
     {
       group: '病历质控与数据元', children: [
+        { key: 'emr-dataset', label: '数据集管理', comp: 'emr-dataset' },
+        /* 患者全景时间线(注册键 emr-patient-timeline 与 comp 同值): 门诊+住院就诊史统一时间轴;
+         * 只读聚合页, 后端 EmrTimelineController(须在 RbacInitializer 补种菜单与角色授权) */
+        { key: 'emr-patient-timeline', label: '患者时间线', comp: 'emr-patient-timeline' },
+        /* 结构化模板设计器(P1a-3, 注册键 emr-template-designer 与 comp 同值): 数据集驱动 Tiptap 三栏式模板设计;
+         * RbacInitializer 已补种(ensureEmrQualityMenus 挂 emr-quality 目录, DOCTOR 角色已补授) */
+        { key: 'emr-template-designer', label: '模板设计器(结构化)', comp: 'emr-template-designer' },
         { key: 'emr-quality-rule', label: '质控规则维护', comp: 'EmrQualityRuleManage' },
         { key: 'emr-element-search', label: '病历检索上报', comp: 'EmrElementSearch' },
-        { key: 'emr-quality-board', label: '质控评分看板', comp: 'EmrQualityBoard' }
+        { key: 'emr-quality-board', label: '质控评分看板', comp: 'EmrQualityBoard' },
+        { key: 'emr-audit-log', label: '病历审计日志', comp: 'EmrAuditLog' }
       ]
     },
     {
@@ -397,8 +407,12 @@
   var AppLayout = {
     props: ['user'],
     emits: ['logout'],
-    /* 顶栏通知铃铛(notification-bell.js 须先于本文件加载; 缺失时降级为不注册, 主布局不受影响) */
-    components: { 'notification-bell': (HIS.components || {}).NotificationBell },
+    /* 顶栏通知铃铛(notification-bell.js 须先于本文件加载; 缺失时降级为不注册, 主布局不受影响);
+     * emr-sse-bell 为病历实时通知铃铛(emr-sse-client.js 提供 HIS.EmrSseClient.NotificationBell, 同样须先加载) */
+    components: {
+      'notification-bell': (HIS.components || {}).NotificationBell,
+      'emr-sse-bell': (HIS.EmrSseClient || {}).NotificationBell
+    },
     data: function () {
       return {
         activeKey: 'dashboard', menu: MENU,
@@ -549,7 +563,8 @@
       '    <span class="hosp" v-else-if="user.orgName" style="opacity:.85;">机构: {{ user.orgName }}</span>',
       '    <span class="spacer"></span>',
       '    <span class="hosp hdr-date">{{ dateText }}</span>',
-      /* 通知中心铃铛: 顶栏右侧、用户信息左侧 */
+      /* 通知中心铃铛: 顶栏右侧、用户信息左侧; 其左为病历实时通知铃铛(SSE, emr-sse-client.js) */
+      '    <emr-sse-bell></emr-sse-bell>',
       '    <notification-bell></notification-bell>',
       '    <el-dropdown @command="onCmd">',
       '      <span class="user" :data-avatar="avatarChar">{{ user.realName || user.username }}（{{ roleName }}）<span style="margin-left:4px;">▾</span></span>',

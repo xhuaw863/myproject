@@ -6,6 +6,8 @@ import com.alibaba.fastjson2.JSONObject;
 import com.baomidou.mybatisplus.core.toolkit.Wrappers;
 import com.yb.hi.dto.inpatient.EmrFieldDefDTO;
 import com.yb.hi.dto.inpatient.EmrTemplateDTO;
+import com.yb.hi.entity.inpatient.HisEmrDataset;
+import com.yb.hi.entity.inpatient.HisEmrDatasetElement;
 import com.yb.hi.entity.inpatient.HisEmrTemplate;
 import com.yb.hi.framework.common.BizException;
 import com.yb.hi.framework.common.R;
@@ -13,24 +15,33 @@ import com.yb.hi.framework.common.Roles;
 import com.yb.hi.framework.tenant.LoginUser;
 import com.yb.hi.framework.tenant.TenantContext;
 import com.yb.hi.framework.tenant.UserContext;
+import com.yb.hi.mapper.inpatient.EmrDatasetElementMapper;
+import com.yb.hi.mapper.inpatient.EmrDatasetMapper;
 import com.yb.hi.mapper.inpatient.HisEmrTemplateMapper;
 import com.yb.hi.platform.entity.SysTenant;
 import com.yb.hi.platform.service.OrgAccessGuard;
 import com.yb.hi.platform.service.SysTenantService;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.boot.ApplicationArguments;
 import org.springframework.boot.ApplicationRunner;
 import org.springframework.core.annotation.Order;
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
 
 import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Collections;
 import java.util.Comparator;
+import java.util.HashMap;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 /**
  * 病历结构化模板服务: 维护 8 类标准文书模板(入院记录/首次病程/日常病程/上级医师查房/手术记录/术后病程/出院小结/死亡记录)
@@ -39,6 +50,11 @@ import java.util.Map;
  * 编码约定: his_emr_template 唯一键 uk_emr_tpl_code(template_code, deleted) 不含租户 —— 标准编码为全租户共享的
  * 全局主数据(tenant_id=1 优先获得标准编码); 播种前用 JdbcTemplate 全局查重(绕开租户插件), 编码已被其他租户
  * 占用则跳过, 各租户可自建扩展编码模板。creatTemplate 对重复编码返回友好 400。
+ *
+ * 三级继承: scope_level 0全院/1科室/2个人, 子模板经 parent_template_id 挂母板; 母板 locked_sections 锁定
+ * 章节内容由 propagate 统一下发, listByScope 返回个人覆盖科室覆盖全院的有效合并视图。
+ * Tiptap 文档: document 列承载 ProseMirror JSON(章节 emrSection/数据元 emrField 节点), 可由数据集生成
+ * (createFromDataset)或设计器产出; 批量维护见 batchUpdateElementAttr/batchReplaceSection/batchReplaceHeader。
  */
 @Slf4j
 @Order(7)
@@ -55,20 +71,49 @@ public class EmrTemplateService implements ApplicationRunner {
             {"EMR_POST_SURGERY", "术后病程记录", "1", "6", "1"},
             {"EMR_DISCHARGE", "出院小结", "7", "7", "1"},
             {"EMR_DEATH", "死亡记录", "1", "8", "1"},
-            {"EMR_OUTP_GENERAL", "门诊病历(通用)", "2", "21", "2"}
+            {"EMR_OUTP_GENERAL", "门诊病历(通用)", "2", "21", "2"},
+            /* P2 扩展: 10-15 类文书(病案首页/交接班/转科/知情同意/讨论/会诊), record_type 与签名规则口径一致 */
+            {"EMR_HOMEPAGE", "病案首页", "10", "10", "1"},
+            {"EMR_HANDOVER", "交接班记录", "11", "11", "1"},
+            {"EMR_TRANSFER", "转科记录", "12", "12", "1"},
+            {"EMR_CONSENT", "知情同意书", "13", "13", "1"},
+            {"EMR_DISCUSSION", "疑难病例讨论记录", "14", "14", "1"},
+            {"EMR_CONSULTATION", "会诊记录", "15", "15", "1"}
     };
+
+    /** 播种时附加 Tiptap 文档骨架的模板编码(P2 新增 10-15 类): 由种子字段定义生成章节/数据元节点, 书写器可直接渲染 */
+    private static final Set<String> SEED_DOC_CODES = new HashSet<>(Arrays.asList(
+            "EMR_HOMEPAGE", "EMR_HANDOVER", "EMR_TRANSFER", "EMR_CONSENT", "EMR_DISCUSSION", "EMR_CONSULTATION"));
+
+    /** Tiptap 节点类型常量 */
+    private static final String NODE_DOC = "doc";
+    private static final String NODE_SECTION = "emrSection";
+    private static final String NODE_FIELD = "emrField";
+    private static final String NODE_HEADER = "emrHeader";
+
+    /** 传播同步阈值: 子模板数超过该值转 @Async 后台执行, 避免接口长事务 */
+    private static final int PROPAGATE_ASYNC_THRESHOLD = 10;
 
     private final HisEmrTemplateMapper templateMapper;
     private final OrgAccessGuard guard;
     private final SysTenantService tenantService;
     private final JdbcTemplate jdbcTemplate;
+    private final EmrDatasetMapper datasetMapper;
+    private final EmrDatasetElementMapper datasetElementMapper;
+    /** 自注入代理: @Async 传播方法须经代理调用才异步(同类内直调不走代理) */
+    private final ObjectProvider<EmrTemplateService> selfProvider;
 
     public EmrTemplateService(HisEmrTemplateMapper templateMapper, OrgAccessGuard guard,
-                              SysTenantService tenantService, JdbcTemplate jdbcTemplate) {
+                              SysTenantService tenantService, JdbcTemplate jdbcTemplate,
+                              EmrDatasetMapper datasetMapper, EmrDatasetElementMapper datasetElementMapper,
+                              ObjectProvider<EmrTemplateService> selfProvider) {
         this.templateMapper = templateMapper;
         this.guard = guard;
         this.tenantService = tenantService;
         this.jdbcTemplate = jdbcTemplate;
+        this.datasetMapper = datasetMapper;
+        this.datasetElementMapper = datasetElementMapper;
+        this.selfProvider = selfProvider;
     }
 
     /* ================= 启动播种 ================= */
@@ -136,6 +181,9 @@ public class EmrTemplateService implements ApplicationRunner {
                 t.setRecordType(Integer.valueOf(def[2]));
                 t.setTemplateCategory(Integer.valueOf(def[3]));
                 t.setFields(buildSeedFields(code));
+                if (SEED_DOC_CODES.contains(code)) {
+                    t.setDocument(buildSeedDocument(code, def[1]));
+                }
                 t.setDeptId(0L);
                 t.setScope(Integer.valueOf(def[4]));
                 t.setVersion(1);
@@ -274,6 +322,13 @@ public class EmrTemplateService implements ApplicationRunner {
         t.setTemplateCategory(dto.getTemplateCategory());
         t.setFields(resolveFieldsJson(dto));
         t.setLayout(dto.getLayout());
+        validateParentLink(null, dto.getParentTemplateId());
+        t.setParentTemplateId(dto.getParentTemplateId());
+        t.setScopeLevel(resolveScopeLevel(ownerScope, dto.getScopeLevel()));
+        t.setLockedSections(normalizeLockedSections(dto.getLockedSections()));
+        t.setDocument(validateDocument(dto.getDocument()));
+        t.setPrintScript(dto.getPrintScript());
+        t.setDatasetId(dto.getDatasetId());
         t.setScope(dto.getScope() != null ? dto.getScope() : 1);
         t.setStaffId(staffId);
         t.setDeptId(deptId);
@@ -319,6 +374,28 @@ public class EmrTemplateService implements ApplicationRunner {
         }
         if (dto.getLayout() != null) {
             exist.setLayout(dto.getLayout());
+        }
+        if (dto.getScopeLevel() != null) {
+            if (dto.getScopeLevel() < 0 || dto.getScopeLevel() > 2) {
+                throw new BizException(400, "scopeLevel 仅支持 0全院/1科室/2个人");
+            }
+            exist.setScopeLevel(dto.getScopeLevel());
+        }
+        if (dto.getParentTemplateId() != null) {
+            validateParentLink(exist.getId(), dto.getParentTemplateId());
+            exist.setParentTemplateId(dto.getParentTemplateId());
+        }
+        if (dto.getLockedSections() != null) {
+            exist.setLockedSections(normalizeLockedSections(dto.getLockedSections()));
+        }
+        if (dto.getDocument() != null) {
+            exist.setDocument(validateDocument(dto.getDocument()));
+        }
+        if (dto.getPrintScript() != null) {
+            exist.setPrintScript(dto.getPrintScript());
+        }
+        if (dto.getDatasetId() != null) {
+            exist.setDatasetId(dto.getDatasetId());
         }
         if (dto.getScope() != null) {
             exist.setScope(dto.getScope());
@@ -383,6 +460,823 @@ public class EmrTemplateService implements ApplicationRunner {
             list.add(m);
         }
         return list;
+    }
+
+    /* ================= 三级继承: 母板锁定章节传播 ================= */
+
+    /**
+     * 母板传播: 将全院/科室母板 templateId 的 locked_sections 锁定章节内容下发到全部直接子模板
+     * (parent_template_id = templateId): 母板章节节点的 attrs/content 深拷贝覆盖子模板同key节点并保存。
+     * 子模板数 <= PROPAGATE_ASYNC_THRESHOLD 同步执行返回统计; 超过则提交 @Async 后台执行。
+     * 个人模板不可作为母板下发(仅全院/科室母板可锁定章节)。
+     */
+    public R<Map<String, Object>> propagate(Long templateId) {
+        HisEmrTemplate parent = templateId == null ? null : templateMapper.selectById(templateId);
+        if (parent == null) {
+            throw new BizException(400, "病历模板不存在");
+        }
+        if ((parent.getScopeLevel() != null && parent.getScopeLevel() == 2) || parent.getStaffId() != null) {
+            throw new BizException(400, "个人模板不支持向下传播(仅全院/科室母板可锁定章节下发)");
+        }
+        guardEditable(parent);
+        List<String> lockedKeys = parseLockedKeys(parent.getLockedSections());
+        List<HisEmrTemplate> children = listChildren(templateId);
+        Map<String, Object> stat = new LinkedHashMap<>();
+        stat.put("children", children.size());
+        if (lockedKeys.isEmpty()) {
+            stat.put("updated", 0);
+            stat.put("async", false);
+            stat.put("message", "母板未锁定任何章节, 无需传播");
+            return R.ok(stat);
+        }
+        JSONObject parentDoc = parseDocSafe(parent.getDocument());
+        if (parentDoc == null) {
+            throw new BizException(400, "母板缺少 Tiptap 文档, 无法传播");
+        }
+        if (children.size() > PROPAGATE_ASYNC_THRESHOLD) {
+            selfProvider.getObject().propagateAsync(templateId, TenantContext.get(), UserContext.get());
+            stat.put("updated", -1);
+            stat.put("async", true);
+            stat.put("message", "子模板较多, 已提交后台异步传播");
+            return R.ok(stat);
+        }
+        int updated = applyLockedSections(parentDoc, lockedKeys, children);
+        stat.put("updated", updated);
+        stat.put("async", false);
+        return R.ok(stat);
+    }
+
+    /** 后台异步传播(@Async; 租户/用户 ThreadLocal 由调用线程捕获后在本线程恢复, 失败仅记日志不影响主流程) */
+    @Async
+    public void propagateAsync(Long templateId, Long tenantId, LoginUser user) {
+        Long prevTenant = TenantContext.get();
+        LoginUser prevUser = UserContext.get();
+        try {
+            if (tenantId != null) {
+                TenantContext.set(tenantId);
+            }
+            if (user != null) {
+                UserContext.set(user);
+            }
+            HisEmrTemplate parent = templateMapper.selectById(templateId);
+            if (parent == null) {
+                log.warn("异步传播跳过: 母板不存在 id={}", templateId);
+                return;
+            }
+            List<String> lockedKeys = parseLockedKeys(parent.getLockedSections());
+            JSONObject parentDoc = parseDocSafe(parent.getDocument());
+            if (lockedKeys.isEmpty() || parentDoc == null) {
+                return;
+            }
+            int updated = applyLockedSections(parentDoc, lockedKeys, listChildren(templateId));
+            log.info("母板传播完成(异步): parentId={}, updated={}", templateId, updated);
+        } catch (Exception e) {
+            log.error("母板传播异步执行失败: parentId={}", templateId, e);
+        } finally {
+            if (prevTenant == null) {
+                TenantContext.clear();
+            } else {
+                TenantContext.set(prevTenant);
+            }
+            if (prevUser == null) {
+                UserContext.clear();
+            } else {
+                UserContext.set(prevUser);
+            }
+        }
+    }
+
+    /** 直接下级子模板(parent_template_id = templateId) */
+    private List<HisEmrTemplate> listChildren(Long templateId) {
+        return templateMapper.selectList(Wrappers.<HisEmrTemplate>lambdaQuery()
+                .eq(HisEmrTemplate::getParentTemplateId, templateId)
+                .orderByAsc(HisEmrTemplate::getId));
+    }
+
+    /** 锁定章节下发: 母板节点 attrs/content 深拷贝覆盖各子模板同key节点, 返回实际更新子模板数 */
+    private int applyLockedSections(JSONObject parentDoc, List<String> lockedKeys, List<HisEmrTemplate> children) {
+        int updated = 0;
+        for (HisEmrTemplate child : children) {
+            JSONObject childDoc = parseDocSafe(child.getDocument());
+            if (childDoc == null) {
+                continue;
+            }
+            int replaced = 0;
+            for (String key : lockedKeys) {
+                JSONObject parentNode = findSectionNode(parentDoc, key);
+                JSONObject childNode = findSectionNode(childDoc, key);
+                if (parentNode == null || childNode == null) {
+                    continue;
+                }
+                if (parentNode.get("attrs") != null) {
+                    childNode.put("attrs", deepCopy(parentNode.get("attrs")));
+                }
+                if (parentNode.get("content") == null) {
+                    childNode.remove("content");
+                } else {
+                    childNode.put("content", deepCopy(parentNode.get("content")));
+                }
+                replaced++;
+            }
+            if (replaced > 0) {
+                child.setDocument(JSON.toJSONString(childDoc));
+                templateMapper.updateById(child);
+                updated++;
+            }
+        }
+        return updated;
+    }
+
+    /** 递归定位章节/小节节点(emrSection 且 attrs.key 命中) */
+    private JSONObject findSectionNode(JSONObject node, String key) {
+        if (node == null || key == null) {
+            return null;
+        }
+        if (NODE_SECTION.equals(node.getString("type"))) {
+            JSONObject attrs = node.getJSONObject("attrs");
+            if (attrs != null && key.equals(attrs.getString("key"))) {
+                return node;
+            }
+        }
+        JSONArray content = node.getJSONArray("content");
+        if (content == null) {
+            return null;
+        }
+        for (int i = 0; i < content.size(); i++) {
+            Object el = content.get(i);
+            if (el instanceof JSONObject) {
+                JSONObject hit = findSectionNode((JSONObject) el, key);
+                if (hit != null) {
+                    return hit;
+                }
+            }
+        }
+        return null;
+    }
+
+    /** 解析母板锁定章节key列表(非法JSON返回空表, 不阻断传播) */
+    private List<String> parseLockedKeys(String json) {
+        List<String> keys = new ArrayList<>();
+        if (!StringUtils.hasText(json)) {
+            return keys;
+        }
+        try {
+            JSONArray arr = JSON.parseArray(json);
+            if (arr != null) {
+                for (int i = 0; i < arr.size(); i++) {
+                    String k = arr.getString(i);
+                    if (StringUtils.hasText(k) && !keys.contains(k)) {
+                        keys.add(k);
+                    }
+                }
+            }
+        } catch (Exception e) {
+            log.warn("locked_sections JSON解析失败: {}", e.getMessage());
+        }
+        return keys;
+    }
+
+    /* ================= 三级继承: 层级合并查询 ================= */
+
+    /**
+     * 按层级查询有效模板(合并视图): scopeLevel 限定合并深度 0=仅全院 1=全院+科室 2=全院+科室+个人(缺省2)。
+     * 同一(记录类型,类别,适用范围)视为同一文书, 深层层级整体覆盖浅层(个人 > 科室 > 全院);
+     * 未分类模板按编码并列共存。deptId/staffId 缺省回落当前登录科室/职工; 非管理员仅可查询本人个人模板。
+     */
+    public R<List<HisEmrTemplate>> listByScope(Integer scopeLevel, Long deptId, Long staffId) {
+        int maxLevel;
+        if (scopeLevel == null) {
+            maxLevel = 2;
+        } else if (scopeLevel < 0 || scopeLevel > 2) {
+            throw new BizException(400, "scopeLevel 仅支持 0全院/1科室/2个人");
+        } else {
+            maxLevel = scopeLevel;
+        }
+        LoginUser lu = UserContext.get();
+        Long effDept = deptId != null ? deptId : (lu == null ? null : lu.getDeptId());
+        Long effStaff = staffId != null ? staffId : (lu == null ? null : lu.getStaffId());
+        if (staffId != null && !isAdmin(lu) && (lu == null || !staffId.equals(lu.getStaffId()))) {
+            throw new BizException(403, "仅管理员可查询他人个人模板");
+        }
+        Map<String, List<HisEmrTemplate>> merged = new LinkedHashMap<>();
+        merged.putAll(groupByOverrideKey(templateMapper.selectList(Wrappers.<HisEmrTemplate>lambdaQuery()
+                .eq(HisEmrTemplate::getStatus, 1)
+                .isNull(HisEmrTemplate::getStaffId)
+                .and(w -> w.eq(HisEmrTemplate::getDeptId, 0L).or().isNull(HisEmrTemplate::getDeptId))
+                .orderByAsc(HisEmrTemplate::getRecordType)
+                .orderByAsc(HisEmrTemplate::getTemplateCategory)
+                .orderByAsc(HisEmrTemplate::getId))));
+        if (maxLevel >= 1 && effDept != null && effDept != 0L) {
+            merged.putAll(groupByOverrideKey(templateMapper.selectList(Wrappers.<HisEmrTemplate>lambdaQuery()
+                    .eq(HisEmrTemplate::getStatus, 1)
+                    .isNull(HisEmrTemplate::getStaffId)
+                    .eq(HisEmrTemplate::getDeptId, effDept)
+                    .orderByAsc(HisEmrTemplate::getRecordType)
+                    .orderByAsc(HisEmrTemplate::getTemplateCategory)
+                    .orderByAsc(HisEmrTemplate::getId))));
+        }
+        if (maxLevel >= 2 && effStaff != null) {
+            merged.putAll(groupByOverrideKey(templateMapper.selectList(Wrappers.<HisEmrTemplate>lambdaQuery()
+                    .eq(HisEmrTemplate::getStatus, 1)
+                    .eq(HisEmrTemplate::getStaffId, effStaff)
+                    .orderByAsc(HisEmrTemplate::getRecordType)
+                    .orderByAsc(HisEmrTemplate::getTemplateCategory)
+                    .orderByAsc(HisEmrTemplate::getId))));
+        }
+        List<HisEmrTemplate> out = new ArrayList<>();
+        for (List<HisEmrTemplate> group : merged.values()) {
+            out.addAll(group);
+        }
+        return R.ok(out);
+    }
+
+    /** 按覆盖键分组(同键同层多个模板并存, 深层整组覆盖浅层) */
+    private Map<String, List<HisEmrTemplate>> groupByOverrideKey(List<HisEmrTemplate> list) {
+        Map<String, List<HisEmrTemplate>> m = new LinkedHashMap<>();
+        for (HisEmrTemplate t : list) {
+            m.computeIfAbsent(overrideKeyOf(t), k -> new ArrayList<>()).add(t);
+        }
+        return m;
+    }
+
+    /** 覆盖键: 同记录类型+类别+适用范围视为同一文书; 无类别模板按编码并列共存 */
+    private String overrideKeyOf(HisEmrTemplate t) {
+        if (t.getTemplateCategory() != null) {
+            return "cat:" + t.getRecordType() + "|" + t.getTemplateCategory() + "|" + t.getScope();
+        }
+        return "code:" + (StringUtils.hasText(t.getTemplateCode()) ? t.getTemplateCode() : ("id:" + t.getId()));
+    }
+
+    /* ================= 数据集 → Tiptap 模板 ================= */
+
+    /**
+     * 由数据集生成 Tiptap 文档模板: 读取 his_emr_dataset + his_emr_dataset_element,
+     * 按 章节 → 小节 → 数据元 生成 emrSection/emrField 节点树, 并同步回填 fields 定义(兼容既有渲染链路)。
+     * scopeLevel: 0全院(牵头管理员) 1科室(当前登录科室) 2个人(当前登录职工), 归属与守卫同 createTemplate。
+     */
+    public R<HisEmrTemplate> createFromDataset(Long datasetId, String name, Integer scopeLevel) {
+        if (datasetId == null) {
+            throw new BizException(400, "数据集不能为空");
+        }
+        if (!StringUtils.hasText(name)) {
+            throw new BizException(400, "模板名称不能为空");
+        }
+        if (scopeLevel != null && (scopeLevel < 0 || scopeLevel > 2)) {
+            throw new BizException(400, "scopeLevel 仅支持 0全院/1科室/2个人");
+        }
+        int level = scopeLevel == null ? 0 : scopeLevel;
+        HisEmrDataset ds = datasetMapper.selectById(datasetId);
+        if (ds == null) {
+            throw new BizException(400, "数据集不存在");
+        }
+        List<HisEmrDatasetElement> elements = datasetElementMapper.selectList(
+                Wrappers.<HisEmrDatasetElement>lambdaQuery()
+                        .eq(HisEmrDatasetElement::getDatasetId, datasetId)
+                        .orderByAsc(HisEmrDatasetElement::getSortNo)
+                        .orderByAsc(HisEmrDatasetElement::getId));
+        if (elements.isEmpty()) {
+            throw new BizException(400, "数据集下无数据元, 无法生成模板");
+        }
+        LoginUser lu = UserContext.get();
+        Long staffId = null;
+        Long deptId;
+        if (level == 2) {
+            if (lu == null || lu.getStaffId() == null) {
+                throw new BizException(400, "个人模板须绑定当前登录职工");
+            }
+            staffId = lu.getStaffId();
+            deptId = lu.getDeptId() != null ? lu.getDeptId() : 0L;
+        } else if (level == 1) {
+            if (lu == null || lu.getDeptId() == null || lu.getDeptId() == 0L) {
+                throw new BizException(400, "科室模板须绑定当前登录科室");
+            }
+            deptId = lu.getDeptId();
+        } else {
+            guard.requireLeadOrg("仅牵头机构管理员可维护全院病历模板");
+            deptId = 0L;
+        }
+        String code = generateDatasetTemplateCode(datasetId);
+        ensureCodeAvailable(code);
+        HisEmrTemplate t = new HisEmrTemplate();
+        t.setOrgId(guard.currentOrgId());
+        t.setTemplateCode(code);
+        t.setTemplateName(name.trim());
+        t.setRecordType(ds.getScope() != null && ds.getScope() == 2 ? 2 : 1);
+        t.setFields(buildFieldsJson(elements));
+        t.setScope(ds.getScope() != null && ds.getScope() == 2 ? 2 : 1);
+        t.setStaffId(staffId);
+        t.setDeptId(deptId);
+        t.setScopeLevel(level);
+        t.setDatasetId(datasetId);
+        t.setDocument(buildTiptapDocument(elements));
+        t.setVersion(1);
+        t.setStatus(1);
+        try {
+            templateMapper.insert(t);
+        } catch (DuplicateKeyException e) {
+            throw new BizException(400, "模板编码已存在: " + code);
+        }
+        log.info("由数据集生成病历模板: id={}, code={}, datasetId={}, level={}", t.getId(), code, datasetId, level);
+        return R.ok(templateMapper.selectById(t.getId()));
+    }
+
+    /** 数据集模板编码: EMR_DS_{datasetId}_{13位毫秒}(长度<=50, 跨租户唯一性校验同 createTemplate) */
+    private String generateDatasetTemplateCode(Long datasetId) {
+        return "EMR_DS_" + datasetId + "_" + System.currentTimeMillis();
+    }
+
+    /** 数据元序列 → Tiptap 文档JSON: 章节(emrSection/editMode=mixed) → 小节(emrSection/editMode=form) → 数据元段落(emrField) */
+    private String buildTiptapDocument(List<HisEmrDatasetElement> elements) {
+        JSONArray chapters = new JSONArray();
+        Map<String, JSONObject> chapterNodes = new LinkedHashMap<>();
+        Map<String, Map<String, JSONObject>> sectionNodes = new LinkedHashMap<>();
+        for (HisEmrDatasetElement el : elements) {
+            String chapterKey = StringUtils.hasText(el.getChapterKey()) ? el.getChapterKey().trim() : "chapter";
+            String chapterName = StringUtils.hasText(el.getChapterName()) ? el.getChapterName() : chapterKey;
+            JSONObject chapter = chapterNodes.get(chapterKey);
+            if (chapter == null) {
+                chapter = buildSectionNode(chapterKey, chapterName, "mixed");
+                chapterNodes.put(chapterKey, chapter);
+                chapters.add(chapter);
+            }
+            JSONArray holder = chapter.getJSONArray("content");
+            if (StringUtils.hasText(el.getSectionKey())) {
+                String sectionKey = el.getSectionKey().trim();
+                Map<String, JSONObject> byChapter = sectionNodes.computeIfAbsent(chapterKey, k -> new LinkedHashMap<>());
+                JSONObject section = byChapter.get(sectionKey);
+                if (section == null) {
+                    section = buildSectionNode(sectionKey,
+                            StringUtils.hasText(el.getSectionName()) ? el.getSectionName() : sectionKey, "form");
+                    byChapter.put(sectionKey, section);
+                    holder.add(section);
+                }
+                holder = section.getJSONArray("content");
+            }
+            holder.add(buildFieldParagraph(el));
+        }
+        JSONObject doc = new JSONObject();
+        doc.put("type", NODE_DOC);
+        doc.put("content", chapters);
+        return JSON.toJSONString(doc);
+    }
+
+    /** 章节/小节节点骨架 */
+    private JSONObject buildSectionNode(String key, String title, String editMode) {
+        JSONObject node = new JSONObject();
+        node.put("type", NODE_SECTION);
+        JSONObject attrs = new JSONObject();
+        attrs.put("key", key);
+        attrs.put("title", title);
+        attrs.put("editMode", editMode);
+        attrs.put("locked", false);
+        node.put("attrs", attrs);
+        node.put("content", new JSONArray());
+        return node;
+    }
+
+    /** 单个数据元 → 段落节点(字段名文本 + emrField 内联节点) */
+    private JSONObject buildFieldParagraph(HisEmrDatasetElement el) {
+        JSONObject paragraph = new JSONObject();
+        paragraph.put("type", "paragraph");
+        JSONArray content = new JSONArray();
+        JSONObject label = new JSONObject();
+        label.put("type", "text");
+        label.put("text", (StringUtils.hasText(el.getFieldName()) ? el.getFieldName() : el.getFieldKey()) + "：");
+        content.add(label);
+        content.add(buildFieldNode(el));
+        paragraph.put("content", content);
+        return paragraph;
+    }
+
+    /** 数据元 → emrField 内联节点(attrs 口径与前端 Tiptap 渲染器约定一致) */
+    private JSONObject buildFieldNode(HisEmrDatasetElement el) {
+        JSONObject node = new JSONObject();
+        node.put("type", NODE_FIELD);
+        JSONObject attrs = new JSONObject();
+        attrs.put("fieldKey", el.getFieldKey());
+        attrs.put("fieldName", el.getFieldName());
+        attrs.put("valueType", mapValueType(el.getFieldType()));
+        attrs.put("dictSource", el.getDictSource());
+        attrs.put("required", el.getRequired() != null && el.getRequired() == 1);
+        attrs.put("readonly", el.getReadonly() != null && el.getReadonly() == 1);
+        attrs.put("noCopy", el.getNoCopy() != null && el.getNoCopy() == 1);
+        attrs.put("value", null);
+        if (el.getMaxLength() != null) {
+            attrs.put("maxLength", el.getMaxLength());
+        }
+        if (StringUtils.hasText(el.getDefaultValue())) {
+            attrs.put("defaultValue", el.getDefaultValue());
+        }
+        if (el.getPrintHidden() != null && el.getPrintHidden() == 1) {
+            attrs.put("printHidden", true);
+        }
+        node.put("attrs", attrs);
+        return node;
+    }
+
+    /** 数据集字段类型 → Tiptap valueType: 多选/复选归一为 multiSelect */
+    private String mapValueType(String fieldType) {
+        if (!StringUtils.hasText(fieldType)) {
+            return "text";
+        }
+        String t = fieldType.trim().toLowerCase();
+        switch (t) {
+            case "number":
+                return "number";
+            case "date":
+            case "datetime":
+                return t;
+            case "select":
+                return "select";
+            case "multiselect":
+            case "checkbox":
+                return "multiSelect";
+            case "dict":
+                return "dict";
+            default:
+                return "text";
+        }
+    }
+
+    /** 数据元 → 模板 fields 定义数组(兼容既有渲染/设计器链路; 类型保留数据集原值) */
+    private String buildFieldsJson(List<HisEmrDatasetElement> elements) {
+        JSONArray arr = new JSONArray();
+        for (HisEmrDatasetElement el : elements) {
+            if (!StringUtils.hasText(el.getFieldKey())) {
+                continue;
+            }
+            JSONObject o = new JSONObject();
+            o.put("fieldKey", el.getFieldKey());
+            o.put("label", el.getFieldName());
+            o.put("type", StringUtils.hasText(el.getFieldType()) ? el.getFieldType() : "text");
+            o.put("required", el.getRequired() != null && el.getRequired() == 1);
+            if (el.getMaxLength() != null) {
+                o.put("maxLength", el.getMaxLength());
+            }
+            if (StringUtils.hasText(el.getDefaultValue())) {
+                o.put("defaultValue", el.getDefaultValue());
+            }
+            if (StringUtils.hasText(el.getDictSource())) {
+                o.put("dictSource", el.getDictSource());
+            }
+            arr.add(o);
+        }
+        return JSON.toJSONString(arr);
+    }
+
+    /* ================= 批量维护(数据元/章节/页眉) ================= */
+
+    /**
+     * 批量更新数据元属性: 对多个模板中指定 fieldKey 的数据元逐键合并 attrs,
+     * 同时更新 Tiptap 文档 emrField 节点与 fields 定义数组(两处存储保持一致)。
+     */
+    public R<Map<String, Object>> batchUpdateElementAttr(List<Long> templateIds, String fieldKey, Map<String, Object> attrs) {
+        List<HisEmrTemplate> targets = requireBatchTargets(templateIds);
+        if (!StringUtils.hasText(fieldKey)) {
+            throw new BizException(400, "fieldKey 不能为空");
+        }
+        if (attrs == null || attrs.isEmpty()) {
+            throw new BizException(400, "attrs 不能为空");
+        }
+        String key = fieldKey.trim();
+        int updated = 0;
+        int skipped = 0;
+        for (HisEmrTemplate t : targets) {
+            JSONArray fields = parseArraySafe(t.getFields());
+            boolean fieldsChanged = false;
+            for (int i = 0; i < fields.size(); i++) {
+                JSONObject f = fields.getJSONObject(i);
+                if (f != null && key.equals(text(f.get("fieldKey")))) {
+                    for (Map.Entry<String, Object> e : attrs.entrySet()) {
+                        f.put(e.getKey(), e.getValue());
+                    }
+                    fieldsChanged = true;
+                }
+            }
+            JSONObject doc = parseDocSafe(t.getDocument());
+            int docHit = doc == null ? 0 : updateFieldAttrsInTree(doc, key, attrs);
+            if (!fieldsChanged && docHit == 0) {
+                skipped++;
+                continue;
+            }
+            if (fieldsChanged) {
+                t.setFields(JSON.toJSONString(fields));
+            }
+            if (docHit > 0) {
+                t.setDocument(JSON.toJSONString(doc));
+            }
+            templateMapper.updateById(t);
+            updated++;
+        }
+        log.info("批量更新数据元属性: fieldKey={}, templates={}, updated={}", key, targets.size(), updated);
+        return R.ok(batchStat(targets.size(), updated, skipped));
+    }
+
+    /**
+     * 批量替换章节内容: 在多个模板的 Tiptap 文档中按章节key定位(emrSection.attrs.key), 用 newContent 替换其 content。
+     * newContent 支持: JSON节点数组 / 单节点JSON对象 / 纯文本(包装为段落) / 空串(清空章节内容)。
+     * 继承自母板且该章节被母板锁定的子模板跳过(锁定章节以母板为准)。
+     */
+    public R<Map<String, Object>> batchReplaceSection(List<Long> templateIds, String sectionKey, String newContent) {
+        List<HisEmrTemplate> targets = requireBatchTargets(templateIds);
+        if (!StringUtils.hasText(sectionKey)) {
+            throw new BizException(400, "sectionKey 不能为空");
+        }
+        String key = sectionKey.trim();
+        JSONArray content = normalizeSectionContent(newContent);
+        Map<Long, List<String>> parentLockCache = new HashMap<>();
+        int updated = 0;
+        int skipped = 0;
+        for (HisEmrTemplate t : targets) {
+            if (isLockedByParent(t, key, parentLockCache)) {
+                log.info("批量替换章节跳过(母板锁定): templateId={}, sectionKey={}", t.getId(), key);
+                skipped++;
+                continue;
+            }
+            JSONObject doc = parseDocSafe(t.getDocument());
+            if (doc == null || !replaceSectionInTree(doc, key, content)) {
+                skipped++;
+                continue;
+            }
+            t.setDocument(JSON.toJSONString(doc));
+            templateMapper.updateById(t);
+            updated++;
+        }
+        log.info("批量替换章节: sectionKey={}, templates={}, updated={}", key, targets.size(), updated);
+        return R.ok(batchStat(targets.size(), updated, skipped));
+    }
+
+    /**
+     * 批量替换文档页眉: 根节点 attrs.header = newHeader, 并同步替换文档内 emrHeader 节点内容(存在时)。
+     * 无 Tiptap 文档(纯 fields 旧模板)跳过。
+     */
+    public R<Map<String, Object>> batchReplaceHeader(List<Long> templateIds, String newHeader) {
+        List<HisEmrTemplate> targets = requireBatchTargets(templateIds);
+        String header = newHeader == null ? "" : newHeader;
+        int updated = 0;
+        int skipped = 0;
+        for (HisEmrTemplate t : targets) {
+            JSONObject doc = parseDocSafe(t.getDocument());
+            if (doc == null) {
+                skipped++;
+                continue;
+            }
+            JSONObject attrs = doc.getJSONObject("attrs");
+            if (attrs == null) {
+                attrs = new JSONObject();
+                doc.put("attrs", attrs);
+            }
+            attrs.put("header", header);
+            replaceHeaderNodeInTree(doc, header);
+            t.setDocument(JSON.toJSONString(doc));
+            templateMapper.updateById(t);
+            updated++;
+        }
+        log.info("批量替换页眉: templates={}, updated={}", targets.size(), updated);
+        return R.ok(batchStat(targets.size(), updated, skipped));
+    }
+
+    /** 批量目标加载 + 逐模板可编辑性预校验(任一不可编辑即整体拒绝, 避免半量更新) */
+    private List<HisEmrTemplate> requireBatchTargets(List<Long> templateIds) {
+        if (templateIds == null || templateIds.isEmpty()) {
+            throw new BizException(400, "templateIds 不能为空");
+        }
+        List<HisEmrTemplate> targets = new ArrayList<>();
+        for (Long id : templateIds) {
+            HisEmrTemplate t = id == null ? null : templateMapper.selectById(id);
+            if (t == null) {
+                throw new BizException(400, "病历模板不存在: " + id);
+            }
+            guardEditable(t);
+            targets.add(t);
+        }
+        return targets;
+    }
+
+    /** 批量操作统计体 */
+    private Map<String, Object> batchStat(int requested, int updated, int skipped) {
+        Map<String, Object> m = new LinkedHashMap<>();
+        m.put("requested", requested);
+        m.put("updated", updated);
+        m.put("skipped", skipped);
+        return m;
+    }
+
+    /** 递归更新 emrField 节点 attrs(attrs.fieldKey 命中), 返回命中节点数 */
+    private int updateFieldAttrsInTree(JSONObject node, String fieldKey, Map<String, Object> attrs) {
+        int n = 0;
+        if (NODE_FIELD.equals(node.getString("type"))) {
+            JSONObject a = node.getJSONObject("attrs");
+            if (a != null && fieldKey.equals(a.getString("fieldKey"))) {
+                for (Map.Entry<String, Object> e : attrs.entrySet()) {
+                    a.put(e.getKey(), e.getValue());
+                }
+                n++;
+            }
+        }
+        JSONArray content = node.getJSONArray("content");
+        if (content != null) {
+            for (int i = 0; i < content.size(); i++) {
+                Object el = content.get(i);
+                if (el instanceof JSONObject) {
+                    n += updateFieldAttrsInTree((JSONObject) el, fieldKey, attrs);
+                }
+            }
+        }
+        return n;
+    }
+
+    /** 章节新内容归一: JSON数组→节点数组, JSON对象→单节点数组, 纯文本→段落节点数组, 空→空数组 */
+    private JSONArray normalizeSectionContent(String newContent) {
+        JSONArray arr = new JSONArray();
+        if (!StringUtils.hasText(newContent)) {
+            return arr;
+        }
+        String s = newContent.trim();
+        try {
+            if (s.startsWith("[")) {
+                JSONArray parsed = JSON.parseArray(s);
+                if (parsed != null) {
+                    return parsed;
+                }
+            } else if (s.startsWith("{")) {
+                JSONObject parsed = JSON.parseObject(s);
+                if (parsed != null) {
+                    arr.add(parsed);
+                    return arr;
+                }
+            }
+        } catch (Exception ignore) {
+            // 非合法JSON按纯文本处理
+        }
+        JSONObject paragraph = new JSONObject();
+        paragraph.put("type", "paragraph");
+        JSONArray inline = new JSONArray();
+        JSONObject textNode = new JSONObject();
+        textNode.put("type", "text");
+        textNode.put("text", s);
+        inline.add(textNode);
+        paragraph.put("content", inline);
+        arr.add(paragraph);
+        return arr;
+    }
+
+    /** 递归替换章节节点 content(emrSection.attrs.key 命中); 返回是否命中 */
+    private boolean replaceSectionInTree(JSONObject node, String sectionKey, JSONArray newContent) {
+        if (NODE_SECTION.equals(node.getString("type"))) {
+            JSONObject attrs = node.getJSONObject("attrs");
+            if (attrs != null && sectionKey.equals(attrs.getString("key"))) {
+                node.put("content", deepCopy(newContent));
+                return true;
+            }
+        }
+        JSONArray content = node.getJSONArray("content");
+        if (content != null) {
+            for (int i = 0; i < content.size(); i++) {
+                Object el = content.get(i);
+                if (el instanceof JSONObject && replaceSectionInTree((JSONObject) el, sectionKey, newContent)) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    /** 子模板归属的母板是否锁定了该章节(按父模板ID缓存锁定列表) */
+    private boolean isLockedByParent(HisEmrTemplate t, String sectionKey, Map<Long, List<String>> cache) {
+        Long pid = t.getParentTemplateId();
+        if (pid == null) {
+            return false;
+        }
+        List<String> locks = cache.computeIfAbsent(pid, k -> {
+            HisEmrTemplate parent = templateMapper.selectById(k);
+            return parent == null ? Collections.emptyList() : parseLockedKeys(parent.getLockedSections());
+        });
+        return locks.contains(sectionKey);
+    }
+
+    /** 递归替换 emrHeader 节点头内容为单段落纯文本(存在则替换; 不存在仅保留根 attrs.header) */
+    private void replaceHeaderNodeInTree(JSONObject node, String header) {
+        if (NODE_HEADER.equals(node.getString("type"))) {
+            JSONArray content = new JSONArray();
+            JSONObject paragraph = new JSONObject();
+            paragraph.put("type", "paragraph");
+            JSONArray inline = new JSONArray();
+            JSONObject textNode = new JSONObject();
+            textNode.put("type", "text");
+            textNode.put("text", header);
+            inline.add(textNode);
+            paragraph.put("content", inline);
+            content.add(paragraph);
+            node.put("content", content);
+        }
+        JSONArray content = node.getJSONArray("content");
+        if (content != null) {
+            for (int i = 0; i < content.size(); i++) {
+                Object el = content.get(i);
+                if (el instanceof JSONObject) {
+                    replaceHeaderNodeInTree((JSONObject) el, header);
+                }
+            }
+        }
+    }
+
+    /* ================= 扩展字段内部校验 ================= */
+
+    /** 新建层级推导: 显式 scopeLevel 优先(0-2), 缺省按归属 ownerScope 映射(global=0/dept=1/personal=2) */
+    private int resolveScopeLevel(String ownerScope, Integer explicit) {
+        if (explicit != null) {
+            if (explicit < 0 || explicit > 2) {
+                throw new BizException(400, "scopeLevel 仅支持 0全院/1科室/2个人");
+            }
+            return explicit;
+        }
+        if ("personal".equals(ownerScope)) {
+            return 2;
+        }
+        if ("dept".equals(ownerScope)) {
+            return 1;
+        }
+        return 0;
+    }
+
+    /** 锁定章节JSON归一: null 原样返回(不修改), 空白串→"[]"(清空), 字符串数组→规范化JSON, 非法→400 */
+    private String normalizeLockedSections(String json) {
+        if (json == null) {
+            return null;
+        }
+        if (!StringUtils.hasText(json)) {
+            return "[]";
+        }
+        try {
+            JSONArray arr = JSON.parseArray(json.trim());
+            if (arr == null) {
+                return "[]";
+            }
+            JSONArray out = new JSONArray();
+            for (int i = 0; i < arr.size(); i++) {
+                String k = arr.getString(i);
+                if (StringUtils.hasText(k)) {
+                    out.add(k.trim());
+                }
+            }
+            return JSON.toJSONString(out);
+        } catch (Exception e) {
+            throw new BizException(400, "lockedSections 须为章节key的JSON字符串数组");
+        }
+    }
+
+    /** Tiptap文档校验: null/空白 原样返回(null不修改), 其余须为 type=doc 的JSON对象, 否则 400 */
+    private String validateDocument(String json) {
+        if (!StringUtils.hasText(json)) {
+            return null;
+        }
+        JSONObject doc;
+        try {
+            doc = JSON.parseObject(json.trim());
+        } catch (Exception e) {
+            throw new BizException(400, "document 须为合法的 Tiptap JSON 文档");
+        }
+        if (doc == null || !NODE_DOC.equals(doc.getString("type"))) {
+            throw new BizException(400, "document 须为 type=doc 的 Tiptap 文档");
+        }
+        return json.trim();
+    }
+
+    /** 父模板链接校验: 父存在、非自身、不成环(三级继承最多向上两跳) */
+    private void validateParentLink(Long templateId, Long parentId) {
+        if (parentId == null) {
+            return;
+        }
+        if (parentId.equals(templateId)) {
+            throw new BizException(400, "父模板不能是自身");
+        }
+        HisEmrTemplate parent = templateMapper.selectById(parentId);
+        if (parent == null) {
+            throw new BizException(400, "父模板不存在: " + parentId);
+        }
+        if (templateId != null && templateId.equals(parent.getParentTemplateId())) {
+            throw new BizException(400, "父模板链接成环(其父模板为当前模板)");
+        }
+    }
+
+    /** Tiptap文档解析: 非 type=doc 或非法JSON返回 null(不阻断批量操作, 计为跳过) */
+    private JSONObject parseDocSafe(String json) {
+        if (!StringUtils.hasText(json)) {
+            return null;
+        }
+        try {
+            JSONObject o = JSON.parseObject(json);
+            return o != null && NODE_DOC.equals(o.getString("type")) ? o : null;
+        } catch (Exception e) {
+            log.warn("Tiptap文档JSON解析失败: {}", e.getMessage());
+            return null;
+        }
+    }
+
+    /** JSON节点深拷贝(母板内容跨模板复用须复制, 避免引用共享) */
+    private Object deepCopy(Object node) {
+        return node == null ? null : JSON.parse(JSON.toJSONString(node));
     }
 
     /* ================= 内部实现 ================= */
@@ -631,9 +1525,172 @@ public class EmrTemplateService implements ApplicationRunner {
                 a.add(f("treatmentOpinion", "处理意见", "textarea", true));
                 a.add(f("followupNote", "随访建议", "textarea", false));
                 break;
+            /* ---------- P2 扩展: 10-15 类文书 ---------- */
+            case "EMR_HOMEPAGE": {
+                JSONArray outcomeOpts = new JSONArray();
+                outcomeOpts.add("治愈");
+                outcomeOpts.add("好转");
+                outcomeOpts.add("未愈");
+                outcomeOpts.add("死亡");
+                outcomeOpts.add("其他");
+                a.add(f("admitDate", "入院日期", "date", true, "defaultMacro", "admit_date"));
+                a.add(f("dischargeDate", "出院日期", "date", true, "defaultMacro", "discharge_date"));
+                a.add(f("admitDiag", "入院诊断", "textarea", true, "defaultMacro", "admit_diag"));
+                a.add(f("dischargeDiag", "出院诊断", "textarea", true, "defaultMacro", "discharge_diag"));
+                a.add(f("mainDiag", "主要诊断", "textarea", true));
+                a.add(f("surgeryName", "手术名称", "text", false));
+                a.add(f("outcome", "治疗转归", "select", true, "options", outcomeOpts));
+                a.add(f("totalCost", "住院总费用(元)", "number", false));
+                a.add(f("attendingDoctor", "主管医师", "text", true, "defaultMacro", "attending_doctor"));
+                break;
+            }
+            case "EMR_HANDOVER":
+                a.add(f("handoverTime", "交接时间", "datetime", true));
+                a.add(f("shiftType", "班次", "text", true));
+                a.add(f("handoverFrom", "交班医师", "text", true));
+                a.add(f("handoverTo", "接班医师", "text", true));
+                a.add(f("patientSummary", "患者情况(S)", "textarea", true));
+                a.add(f("background", "背景(B)", "textarea", true));
+                a.add(f("assessment", "评估(A)", "textarea", true));
+                a.add(f("recommendation", "建议(R)", "textarea", true));
+                a.add(f("pendingMatters", "待办事项", "textarea", false));
+                break;
+            case "EMR_TRANSFER":
+                a.add(f("transferTime", "转科时间", "datetime", true));
+                a.add(f("fromDept", "转出科室", "text", true));
+                a.add(f("toDept", "转入科室", "text", true));
+                a.add(f("transferReason", "转科原因", "textarea", true));
+                a.add(f("currentCondition", "目前情况", "textarea", true));
+                a.add(f("diagnosis", "诊断", "textarea", true));
+                a.add(f("transferAdvice", "转科建议/注意事项", "textarea", false));
+                a.add(f("doctorSign", "医师签名", "text", true));
+                break;
+            case "EMR_CONSENT": {
+                JSONArray consentOpts = new JSONArray();
+                consentOpts.add("手术同意书");
+                consentOpts.add("麻醉同意书");
+                consentOpts.add("输血同意书");
+                consentOpts.add("特殊检查同意书");
+                consentOpts.add("特殊治疗同意书");
+                consentOpts.add("自费项目同意书");
+                consentOpts.add("病危通知书");
+                a.add(f("consentType", "同意书类型", "select", true, "options", consentOpts));
+                a.add(f("patientName", "患者姓名", "text", true));
+                a.add(f("diagnosis", "诊断", "textarea", true));
+                a.add(f("proposedPlan", "拟实施诊疗方案", "textarea", true));
+                a.add(f("risks", "风险与并发症", "textarea", true));
+                a.add(f("alternatives", "替代方案", "textarea", false));
+                a.add(f("patientOpinion", "患者/家属意见", "textarea", true));
+                a.add(f("patientSignTime", "患者签字时间", "datetime", false));
+                a.add(f("doctorSignTime", "医师签字时间", "datetime", false));
+                break;
+            }
+            case "EMR_DISCUSSION": {
+                JSONArray discussOpts = new JSONArray();
+                discussOpts.add("疑难病例讨论");
+                discussOpts.add("危重病例讨论");
+                discussOpts.add("术前讨论");
+                discussOpts.add("死亡病例讨论");
+                a.add(f("discussTime", "讨论时间", "datetime", true));
+                a.add(f("discussType", "讨论类型", "select", true, "options", discussOpts));
+                a.add(f("host", "主持人", "text", true));
+                a.add(f("participants", "参加人员", "textarea", true));
+                a.add(f("caseReport", "病例汇报", "textarea", true));
+                a.add(f("discussOpinions", "讨论意见", "textarea", true));
+                a.add(f("conclusion", "讨论结论", "textarea", true));
+                a.add(f("recordDoctor", "记录医师", "text", true));
+                break;
+            }
+            case "EMR_CONSULTATION": {
+                JSONArray consultOpts = new JSONArray();
+                consultOpts.add("普通会诊");
+                consultOpts.add("急会诊");
+                consultOpts.add("MDT多学科会诊");
+                a.add(f("applyTime", "申请时间", "datetime", true));
+                a.add(f("consultType", "会诊类型", "select", true, "options", consultOpts));
+                a.add(f("applyDept", "申请科室", "text", true));
+                a.add(f("consultDept", "会诊科室", "text", true));
+                a.add(f("consultReason", "会诊理由", "textarea", true));
+                a.add(f("currentCondition", "患者目前情况", "textarea", true));
+                a.add(f("consultOpinion", "会诊意见", "textarea", true));
+                a.add(f("consultDoctor", "会诊医师", "text", true));
+                a.add(f("consultTime", "会诊完成时间", "datetime", false));
+                break;
+            }
             default:
                 break;
         }
         return JSON.toJSONString(a);
+    }
+
+    /* ================= 种子文档骨架(P2 新增 10-15 类) ================= */
+
+    /**
+     * 由种子字段定义生成 Tiptap 文档骨架: 单章节 emrSection(editMode=mixed) 内含各字段段落
+     * (文本标签 + emrField 内联节点), 节点口径与 createFromDataset 的 buildTiptapDocument 一致,
+     * 书写器可直接渲染; section 的 key 取模板编码小写(如 emr_homepage), section 分组标记不生成数据元节点。
+     */
+    private static String buildSeedDocument(String code, String title) {
+        JSONArray fields = JSON.parseArray(buildSeedFields(code));
+        JSONArray paragraphs = new JSONArray();
+        for (int i = 0; i < fields.size(); i++) {
+            JSONObject def = fields.getJSONObject(i);
+            if ("section".equals(def.getString("type"))) {
+                continue; // 分组标记行不生成数据元节点
+            }
+            JSONObject paragraph = new JSONObject();
+            paragraph.put("type", "paragraph");
+            JSONArray content = new JSONArray();
+            JSONObject label = new JSONObject();
+            label.put("type", "text");
+            label.put("text", def.getString("label") + "：");
+            content.add(label);
+            JSONObject fieldNode = new JSONObject();
+            fieldNode.put("type", NODE_FIELD);
+            JSONObject attrs = new JSONObject();
+            attrs.put("fieldKey", def.getString("fieldKey"));
+            attrs.put("fieldName", def.getString("label"));
+            attrs.put("valueType", seedValueType(def.getString("type")));
+            attrs.put("required", Boolean.TRUE.equals(def.getBoolean("required")));
+            attrs.put("value", null);
+            fieldNode.put("attrs", attrs);
+            content.add(fieldNode);
+            paragraph.put("content", content);
+            paragraphs.add(paragraph);
+        }
+        JSONObject section = new JSONObject();
+        section.put("type", NODE_SECTION);
+        JSONObject sectionAttrs = new JSONObject();
+        sectionAttrs.put("key", code.toLowerCase());
+        sectionAttrs.put("title", title);
+        sectionAttrs.put("editMode", "mixed");
+        sectionAttrs.put("locked", false);
+        section.put("attrs", sectionAttrs);
+        section.put("content", paragraphs);
+        JSONObject doc = new JSONObject();
+        doc.put("type", NODE_DOC);
+        JSONArray docContent = new JSONArray();
+        docContent.add(section);
+        doc.put("content", docContent);
+        return JSON.toJSONString(doc);
+    }
+
+    /** 种子字段类型 → Tiptap valueType(与前端 emrField 渲染器口径一致; textarea/text/vitals/diagnosis 归一文本) */
+    private static String seedValueType(String fieldType) {
+        if (fieldType == null) {
+            return "text";
+        }
+        switch (fieldType) {
+            case "number":
+                return "number";
+            case "date":
+                return "date";
+            case "datetime":
+                return "datetime";
+            case "select":
+                return "select";
+            default:
+                return "text";
+        }
     }
 }

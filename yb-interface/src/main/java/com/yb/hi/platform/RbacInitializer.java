@@ -219,11 +219,18 @@ public class RbacInitializer implements ApplicationRunner {
         ids.put("doctor-worklog", menuK("doctor-worklog", "医生工作日志", "DoctorWorklog", null, g6, ++sort[0]));
         ids.put("medical-template", menuK("medical-template", "病历模板管理", "MedicalTemplateManage", null, g6, ++sort[0]));
         ids.put("emr-designer", menuK("emr-designer", "病历模板设计器", "EmrTemplateDesigner", null, g6, ++sort[0]));
-        // 病历质控与数据元(Phase C 2026-10: 质控规则维护/病历检索上报/质控评分看板, 跨scope结构化病历二次利用与质控闭环)
+        // 病历质控与数据元(Phase C 2026-10: 质控规则维护/病历检索上报/质控评分看板, 跨scope结构化病历二次利用与质控闭环;
+        // P1a 2026-10 病历管理前置两菜单: 数据集管理/结构化模板设计器, comp 与 HIS.views 注册键同值(小写短横线特例))
         long gEmrQ = dir("emr-quality", "病历质控与数据元", 0L, ++sort[0]);
+        ids.put("emr-dataset", menuK("emr-dataset", "数据集管理", "emr-dataset", null, gEmrQ, ++sort[0]));
+        ids.put("emr-template-designer", menuK("emr-template-designer", "模板设计器(结构化)", "emr-template-designer", null, gEmrQ, ++sort[0]));
+        // P1c(2026-10) 患者全景时间线: 门诊+住院就诊事件统一时间轴, comp 与 HIS.views 注册键同值
+        ids.put("emr-patient-timeline", menuK("emr-patient-timeline", "患者全景时间线", "emr-patient-timeline", null, gEmrQ, ++sort[0]));
         ids.put("emr-quality-rule", menuK("emr-quality-rule", "质控规则维护", "EmrQualityRuleManage", null, gEmrQ, ++sort[0]));
         ids.put("emr-element-search", menuK("emr-element-search", "病历检索上报", "EmrElementSearch", null, gEmrQ, ++sort[0]));
         ids.put("emr-quality-board", menuK("emr-quality-board", "质控评分看板", "EmrQualityBoard", null, gEmrQ, ++sort[0]));
+                // P2(病历审计日志): 操作审计全量分页检索
+        ids.put("emr-audit-log", menuK("emr-audit-log", "病历审计日志", "EmrAuditLog", null, gEmrQ, ++sort[0]));
         // 药房(2026-09 P1d 交付: 待发药/调剂发药/退药前端已上线; P2 药房管理/药房统计上线)
         long g7 = dir("pharmacy", "药房系统", 0L, ++sort[0]);
         // 药房系统按业务域分组(2026-11 整合: 门诊发药/住院发药/药房运营与追溯/统计查询; 对齐药库五域做法;
@@ -501,7 +508,7 @@ public class RbacInitializer implements ApplicationRunner {
         // ADMIN/SUPER_ADMIN 走 all_menus 免配置; 其余角色给"工作台+本职能相关菜单"最小子集
         Map<String, String[]> grants = new HashMap<>();
         grants.put(Roles.REGISTRAR, new String[]{"dashboard", "patient", "register", "unregister", "reg_stats", "reg_detail"});
-        grants.put(Roles.DOCTOR, new String[]{"dashboard", "doctor-ws", "patient", "doctor-worklog", "medical-template", "emr-designer", "emr-element-search", "emr-quality-board", "nurse-allergy", "medtech-report-query",
+        grants.put(Roles.DOCTOR, new String[]{"dashboard", "doctor-ws", "patient", "doctor-worklog", "medical-template", "emr-designer", "emr-template-designer", "emr-patient-timeline", "emr-element-search", "emr-quality-board", "emr-audit-log", "nurse-allergy", "medtech-report-query",
                 // 住院医生站(2026-09 住院模块): 医嘱/诊断/病历/患者概览入口共用工作站组件
                 "inp-doctor-ws", "inp-order-manage", "inp-order-template", "inp-diagnosis", "inp-med-record", "inp-patient-overview",
                 // 临床路径/手术麻醉(2026-09 集成): 路径模板管理 + 手术管理 + 麻醉记录; 手麻P0: 手术申请管理
@@ -578,7 +585,7 @@ public class RbacInitializer implements ApplicationRunner {
                 // 住院报表(2026-09 报表/打印模块): 打印管理(日清单/结算单打印)
                 "inp-print"});
         grants.put(Roles.REGISTRAR, new String[]{"reg_stats", "reg_detail"});
-        grants.put(Roles.DOCTOR, new String[]{"doctor-ws", "doctor-worklog", "medical-template", "emr-designer", "emr-element-search", "emr-quality-board", "nurse-allergy", "medtech-report-query",
+        grants.put(Roles.DOCTOR, new String[]{"doctor-ws", "doctor-worklog", "medical-template", "emr-designer", "emr-template-designer", "emr-patient-timeline", "emr-element-search", "emr-quality-board", "emr-audit-log", "nurse-allergy", "medtech-report-query",
                 // 住院医生站(2026-09 住院模块)
                 "inp-doctor-ws", "inp-order-manage", "inp-order-template", "inp-diagnosis", "inp-med-record", "inp-patient-overview",
                 // 临床路径/手术麻醉(2026-09 集成): 路径模板管理 + 手术管理 + 麻醉记录; 手麻P0: 手术申请管理
@@ -1397,9 +1404,11 @@ public class RbacInitializer implements ApplicationRunner {
     }
 
     /**
-     * 幂等补种“病历质控与数据元”目录及三个子菜单(Phase C 2026-10: 质控规则维护/病历检索上报/质控评分看板)。
-     * 既有库 seedMenus 表非空即跳过, 故先按 menu_key 判存建顶级目录(menu_type=1, sort 续接), 再挂三叶子并回填 menuIds
-     * 供 ensureBizRoleGrants 给医生角色补授权(检索/看板); 规则维护属管理职能, 由走 all_menus 免配置的机构/平台管理员可见。
+     * 幂等补种“病历质控与数据元”目录及五个子菜单(Phase C 2026-10: 质控规则维护/病历检索上报/质控评分看板;
+     * P1a 2026-10 病历管理: 数据集管理/结构化模板设计器, 与前端 app.js 静态菜单同 key 同名同组)。
+     * 既有库 seedMenus 表非空即跳过, 故先按 menu_key 判存建顶级目录(menu_type=1, sort 续接), 再挂叶子并回填 menuIds
+     * 供 ensureBizRoleGrants 给医生角色补授权(检索/看板/结构化模板设计器); 规则维护与数据集管理属管理职能,
+     * 由走 all_menus 免配置的机构/平台管理员可见。
      */
     private void ensureEmrQualityMenus(Map<String, Long> menuIds) {
         SysMenu dir = menuMapper.selectOne(new QueryWrapper<SysMenu>().eq("menu_key", "emr-quality").last("LIMIT 1"));
@@ -1423,6 +1432,13 @@ public class RbacInitializer implements ApplicationRunner {
         ensureChildMenu(menuIds, "emr-quality", "emr-quality-rule", "质控规则维护", "EmrQualityRuleManage");
         ensureChildMenu(menuIds, "emr-quality", "emr-element-search", "病历检索上报", "EmrElementSearch");
         ensureChildMenu(menuIds, "emr-quality", "emr-quality-board", "质控评分看板", "EmrQualityBoard");
+        // P1a(2026-10) 病历管理两叶子: 数据集管理(章节/小节/数据元三级维护, 管理职能) + 结构化模板设计器(数据集驱动 Tiptap 三栏式)
+        ensureChildMenu(menuIds, "emr-quality", "emr-dataset", "数据集管理", "emr-dataset");
+        ensureChildMenu(menuIds, "emr-quality", "emr-template-designer", "模板设计器(结构化)", "emr-template-designer");
+        // P1c(2026-10) 患者全景时间线: 门诊+住院就诊事件统一时间轴(只读聚合, DOCTOR可访问)
+        ensureChildMenu(menuIds, "emr-quality", "emr-patient-timeline", "患者全景时间线", "emr-patient-timeline");
+        // P2(病历审计日志): 操作审计全量分页检索(牵头机构管理员可查, 医生可查单份病历审计)
+        ensureChildMenu(menuIds, "emr-quality", "emr-audit-log", "病历审计日志", "EmrAuditLog");
     }
 
     /**

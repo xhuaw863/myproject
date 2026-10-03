@@ -69,6 +69,20 @@
   <script src="/js/views/emr/emr-quality-rule.js?v=20261001e"></script>
   <script src="/js/views/emr/emr-element-search.js?v=20261001e"></script>
   <script src="/js/views/emr/emr-quality-board.js?v=20261001e"></script>
+  <!-- 病历数据集管理: 章节→小节→数据元三级结构维护(须在 app.js 之前加载) -->
+  <script src="/js/views/emr-dataset.js?v=20261002a"></script>
+  <!-- 结构化病历 Tiptap 编辑器引擎 + 模板设计器(数据集驱动三栏式, 须在 app.js 之前加载) -->
+  <script src="/vendor/tiptap/tiptap-loader.js"></script>
+  <script src="/js/lib/emr-extensions.js?v=20261002a"></script>
+  <script src="/js/lib/emr-drawing-panel.js?v=20261002a"></script>
+  <script src="/js/lib/emr-editor.js?v=20261002a"></script>
+  <!-- EMR 离线草稿(IndexedDB 自动保存, HIS.EmrOfflineDraft, 运行时接收编辑器 wrapper) -->
+  <script src="/js/lib/emr-offline-draft.js?v=20261003a"></script>
+  <!-- 病历实时通知 SSE 客户端(HIS.EmrSseClient: Bearer 鉴权走 fetch 流式消费+退避重连+多标签租约; 须在 app.js 之前加载) -->
+  <script src="/js/lib/emr-sse-client.js?v=20261003a"></script>
+  <script src="/js/views/emr-template-designer.js?v=20261002a"></script>
+  <!-- 患者360°全景时间线(门诊+住院就诊事件统一时间轴, 须在 app.js 之前加载) -->
+  <script src="/js/views/emr-patient-timeline.js?v=20261003a"></script>
   <!-- 病案统计科(P0): 病案分配/首页编目/质量审核(须在 app.js 之前加载) -->
   <script src="/js/views/mr/mr-assign.js?v=20261101a"></script>
   <script src="/js/views/mr/mr-catalog.js?v=20261101d"></script>
@@ -119,6 +133,8 @@
   <script src="/js/views/inp-doctor/inp-order-panel.js?v=20261002"></script>
   <script src="/js/views/inp-doctor/inp-diag-panel.js?v=20260928b"></script>
   <script src="/js/views/inp-doctor/inp-record-panel.js?v=20261001a"></script>
+  <!-- 住院病历书写器(P2-4 Tiptap 三栏工作台, 须在 emr-editor/emr-offline-draft/emr-sse-client/signature-pad/inp-record-panel 之后、inp-doctor.js 之前加载) -->
+  <script src="/js/views/inp-doctor/inp-emr-writer.js?v=20261003a"></script>
   <!-- 临床路径面板(住院医生站子组件, 须在 inp-doctor.js 之前加载) -->
   <script src="/js/views/inp-doctor/inp-pathway-panel.js?v=20260928"></script>
   <!-- 会诊/知情同意面板(住院医生站子组件, 须在 inp-doctor.js 之前加载) -->
@@ -153,6 +169,8 @@
   <script src="/js/views/notification-bell.js?v=20260929b"></script>
   <!-- PDA扫码工作台(T48 P3: 扫腕带识别患者/Code128条码预览/待执行医嘱床旁执行, 须在 app.js 之前加载) -->
   <script src="/js/views/pda-simulation.js?v=20260929"></script>
-  <script src="/js/app.js?v=20261001d"></script>
+  <!-- 病历审计日志(病历P2 审计查询前端页, 须在 app.js 之前加载) -->
+  <script src="/js/views/emr-audit-log.js?v=20261003a"></script>
+  <script src="/js/app.js?v=20261003a"></script>
 </body>
 </html>

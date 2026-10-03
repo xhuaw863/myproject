@@ -1,0 +1,72 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <link rel="icon" href="data:,">
+  <title>tiptap-bundle smoke test</title>
+</head>
+<body>
+  <div id="editor"></div>
+  <!-- 只加载懒加载入口, bundle 由 TiptapLoader.ensure() 动态注入(与 EMR 编辑器实际用法一致) -->
+  <script src="./tiptap-loader.js"></script>
+  <script>
+    window.__SMOKE = { loaded: false, checks: {}, editorOk: false, reuseSamePromise: false,
+      html: null, insertTableReturned: false, htmlAfterTable: null,
+      tableOk: false, colorOk: false, underlineOk: false, error: null };
+    var EXPECTED = ['Editor', 'Node', 'Mark', 'Extension', 'mergeAttributes', 'StarterKit',
+      'Table', 'TableRow', 'TableCell', 'TableHeader', 'Placeholder', 'Underline',
+      'TextAlign', 'Color', 'TextStyle', 'Image', 'History'];
+
+    TiptapLoader.ensure().then(function (T1) {
+      window.__SMOKE.loaded = !!T1;
+      EXPECTED.forEach(function (k) { window.__SMOKE.checks[k] = typeof T1[k]; });
+
+      // 第二次 ensure 应同步复用已加载实例(同一全局对象)
+      return TiptapLoader.ensure().then(function (T2) {
+        window.__SMOKE.reuseSamePromise = (T2 === T1 && !!window.Tiptap);
+
+        var ed = new T1.Editor({
+          element: document.querySelector('#editor'),
+          extensions: [
+            T1.StarterKit,
+            T1.Placeholder.configure({ placeholder: 'input here' }),
+            T1.Underline,
+            T1.TextAlign.configure({ types: ['heading', 'paragraph'] }),
+            T1.TextStyle,
+            T1.Color,
+            T1.Table.configure({ resizable: true }),
+            T1.TableRow,
+            T1.TableHeader,
+            T1.TableCell,
+            T1.Image,
+          ],
+          content: '<p>hello <strong>tiptap</strong></p>',
+        });
+        window.__SMOKE.editorOk = true;
+        ed.commands.setContent('<p>plain <u>u</u> <span style="color: #e11d48">red</span></p>');
+        var html = ed.getHTML();
+        window.__SMOKE.html = html;
+        window.__SMOKE.colorOk = /color:\s*(rgb\(225,\s*29,\s*72\)|#e11d48)/.test(html.replace(/\s+/g, ' '));
+        window.__SMOKE.underlineOk = /<u>u<\/u>/.test(html);
+        var insertRes = ed.commands.insertTable({ rows: 2, cols: 2, withHeaderRow: true });
+        var html2 = ed.getHTML();
+        window.__SMOKE.insertTableReturned = insertRes === true;
+        window.__SMOKE.htmlAfterTable = html2;
+        window.__SMOKE.tableOk = insertRes === true && html2.indexOf('<table') !== -1;
+        ed.destroy();
+
+        var allOk = window.__SMOKE.loaded && window.__SMOKE.reuseSamePromise && window.__SMOKE.editorOk
+          && window.__SMOKE.colorOk && window.__SMOKE.underlineOk && window.__SMOKE.tableOk
+          && EXPECTED.every(function (k) {
+            var t = window.__SMOKE.checks[k];
+            return t === 'function' || t === 'object';
+          });
+        document.title = allOk ? 'SMOKE-OK' : 'SMOKE-FAIL';
+      });
+    }).catch(function (e) {
+      window.__SMOKE.error = String((e && e.message) || e);
+      document.title = 'SMOKE-FAIL';
+    });
+  </script>
+</body>
+</html>

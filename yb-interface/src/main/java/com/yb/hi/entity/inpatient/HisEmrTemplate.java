@@ -34,6 +34,18 @@ public class HisEmrTemplate extends BaseEntity {
     private Integer scope;
     /** 布局定义JSON(分节/栅格, 设计器产出) */
     private String layout;
+    /** 父模板ID(三级继承: 科室模板挂全院母板, 个人模板挂科室/全院母板; null=根模板) */
+    private Long parentTemplateId;
+    /** 模板层级: 0全院 1科室 2个人(与 staffId/deptId 归属语义一致) */
+    private Integer scopeLevel;
+    /** 母板锁定的章节key列表JSON(父模板下发, 子模板须随母板同步) */
+    private String lockedSections;
+    /** Tiptap ProseMirror JSON文档(结构化书写主载荷) */
+    private String document;
+    /** 打印格式脚本 */
+    private String printScript;
+    /** 关联数据集ID(his_emr_dataset.id) */
+    private Long datasetId;
     /** 个人模板归属职工ID(his_staff.id, null=科室/全院) */
     private Long staffId;
     /** 科室ID(his_dept.id, 0=全院) */

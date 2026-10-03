@@ -4421,6 +4421,12 @@ public class DictSchemaMigration implements ApplicationRunner {
                     + "scope TINYINT DEFAULT 1 COMMENT '适用范围:1住院 2门诊',"
                     + "layout TEXT NULL COMMENT '布局定义JSON(分节/栅格, 设计器产出)',"
                     + "staff_id BIGINT DEFAULT NULL COMMENT '个人模板归属职工ID(his_staff.id, null=科室/全院)',"
+                    + "parent_template_id BIGINT DEFAULT NULL COMMENT '父模板ID(三级继承)',"
+                    + "scope_level TINYINT DEFAULT 0 COMMENT '模板层级:0全院 1科室 2个人',"
+                    + "locked_sections TEXT NULL COMMENT '母板锁定的章节key列表JSON',"
+                    + "document TEXT NULL COMMENT 'Tiptap ProseMirror JSON文档',"
+                    + "print_script TEXT NULL COMMENT '打印格式脚本',"
+                    + "dataset_id BIGINT DEFAULT NULL COMMENT '关联数据集ID(his_emr_dataset.id)',"
                     + "dept_id BIGINT DEFAULT 0 COMMENT '科室ID(his_dept.id, 0=全院)',"
                     + "version INT DEFAULT 1 COMMENT '版本号',"
                     + "status INT DEFAULT 1 COMMENT '状态:1启用 0停用',"
@@ -4523,11 +4529,194 @@ public class DictSchemaMigration implements ApplicationRunner {
                     + "KEY idx_sig_signer (signer_id),"
                     + "KEY idx_sig_patient (patient_id)"
                     + ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='病历可靠电子签名(SM2)'");
+            /* 病历数据集: 章节/小节/数据元三级结构定义, 供模板挂载(dataset_id)与结构化书写取元 */
+            st.executeUpdate("CREATE TABLE IF NOT EXISTS his_emr_dataset ("
+                    + "id BIGINT NOT NULL AUTO_INCREMENT COMMENT '主键',"
+                    + "tenant_id BIGINT NOT NULL COMMENT '租户ID',"
+                    + "org_id BIGINT NOT NULL COMMENT '机构ID',"
+                    + "code VARCHAR(50) NOT NULL COMMENT '数据集编码',"
+                    + "name VARCHAR(200) NOT NULL COMMENT '数据集名称',"
+                    + "scope TINYINT DEFAULT 0 COMMENT '适用范围:0全部 1住院 2门诊 3护理',"
+                    + "description VARCHAR(500) DEFAULT NULL COMMENT '描述',"
+                    + "status TINYINT DEFAULT 1 COMMENT '状态:1启用 0停用',"
+                    + "create_by VARCHAR(50) DEFAULT NULL, create_time DATETIME DEFAULT NULL,"
+                    + "update_by VARCHAR(50) DEFAULT NULL, update_time DATETIME DEFAULT NULL, deleted TINYINT DEFAULT 0,"
+                    + "PRIMARY KEY (id),"
+                    + "KEY idx_ds_code (code),"
+                    + "KEY idx_ds_scope (scope, status)"
+                    + ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='病历数据集(章节/小节/数据元结构)'");
+            /* 数据集数据元: 数据集内单个数据元定义(章节/小节归属 + 类型/字典来源/默认值/校验/防复制/打印隐藏等书写属性) */
+            st.executeUpdate("CREATE TABLE IF NOT EXISTS his_emr_dataset_element ("
+                    + "id BIGINT NOT NULL AUTO_INCREMENT COMMENT '主键',"
+                    + "tenant_id BIGINT NOT NULL COMMENT '租户ID',"
+                    + "org_id BIGINT NOT NULL COMMENT '机构ID',"
+                    + "dataset_id BIGINT NOT NULL COMMENT '所属数据集ID(his_emr_dataset.id)',"
+                    + "chapter_key VARCHAR(50) NOT NULL COMMENT '章节key',"
+                    + "chapter_name VARCHAR(100) NOT NULL COMMENT '章节名称',"
+                    + "section_key VARCHAR(50) DEFAULT NULL COMMENT '小节key',"
+                    + "section_name VARCHAR(100) DEFAULT NULL COMMENT '小节名称',"
+                    + "field_key VARCHAR(100) NOT NULL COMMENT '数据元key(全局唯一标识)',"
+                    + "field_name VARCHAR(200) NOT NULL COMMENT '数据元名称',"
+                    + "field_type VARCHAR(30) NOT NULL COMMENT '类型:text/number/date/datetime/select/multiselect/checkbox/dict/textarea',"
+                    + "dict_source VARCHAR(100) DEFAULT NULL COMMENT '字典来源(dict_type或自定义值域编码)',"
+                    + "default_value VARCHAR(500) DEFAULT NULL COMMENT '默认值',"
+                    + "required TINYINT DEFAULT 0 COMMENT '是否必填:1是 0否',"
+                    + "readonly TINYINT DEFAULT 0 COMMENT '是否只读:1是 0否',"
+                    + "no_copy TINYINT DEFAULT 0 COMMENT '防复制标志:1禁止 0允许',"
+                    + "print_hidden TINYINT DEFAULT 0 COMMENT '打印隐藏:1隐藏 0显示',"
+                    + "max_length INT DEFAULT NULL COMMENT '最大长度',"
+                    + "validation_rule VARCHAR(500) DEFAULT NULL COMMENT '校验规则(正则或表达式)',"
+                    + "sort_no INT DEFAULT 0 COMMENT '排序号',"
+                    + "create_by VARCHAR(50) DEFAULT NULL, create_time DATETIME DEFAULT NULL,"
+                    + "update_by VARCHAR(50) DEFAULT NULL, update_time DATETIME DEFAULT NULL, deleted TINYINT DEFAULT 0,"
+                    + "PRIMARY KEY (id),"
+                    + "KEY idx_dse_dataset (dataset_id),"
+                    + "KEY idx_dse_field (field_key)"
+                    + ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='病历数据集数据元'");
+            /* NLG 自然语言生成模板: 按章节配置生成模板(占位符{field_key})/连接词/语序规则, 结构化数据转叙述文本 */
+            st.executeUpdate("CREATE TABLE IF NOT EXISTS his_emr_nlg_template ("
+                    + "id BIGINT NOT NULL AUTO_INCREMENT COMMENT '主键',"
+                    + "tenant_id BIGINT NOT NULL COMMENT '租户ID',"
+                    + "org_id BIGINT NOT NULL COMMENT '机构ID',"
+                    + "scope TINYINT DEFAULT 0 COMMENT '适用范围:0全部 1住院 2门诊',"
+                    + "section_key VARCHAR(50) NOT NULL COMMENT '病历章节key',"
+                    + "section_name VARCHAR(100) DEFAULT NULL COMMENT '章节名称',"
+                    + "template_text TEXT NOT NULL COMMENT '生成模板(含占位符如{field_key})',"
+                    + "connectors TEXT NULL COMMENT '连接词配置JSON',"
+                    + "sort_rules TEXT NULL COMMENT '语序规则JSON',"
+                    + "enabled TINYINT DEFAULT 1 COMMENT '是否启用:1启用 0停用',"
+                    + "create_by VARCHAR(50) DEFAULT NULL, create_time DATETIME DEFAULT NULL,"
+                    + "update_by VARCHAR(50) DEFAULT NULL, update_time DATETIME DEFAULT NULL, deleted TINYINT DEFAULT 0,"
+                    + "PRIMARY KEY (id),"
+                    + "KEY idx_nlg_section (scope, section_key)"
+                    + ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='病历NLG生成模板'");
+            /* 病历片段: 可复用文档片段(全院/科室/个人三级作用域), document 为 Tiptap JSON, 书写按 fragmentId 引用, 打印/导出时批量展开 */
+            st.executeUpdate("CREATE TABLE IF NOT EXISTS his_emr_fragment ("
+                    + "id BIGINT NOT NULL AUTO_INCREMENT COMMENT '主键',"
+                    + "tenant_id BIGINT NOT NULL COMMENT '租户ID',"
+                    + "org_id BIGINT NOT NULL COMMENT '机构ID',"
+                    + "code VARCHAR(50) NOT NULL COMMENT '片段编码',"
+                    + "title VARCHAR(200) NOT NULL COMMENT '片段名称',"
+                    + "scope_level INT DEFAULT 0 COMMENT '作用域层级:0全院 1科室 2个人',"
+                    + "dept_id BIGINT DEFAULT NULL COMMENT '归属科室ID(his_dept.id, scope_level=1 时使用)',"
+                    + "staff_id BIGINT DEFAULT NULL COMMENT '归属职工ID(his_staff.id, scope_level=2 时使用)',"
+                    + "document TEXT NULL COMMENT 'Tiptap ProseMirror JSON内容',"
+                    + "version INT DEFAULT 1 COMMENT '版本号(每次更新自增)',"
+                    + "status INT DEFAULT 1 COMMENT '状态:1启用 0停用',"
+                    + "create_by VARCHAR(50) DEFAULT NULL, create_time DATETIME DEFAULT NULL,"
+                    + "update_by VARCHAR(50) DEFAULT NULL, update_time DATETIME DEFAULT NULL, deleted TINYINT DEFAULT 0,"
+                    + "PRIMARY KEY (id),"
+                    + "KEY idx_frag_code (code),"
+                    + "KEY idx_frag_scope (scope_level, dept_id)"
+                    + ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='病历片段(可复用文档块)'");
+            /* 医学图示模板: SVG 人体/部位图示(标注底图), 按类别维护, 书写时插入 emrDrawing 画布作背景供标注 */
+            st.executeUpdate("CREATE TABLE IF NOT EXISTS his_emr_drawing_template ("
+                    + "id BIGINT NOT NULL AUTO_INCREMENT COMMENT '主键',"
+                    + "tenant_id BIGINT NOT NULL COMMENT '租户ID',"
+                    + "org_id BIGINT NOT NULL COMMENT '机构ID',"
+                    + "code VARCHAR(50) NOT NULL COMMENT '模板编码',"
+                    + "title VARCHAR(200) NOT NULL COMMENT '模板名称',"
+                    + "category VARCHAR(50) NOT NULL COMMENT '类别:body_front/body_back/head/oral/hand/foot/wound/custom',"
+                    + "svg_template TEXT NOT NULL COMMENT 'SVG模板内容(标注底图)',"
+                    + "description VARCHAR(500) DEFAULT NULL COMMENT '说明',"
+                    + "status INT DEFAULT 1 COMMENT '状态:1启用 0停用',"
+                    + "create_by VARCHAR(50) DEFAULT NULL, create_time DATETIME DEFAULT NULL,"
+                    + "update_by VARCHAR(50) DEFAULT NULL, update_time DATETIME DEFAULT NULL, deleted TINYINT DEFAULT 0,"
+                    + "PRIMARY KEY (id),"
+                    + "KEY idx_dt_category (category),"
+                    + "KEY idx_dt_code (code)"
+                    + ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='医学图示模板(SVG)'");
+            /* CDSS 临床决策支持规则: 药物冲突/剂量预警/重复检查/危急值/指南推荐五类, condition_expr 条件JSON命中后按 severity 分级提示 */
+            st.executeUpdate("CREATE TABLE IF NOT EXISTS his_cdss_rule ("
+                    + "id BIGINT NOT NULL AUTO_INCREMENT COMMENT '主键',"
+                    + "tenant_id BIGINT NOT NULL COMMENT '租户ID',"
+                    + "org_id BIGINT NOT NULL COMMENT '机构ID',"
+                    + "name VARCHAR(200) NOT NULL COMMENT '规则名称',"
+                    + "rule_code VARCHAR(50) DEFAULT NULL COMMENT '规则编码(种子/程序化识别, 租户内唯一)',"
+                    + "rule_type VARCHAR(30) NOT NULL COMMENT '类型:drug_conflict/dose_alert/repeat_exam/critical_value/guideline',"
+                    + "condition_expr TEXT NOT NULL COMMENT '条件表达式JSON',"
+                    + "action_message VARCHAR(500) DEFAULT NULL COMMENT '提示消息',"
+                    + "severity VARCHAR(10) DEFAULT 'info' COMMENT '严重程度:info/warning/block',"
+                    + "knowledge_source VARCHAR(200) DEFAULT NULL COMMENT '知识来源',"
+                    + "applicable_depts TEXT NULL COMMENT '适用科室ID列表JSON',"
+                    + "enabled TINYINT DEFAULT 1 COMMENT '是否启用:1启用 0停用',"
+                    + "sort_no INT DEFAULT 0 COMMENT '排序号',"
+                    + "create_by VARCHAR(50) DEFAULT NULL, create_time DATETIME DEFAULT NULL,"
+                    + "update_by VARCHAR(50) DEFAULT NULL, update_time DATETIME DEFAULT NULL, deleted TINYINT DEFAULT 0,"
+                    + "PRIMARY KEY (id),"
+                    + "KEY idx_cdss_type (rule_type, enabled)"
+                    + ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='CDSS临床决策支持规则'");
+            /* ---------- 病历P2基座 3 张表: 操作审计/签名规则链/常用语 ---------- */
+            /* 病历操作审计日志: 病历级动作留痕(CREATE/UPDATE/VIEW/PRINT/SIGN/DELETE/SUBMIT/AUDIT), detail 为变更摘要JSON,
+               按病历维(record_id+scope)与操作人维(operator_id+create_time)双索引支撑追溯 */
+            st.executeUpdate("CREATE TABLE IF NOT EXISTS his_emr_audit_log ("
+                    + "id BIGINT NOT NULL AUTO_INCREMENT COMMENT '主键',"
+                    + "tenant_id BIGINT NOT NULL COMMENT '租户ID',"
+                    + "org_id BIGINT DEFAULT NULL COMMENT '机构ID',"
+                    + "record_id BIGINT DEFAULT NULL COMMENT '关联病历ID',"
+                    + "scope TINYINT DEFAULT 1 COMMENT '适用范围:1住院 2门诊',"
+                    + "action VARCHAR(32) DEFAULT NULL COMMENT '动作:CREATE/UPDATE/VIEW/PRINT/SIGN/DELETE/SUBMIT/AUDIT',"
+                    + "operator_id BIGINT DEFAULT NULL COMMENT '操作人ID(his_staff.id)',"
+                    + "operator_name VARCHAR(64) DEFAULT NULL COMMENT '操作人姓名(冗余留痕)',"
+                    + "detail TEXT NULL COMMENT '变更摘要JSON',"
+                    + "ip_address VARCHAR(64) DEFAULT NULL COMMENT '操作来源IP',"
+                    + "create_time DATETIME DEFAULT NULL COMMENT '操作时间',"
+                    + "deleted TINYINT DEFAULT 0,"
+                    + "PRIMARY KEY (id),"
+                    + "KEY idx_audit_record (record_id, scope),"
+                    + "KEY idx_audit_operator (operator_id, create_time)"
+                    + ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='病历操作审计日志'");
+            /* 病历签名规则链: 按病历类型(1-15类)配置签名环节链(作者/住院/主治/主任), stage_order 升序为签署顺序,
+               title_code_min/max 限职称档位(CV08.30.005), 供签署服务校验环节顺序与签署人资质 */
+            st.executeUpdate("CREATE TABLE IF NOT EXISTS his_emr_signature_rule ("
+                    + "id BIGINT NOT NULL AUTO_INCREMENT COMMENT '主键',"
+                    + "tenant_id BIGINT NOT NULL COMMENT '租户ID',"
+                    + "org_id BIGINT DEFAULT NULL COMMENT '机构ID',"
+                    + "record_type INT DEFAULT NULL COMMENT '病历类型:1入院记录 2首次病程 3日常病程 4查房记录 5术前小结 6手术记录 7术后病程 8出院小结 9死亡记录 10病案首页 11交接班 12转科 13知情同意 14讨论 15会诊',"
+                    + "stage VARCHAR(32) DEFAULT NULL COMMENT '签名环节:author/resident/attending/director',"
+                    + "stage_order INT DEFAULT 0 COMMENT '签名顺序(升序)',"
+                    + "required TINYINT DEFAULT 1 COMMENT '是否必需:1是 0否',"
+                    + "title_code_min VARCHAR(16) DEFAULT NULL COMMENT '最低职称档(CV08.30.005, 空=不限)',"
+                    + "title_code_max VARCHAR(16) DEFAULT NULL COMMENT '最高职称档(CV08.30.005, 空=不限)',"
+                    + "create_time DATETIME DEFAULT NULL,"
+                    + "update_time DATETIME DEFAULT NULL,"
+                    + "deleted TINYINT DEFAULT 0,"
+                    + "PRIMARY KEY (id),"
+                    + "KEY idx_sigrule_type (record_type, org_id)"
+                    + ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='病历签名规则链'");
+            /* 病历常用语: 全局/科室/个人三级作用域(scope 0/1/2)常用语库, 按分类(category)分栏供书写区快速插入,
+               usage_count 供热度排序; scope=1 用 dept_code 归属, scope=2 用 creator_id 归属 */
+            st.executeUpdate("CREATE TABLE IF NOT EXISTS his_emr_phrase ("
+                    + "id BIGINT NOT NULL AUTO_INCREMENT COMMENT '主键',"
+                    + "tenant_id BIGINT NOT NULL COMMENT '租户ID',"
+                    + "org_id BIGINT DEFAULT NULL COMMENT '机构ID',"
+                    + "category VARCHAR(32) DEFAULT NULL COMMENT '分类:chief_complaint/present_illness/past_history/physical_exam/diagnosis/treatment/nursing',"
+                    + "content TEXT NULL COMMENT '常用语内容',"
+                    + "scope TINYINT DEFAULT 0 COMMENT '作用域:0全局 1科室 2个人',"
+                    + "dept_code VARCHAR(32) DEFAULT NULL COMMENT '科室编码(scope=1时使用)',"
+                    + "creator_id BIGINT DEFAULT NULL COMMENT '创建人ID(his_staff.id, scope=2个人常用语)',"
+                    + "usage_count INT DEFAULT 0 COMMENT '使用次数(热度排序)',"
+                    + "enabled TINYINT DEFAULT 1 COMMENT '是否启用:1启用 0停用',"
+                    + "create_time DATETIME DEFAULT NULL,"
+                    + "update_time DATETIME DEFAULT NULL,"
+                    + "deleted TINYINT DEFAULT 0,"
+                    + "PRIMARY KEY (id),"
+                    + "KEY idx_phrase_cat (category, scope, dept_code)"
+                    + ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='病历常用语'");
             /* 存量库补列: his_emr_template 设计器扩展列(新库 CREATE 已含, 旧库幂等补) */
         }
+        /* 存量库补列: his_cdss_rule 规则编码列(新库 CREATE 已含, 旧库幂等补; CDSS引擎按 rule_code 识别种子/程序化规则) */
+        addColumnIfNotExists(conn, "his_cdss_rule", "rule_code", "VARCHAR(50) DEFAULT NULL COMMENT '规则编码(种子/程序化识别, 租户内唯一)'");
         addColumnIfNotExists(conn, "his_emr_template", "scope", "TINYINT DEFAULT 1 COMMENT '适用范围:1住院 2门诊'");
         addColumnIfNotExists(conn, "his_emr_template", "layout", "TEXT NULL COMMENT '布局定义JSON(分节/栅格, 设计器产出)'");
         addColumnIfNotExists(conn, "his_emr_template", "staff_id", "BIGINT DEFAULT NULL COMMENT '个人模板归属职工ID(his_staff.id, null=科室/全院)'");
+        /* 模板三级继承 + Tiptap 富文本文档 + 数据集挂载扩展列(新库 CREATE 已含, 旧库幂等补) */
+        addColumnIfNotExists(conn, "his_emr_template", "parent_template_id", "BIGINT DEFAULT NULL COMMENT '父模板ID(三级继承)'");
+        addColumnIfNotExists(conn, "his_emr_template", "scope_level", "TINYINT DEFAULT 0 COMMENT '模板层级:0全院 1科室 2个人'");
+        addColumnIfNotExists(conn, "his_emr_template", "locked_sections", "TEXT NULL COMMENT '母板锁定的章节key列表JSON'");
+        addColumnIfNotExists(conn, "his_emr_template", "document", "TEXT NULL COMMENT 'Tiptap ProseMirror JSON文档'");
+        addColumnIfNotExists(conn, "his_emr_template", "print_script", "TEXT NULL COMMENT '打印格式脚本'");
+        addColumnIfNotExists(conn, "his_emr_template", "dataset_id", "BIGINT DEFAULT NULL COMMENT '关联数据集ID(his_emr_dataset.id)'");
         try (Statement st = conn.createStatement()) {
             /* ---------- 报表与打印 3 张表 ---------- */
             /* 每日费用清单: 就诊×日期一份(软删不参与唯一碰撞), 费用项 JSON + 当日/累计/预交金余额三金额, 打印留痕 */

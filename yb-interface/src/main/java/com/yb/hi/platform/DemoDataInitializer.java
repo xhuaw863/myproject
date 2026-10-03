@@ -37,9 +37,11 @@ import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Random;
+import java.util.Set;
 
 /**
  * 演示数据初始化: 应用启动时幂等创建演示医院(租户)与管理员账号
@@ -47,6 +49,9 @@ import java.util.Random;
  * 2026-09 扩展: 药品库存演示(药库库存/低库存预警测试) + 演示收费单(报表/Dashboard数据)。
  * 2026-09 集成扩展(三模块基座): 危急值规则(6条门诊通用阈值) + 护士站执行记录(含皮试阳性同步过敏档案)
  * + 治疗计划(进行中疗程) + 危急值待确认记录(Dashboard徽章演示)。
+ * 2026-10 扩展: CDSS 临床决策支持规则种子(8条: 主诉超长/性别描述不符/阿司匹林禁忌/重复检查/危急值未处置/诊断必填/补钾浓度/高血压血压)。
+ * 2026-10 EMR扩展: 病历NLG生成模板种子(4条常用章节: 主诉/现病史/既往史/体格检查) + 医学图示模板(SVG标注底图)。
+ * 2026-10 病历P2基座: 病历签名规则链种子(15类文书 author/resident/attending/director 链) + 病历常用语种子(14条全局)。
  * 库存/收费/三模块种子均在基础数据已就绪的库上生效(药品目录已导入/已完成就诊存在/机构已建):
  * 全新库首次启动时 RBAC(@Order(3)) 尚未建机构、目录/就诊未导入, 自然跳过, 满足条件后重启补种。
  */
@@ -122,6 +127,18 @@ public class DemoDataInitializer implements ApplicationRunner {
                 } catch (Exception e) {
                     log.warn("租户[{}] 演示库存/收费数据初始化跳过: {}", t.getId(), e.getMessage());
                 }
+                // 医学图示模板种子(SVG 标注底图): 独立 try 防表未建时拖累其他种子
+                try {
+                    seedDrawingTemplates(t.getId());
+                } catch (Exception e) {
+                    log.warn("租户[{}] 医学图示模板种子跳过(可能表未建): {}", t.getId(), e.getMessage());
+                }
+                // 病历NLG生成模板种子(主诉/现病史/既往史/体格检查): 独立 try 防表未建时拖累其他种子
+                try {
+                    seedNlgTemplates(t.getId());
+                } catch (Exception e) {
+                    log.warn("租户[{}] 病历NLG生成模板种子跳过(可能表未建): {}", t.getId(), e.getMessage());
+                }
                 // 三模块基座演示(危急值规则/护士站/治疗/危急值待确认): 独立 try 防表未建时拖累其他种子,
                 // 表由 DictSchemaMigration(@Order(0)) 幂等建, 关联医嘱/就诊未就绪时逐方法内部判空跳过
                 try {
@@ -131,6 +148,19 @@ public class DemoDataInitializer implements ApplicationRunner {
                     seedSampleCriticalPending(t.getId());
                 } catch (Exception e) {
                     log.warn("租户[{}] 三模块演示数据初始化跳过(可能表未建或关联数据未就绪): {}", t.getId(), e.getMessage());
+                }
+                // 病历P2基座种子(签名规则链15类+常用语14条): 独立 try 防表未建时拖累其他种子
+                try {
+                    seedSignatureRules(t.getId());
+                    seedEmrPhrases(t.getId());
+                } catch (Exception e) {
+                    log.warn("租户[{}] 病历签名规则/常用语种子跳过(可能表未建): {}", t.getId(), e.getMessage());
+                }
+                // CDSS 临床决策支持规则种子(8条, 五类): 独立 try 防表未建时拖累其他种子
+                try {
+                    seedCdssRules(t.getId());
+                } catch (Exception e) {
+                    log.warn("租户[{}] CDSS规则种子跳过(可能表未建): {}", t.getId(), e.getMessage());
                 } finally {
                     if (prev != null) {
                         TenantContext.set(prev);
@@ -147,7 +177,7 @@ public class DemoDataInitializer implements ApplicationRunner {
     /* ===================== 系统参数种子(全局, 2026-09) ===================== */
 
     /**
-     * 系统参数全局种子: 8 个参数分组(sys_param_group) + 25 条参数定义(sys_param 定义行 scope_level=0,
+     * 系统参数全局种子: 9 个参数分组(sys_param_group) + 30 条参数定义(sys_param 定义行 scope_level=0,
      * scope_id=0, tenant_id=0)。sys_param/sys_param_group 均已豁免租户插件且全局行 tenant_id=0 需跨租户
      * 可见, 故不走 Mapper 而直接 JdbcTemplate INSERT 并显式落 tenant_id=0。
      * 幂等: 两表物理唯一键(uk_group_code / uk_param_scope)均不含 deleted, 墓碑行仍占键位 —— 判存查询
@@ -165,7 +195,8 @@ public class DemoDataInitializer implements ApplicationRunner {
                 {"schedule", "排班管理", 5, "排班与号源参数"},
                 {"nurse", "护士站", 6, "护理执行与安全参数"},
                 {"treatment", "治疗管理", 7, "疗程计划与执行参数"},
-                {"medtech", "医技管理", 8, "标本/报告/危急值参数"}
+                {"medtech", "医技管理", 8, "标本/报告/危急值参数"},
+                {"emr", "电子病历", 9, "电子病历与CDSS参数"}
         };
         int groupsAdded = 0;
         for (Object[] g : groups) {
@@ -219,7 +250,8 @@ public class DemoDataInitializer implements ApplicationRunner {
                 {"medtech", "medtech.report_double_review", "报告双人审核", "bool", "true", null, null, null, 1, "0,1,2,3", "报告发布需第二人审核"},
                 {"medtech", "medtech.critical_notify_timeout", "危急值通知超时(分钟)", "int", "30", null, "5", "240", 1, "0,1,2,3", "危急值发现后须通知的最长时长"},
                 {"medtech", "medtech.critical_receive_timeout", "危急值接收超时(分钟)", "int", "30", null, "5", "240", 1, "0,1,2,3", "危急值通知后临床须接收的最长时长"},
-                {"medtech", "medtech.specimen_barcode_prefix", "标本条码前缀", "string", "BB", null, null, null, 0, "0,1", "标本条码生成前缀"}
+                {"medtech", "medtech.specimen_barcode_prefix", "标本条码前缀", "string", "BB", null, null, null, 0, "0,1", "标本条码生成前缀"},
+                {"emr", "emr.encryption.key", "EMR病历加密密钥", "string", "5f8a2c4e9b1d7f3a6e0c8b2d4f6a8c1e", null, null, null, 1, "0", "病历内容AES-256加密密钥(32位hex), 仅全局作用域维护, 变更需评估存量密文重加密"}
         };
         int paramsAdded = 0;
         for (Object[] p : params) {
@@ -586,6 +618,78 @@ public class DemoDataInitializer implements ApplicationRunner {
     }
 
     /**
+     * CDSS 临床决策支持规则种子(8条, 覆盖五类): drug_conflict(阿司匹林+消化道出血→block)/
+     * dose_alert(静脉补钾浓度超限→warning)/repeat_exam(7天内重复检查→warning)/critical_value(危急值未处置→block)/
+     * guideline(主诉超长/性别描述不符/诊断必填/高血压未记录血压)。
+     * condition_expr 按 CdssEngineService 评估口径书写(eq/ne/gt/lt/contains/empty/notEmpty/in + and/or 组合,
+     * 另扩展 lenGt/lenLt 文本长度); action_message 含 {fieldKey} 占位符, 评估时以命中字段值插值。
+     * applicable_depts 一律放空=全院适用(科室级限定由管理员在规则维护页配置)。
+     * 幂等: 逐条按 租户+规则编码 判存补种, 已有规则(含手工调整)保持不动; 机构未建则跳过, 下次启动补种。
+     * 字段键与种子模板口径对齐(chiefComplaint/presentIllness/pastHistory/diagnosis/vitals 等); gender/medications/
+     * duplicateExam/criticalValue/kclConcentration 等为调用方(医生站)评估时注入的上下文字段。
+     */
+    private void seedCdssRules(Long tenantId) {
+        Long orgId = leadOrgId();
+        if (orgId == null) {
+            return; // 机构未建(RBAC初始化未执行), 下次启动补种
+        }
+        Object[][] rules = {
+                {"chief_complaint_length", "主诉超长提醒", "guideline",
+                        "{\"field\":\"chiefComplaint\",\"op\":\"lenGt\",\"value\":\"20\"}",
+                        "主诉超过20字, 请按'症状+持续时间'精简描述(当前主诉:{chiefComplaint})",
+                        "info", "《病历书写基本规范》", 10},
+                {"gender_mismatch", "性别描述不符提醒", "guideline",
+                        "{\"and\":[{\"field\":\"gender\",\"op\":\"eq\",\"value\":\"男\"},{\"or\":[{\"field\":\"presentIllness\",\"op\":\"contains\",\"value\":\"月经\"},{\"field\":\"presentIllness\",\"op\":\"contains\",\"value\":\"妊娠\"},{\"field\":\"pastHistory\",\"op\":\"contains\",\"value\":\"月经\"}]}]}",
+                        "患者性别为{gender}, 病历中出现女性生理相关描述(月经/妊娠/经期), 请再次核对病史采集内容",
+                        "warning", "病历质控规则库", 20},
+                {"drug_contraindication_asa", "阿司匹林禁忌使用提示", "drug_conflict",
+                        "{\"and\":[{\"field\":\"medications\",\"op\":\"contains\",\"value\":\"阿司匹林\"},{\"or\":[{\"field\":\"diagnosis\",\"op\":\"contains\",\"value\":\"消化道出血\"},{\"field\":\"admitDiagnosis\",\"op\":\"contains\",\"value\":\"消化道出血\"}]}]}",
+                        "诊断提示消化道出血, 阿司匹林为禁忌用药, 请调整用药方案后再保存/签署",
+                        "block", "阿司匹林说明书·禁忌", 30},
+                {"duplicate_exam_7d", "7天内重复检查提醒", "repeat_exam",
+                        "{\"field\":\"duplicateExam\",\"op\":\"notEmpty\"}",
+                        "7天内已开具相同检查({duplicateExam}), 请确认检查必要性",
+                        "warning", "合理检查质控规则", 40},
+                {"critical_value_unhandled", "危急值未处置阻断", "critical_value",
+                        "{\"and\":[{\"field\":\"criticalValue\",\"op\":\"notEmpty\"},{\"field\":\"criticalValueHandled\",\"op\":\"ne\",\"value\":\"Y\"}]}",
+                        "存在未处置的危急值({criticalValue}), 请完成危急值处置并记录后再保存/签署",
+                        "block", "危急值报告制度", 50},
+                {"diagnosis_required", "诊断必填提醒", "guideline",
+                        "{\"field\":\"diagnosis\",\"op\":\"empty\"}",
+                        "门诊诊断为必填项, 请先补录诊断后再保存",
+                        "warning", "《病历书写基本规范》", 60},
+                {"dose_alert_kcl", "静脉补钾浓度预警", "dose_alert",
+                        "{\"field\":\"kclConcentration\",\"op\":\"gt\",\"value\":\"3\"}",
+                        "静脉补钾浓度{kclConcentration}‰超过3‰安全上限, 请稀释后使用并加强心电监护",
+                        "warning", "《临床用药须知》", 70},
+                {"hypertension_vitals", "高血压未记录血压提醒", "guideline",
+                        "{\"and\":[{\"field\":\"diagnosis\",\"op\":\"contains\",\"value\":\"高血压\"},{\"field\":\"vitals\",\"op\":\"empty\"}]}",
+                        "高血压诊断患者建议记录生命体征(血压), 便于复诊评估",
+                        "info", "《中国高血压防治指南》", 80}
+        };
+        int added = 0;
+        for (Object[] r : rules) {
+            String code = (String) r[0];
+            Integer exists = jdbcTemplate.queryForObject(
+                    "SELECT COUNT(*) FROM his_cdss_rule WHERE tenant_id = ? AND rule_code = ? AND deleted = 0",
+                    Integer.class, tenantId, code);
+            if (exists != null && exists > 0) {
+                continue;
+            }
+            jdbcTemplate.update(
+                    "INSERT INTO his_cdss_rule (tenant_id, org_id, rule_code, name, rule_type, condition_expr, action_message,"
+                            + " severity, knowledge_source, applicable_depts, enabled, sort_no,"
+                            + " create_by, create_time, update_by, update_time, deleted)"
+                            + " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, 1, ?, 'demo-seed', NOW(), 'demo-seed', NOW(), 0)",
+                    tenantId, orgId, code, r[1], r[2], r[3], r[4], r[5], r[6], r[7]);
+            added++;
+        }
+        if (added > 0) {
+            log.info("租户[{}] CDSS规则种子: 补种 {} 条临床决策支持规则(已有规则保持不动)", tenantId, added);
+        }
+    }
+
+    /**
      * 护士站演示数据: 取一条已付费输液/注射医嘱生成完整闭环样本 ——
      * 青霉素皮试(阳性→通知医生→同步过敏档案) + 换药后静脉输液(穿刺/巡视/拔针, 双人核对)。
      * 幂等: 该租户已有执行记录则跳过; 无已付费医嘱/无职工则跳过(基础数据就绪后重启补种)。
@@ -815,6 +919,356 @@ public class DemoDataInitializer implements ApplicationRunner {
                 now.minusMinutes(40), staff.isEmpty() ? null : staff.get(0), now.minusMinutes(30), now.minusMinutes(20));
         log.info("租户[{}] 危急值待确认样本 x1 ({} {}={}), 供 Dashboard 徽章与接收闭环演示",
                 tenantId, str(rpt.get("itemName")), str(rpt.get("itemCode")), str(rpt.get("resultValue")));
+    }
+
+    /* ===================== 病历NLG生成模板种子(EMR P1c) ===================== */
+
+    /**
+     * NLG 生成模板种子: 每租户 4 条常用章节模板(主诉/现病史/既往史/体格检查, scope=0 全部),
+     * 供结构化字段值 → 叙述文本生成(即时预览/一键成文)。
+     * 模板语法: 占位符 {fieldKey}; sort_rules 为输出语序(JSON数组); connectors 为相邻字段连接词
+     * {"default":"兜底连接词","rules":[{"after":"前字段","before":"后字段","word":"连接词"}]},
+     * 仅当前后字段均有值时连接词才生效(字段为空连同连接词一并跳过), 规则命中优先于模板字面量。
+     * 幂等: 同租户同 section_key+scope 已存在则跳过(手工修改保持不动); 机构未建时跳过下次启动补。
+     */
+    private void seedNlgTemplates(Long tenantId) {
+        Long orgId = leadOrgId();
+        if (orgId == null) {
+            return; // 机构未建(RBAC初始化未执行), 下次启动补
+        }
+        // 列序: {章节key, 章节名, 模板文本, 连接词JSON, 语序JSON}
+        Object[][] templates = {
+                {"chief_complaint", "主诉",
+                        "{location}{nature}{symptom}{duration}",
+                        "{\"default\":\"\"}",
+                        "[\"location\",\"nature\",\"symptom\",\"duration\"]"},
+                {"present_illness", "现病史",
+                        "{onset}{inducement}出现{location}{symptom}，{progression}，{accompany}。{treatment}。",
+                        "{\"default\":\"\",\"rules\":[{\"before\":\"treatment\",\"word\":\"，\"}]}",
+                        "[\"onset\",\"inducement\",\"location\",\"symptom\",\"progression\",\"accompany\",\"treatment\"]"},
+                {"past_history", "既往史",
+                        "{chronicDisease}{infectiousDisease}{operationHistory}{allergyHistory}{transfusionHistory}{vaccinationHistory}。",
+                        "{\"default\":\"；\"}",
+                        "[\"chronicDisease\",\"infectiousDisease\",\"operationHistory\",\"allergyHistory\",\"transfusionHistory\",\"vaccinationHistory\"]"},
+                {"physical_exam", "体格检查",
+                        "{temperature}{pulse}{respiration}{bloodPressure}{generalCondition}{skin}{heart}{lung}{abdomen}{nervousSystem}",
+                        "{\"default\":\"，\",\"rules\":[{\"before\":\"pulse\",\"word\":\" \"},{\"before\":\"respiration\",\"word\":\" \"},{\"before\":\"bloodPressure\",\"word\":\" \"},{\"before\":\"generalCondition\",\"word\":\"。\"}]}",
+                        "[\"temperature\",\"pulse\",\"respiration\",\"bloodPressure\",\"generalCondition\",\"skin\",\"heart\",\"lung\",\"abdomen\",\"nervousSystem\"]"}
+        };
+        int added = 0;
+        for (Object[] t : templates) {
+            String sectionKey = (String) t[0];
+            Integer exists = jdbcTemplate.queryForObject(
+                    "SELECT COUNT(*) FROM his_emr_nlg_template"
+                            + " WHERE tenant_id = ? AND section_key = ? AND scope = 0 AND deleted = 0",
+                    Integer.class, tenantId, sectionKey);
+            if (exists != null && exists > 0) {
+                continue;
+            }
+            jdbcTemplate.update(
+                    "INSERT INTO his_emr_nlg_template (tenant_id, org_id, scope, section_key, section_name, template_text,"
+                            + " connectors, sort_rules, enabled, create_by, create_time, update_by, update_time, deleted)"
+                            + " VALUES (?, ?, 0, ?, ?, ?, ?, ?, 1, 'demo-seed', NOW(), 'demo-seed', NOW(), 0)",
+                    tenantId, orgId, sectionKey, t[1], t[2], t[3], t[4]);
+            added++;
+        }
+        if (added > 0) {
+            log.info("租户[{}] 病历NLG生成模板种子: 补种 {} 条章节模板(主诉/现病史/既往史/体格检查, 已有保持不动)",
+                    tenantId, added);
+        }
+    }
+
+    /* ===================== 医学图示模板种子(EMR P1b) ===================== */
+
+    /**
+     * 医学图示模板种子: 每租户 5 个基础 SVG 标注底图(正/背面人体轮廓、头面、左右手),
+     * 供病历书写插入 emrDrawing 画布作背景供体表标注(简单轮廓线, 非精细解剖图)。
+     * 幂等: 同租户同编码已存在则跳过(手工修改保持不动); 机构未建时跳过下次启动补。
+     */
+    private void seedDrawingTemplates(Long tenantId) {
+        Long orgId = leadOrgId();
+        if (orgId == null) {
+            return; // 机构未建(RBAC初始化未执行), 下次启动补
+        }
+        // 列序: {编码, 名称, 类别, SVG源串, 说明}
+        Object[][] templates = {
+                {"SVG_BODY_FRONT", "正面人体轮廓", "body_front", svgBodyFront(), "正面全身轮廓, 供标注疼痛/皮疹/伤口等体表位置"},
+                {"SVG_BODY_BACK", "背面人体轮廓", "body_back", svgBodyBack(), "背面全身轮廓(含脊柱中线), 供标注背部体表位置"},
+                {"SVG_HEAD_FRONT", "头部正面", "head", svgHeadFront(), "头面部轮廓, 供标注五官/颅面区域"},
+                {"SVG_ORAL", "口腔正面", "oral", svgOral(), "张口位口腔轮廓(唇/齿弓/舌/悬雍垂), 供标注口内病变"},
+                {"SVG_HAND_LEFT", "左手掌面", "hand", svgHandLeft(), "左手掌面轮廓, 供标注手指/掌部皮损"},
+                {"SVG_HAND_RIGHT", "右手掌面", "hand", svgHandRight(), "右手掌面轮廓, 供标注手指/掌部皮损"},
+                {"SVG_FOOT", "足部轮廓", "foot", svgFoot(), "足部(足底)轮廓, 供标注足部皮损/溃疡位置"},
+                {"SVG_WOUND", "伤口标注底图", "wound", svgWound(), "同心环+十字定位底图, 供标注伤口位置与范围"}
+        };
+        int added = 0;
+        for (Object[] t : templates) {
+            Integer exists = jdbcTemplate.queryForObject(
+                    "SELECT COUNT(*) FROM his_emr_drawing_template WHERE tenant_id = ? AND code = ? AND deleted = 0",
+                    Integer.class, tenantId, t[0]);
+            if (exists != null && exists > 0) {
+                continue;
+            }
+            jdbcTemplate.update(
+                    "INSERT INTO his_emr_drawing_template (tenant_id, org_id, code, title, category, svg_template, description, status,"
+                            + " create_by, create_time, update_by, update_time, deleted)"
+                            + " VALUES (?, ?, ?, ?, ?, ?, ?, 1, 'demo-seed', NOW(), 'demo-seed', NOW(), 0)",
+                    tenantId, orgId, t[0], t[1], t[2], t[3], t[4]);
+            added++;
+        }
+        if (added > 0) {
+            log.info("租户[{}] 医学图示模板种子: 补种 {} 个 SVG 模板(已有保持不动)", tenantId, added);
+        }
+    }
+
+    /* ===================== 病历签名规则链 + 常用语种子(EMR P2) ===================== */
+
+    /**
+     * 病历签名规则链种子: 15 类文书的签名链(作者→上级→主任), stage_order 升序为签名顺序,
+     * required=1 表示链上必需; title_code_min/max 为职称档位(CV08.30.005 口径: 1-2主任 3主治 4住院 5医士, 空=不限),
+     * 供签署服务校验环节顺序与签署人资质。
+     * 幂等: 按租户已有规则的 (record_type, stage) 判存, 已存在保持不动; 机构未建时跳过下次启动补。
+     */
+    private void seedSignatureRules(Long tenantId) {
+        Long orgId = leadOrgId();
+        if (orgId == null) {
+            return; // 机构未建(RBAC初始化未执行), 下次启动补种
+        }
+        // 列序: {recordType, stage, stageOrder, required, titleMin, titleMax}
+        Object[][] rules = {
+                {1, "author", 1, 1, "4", "5"},
+                {1, "attending", 2, 1, "1", "3"},
+                {2, "author", 1, 1, null, null},
+                {2, "attending", 2, 1, null, null},
+                {3, "author", 1, 1, null, null},
+                {4, "resident", 1, 1, "4", "4"},
+                {4, "attending", 2, 1, "3", "3"},
+                {4, "director", 3, 1, "1", "2"},
+                {5, "author", 1, 1, null, null},
+                {5, "attending", 2, 1, null, null},
+                {6, "author", 1, 1, null, null},
+                {6, "attending", 2, 1, null, null},
+                {7, "author", 1, 1, null, null},
+                {8, "author", 1, 1, null, null},
+                {8, "attending", 2, 1, null, null},
+                {9, "author", 1, 1, null, null},
+                {9, "attending", 2, 1, null, null},
+                {9, "director", 3, 1, null, null},
+                {10, "author", 1, 1, null, null},
+                {10, "attending", 2, 1, null, null},
+                {11, "author", 1, 1, null, null},
+                {12, "author", 1, 1, null, null},
+                {12, "attending", 2, 1, null, null},
+                {13, "author", 1, 1, null, null},
+                {14, "author", 1, 1, null, null},
+                {14, "attending", 2, 1, null, null},
+                {15, "author", 1, 1, null, null}
+        };
+        // 一次捞出该租户已有规则键, 回程判存避免逐行查询
+        List<Map<String, Object>> existRows = jdbcTemplate.queryForList(
+                "SELECT record_type AS rt, stage AS stg FROM his_emr_signature_rule WHERE tenant_id = ? AND deleted = 0",
+                tenantId);
+        Set<String> existKeys = new HashSet<>();
+        for (Map<String, Object> row : existRows) {
+            existKeys.add(String.valueOf(row.get("rt")) + "|" + String.valueOf(row.get("stg")));
+        }
+        int added = 0;
+        for (Object[] r : rules) {
+            if (existKeys.contains(r[0] + "|" + r[1])) {
+                continue;
+            }
+            jdbcTemplate.update(
+                    "INSERT INTO his_emr_signature_rule (tenant_id, org_id, record_type, stage, stage_order, required,"
+                            + " title_code_min, title_code_max, create_time, update_time, deleted)"
+                            + " VALUES (?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW(), 0)",
+                    tenantId, orgId, r[0], r[1], r[2], r[3], r[4], r[5]);
+            added++;
+        }
+        if (added > 0) {
+            log.info("租户[{}] 病历签名规则链种子: 补种 {} 条签名规则(15类文书, 已有保持不动)", tenantId, added);
+        }
+    }
+
+    /**
+     * 病历常用语种子: 14 条全局常用语(scope=0, 主诉5/现病史3/体格检查3/处理3), "X天"为占位提示符,
+     * 供医生站/护士站病历书写区按分类快速插入。
+     * 幂等: 按 (category, content) 判存, 已存在保持不动; 机构未建时跳过下次启动补。
+     */
+    private void seedEmrPhrases(Long tenantId) {
+        Long orgId = leadOrgId();
+        if (orgId == null) {
+            return; // 机构未建(RBAC初始化未执行), 下次启动补种
+        }
+        // 列序: {category, content}
+        Object[][] phrases = {
+                {"chief_complaint", "反复咳嗽、咳痰X天"},
+                {"chief_complaint", "头晕、头痛X天"},
+                {"chief_complaint", "腹痛、腹泻X天"},
+                {"chief_complaint", "胸闷、气促X天"},
+                {"chief_complaint", "发热X天"},
+                {"present_illness", "患者于X天前无明显诱因出现上述症状"},
+                {"present_illness", "病程中无发热、寒战"},
+                {"present_illness", "饮食睡眠尚可，二便正常"},
+                {"physical_exam", "神志清楚，精神可，查体合作"},
+                {"physical_exam", "心肺听诊未闻及明显异常"},
+                {"physical_exam", "腹部平软，无压痛反跳痛"},
+                {"treatment", "予以对症支持治疗"},
+                {"treatment", "继续当前治疗方案"},
+                {"treatment", "密切观察病情变化"}
+        };
+        int added = 0;
+        for (Object[] p : phrases) {
+            Integer exists = jdbcTemplate.queryForObject(
+                    "SELECT COUNT(*) FROM his_emr_phrase WHERE tenant_id = ? AND category = ? AND content = ? AND deleted = 0",
+                    Integer.class, tenantId, p[0], p[1]);
+            if (exists != null && exists > 0) {
+                continue;
+            }
+            jdbcTemplate.update(
+                    "INSERT INTO his_emr_phrase (tenant_id, org_id, category, content, scope, dept_code, creator_id,"
+                            + " usage_count, enabled, create_time, update_time, deleted)"
+                            + " VALUES (?, ?, ?, ?, 0, NULL, NULL, 0, 1, NOW(), NOW(), 0)",
+                    tenantId, orgId, p[0], p[1]);
+            added++;
+        }
+        if (added > 0) {
+            log.info("租户[{}] 病历常用语种子: 补种 {} 条常用语(全局作用域, 已有保持不动)", tenantId, added);
+        }
+    }
+
+    /** 正面人体轮廓(头/躯干/四肢简单轮廓线) */
+    private static String svgBodyFront() {
+        return String.join("\n",
+                "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 220 520' width='220' height='520'>",
+                "  <g fill='#fff' stroke='#2f3640' stroke-width='3' stroke-linecap='round' stroke-linejoin='round'>",
+                "    <circle cx='110' cy='52' r='34'/>",
+                "    <path d='M96 86 L96 112 M124 86 L124 112'/>",
+                "    <path d='M58 132 Q76 112 96 112 L124 112 Q144 112 162 132 Q170 198 152 252 L68 252 Q50 198 58 132 Z'/>",
+                "    <path d='M58 132 Q44 192 40 252 L36 356'/>",
+                "    <path d='M162 132 Q176 192 180 252 L184 356'/>",
+                "    <path d='M36 356 Q34 400 40 436 M184 356 Q186 400 180 436'/>",
+                "    <path d='M90 252 Q86 360 82 468'/>",
+                "    <path d='M130 252 Q134 360 138 468'/>",
+                "    <path d='M72 468 L94 468 M126 468 L148 468'/>",
+                "  </g>",
+                "</svg>");
+    }
+
+    /** 背面人体轮廓(与正面同轮廓, 虚线脊柱中线 + 肩胛示意) */
+    private static String svgBodyBack() {
+        return String.join("\n",
+                "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 220 520' width='220' height='520'>",
+                "  <g fill='#fff' stroke='#2f3640' stroke-width='3' stroke-linecap='round' stroke-linejoin='round'>",
+                "    <circle cx='110' cy='52' r='34'/>",
+                "    <path d='M96 86 L96 112 M124 86 L124 112'/>",
+                "    <path d='M58 132 Q76 112 96 112 L124 112 Q144 112 162 132 Q170 198 152 252 L68 252 Q50 198 58 132 Z'/>",
+                "    <path d='M58 132 Q44 192 40 252 L36 356'/>",
+                "    <path d='M162 132 Q176 192 180 252 L184 356'/>",
+                "    <path d='M36 356 Q34 400 40 436 M184 356 Q186 400 180 436'/>",
+                "    <path d='M90 252 Q86 360 82 468'/>",
+                "    <path d='M130 252 Q134 360 138 468'/>",
+                "    <path d='M72 468 L94 468 M126 468 L148 468'/>",
+                "    <path d='M110 120 L110 246' stroke-dasharray='6 8'/>",
+                "    <path d='M80 148 Q90 162 100 170 M140 148 Q130 162 120 170' stroke-dasharray='6 8'/>",
+                "  </g>",
+                "</svg>");
+    }
+
+    /** 头面部正面(脸/耳/五官定位/发际线/颈部) */
+    private static String svgHeadFront() {
+        return String.join("\n",
+                "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 220 260' width='220' height='260'>",
+                "  <g fill='#fff' stroke='#2f3640' stroke-width='3' stroke-linecap='round' stroke-linejoin='round'>",
+                "    <ellipse cx='110' cy='114' rx='62' ry='78'/>",
+                "    <path d='M48 100 Q42 122 50 142'/>",
+                "    <path d='M172 100 Q178 122 170 142'/>",
+                "    <path d='M82 112 Q88 118 94 112'/>",
+                "    <path d='M126 112 Q132 118 138 112'/>",
+                "    <path d='M110 126 L110 160 Q110 168 101 168'/>",
+                "    <path d='M90 196 Q110 208 130 196'/>",
+                "    <path d='M76 56 Q110 32 144 56'/>",
+                "    <path d='M96 192 L96 226 M124 192 L124 226'/>",
+                "    <path d='M74 226 Q110 214 146 226'/>",
+                "  </g>",
+                "</svg>");
+    }
+
+    /** 左手掌面(拇指在右侧, 四指朝上) */
+    private static String svgHandLeft() {
+        return String.join("\n",
+                "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 200 260' width='200' height='260'>",
+                "  <g fill='#fff' stroke='#2f3640' stroke-width='3' stroke-linecap='round' stroke-linejoin='round'>",
+                "    <path d='M66 152 L62 56'/>",
+                "    <path d='M88 154 L86 40'/>",
+                "    <path d='M110 154 L112 44'/>",
+                "    <path d='M132 152 L138 64'/>",
+                "    <path d='M146 168 Q178 156 170 120'/>",
+                "    <path d='M58 150 Q60 210 100 224 Q140 210 146 152'/>",
+                "    <path d='M84 222 L78 252 M116 222 L122 252'/>",
+                "  </g>",
+                "</svg>");
+    }
+
+    /** 右手掌面(左手镜像, 拇指在左侧) */
+    private static String svgHandRight() {
+        return String.join("\n",
+                "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 200 260' width='200' height='260'>",
+                "  <g fill='#fff' stroke='#2f3640' stroke-width='3' stroke-linecap='round' stroke-linejoin='round'>",
+                "    <path d='M134 152 L138 56'/>",
+                "    <path d='M112 154 L114 40'/>",
+                "    <path d='M90 154 L88 44'/>",
+                "    <path d='M68 152 L62 64'/>",
+                "    <path d='M54 168 Q22 156 30 120'/>",
+                "    <path d='M142 150 Q140 210 100 224 Q60 210 54 152'/>",
+                "    <path d='M116 222 L122 252 M84 222 L78 252'/>",
+                "  </g>",
+                "</svg>");
+    }
+
+    /** 口腔正面(张口位: 唇/齿弓/舌/悬雍垂) */
+    private static String svgOral() {
+        return String.join("\n",
+                "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 220 260' width='220' height='260'>",
+                "  <g fill='#fff' stroke='#2f3640' stroke-width='3' stroke-linecap='round' stroke-linejoin='round'>",
+                "    <ellipse cx='110' cy='130' rx='70' ry='90'/>",
+                "    <ellipse cx='110' cy='132' rx='54' ry='74'/>",
+                "    <path d='M62 100 Q110 78 158 100'/>",
+                "    <path d='M62 166 Q110 188 158 166'/>",
+                "    <ellipse cx='110' cy='166' rx='26' ry='14'/>",
+                "    <circle cx='110' cy='88' r='6'/>",
+                "  </g>",
+                "</svg>");
+    }
+
+    /** 足部轮廓(足底: 足掌+足跟+五趾) */
+    private static String svgFoot() {
+        return String.join("\n",
+                "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 200 300' width='200' height='300'>",
+                "  <g fill='#fff' stroke='#2f3640' stroke-width='3' stroke-linecap='round' stroke-linejoin='round'>",
+                "    <path d='M72 112 Q60 176 68 226 Q74 262 100 262 Q126 262 132 226 Q140 176 128 112 Q122 86 100 86 Q78 86 72 112 Z'/>",
+                "    <ellipse cx='66' cy='70' rx='14' ry='18'/>",
+                "    <ellipse cx='94' cy='52' rx='12' ry='16'/>",
+                "    <ellipse cx='118' cy='54' rx='11' ry='15'/>",
+                "    <ellipse cx='140' cy='64' rx='10' ry='14'/>",
+                "    <ellipse cx='158' cy='82' rx='9' ry='12'/>",
+                "  </g>",
+                "</svg>");
+    }
+
+    /** 伤口标注底图(同心环 + 十字定位, 供标注伤口位置与范围) */
+    private static String svgWound() {
+        return String.join("\n",
+                "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 240 240' width='240' height='240'>",
+                "  <g fill='#fff' stroke='#2f3640' stroke-width='3' stroke-linecap='round' stroke-linejoin='round'>",
+                "    <circle cx='120' cy='120' r='96' stroke-dasharray='6 8'/>",
+                "    <circle cx='120' cy='120' r='64'/>",
+                "    <circle cx='120' cy='120' r='32' stroke-dasharray='6 8'/>",
+                "    <path d='M120 12 L120 228 M12 120 L228 120'/>",
+                "    <path d='M120 12 L112 26 M120 12 L128 26 M120 228 L112 214 M120 228 L128 214'/>",
+                "    <path d='M12 120 L26 112 M12 120 L26 128 M228 120 L214 112 M228 120 L214 128'/>",
+                "    <circle cx='120' cy='120' r='4'/>",
+                "  </g>",
+                "</svg>");
     }
 
     /** 演示职工(护士/治疗师/技师): 职称或姓名含"护"者优先, 否则取 id 最大者(避开主诊排班医生段); 异常回退通用查询 */

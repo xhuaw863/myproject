@@ -1,6 +1,8 @@
 package com.yb.hi.controller.inpatient;
 
+import com.yb.hi.dto.inpatient.EmrTemplateBatchDTO;
 import com.yb.hi.dto.inpatient.EmrTemplateDTO;
+import com.yb.hi.dto.inpatient.EmrTemplateFromDatasetDTO;
 import com.yb.hi.entity.inpatient.HisEmrTemplate;
 import com.yb.hi.framework.common.R;
 import com.yb.hi.platform.service.OrgAccessGuard;
@@ -85,5 +87,44 @@ public class EmrTemplateController {
     @DeleteMapping("/{id}")
     public R<Void> remove(@PathVariable Long id) {
         return templateService.removeTemplate(id);
+    }
+
+    /** 母板锁定章节向下传播(全院/科室母板 → 直接子模板; 超过阈值自动转后台异步) */
+    @PostMapping("/propagate/{id}")
+    public R<Map<String, Object>> propagate(@PathVariable Long id) {
+        return templateService.propagate(id);
+    }
+
+    /** 按层级查询有效模板(合并视图: 个人覆盖科室覆盖全院; scopeLevel 0仅全院/1加科室/2全三级) */
+    @GetMapping("/listByScope")
+    public R<List<HisEmrTemplate>> listByScope(
+            @RequestParam(required = false) Integer scopeLevel,
+            @RequestParam(required = false) Long deptId,
+            @RequestParam(required = false) Long staffId) {
+        return templateService.listByScope(scopeLevel, deptId, staffId);
+    }
+
+    /** 由数据集生成 Tiptap 文档模板(章节/小节/数据元 → emrSection/emrField 节点树) */
+    @PostMapping("/createFromDataset")
+    public R<HisEmrTemplate> createFromDataset(@RequestBody EmrTemplateFromDatasetDTO dto) {
+        return templateService.createFromDataset(dto.getDatasetId(), dto.getName(), dto.getScopeLevel());
+    }
+
+    /** 批量更新数据元属性(attrs 逐键覆盖; Tiptap 文档与 fields 定义双写) */
+    @PostMapping("/batch/updateElementAttr")
+    public R<Map<String, Object>> batchUpdateElementAttr(@RequestBody EmrTemplateBatchDTO dto) {
+        return templateService.batchUpdateElementAttr(dto.getTemplateIds(), dto.getFieldKey(), dto.getAttrs());
+    }
+
+    /** 批量替换章节内容(emrSection.attrs.key 命中; 母板锁定的子模板章节自动跳过) */
+    @PostMapping("/batch/replaceSection")
+    public R<Map<String, Object>> batchReplaceSection(@RequestBody EmrTemplateBatchDTO dto) {
+        return templateService.batchReplaceSection(dto.getTemplateIds(), dto.getSectionKey(), dto.getNewContent());
+    }
+
+    /** 批量替换文档页眉 */
+    @PostMapping("/batch/replaceHeader")
+    public R<Map<String, Object>> batchReplaceHeader(@RequestBody EmrTemplateBatchDTO dto) {
+        return templateService.batchReplaceHeader(dto.getTemplateIds(), dto.getNewHeader());
     }
 }

@@ -707,6 +707,7 @@
       'inp-order-panel': HIS.components.InpOrderPanel,
       'inp-diag-panel': HIS.components.InpDiagPanel,
       'inp-record-panel': HIS.components.InpRecordPanel,
+      'inp-emr-writer': HIS.components.InpEmrWriter,
       'inp-pathway-panel': HIS.components.InpPathwayPanel,
       'inp-consult-panel': HIS.components.InpConsultPanel,
       'inp-consent-panel': HIS.components.InpConsentPanel,
@@ -944,6 +945,10 @@
         }
         this.activeTab = name;
       },
+      /* 病历书写器 -> 全景时间线: 跳转 emr-patient-timeline 页(HIS.go 由 AppLayout 提供) */
+      handleOpenTimeline(patientId) {
+        if (typeof HIS.go === 'function') { HIS.go('emr-patient-timeline'); }
+      },
       printWristband(p) {
         const visitId = (p && p.id) || this.currentVisitId;
         if (!visitId) { return; }
@@ -1140,7 +1145,16 @@
               <inp-diag-panel v-if="activeTab === 'diag'" :visit-id="currentVisitId" :key="'dg-' + currentVisitId"></inp-diag-panel>
             </el-tab-pane>
             <el-tab-pane label="病历" name="record" :disabled="!currentVisitId">
-              <inp-record-panel v-if="activeTab === 'record'" :visit-id="currentVisitId" :key="'rc-' + currentVisitId"></inp-record-panel>
+              <inp-emr-writer v-if="activeTab === 'record' && currentVisitId"
+                :inp-visit-id="currentVisitId"
+                :patient-id="currentVisit ? currentVisit.patientId : null"
+                :dept-code="currentVisit ? String(currentVisit.deptId || '') : ''"
+                :bed-no="currentVisit ? (currentVisit.bedNo || '') : ''"
+                :patient-name="currentVisit ? (currentVisit.patientName || '') : ''"
+                :patient="currentVisit"
+                @open-timeline="handleOpenTimeline"
+                :key="'rc-' + currentVisitId">
+              </inp-emr-writer>
             </el-tab-pane>
             <el-tab-pane label="费用" name="charge" :disabled="!currentVisitId">
               <inp-charge-overview v-if="activeTab === 'charge'" :visit-id="currentVisitId" :key="'ch-' + currentVisitId"></inp-charge-overview>
@@ -1225,7 +1239,8 @@
       InpChargeOverview: '费用页签',
       InpOrderPanel: '医嘱页签',
       InpDiagPanel: '诊断页签',
-      InpRecordPanel: '病历页签',
+      InpRecordPanel: '病历页签(旧)',
+      InpEmrWriter: '病历书写器(P2)',
       InpPathwayPanel: '临床路径页签',
       InpConsultPanel: '会诊页签',
       InpConsentPanel: '知情同意页签',
