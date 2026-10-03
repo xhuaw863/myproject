@@ -14,6 +14,14 @@ public class DrugPriceAdjustReq {
     private Long orgId;
     /** 范围: ALL/DRUG(默认 DRUG) */
     private String scope;
+    /** 调价域: CATALOG/WAREHOUSE/PHARMACY/ALL(默认 ALL=向后兼容) */
+    private String priceDomain;
+    /** 药库域目标库位(priceDomain=WAREHOUSE 必填) */
+    private Long targetWarehouseId;
+    /** 药房域目标药房(priceDomain=PHARMACY 必填) */
+    private Long targetPharmacyId;
+    /** 是否到生效日自动生效: 1/0(默认 0=仅手动) */
+    private Integer autoEffect;
     /** 生效日期 */
     private LocalDate effectiveDate;
     /** 调价原因 */

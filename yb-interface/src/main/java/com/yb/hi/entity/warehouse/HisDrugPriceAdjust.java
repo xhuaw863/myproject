@@ -31,6 +31,14 @@ public class HisDrugPriceAdjust extends BaseEntity {
     private String adjustNo;
     /** 范围: ALL/DRUG */
     private String scope;
+    /** 调价域: CATALOG目录/WAREHOUSE药库/PHARMACY药房/ALL全部(默认 ALL=向后兼容旧无差别刷价) */
+    private String priceDomain;
+    /** 药库域目标库位(his_warehouse_def.id) */
+    private Long targetWarehouseId;
+    /** 药房域目标药房(his_pharmacy_def.id) */
+    private Long targetPharmacyId;
+    /** 到生效日是否自动生效: 1=调度器认领生效, 0=仅手动 */
+    private Integer autoEffect;
     /** 生效日期 */
     @JsonFormat(pattern = "yyyy-MM-dd")
     private LocalDate effectiveDate;

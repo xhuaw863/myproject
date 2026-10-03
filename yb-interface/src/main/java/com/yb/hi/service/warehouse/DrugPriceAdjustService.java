@@ -73,6 +73,9 @@ public class DrugPriceAdjustService {
         List<Map<String, Object>> rows = new ArrayList<>();
         BigDecimal totalDiff = BigDecimal.ZERO;
         if (req != null && !CollectionUtils.isEmpty(req.getItems())) {
+            String pvDomain = normDomain(req.getPriceDomain());
+            Long pvWh = "WAREHOUSE".equals(pvDomain) ? req.getTargetWarehouseId()
+                    : ("PHARMACY".equals(pvDomain) ? resolveStockLocWh(req.getTargetPharmacyId()) : null);
             for (DrugPriceAdjustReq.Item it : req.getItems()) {
                 if (it.getDrugCatalogId() == null) {
                     continue;
@@ -90,7 +93,7 @@ public class DrugPriceAdjustService {
                 row.put("newPurchase", pickNew(it.getNewPurchase(), drug.getPurchasePrice()));
                 row.put("oldRetail", drug.getRetailPrice());
                 row.put("newRetail", pickNew(it.getNewRetail(), drug.getRetailPrice()));
-                BigDecimal stockQty = stockQty(drug.getId());
+                BigDecimal stockQty = scopeStockQty(drug.getId(), pvDomain, pvWh);
                 row.put("impactStockQty", stockQty);
                 BigDecimal diff = retailDiffAmount(drug.getRetailPrice(), it.getNewRetail(), stockQty);
                 row.put("retailDiffAmount", diff);
@@ -118,10 +121,30 @@ public class DrugPriceAdjustService {
         if (!StringUtils.hasText(req.getReason())) {
             throw new BizException(400, "调价原因必须录入");
         }
+        // 三期分域: 解析调价域与目标库位(默认 ALL=旧全院刷价, 向后兼容)
+        String domain = normDomain(req.getPriceDomain());
+        Long targetWh = null;
+        Long targetPh = null;
+        if ("WAREHOUSE".equals(domain)) {
+            if (req.getTargetWarehouseId() == null) {
+                throw new BizException(400, "药库域调价必须指定目标药库");
+            }
+            targetWh = req.getTargetWarehouseId();
+        } else if ("PHARMACY".equals(domain)) {
+            if (req.getTargetPharmacyId() == null) {
+                throw new BizException(400, "药房域调价必须指定目标药房");
+            }
+            targetPh = req.getTargetPharmacyId();
+        }
+        Long stockWh = "WAREHOUSE".equals(domain) ? targetWh : ("PHARMACY".equals(domain) ? resolveStockLocWh(targetPh) : null);
         HisDrugPriceAdjust main = new HisDrugPriceAdjust();
         main.setOrgId(req.getOrgId());
         main.setAdjustNo(generateNo());
         main.setScope(StringUtils.hasText(req.getScope()) ? req.getScope() : "DRUG");
+        main.setPriceDomain(domain);
+        main.setTargetWarehouseId(targetWh);
+        main.setTargetPharmacyId(targetPh);
+        main.setAutoEffect(req.getAutoEffect() != null && req.getAutoEffect() == 1 ? 1 : 0);
         main.setEffectiveDate(req.getEffectiveDate());
         main.setStatus(0);
         main.setReason(req.getReason());
@@ -155,7 +178,7 @@ public class DrugPriceAdjustService {
             item.setNewPurchase(pickNew(it.getNewPurchase(), drug.getPurchasePrice()));
             item.setOldRetail(drug.getRetailPrice());
             item.setNewRetail(pickNew(it.getNewRetail(), drug.getRetailPrice()));
-            BigDecimal stockQty = stockQty(drug.getId());
+            BigDecimal stockQty = scopeStockQty(drug.getId(), domain, stockWh);
             item.setImpactStockQty(stockQty);
             totalDiff = totalDiff.add(retailDiffAmount(drug.getRetailPrice(), it.getNewRetail(), stockQty));
             itemMapper.insert(item);
@@ -174,8 +197,9 @@ public class DrugPriceAdjustService {
     /* ================= 生效 ================= */
 
     /**
-     * 生效调价单: 逐明细更新目录 purchase_price/retail_price(仅新价非空且变化), 同步该药品全部在库 his_drug_stock.retail_price(仅零售价变动时),
-     * 并对每个实际变动的价格字段写 his_price_adjust 留痕。置已生效(1)+生效时间。历史处方/收费快照价不回改。
+     * 生效调价单(三期分域): 原子认领草稿(0→3 防并发/调度重复) → 按调价域应用价格 → 置已生效(1)+生效时间。
+     * CATALOG 只改目录基准价; WAREHOUSE/PHARMACY 只改目标库位内该药批次零售价(不动目录); ALL 目录+全院批次(旧行为)。历史处方/收费快照价不回改。
+     * 手动 confirm 与调度器共用此入口(调度器需先置 TenantContext); 整个方法单事务, 失败则认领与改价一并回滚(状态回 0 待下次重试)。
      */
     @Transactional(rollbackFor = Exception.class)
     public HisDrugPriceAdjust confirm(Long id) {
@@ -186,10 +210,30 @@ public class DrugPriceAdjustService {
         if (main.getStatus() == null || main.getStatus() != 0) {
             throw new BizException("仅草稿调价单可生效: " + main.getAdjustNo());
         }
-        List<HisDrugPriceAdjustItem> items = listItems(id);
+        int claimed = jdbcTemplate.update(
+                "UPDATE his_drug_price_adjust SET status = 3 WHERE id = ? AND tenant_id = ? AND status = 0",
+                id, tenantId());
+        if (claimed != 1) {
+            throw new BizException("调价单状态已变更(疑似并发生效), 请刷新后重试: " + main.getAdjustNo());
+        }
+        applyPrices(main);
+        jdbcTemplate.update(
+                "UPDATE his_drug_price_adjust SET status = 1, effect_time = NOW() WHERE id = ? AND tenant_id = ? AND status = 3",
+                id, tenantId());
+        log.info("调价单生效完成: adjustNo={}, domain={}", main.getAdjustNo(), normDomain(main.getPriceDomain()));
+        return adjustMapper.selectById(id);
+    }
+
+    /** 按调价域应用价格并逐变动字段写 his_price_adjust 留痕。 */
+    private void applyPrices(HisDrugPriceAdjust main) {
+        List<HisDrugPriceAdjustItem> items = listItems(main.getId());
         if (items.isEmpty()) {
             throw new BizException("调价单无明细, 无法生效");
         }
+        String domain = normDomain(main.getPriceDomain());
+        boolean catalogScope = "CATALOG".equals(domain) || "ALL".equals(domain);
+        boolean batchScope = !"CATALOG".equals(domain);
+        Long stockWh = domainBatchLocationWh(main, domain);
         for (HisDrugPriceAdjustItem it : items) {
             HisDrugCatalog drug = drugCatalogMapper.selectById(it.getDrugCatalogId());
             if (drug == null) {
@@ -197,34 +241,98 @@ public class DrugPriceAdjustService {
             }
             boolean purchaseChanged = changed(it.getOldPurchase(), it.getNewPurchase());
             boolean retailChanged = changed(it.getOldRetail(), it.getNewRetail());
-            if (purchaseChanged) {
-                drug.setPurchasePrice(it.getNewPurchase());
+            if (catalogScope) {
+                if (purchaseChanged) {
+                    drug.setPurchasePrice(it.getNewPurchase());
+                }
+                if (retailChanged) {
+                    drug.setRetailPrice(it.getNewRetail());
+                }
+                if (purchaseChanged || retailChanged) {
+                    drugCatalogMapper.updateById(drug);
+                }
             }
-            if (retailChanged) {
-                drug.setRetailPrice(it.getNewRetail());
+            if (retailChanged && batchScope) {
+                if ("ALL".equals(domain)) {
+                    jdbcTemplate.update("UPDATE his_drug_stock SET retail_price = ?, update_time = NOW()"
+                                    + " WHERE tenant_id = ? AND drug_catalog_id = ? AND deleted = 0",
+                            it.getNewRetail(), tenantId(), it.getDrugCatalogId());
+                } else {
+                    if (stockWh == null) {
+                        throw new BizException("目标药库/药房无有效库存位, 无法按域调价: " + main.getAdjustNo());
+                    }
+                    jdbcTemplate.update("UPDATE his_drug_stock SET retail_price = ?, update_time = NOW()"
+                                    + " WHERE tenant_id = ? AND drug_catalog_id = ? AND warehouse_id = ? AND deleted = 0",
+                            it.getNewRetail(), tenantId(), it.getDrugCatalogId(), stockWh);
+                }
             }
-            if (purchaseChanged || retailChanged) {
-                drugCatalogMapper.updateById(drug);
-            }
-            // 在库零售价同步(仅零售价变动): 全租户该药品所有批次/库位
-            if (retailChanged) {
-                jdbcTemplate.update("UPDATE his_drug_stock SET retail_price = ?, update_time = NOW()"
-                        + " WHERE tenant_id = ? AND drug_catalog_id = ? AND deleted = 0",
-                        it.getNewRetail(), tenantId(), it.getDrugCatalogId());
-            }
-            // 留痕(复用医共体目录调价留痕表 his_price_adjust): 每个实际变动字段一行
-            if (purchaseChanged) {
+            if (purchaseChanged && catalogScope) {
                 writeLog(drug, "purchase_price", "进货价(最小单位)", it.getOldPurchase(), it.getNewPurchase(), main);
             }
             if (retailChanged) {
                 writeLog(drug, "retail_price", "零售价(最小单位)", it.getOldRetail(), it.getNewRetail(), main);
             }
         }
-        main.setStatus(1);
-        main.setEffectTime(LocalDateTime.now());
-        adjustMapper.updateById(main);
-        log.info("调价单生效完成: adjustNo={}, items={}", main.getAdjustNo(), items.size());
-        return adjustMapper.selectById(id);
+    }
+
+    /** 调价域归一: 空/未知一律回落 ALL(向后兼容旧全院刷价)。 */
+    private static String normDomain(String d) {
+        if (!StringUtils.hasText(d)) {
+            return "ALL";
+        }
+        String u = d.trim().toUpperCase();
+        if ("CATALOG".equals(u) || "WAREHOUSE".equals(u) || "PHARMACY".equals(u) || "ALL".equals(u)) {
+            return u;
+        }
+        return "ALL";
+    }
+
+    /** 批次改价目标库位: WAREHOUSE 取药库ID, PHARMACY 解析药房库存位, 其余(ALL/CATALOG) null=不限库位。 */
+    private Long domainBatchLocationWh(HisDrugPriceAdjust main, String domain) {
+        if ("WAREHOUSE".equals(domain)) {
+            return main.getTargetWarehouseId();
+        }
+        if ("PHARMACY".equals(domain)) {
+            return resolveStockLocWh(main.getTargetPharmacyId());
+        }
+        return null;
+    }
+
+    /** 药房库存位(his_pharmacy_def.stock_location_id 充当 his_drug_stock.warehouse_id); 无则回落其 warehouse_id。 */
+    private Long resolveStockLocWh(Long pharmacyId) {
+        if (pharmacyId == null) {
+            return null;
+        }
+        List<Map<String, Object>> rows = jdbcTemplate.queryForList(
+                "SELECT stock_location_id, warehouse_id FROM his_pharmacy_def WHERE id = ? AND tenant_id = ? AND deleted = 0",
+                pharmacyId, tenantId());
+        if (rows.isEmpty()) {
+            return null;
+        }
+        Object loc = rows.get(0).get("stock_location_id");
+        if (loc != null) {
+            return ((Number) loc).longValue();
+        }
+        Object wh = rows.get(0).get("warehouse_id");
+        return wh == null ? null : ((Number) wh).longValue();
+    }
+
+    /** 分域在库量: CATALOG 不动批次=0; ALL 全院; WAREHOUSE/PHARMACY 仅目标库位内。 */
+    private BigDecimal scopeStockQty(Long drugCatalogId, String domain, Long stockWh) {
+        if ("CATALOG".equals(domain)) {
+            return BigDecimal.ZERO;
+        }
+        if ("ALL".equals(domain)) {
+            return stockQty(drugCatalogId);
+        }
+        if (stockWh == null) {
+            return BigDecimal.ZERO;
+        }
+        BigDecimal q = jdbcTemplate.queryForObject(
+                "SELECT COALESCE(SUM(qty), 0) FROM his_drug_stock"
+                        + " WHERE tenant_id = ? AND drug_catalog_id = ? AND warehouse_id = ? AND status = 1 AND deleted = 0",
+                BigDecimal.class, tenantId(), drugCatalogId, stockWh);
+        return q == null ? BigDecimal.ZERO : q;
     }
 
     /** 作废草稿调价单(仅草稿可作废; 生效后不可撤) */
