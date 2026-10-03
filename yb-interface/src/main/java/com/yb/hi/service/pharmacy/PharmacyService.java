@@ -12,7 +12,9 @@ import com.yb.hi.dto.warehouse.StockInReq;
 import com.yb.hi.dto.warehouse.StockOutItemReq;
 import com.yb.hi.dto.warehouse.StockOutReq;
 import com.yb.hi.entity.pharmacy.HisDispense;
+import com.yb.hi.entity.pharmacy.HisDispenseItem;
 import com.yb.hi.entity.pharmacy.HisDrugReturn;
+import com.yb.hi.entity.pharmacy.HisDrugReturnItem;
 import com.yb.hi.entity.pharmacy.HisPharmacyDef;
 import com.yb.hi.entity.warehouse.HisStockIn;
 import com.yb.hi.entity.warehouse.HisStockOut;
@@ -21,7 +23,9 @@ import com.yb.hi.framework.common.Roles;
 import com.yb.hi.framework.tenant.LoginUser;
 import com.yb.hi.framework.tenant.TenantContext;
 import com.yb.hi.framework.tenant.UserContext;
+import com.yb.hi.mapper.pharmacy.HisDispenseItemMapper;
 import com.yb.hi.mapper.pharmacy.HisDispenseMapper;
+import com.yb.hi.mapper.pharmacy.HisDrugReturnItemMapper;
 import com.yb.hi.mapper.pharmacy.HisDrugReturnMapper;
 import com.yb.hi.platform.service.SystemParamResolver;
 import com.yb.hi.service.warehouse.DrugStockService;
@@ -69,6 +73,8 @@ public class PharmacyService {
 
     private final HisDispenseMapper dispenseMapper;
     private final HisDrugReturnMapper returnMapper;
+    private final HisDispenseItemMapper dispenseItemMapper;
+    private final HisDrugReturnItemMapper returnItemMapper;
     private final DrugStockService drugStockService;
     private final PharmacyDefService pharmacyDefService;
     private final PharmacyPriceService pharmacyPriceService;
@@ -86,6 +92,7 @@ public class PharmacyService {
     private int seqNo = 0;
 
     public PharmacyService(HisDispenseMapper dispenseMapper, HisDrugReturnMapper returnMapper,
+                           HisDispenseItemMapper dispenseItemMapper, HisDrugReturnItemMapper returnItemMapper,
                            DrugStockService drugStockService, PharmacyDefService pharmacyDefService,
                            PharmacyPriceService pharmacyPriceService,
                            WindowDispatchService windowDispatchService, PharmacyWindowService pharmacyWindowService,
@@ -94,6 +101,8 @@ public class PharmacyService {
                            JdbcTemplate jdbcTemplate) {
         this.dispenseMapper = dispenseMapper;
         this.returnMapper = returnMapper;
+        this.dispenseItemMapper = dispenseItemMapper;
+        this.returnItemMapper = returnItemMapper;
         this.drugStockService = drugStockService;
         this.pharmacyDefService = pharmacyDefService;
         this.pharmacyPriceService = pharmacyPriceService;
@@ -282,7 +291,7 @@ public class PharmacyService {
 
         // 3. 查处方药品明细(drug_id 非空行才扣库存)
         List<Map<String, Object>> items = jdbcTemplate.queryForList(
-                "SELECT drug_id, item_code, item_name, spec, quantity"
+                "SELECT id, drug_id, item_code, item_name, spec, unit, quantity, price, amount"
                         + " FROM his_prescription_item"
                         + " WHERE prescription_id = ? AND tenant_id = ? AND drug_id IS NOT NULL AND deleted = 0 ORDER BY id",
                 prescriptionId, tenantId);
@@ -452,6 +461,9 @@ public class PharmacyService {
         dispense.setTraceScanned(0);
         dispense.setRemark(composePriceDiffRemark(req.getRemark(), priceDiffNote));
         dispenseMapper.insert(dispense);
+
+        // 三期 C2: 落发药明细行(行级部分退粒度), billed_price/billed_amount 直引划价快照原价, 保证后续退药按原价不退不平
+        writeDispenseItems(dispense, items);
 
         // P3 发药后绑定: 将已校验在库物理追溯码置已发药并绑定本次发药(患者/就诊/发药记录), 回写已绑数
         if (traceRequired && !traceBound.isEmpty()) {
@@ -950,8 +962,10 @@ public class PharmacyService {
 
     /* ================= 退药 ================= */
 
-    /** 退药申请: 已发药(status=2)的发药记录可申请, 生成退药单(TY)待审核;
-     * 行锁发药记录: 并发双击申请时后到事务阻塞后看到已有待审核/已退药申请, 拒绝重复申请 */
+    /** 退药申请: 已发药(status=2)的发药记录可申请, 生成退药单(TY)待审核。
+     * 三期 C2: 有发药明细行 -> 行级(按 dispenseItemId+returnQty 逐行校验不超剩余可退, items 缺省=一键整退全部剩余行, 金额按划价原价);
+     *           无明细行(改造前存量发药) -> 回落旧整方退(退整单金额, 任一待审核/已退药均拒重复)。
+     * 行锁发药记录: 并发双击申请时后到事务阻塞后看到已有申请被拒。 */
     @Transactional(rollbackFor = Exception.class)
     public HisDrugReturn returnApply(DrugReturnReq req) {
         if (req == null || req.getDispenseId() == null) {
@@ -966,25 +980,110 @@ public class PharmacyService {
         if (dispense.getStatus() == null || dispense.getStatus() != 2) {
             throw new BizException("仅已发药的记录可申请退药");
         }
+
+        List<HisDispenseItem> lines = dispenseItemMapper.selectList(Wrappers.<HisDispenseItem>lambdaQuery()
+                .eq(HisDispenseItem::getDispenseId, dispense.getId())
+                .orderByAsc(HisDispenseItem::getId));
+
+        // ---- 旧整方路径(改造前无明细行的发药): 保持改造前语义 ----
+        if (lines.isEmpty()) {
+            Long legacyPending = returnMapper.selectCount(Wrappers.<HisDrugReturn>lambdaQuery()
+                    .eq(HisDrugReturn::getDispenseId, dispense.getId())
+                    .in(HisDrugReturn::getStatus, 0, 1));
+            if (legacyPending != null && legacyPending > 0) {
+                throw new BizException("该发药记录已有退药申请(待审核/已退药), 请勿重复申请");
+            }
+            HisDrugReturn dr = newReturnShell(dispense, req.getReason());
+            dr.setReturnAmount(dispense.getTotalAmount() == null ? BigDecimal.ZERO : dispense.getTotalAmount());
+            returnMapper.insert(dr);
+            log.info("退药申请(整方): returnNo={}, dispenseId={}, patient={}, pharmacyId={}",
+                    dr.getReturnNo(), dr.getDispenseId(), dr.getPatientName(), dispense.getPharmacyId());
+            return dr;
+        }
+
+        // ---- 行级路径: 允许已退药后多轮再退, 但同一时刻仅一笔待审核 ----
         Long pending = returnMapper.selectCount(Wrappers.<HisDrugReturn>lambdaQuery()
                 .eq(HisDrugReturn::getDispenseId, dispense.getId())
-                .in(HisDrugReturn::getStatus, 0, 1));
+                .eq(HisDrugReturn::getStatus, 0));
         if (pending != null && pending > 0) {
-            throw new BizException("该发药记录已有退药申请(待审核/已退药), 请勿重复申请");
+            throw new BizException("该发药记录已有待审核退药申请, 请先处理后再申请");
         }
-        HisDrugReturn dr = new HisDrugReturn();
-        dr.setOrgId(dispense.getOrgId());
-        dr.setReturnNo(generateNo("TY"));
-        dr.setDispenseId(dispense.getId());
-        dr.setVisitId(dispense.getVisitId());
-        dr.setPatientId(dispense.getPatientId());
-        dr.setPatientName(dispense.getPatientName());
-        dr.setReason(req.getReason());
-        dr.setStatus(0);
-        dr.setReturnAmount(dispense.getTotalAmount() == null ? BigDecimal.ZERO : dispense.getTotalAmount());
+
+        // 归并对同一发药行的多次入参(累加), 逐行校验不超剩余可退量
+        Map<Long, BigDecimal> wantQty = new LinkedHashMap<>();
+        if (req.getItems() == null || req.getItems().isEmpty()) {
+            // items 缺省 -> 一键整退: 展开为全部仍有剩余可退量的行(走行级, 按原价退)
+            for (HisDispenseItem ln : lines) {
+                BigDecimal remain = bdOrZero(ln.getDispenseQty()).subtract(bdOrZero(ln.getReturnedQty()));
+                if (remain.compareTo(BigDecimal.ZERO) > 0) {
+                    wantQty.put(ln.getId(), remain);
+                }
+            }
+            if (wantQty.isEmpty()) {
+                throw new BizException("该发药记录已全部退药, 无剩余可退");
+            }
+        } else {
+            Map<Long, HisDispenseItem> byId = new HashMap<>();
+            for (HisDispenseItem ln : lines) {
+                byId.put(ln.getId(), ln);
+            }
+            for (DrugReturnReq.Item it : req.getItems()) {
+                if (it == null || it.getDispenseItemId() == null) {
+                    throw new BizException(400, "行级退药明细缺少发药行ID");
+                }
+                BigDecimal q = it.getReturnQty();
+                if (q == null || q.compareTo(BigDecimal.ZERO) <= 0) {
+                    throw new BizException(400, "退药数量须大于0");
+                }
+                if (!byId.containsKey(it.getDispenseItemId())) {
+                    throw new BizException("退药行不属于该发药记录: " + it.getDispenseItemId());
+                }
+                wantQty.merge(it.getDispenseItemId(), q, BigDecimal::add);
+            }
+            for (HisDispenseItem ln : lines) {
+                BigDecimal w = wantQty.get(ln.getId());
+                if (w == null) {
+                    continue;
+                }
+                BigDecimal remain = bdOrZero(ln.getDispenseQty()).subtract(bdOrZero(ln.getReturnedQty()));
+                if (w.compareTo(remain) > 0) {
+                    throw new BizException("退药数量超出该行剩余可退量: " + ln.getDrugName()
+                            + "(发药" + plain(bdOrZero(ln.getDispenseQty())) + ", 已退" + plain(bdOrZero(ln.getReturnedQty())) + ")");
+                }
+            }
+        }
+
+        // 落退药单(待审核) + 退药明细行(金额按该行划价原价; 本行退完用原价总额精确兜底)
+        HisDrugReturn dr = newReturnShell(dispense, req.getReason());
+        BigDecimal totalRet = BigDecimal.ZERO;
+        List<HisDrugReturnItem> retItems = new ArrayList<>();
+        for (HisDispenseItem ln : lines) {
+            BigDecimal w = wantQty.get(ln.getId());
+            if (w == null) {
+                continue;
+            }
+            BigDecimal lineAmt = lineReturnAmount(ln, w);
+            totalRet = totalRet.add(lineAmt);
+            HisDrugReturnItem ri = new HisDrugReturnItem();
+            ri.setOrgId(dispense.getOrgId());
+            ri.setDispenseItemId(ln.getId());
+            ri.setDrugCatalogId(ln.getDrugCatalogId());
+            ri.setDrugCode(ln.getDrugCode());
+            ri.setDrugName(ln.getDrugName());
+            ri.setSpec(ln.getSpec());
+            ri.setUnit(ln.getUnit());
+            ri.setReturnQty(w);
+            ri.setReturnAmount(lineAmt);
+            retItems.add(ri);
+        }
+        dr.setReturnAmount(totalRet);
         returnMapper.insert(dr);
-        log.info("退药申请: returnNo={}, dispenseId={}, patient={}, pharmacyId={}",
-                dr.getReturnNo(), dr.getDispenseId(), dr.getPatientName(), dispense.getPharmacyId());
+        for (HisDrugReturnItem ri : retItems) {
+            ri.setReturnId(dr.getId());
+            returnItemMapper.insert(ri);
+        }
+        log.info("退药申请(行级): returnNo={}, dispenseId={}, lines={}, returnAmount={}",
+                dr.getReturnNo(), dr.getDispenseId(), retItems.size(), totalRet);
         return dr;
     }
 
@@ -1036,61 +1135,106 @@ public class PharmacyService {
             throw new BizException("未找到发药出库明细, 无法回库");
         }
 
-        // 2. 创建退药回库入库单并确认: 确认时按 (机构+药房库存位+药品+批次) upsert 库存加量, 与发药同源对称回补
+        // 三期 C2: 有退药明细行 -> 行级回库路径; 无(改造前存量整方退) -> 回落旧整方全额回库路径
+        List<HisDrugReturnItem> retItems = returnItemMapper.selectList(Wrappers.<HisDrugReturnItem>lambdaQuery()
+                .eq(HisDrugReturnItem::getReturnId, dr.getId())
+                .orderByAsc(HisDrugReturnItem::getId));
+        if (retItems.isEmpty()) {
+            returnApproveLegacy(dr, dispense, warehouseId, outItems);
+            return dr;
+        }
+
+        // 2a. 加载发药行 + 逐行复核剩余可退 + 权威金额按划价原价重算(消除与申请时舍入漂移, 不退不平) + 归并各药本事务退量
+        Map<Long, HisDispenseItem> itemById = new HashMap<>();
+        for (HisDispenseItem di : dispenseItemMapper.selectList(Wrappers.<HisDispenseItem>lambdaQuery()
+                .eq(HisDispenseItem::getDispenseId, dispense.getId()))) {
+            itemById.put(di.getId(), di);
+        }
+        Map<Long, BigDecimal> txByDrug = new LinkedHashMap<>();
+        Map<Long, BigDecimal> newQtyByItem = new HashMap<>();
+        Map<Long, BigDecimal> newAmtByItem = new HashMap<>();
+        BigDecimal totalRet = BigDecimal.ZERO;
+        for (HisDrugReturnItem ri : retItems) {
+            HisDispenseItem di = itemById.get(ri.getDispenseItemId());
+            if (di == null) {
+                throw new BizException("退药明细行对应发药行不存在: dispenseItemId=" + ri.getDispenseItemId());
+            }
+            BigDecimal q = bdOrZero(ri.getReturnQty());
+            BigDecimal remain = bdOrZero(di.getDispenseQty()).subtract(bdOrZero(di.getReturnedQty()));
+            if (q.compareTo(remain) > 0) {
+                throw new BizException("退药数量超出该行剩余可退量, 请刷新后重试: " + di.getDrugName());
+            }
+            BigDecimal amt = lineReturnAmount(di, q);
+            ri.setReturnAmount(amt);
+            returnItemMapper.updateById(ri);
+            totalRet = totalRet.add(amt);
+            if (di.getDrugCatalogId() != null) {
+                txByDrug.merge(di.getDrugCatalogId(), q, BigDecimal::add);
+            }
+            newQtyByItem.merge(di.getId(), q, BigDecimal::add);
+            newAmtByItem.merge(di.getId(), amt, BigDecimal::add);
+        }
+
+        // 3a. 回库: 按药累计区间[已退,已退+本次) 映射到该药出库批次流, 保证不超批、回库对称、部分退只回本次量
+        List<StockInItemReq> inItems = buildLineRestore(txByDrug, itemById, outItems);
         StockInReq inReq = new StockInReq();
         inReq.setOrgId(dispense.getOrgId());
-        // 透传药房库存位: 与 doDispense 扣减同一维度, 保证退药回到发药的同一库存位
         inReq.setWarehouseId(warehouseId);
         inReq.setInType(2);
-        inReq.setRemark("退药回库: " + dr.getReturnNo() + ", 发药单 " + dispense.getDispenseNo());
-        List<StockInItemReq> inItems = new ArrayList<>();
-        for (Map<String, Object> oi : outItems) {
-            StockInItemReq ii = new StockInItemReq();
-            ii.setDrugCatalogId(toLong(oi.get("drug_catalog_id")));
-            ii.setDrugCode(str(oi.get("drug_code")));
-            ii.setDrugName(str(oi.get("drug_name")));
-            ii.setSpec(str(oi.get("spec")));
-            ii.setBatchNo(str(oi.get("batch_no")));
-            BigDecimal qty = toBd(oi.get("qty"));
-            ii.setQty(qty);
-            ii.setCostPrice(toBd(oi.get("cost_price")));
-            ii.setRetailPrice(toBd(oi.get("retail_price")));
-            // 回库小计: 优先 数量*零售价, 零售价空则 数量*进价(与出库单金额口径一致)
-            BigDecimal amount = null;
-            if (qty != null && toBd(oi.get("retail_price")) != null) {
-                amount = qty.multiply(toBd(oi.get("retail_price"))).setScale(2, RoundingMode.HALF_UP);
-            } else if (qty != null && toBd(oi.get("cost_price")) != null) {
-                amount = qty.multiply(toBd(oi.get("cost_price"))).setScale(2, RoundingMode.HALF_UP);
-            }
-            ii.setAmount(amount);
-            inItems.add(ii);
-        }
+        inReq.setRemark("退药回库(行级): " + dr.getReturnNo() + ", 发药单 " + dispense.getDispenseNo());
         inReq.setItems(inItems);
         HisStockIn stockIn = drugStockService.createStockIn(inReq);
         drugStockService.confirmStockIn(stockIn.getId());
 
-        // 3. 发药记录置已退药(status=3, 条件更新: 仅已发药可置已退药, 并发申请/审批交错时后到者受影响行数为0)
-        int dispenseUpdated = dispenseMapper.update(null, Wrappers.<HisDispense>lambdaUpdate()
-                .set(HisDispense::getStatus, 3)
-                .eq(HisDispense::getId, dispense.getId())
-                .eq(HisDispense::getStatus, 2));
-        if (dispenseUpdated != 1) {
-            throw new BizException("发药记录状态已变化, 请刷新后重试");
+        // 4a. 累加各发药行 returned(条件更新: returned_qty 乐观校验防并发丢失)
+        for (HisDispenseItem di : itemById.values()) {
+            BigDecimal dq = newQtyByItem.get(di.getId());
+            if (dq == null) {
+                continue;
+            }
+            BigDecimal before = bdOrZero(di.getReturnedQty());
+            BigDecimal beforeAmt = bdOrZero(di.getReturnedAmount());
+            int up = dispenseItemMapper.update(null, Wrappers.<HisDispenseItem>lambdaUpdate()
+                    .set(HisDispenseItem::getReturnedQty, before.add(dq))
+                    .set(HisDispenseItem::getReturnedAmount, beforeAmt.add(newAmtByItem.get(di.getId())))
+                    .eq(HisDispenseItem::getId, di.getId())
+                    .eq(HisDispenseItem::getReturnedQty, before));
+            if (up != 1) {
+                throw new BizException("发药行状态已变化, 请刷新后重试");
+            }
         }
 
-        // 4. 处方置已退药(dispense_status=2, 条件更新: 仅已发药(1)可置已退药)
-        jdbcTemplate.update("UPDATE his_prescription SET dispense_status = 2"
-                        + " WHERE id = ? AND tenant_id = ? AND dispense_status = 1 AND deleted = 0",
-                dispense.getPrescriptionId(), tenantId());
+        // 5a. 整单是否全部退完: 全退 -> 发药记录 status 2->3 且处方 dispense_status 1->2; 部分 -> 维持(仍可继续退)
+        boolean allReturned = true;
+        for (HisDispenseItem di : itemById.values()) {
+            BigDecimal rAfter = bdOrZero(di.getReturnedQty()).add(newQtyByItem.getOrDefault(di.getId(), BigDecimal.ZERO));
+            if (rAfter.compareTo(bdOrZero(di.getDispenseQty())) < 0) {
+                allReturned = false;
+                break;
+            }
+        }
+        if (allReturned) {
+            int dispenseUpdated = dispenseMapper.update(null, Wrappers.<HisDispense>lambdaUpdate()
+                    .set(HisDispense::getStatus, 3)
+                    .eq(HisDispense::getId, dispense.getId())
+                    .eq(HisDispense::getStatus, 2));
+            if (dispenseUpdated != 1) {
+                throw new BizException("发药记录状态已变化, 请刷新后重试");
+            }
+            jdbcTemplate.update("UPDATE his_prescription SET dispense_status = 2"
+                            + " WHERE id = ? AND tenant_id = ? AND dispense_status = 1 AND deleted = 0",
+                    dispense.getPrescriptionId(), tenantId());
+        }
 
-        // 5. 退药记录置已退药(status=1)
+        // 6a. 退药记录置已退药(status=1), 金额回写本事务权威退药额
         dr.setStatus(1);
+        dr.setReturnAmount(totalRet);
         dr.setApproveBy(currentUserName());
         dr.setApproveTime(LocalDateTime.now());
         returnMapper.updateById(dr);
 
-        log.info("退药回库完成: returnNo={}, dispenseNo={}, items={}, returnAmount={}, pharmacyId={}, warehouseId={}",
-                dr.getReturnNo(), dispense.getDispenseNo(), outItems.size(), dr.getReturnAmount(),
+        log.info("退药回库完成(行级): returnNo={}, dispenseNo={}, lines={}, returnAmount={}, allReturned={}, pharmacyId={}, warehouseId={}",
+                dr.getReturnNo(), dispense.getDispenseNo(), retItems.size(), totalRet, allReturned,
                 dispense.getPharmacyId(), warehouseId);
         return dr;
     }
@@ -1121,6 +1265,185 @@ public class PharmacyService {
                 + " WHERE so.ref_id = ? AND so.out_type = 1 AND so.status = 1"
                 + " AND so.tenant_id = ? AND soi.deleted = 0"
                 + " ORDER BY soi.id", prescriptionId, tenantId());
+    }
+
+    /* ================= 三期 C2: 行级部分退 内部实现 ================= */
+
+    /** BigDecimal 空值兜底为 0。 */
+    private static BigDecimal bdOrZero(BigDecimal v) {
+        return v == null ? BigDecimal.ZERO : v;
+    }
+
+    /** 发药落库后写 his_dispense_item(行级), 单价/金额取处方明细划价快照原价, 供行级部分退不退不平。 */
+    private void writeDispenseItems(HisDispense dispense, List<Map<String, Object>> items) {
+        Long orgId = dispense.getOrgId();
+        for (Map<String, Object> it : items) {
+            HisDispenseItem di = new HisDispenseItem();
+            di.setOrgId(orgId);
+            di.setDispenseId(dispense.getId());
+            di.setPrescriptionItemId(toLong(it.get("id")));
+            di.setDrugCatalogId(toLong(it.get("drug_id")));
+            String code = str(it.get("item_code"));
+            di.setDrugCode(StringUtils.hasText(code) ? code : "DRUG" + it.get("drug_id"));
+            di.setDrugName(str(it.get("item_name")));
+            di.setSpec(str(it.get("spec")));
+            di.setUnit(str(it.get("unit")));
+            di.setDispenseQty(bdOrZero(toBd(it.get("quantity"))));
+            di.setBilledPrice(bdOrZero(toBd(it.get("price"))));
+            di.setBilledAmount(bdOrZero(toBd(it.get("amount"))));
+            di.setReturnedQty(BigDecimal.ZERO);
+            di.setReturnedAmount(BigDecimal.ZERO);
+            dispenseItemMapper.insert(di);
+        }
+    }
+
+    /** 退药单公共字段填充(整方/行级共用)。 */
+    private HisDrugReturn newReturnShell(HisDispense dispense, String reason) {
+        HisDrugReturn dr = new HisDrugReturn();
+        dr.setOrgId(dispense.getOrgId());
+        dr.setReturnNo(generateNo("TY"));
+        dr.setDispenseId(dispense.getId());
+        dr.setVisitId(dispense.getVisitId());
+        dr.setPatientId(dispense.getPatientId());
+        dr.setPatientName(dispense.getPatientName());
+        dr.setReason(reason);
+        dr.setStatus(0);
+        return dr;
+    }
+
+    /** 单行本次退药金额(按划价原价)。退完该行用"原价总额-已退金额"精确兜底, 消除逐次舍入累计误差(不退不平)。 */
+    private BigDecimal lineReturnAmount(HisDispenseItem ln, BigDecimal qty) {
+        BigDecimal disp = bdOrZero(ln.getDispenseQty());
+        BigDecimal returned = bdOrZero(ln.getReturnedQty());
+        BigDecimal billedAmt = bdOrZero(ln.getBilledAmount()).setScale(2, RoundingMode.HALF_UP);
+        BigDecimal returnedAmt = bdOrZero(ln.getReturnedAmount()).setScale(2, RoundingMode.HALF_UP);
+        if (returned.add(qty).compareTo(disp) >= 0) {
+            BigDecimal rem = billedAmt.subtract(returnedAmt);
+            return rem.compareTo(BigDecimal.ZERO) < 0 ? BigDecimal.ZERO : rem;
+        }
+        return bdOrZero(ln.getBilledPrice()).multiply(qty).setScale(2, RoundingMode.HALF_UP);
+    }
+
+    /** 行级回库批次分配: 对每个药品, 把本事务退量映射到该药出库批次流的累计区间[prior, prior+this),
+     *  prior=该药各发药行已退量之和(本事务未累加前), 保证任一批次累计回库不超其出库量、回库对称、部分退只回本次量。 */
+    private List<StockInItemReq> buildLineRestore(Map<Long, BigDecimal> txByDrug,
+                                                  Map<Long, HisDispenseItem> itemById,
+                                                  List<Map<String, Object>> outItems) {
+        Map<Long, List<Map<String, Object>>> flowByDrug = new LinkedHashMap<>();
+        for (Map<String, Object> oi : outItems) {
+            Long dc = toLong(oi.get("drug_catalog_id"));
+            if (dc == null) {
+                continue;
+            }
+            flowByDrug.computeIfAbsent(dc, k -> new ArrayList<>()).add(oi);
+        }
+        List<StockInItemReq> inItems = new ArrayList<>();
+        for (Map.Entry<Long, BigDecimal> e : txByDrug.entrySet()) {
+            Long dc = e.getKey();
+            BigDecimal thisTx = bdOrZero(e.getValue());
+            if (thisTx.compareTo(BigDecimal.ZERO) <= 0) {
+                continue;
+            }
+            BigDecimal prior = BigDecimal.ZERO;
+            for (HisDispenseItem di : itemById.values()) {
+                if (dc.equals(di.getDrugCatalogId())) {
+                    prior = prior.add(bdOrZero(di.getReturnedQty()));
+                }
+            }
+            List<Map<String, Object>> flow = flowByDrug.get(dc);
+            if (flow == null || flow.isEmpty()) {
+                throw new BizException("药品无发药出库批次, 无法回库: drugCatalogId=" + dc);
+            }
+            BigDecimal cumulative = prior.add(thisTx);
+            BigDecimal cursor = BigDecimal.ZERO;
+            BigDecimal allocated = BigDecimal.ZERO;
+            for (Map<String, Object> oi : flow) {
+                if (allocated.compareTo(thisTx) >= 0) {
+                    break;
+                }
+                BigDecimal batchQty = bdOrZero(toBd(oi.get("qty")));
+                BigDecimal segStart = cursor;
+                BigDecimal segEnd = cursor.add(batchQty);
+                cursor = segEnd;
+                BigDecimal lo = prior.max(segStart);
+                BigDecimal hi = cumulative.min(segEnd);
+                BigDecimal take = hi.subtract(lo);
+                if (take.compareTo(BigDecimal.ZERO) <= 0) {
+                    continue;
+                }
+                StockInItemReq ii = new StockInItemReq();
+                ii.setDrugCatalogId(dc);
+                ii.setDrugCode(str(oi.get("drug_code")));
+                ii.setDrugName(str(oi.get("drug_name")));
+                ii.setSpec(str(oi.get("spec")));
+                ii.setBatchNo(str(oi.get("batch_no")));
+                ii.setQty(take);
+                BigDecimal cost = toBd(oi.get("cost_price"));
+                BigDecimal retail = toBd(oi.get("retail_price"));
+                ii.setCostPrice(cost);
+                ii.setRetailPrice(retail);
+                BigDecimal amount = retail != null ? take.multiply(retail).setScale(2, RoundingMode.HALF_UP)
+                        : (cost != null ? take.multiply(cost).setScale(2, RoundingMode.HALF_UP) : null);
+                ii.setAmount(amount);
+                inItems.add(ii);
+                allocated = allocated.add(take);
+            }
+            if (allocated.compareTo(thisTx) < 0) {
+                throw new BizException("回库数量超出该药出库批次总量, 无法回库: drugCatalogId=" + dc);
+            }
+        }
+        return inItems;
+    }
+
+    /** 旧整方退路径(改造前无明细行的发药): 按全部发药出库明细逐批次全额回库 -> 发药记录/处方整单置已退药 -> 退药单置已退药。 */
+    private void returnApproveLegacy(HisDrugReturn dr, HisDispense dispense, Long warehouseId,
+                                     List<Map<String, Object>> outItems) {
+        StockInReq inReq = new StockInReq();
+        inReq.setOrgId(dispense.getOrgId());
+        inReq.setWarehouseId(warehouseId);
+        inReq.setInType(2);
+        inReq.setRemark("退药回库: " + dr.getReturnNo() + ", 发药单 " + dispense.getDispenseNo());
+        List<StockInItemReq> inItems = new ArrayList<>();
+        for (Map<String, Object> oi : outItems) {
+            StockInItemReq ii = new StockInItemReq();
+            ii.setDrugCatalogId(toLong(oi.get("drug_catalog_id")));
+            ii.setDrugCode(str(oi.get("drug_code")));
+            ii.setDrugName(str(oi.get("drug_name")));
+            ii.setSpec(str(oi.get("spec")));
+            ii.setBatchNo(str(oi.get("batch_no")));
+            BigDecimal qty = toBd(oi.get("qty"));
+            ii.setQty(qty);
+            ii.setCostPrice(toBd(oi.get("cost_price")));
+            ii.setRetailPrice(toBd(oi.get("retail_price")));
+            BigDecimal amount = null;
+            if (qty != null && toBd(oi.get("retail_price")) != null) {
+                amount = qty.multiply(toBd(oi.get("retail_price"))).setScale(2, RoundingMode.HALF_UP);
+            } else if (qty != null && toBd(oi.get("cost_price")) != null) {
+                amount = qty.multiply(toBd(oi.get("cost_price"))).setScale(2, RoundingMode.HALF_UP);
+            }
+            ii.setAmount(amount);
+            inItems.add(ii);
+        }
+        inReq.setItems(inItems);
+        HisStockIn stockIn = drugStockService.createStockIn(inReq);
+        drugStockService.confirmStockIn(stockIn.getId());
+
+        int dispenseUpdated = dispenseMapper.update(null, Wrappers.<HisDispense>lambdaUpdate()
+                .set(HisDispense::getStatus, 3)
+                .eq(HisDispense::getId, dispense.getId())
+                .eq(HisDispense::getStatus, 2));
+        if (dispenseUpdated != 1) {
+            throw new BizException("发药记录状态已变化, 请刷新后重试");
+        }
+        jdbcTemplate.update("UPDATE his_prescription SET dispense_status = 2"
+                        + " WHERE id = ? AND tenant_id = ? AND dispense_status = 1 AND deleted = 0",
+                dispense.getPrescriptionId(), tenantId());
+        dr.setStatus(1);
+        dr.setApproveBy(currentUserName());
+        dr.setApproveTime(LocalDateTime.now());
+        returnMapper.updateById(dr);
+        log.info("退药回库完成(整方): returnNo={}, dispenseNo={}, items={}, returnAmount={}",
+                dr.getReturnNo(), dispense.getDispenseNo(), outItems.size(), dr.getReturnAmount());
     }
 
     /** 药品库存总量: warehouseId 非空按药房库存位维度, 为空按机构全院 SUM 各批次 */
