@@ -1405,7 +1405,7 @@
               </div>
               <div class="iw-form-row">
                 <span class="lb">数量</span>
-                <el-input-number v-model="form.quantity" size="small" :min="0.01" :step="1" :precision="2" style="width:130px"></el-input-number>
+                <el-input-number v-model="form.quantity" size="small" :min="0.01" :step="1" :precision="4" style="width:130px"></el-input-number>
                 <span class="iw-dim">药品类数量按最小发药单位计; 单价由服务端按本机构目录定价</span>
               </div>
             </div>

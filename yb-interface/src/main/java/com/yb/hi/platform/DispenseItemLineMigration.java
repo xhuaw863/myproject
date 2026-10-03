@@ -70,7 +70,7 @@ public class DispenseItemLineMigration implements ApplicationRunner {
                             + "spec VARCHAR(200) DEFAULT NULL COMMENT '规格',"
                             + "unit VARCHAR(20) DEFAULT NULL COMMENT '单位',"
                             + "return_qty DECIMAL(16,4) DEFAULT 0 COMMENT '本次该行退药数量',"
-                            + "return_amount DECIMAL(12,2) DEFAULT 0 COMMENT '本次该行退药金额(按划价原价)',"
+                            + "return_amount DECIMAL(16,2) DEFAULT 0 COMMENT '本次该行退药金额(按划价原价)',"
                             + "create_by VARCHAR(50) DEFAULT NULL, create_time DATETIME DEFAULT NULL,"
                             + "update_by VARCHAR(50) DEFAULT NULL, update_time DATETIME DEFAULT NULL, deleted TINYINT DEFAULT 0,"
                             + "PRIMARY KEY (id),"

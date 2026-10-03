@@ -156,7 +156,7 @@ CREATE TABLE his_registration (
     time_type       VARCHAR(10)  DEFAULT NULL COMMENT '时段:am/pm/night',
     reg_level_code  VARCHAR(30)  DEFAULT NULL COMMENT '号别编码',
     reg_level_name  VARCHAR(50)  DEFAULT NULL COMMENT '号别名称',
-    reg_fee         DECIMAL(10,2) DEFAULT 0.00 COMMENT '挂号费',
+    reg_fee         DECIMAL(16,2) DEFAULT 0.00 COMMENT '挂号费',
     med_type        VARCHAR(10)  DEFAULT '11' COMMENT '医疗类别:11-普通门诊',
     ipt_otp_no      VARCHAR(30)  DEFAULT NULL COMMENT '院内就诊流水号(门诊号)',
     mdtrt_id        VARCHAR(30)  DEFAULT NULL COMMENT '医保就诊ID(2201回填)',

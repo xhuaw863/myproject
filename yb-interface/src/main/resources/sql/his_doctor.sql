@@ -193,7 +193,7 @@ CREATE TABLE his_order (
     dr_name       VARCHAR(50)   DEFAULT NULL COMMENT '医师姓名',
     order_type    VARCHAR(20)   DEFAULT '检查' COMMENT '单据类型:检查/检验/治疗',
     diag_name     VARCHAR(500)  DEFAULT NULL COMMENT '临床诊断',
-    total_amount  DECIMAL(12,2) DEFAULT 0.00 COMMENT '单据金额',
+    total_amount  DECIMAL(16,2) DEFAULT 0.00 COMMENT '单据金额',
     status        TINYINT       DEFAULT 1 COMMENT '状态:1-已开 2-已执行 3-已退',
     create_by     VARCHAR(50)   DEFAULT NULL,
     create_time   DATETIME      DEFAULT NULL,
