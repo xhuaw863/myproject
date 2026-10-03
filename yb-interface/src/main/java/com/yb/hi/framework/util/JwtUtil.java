@@ -78,6 +78,21 @@ public class JwtUtil {
             return null;
         }
         try {
+            // S-1(2026-10-03 安全审计): 拒绝 alg=none / 空签名令牌重放 —— 须为标准三段且签名段非空, header.alg 必须 HS256
+            // (Hutool JWTUtil.verify 对"none头+空签名"返回 true, 被截获的合法令牌去签名即可重放至过期)
+            String[] seg = token.split("\\.", -1);
+            if (seg.length != 3 || seg[0].isEmpty() || seg[1].isEmpty() || seg[2].isEmpty()) {
+                return null;
+            }
+            String headerJson;
+            try {
+                headerJson = new String(java.util.Base64.getUrlDecoder().decode(seg[0]), StandardCharsets.UTF_8);
+            } catch (Exception ex) {
+                return null;
+            }
+            if (headerJson.toUpperCase().indexOf("HS256") < 0) {
+                return null;
+            }
             if (!JWTUtil.verify(token, keyBytes())) {
                 return null;
             }

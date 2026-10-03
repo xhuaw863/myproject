@@ -4,6 +4,7 @@ import com.baomidou.mybatisplus.core.metadata.IPage;
 import com.yb.hi.dto.inpatient.InpAdmitDTO;
 import com.yb.hi.dto.inpatient.InpTransferDTO;
 import com.yb.hi.entity.inpatient.HisInpVisit;
+import com.yb.hi.framework.common.BizException;
 import com.yb.hi.framework.common.R;
 import com.yb.hi.platform.service.OrgAccessGuard;
 import com.yb.hi.service.inpatient.InpVisitService;
@@ -84,7 +85,17 @@ public class InpVisitController {
     /** 就诊详情(含患者信息、床位/病区信息、诊断列表) */
     @GetMapping("/visit/{id}")
     public R<Map<String, Object>> detail(@PathVariable Long id) {
-        return R.ok(inpVisitService.getDetail(id));
+        Map<String, Object> detail = inpVisitService.getDetail(id);
+        // S-2(2026-10-03 安全审计): 就诊详情含患者与医保身份要素, 非"患者维度历史回看"豁免面;
+        // 与在院患者列表同口径: 非牵头机构锁定本机构, 读他机构就诊记录拒 403。
+        Long scope = guard.scopeOrgId(null);
+        if (scope != null) {
+            Object v = detail.get("visit");
+            if (v instanceof HisInpVisit && !scope.equals(((HisInpVisit) v).getOrgId())) {
+                throw new BizException(403, "仅可查看本机构住院就诊记录");
+            }
+        }
+        return R.ok(detail);
     }
 
     /** 转科/转床(释放旧床->占用新床->回写就诊, 换床原子链路) */

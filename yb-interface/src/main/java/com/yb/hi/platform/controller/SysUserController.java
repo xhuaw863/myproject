@@ -2,6 +2,8 @@ package com.yb.hi.platform.controller;
 
 import com.yb.hi.framework.common.BizException;
 import com.yb.hi.framework.common.R;
+import com.yb.hi.framework.common.Roles;
+import com.yb.hi.framework.tenant.LoginUser;
 import com.yb.hi.framework.tenant.UserContext;
 import com.yb.hi.platform.dto.UserSaveReq;
 import com.yb.hi.platform.entity.SysRole;
@@ -120,6 +122,7 @@ public class SysUserController {
     @PostMapping
     public R<Void> create(@RequestBody UserSaveReq req) {
         guard.requireLeadWrite();
+        assertNoSuperAdminGrant(req);
         if (req.getUsername() == null || req.getPassword() == null) {
             throw new BizException(400, "账号与密码不能为空");
         }
@@ -137,6 +140,7 @@ public class SysUserController {
     @PutMapping
     public R<Void> update(@RequestBody UserSaveReq req) {
         guard.requireLeadWrite();
+        assertNoSuperAdminGrant(req);
         userService.assertStaffNotBound(req.getStaffId(), req.getId());
         SysUser u = new SysUser();
         u.setId(req.getId());
@@ -158,6 +162,33 @@ public class SysUserController {
             userRoleService.replaceRoles(req.getId(), primaryRoleId(req), req.getRoleIds());
         }
         return R.ok();
+    }
+
+    /**
+     * S-3(2026-10-03 安全审计): 平台超管档位授予白名单 —— 仅已是 SUPER_ADMIN 的操作者可创建/维护超管账号,
+     * 防止牵头 ADMIN 经 resolveRoleCode 直通角色码把账号提权至平台超管(all_menus=1)档位。
+     */
+    private void assertNoSuperAdminGrant(UserSaveReq req) {
+        LoginUser lu = UserContext.get();
+        if (lu != null && lu.hasRole(Roles.SUPER_ADMIN)) {
+            return;
+        }
+        if (Roles.SUPER_ADMIN.equalsIgnoreCase(resolveRoleCode(req))) {
+            throw new BizException(403, "仅平台超级管理员可授予超管角色");
+        }
+        Set<Long> grantRoleIds = new LinkedHashSet<>();
+        if (req.getRoleId() != null) {
+            grantRoleIds.add(req.getRoleId());
+        }
+        if (req.getRoleIds() != null) {
+            grantRoleIds.addAll(req.getRoleIds());
+        }
+        for (Long rid : grantRoleIds) {
+            SysRole r = roleService.getById(rid);
+            if (r != null && Roles.SUPER_ADMIN.equalsIgnoreCase(r.getRoleCode())) {
+                throw new BizException(403, "仅平台超级管理员可授予超管角色");
+            }
+        }
     }
 
     /** 主角色ID: 优先 roleId(旧单角色传参), 回落 roleIds 首位(多角色约定主角色置首) */
