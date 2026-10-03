@@ -23,6 +23,7 @@ import com.yb.hi.framework.tenant.TenantContext;
 import com.yb.hi.framework.tenant.UserContext;
 import com.yb.hi.mapper.pharmacy.HisDispenseMapper;
 import com.yb.hi.mapper.pharmacy.HisDrugReturnMapper;
+import com.yb.hi.platform.service.SystemParamResolver;
 import com.yb.hi.service.warehouse.DrugStockService;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -74,6 +75,7 @@ public class PharmacyService {
     private final WindowDispatchService windowDispatchService;
     private final PharmacyWindowService pharmacyWindowService;
     private final ScanVerifyService scanVerifyService;
+    private final SystemParamResolver systemParamResolver;
     private final JdbcTemplate jdbcTemplate;
 
     /** 三期: 发药出库单与计费快照口径一致(仅药品行, 金额取 price*quantity) */
@@ -88,6 +90,7 @@ public class PharmacyService {
                            PharmacyPriceService pharmacyPriceService,
                            WindowDispatchService windowDispatchService, PharmacyWindowService pharmacyWindowService,
                            ScanVerifyService scanVerifyService,
+                           SystemParamResolver systemParamResolver,
                            JdbcTemplate jdbcTemplate) {
         this.dispenseMapper = dispenseMapper;
         this.returnMapper = returnMapper;
@@ -97,6 +100,7 @@ public class PharmacyService {
         this.windowDispatchService = windowDispatchService;
         this.pharmacyWindowService = pharmacyWindowService;
         this.scanVerifyService = scanVerifyService;
+        this.systemParamResolver = systemParamResolver;
         this.jdbcTemplate = jdbcTemplate;
     }
 
@@ -384,6 +388,28 @@ public class PharmacyService {
                 throw new BizException("药房库存不足: " + String.join("; ", lacks) + "。可改派至有库存药房后发药");
             }
         }
+        // 二期: 发药批次价差容差闸(仅启用且已绑药房库存位可预估时生效): 超阈按 block 拒绝 / override 需主管放行留痕。
+        // 位置在缺药硬校验之后、真正出库扣减之前: 抛错则整个事务回滚(dispense_status 复原), 不会误扣库存。
+        String priceDiffNote = null;
+        ToleranceCfg tcfg = readToleranceCfg();
+        if (tcfg.enabled && warehouseId != null) {
+            BigDecimal estAmt = estimateStockAmount(orgId, warehouseId, items);
+            PriceDiffVerdict v = assessPriceDiff(tcfg, toBd(pres.get("total_amount")), estAmt);
+            if (v.exceeded) {
+                boolean allowed = "override".equalsIgnoreCase(v.action)
+                        && Boolean.TRUE.equals(req.getPriceDiffOverride())
+                        && StringUtils.hasText(req.getOverrideBy())
+                        && StringUtils.hasText(req.getOverrideReason());
+                if (!allowed) {
+                    throw new BizException(priceDiffBlockMsg(v));
+                }
+                priceDiffNote = "价差超阈经主管放行: 放行人=" + req.getOverrideBy().trim()
+                        + ", 理由=" + req.getOverrideReason().trim() + " | " + priceDiffBlockMsg(v);
+                log.warn("发药价差超阈经主管放行: prescriptionId={}, dispenseBy={}, overrideBy={}, diff={}, rate={}",
+                        prescriptionId, currentUserName(), req.getOverrideBy().trim(), v.diff, v.rate);
+            }
+        }
+
         HisStockOut stockOut = drugStockService.createStockOut(outReq);
         drugStockService.confirmStockOut(stockOut.getId());
 
@@ -424,7 +450,7 @@ public class PharmacyService {
         // P3: 本单追溯强制标志落账(发药后绑定成功再回写已绑数)
         dispense.setTraceRequired(traceRequired ? 1 : 0);
         dispense.setTraceScanned(0);
-        dispense.setRemark(req.getRemark());
+        dispense.setRemark(composePriceDiffRemark(req.getRemark(), priceDiffNote));
         dispenseMapper.insert(dispense);
 
         // P3 发药后绑定: 将已校验在库物理追溯码置已发药并绑定本次发药(患者/就诊/发药记录), 回写已绑数
@@ -519,6 +545,7 @@ public class PharmacyService {
         Long visitId = toLong(pres.get("visit_id"));
         List<Map<String, Object>> blocks = new ArrayList<>();
         List<Map<String, Object>> warns = new ArrayList<>();
+        Map<String, Object> priceDiffInfo = null;
 
         Number rxStatus = (Number) pres.get("status");
         Number ds = (Number) pres.get("dispense_status");
@@ -564,6 +591,30 @@ public class PharmacyService {
             log.warn("发药前缺药校验异常(忽略): prescriptionId={}, err={}", prescriptionId, e.getMessage());
         }
 
+        // 二期: 价差容差预检(软提示): 复用 dispensePreview 预估, 启用且超阈则计入阻断项供前端禁用发药按钮并展示处置口径
+        try {
+            ToleranceCfg tcfg = readToleranceCfg();
+            if (tcfg.enabled) {
+                Map<String, Object> pv = dispensePreview(prescriptionId);
+                if (Boolean.TRUE.equals(pv.get("estReliable"))) {
+                    PriceDiffVerdict v = assessPriceDiff(tcfg,
+                            (BigDecimal) pv.get("billingAmount"), (BigDecimal) pv.get("estStockAmount"));
+                    if (v.exceeded) {
+                        blocks.add(checkItem("price_over_tolerance", priceDiffBlockMsg(v)));
+                        priceDiffInfo = new LinkedHashMap<>();
+                        priceDiffInfo.put("billingAmount", pv.get("billingAmount"));
+                        priceDiffInfo.put("estStockAmount", pv.get("estStockAmount"));
+                        priceDiffInfo.put("estPriceDiff", pv.get("estPriceDiff"));
+                        priceDiffInfo.put("diffRate", v.rate);
+                        priceDiffInfo.put("action", v.action);
+                        priceDiffInfo.put("overridable", "override".equalsIgnoreCase(v.action));
+                    }
+                }
+            }
+        } catch (Exception e) {
+            log.warn("发药前价差容差校验异常(忽略): prescriptionId={}, err={}", prescriptionId, e.getMessage());
+        }
+
         // 同就诊跨药房未发药提醒
         if (visitId != null) {
             Long otherUndispensed = jdbcTemplate.queryForObject(
@@ -580,6 +631,9 @@ public class PharmacyService {
         out.put("canDispense", blocks.isEmpty());
         out.put("blocks", blocks);
         out.put("warns", warns);
+        if (priceDiffInfo != null) {
+            out.put("priceDiffInfo", priceDiffInfo);
+        }
         return out;
     }
 
@@ -710,6 +764,7 @@ public class PharmacyService {
         out.put("estPriceDiff", priceDiff);
         out.put("hasPriceDiff", priceDiff.compareTo(BigDecimal.ZERO) != 0);
         out.put("hasShortage", hasShortage);
+        out.put("estReliable", wh != null);
         out.put("shortageLines", lines);
         out.put("note", wh == null ? "处方未绑定药房, 发药按全院FIFO, 实发金额以出库为准" : null);
         return out;
@@ -1164,6 +1219,121 @@ public class PharmacyService {
         out.put("available", availSum);
         out.put("shortage", availSum.compareTo(need) < 0);
         return out;
+    }
+
+    /* ================= 二期: 发药批次价差容差闸 ================= */
+
+    /** 容差闸配置(读 sys_param, 四级作用域; 缺省=关闭以保持既有发药行为) */
+    private static final class ToleranceCfg {
+        boolean enabled;
+        BigDecimal rate;    // 差率阈值(%), null/<=0 表示不按差率约束
+        BigDecimal amount;  // 绝对额阈值(元), null/<=0 表示不按绝对额约束
+        String action;      // block/override
+    }
+
+    /** 价差判定结果(有符号差额=预估实发-划价快照) */
+    private static final class PriceDiffVerdict {
+        boolean exceeded;
+        BigDecimal billing;
+        BigDecimal est;
+        BigDecimal diff;
+        BigDecimal rate;
+        BigDecimal rateLimit;
+        BigDecimal amountLimit;
+        String action;
+    }
+
+    /** 读容差闸配置: 先读开关, 关闭则不再读阈值(每请求省参数查询) */
+    private ToleranceCfg readToleranceCfg() {
+        ToleranceCfg c = new ToleranceCfg();
+        c.action = "block";
+        c.enabled = "true".equalsIgnoreCase(nvlStr(systemParamResolver.resolve("pharmacy.price_diff_tolerance_enabled")));
+        if (!c.enabled) {
+            return c;
+        }
+        c.rate = parseCfgNum(systemParamResolver.resolve("pharmacy.price_diff_tolerance_rate"));
+        c.amount = parseCfgNum(systemParamResolver.resolve("pharmacy.price_diff_tolerance_amount"));
+        String a = systemParamResolver.resolve("pharmacy.price_diff_action");
+        if (StringUtils.hasText(a)) {
+            c.action = a.trim().toLowerCase();
+        }
+        return c;
+    }
+
+    /** 预估实发批次零售金额: 逐药按有效期升序 FIFO 吃批次(不扣减), 与 estimateFifo/出库确认同口径 */
+    private BigDecimal estimateStockAmount(Long orgId, Long warehouseId, List<Map<String, Object>> items) {
+        BigDecimal est = BigDecimal.ZERO;
+        for (Map<String, Object> it : items) {
+            BigDecimal need = nvlBd(toBd(it.get("quantity")));
+            if (need.compareTo(BigDecimal.ZERO) <= 0) {
+                continue;
+            }
+            Map<String, Object> e = estimateFifo(orgId, warehouseId, toLong(it.get("drug_id")), need);
+            est = est.add(nvlBd((BigDecimal) e.get("stockAmount")));
+        }
+        return est.setScale(2, RoundingMode.HALF_UP);
+    }
+
+    /** 依配置对"划价快照 vs 预估实发"判超阈(差率/绝对额任一越线即超) */
+    private PriceDiffVerdict assessPriceDiff(ToleranceCfg cfg, BigDecimal billing, BigDecimal est) {
+        PriceDiffVerdict v = new PriceDiffVerdict();
+        BigDecimal b = nvlBd(billing).setScale(2, RoundingMode.HALF_UP);
+        BigDecimal e = nvlBd(est).setScale(2, RoundingMode.HALF_UP);
+        v.billing = b;
+        v.est = e;
+        v.diff = e.subtract(b);
+        v.rateLimit = cfg.rate;
+        v.amountLimit = cfg.amount;
+        v.action = cfg.action;
+        BigDecimal abs = v.diff.abs();
+        if (b.compareTo(BigDecimal.ZERO) > 0) {
+            v.rate = abs.multiply(BigDecimal.valueOf(100)).divide(b, 2, RoundingMode.HALF_UP);
+        } else {
+            v.rate = abs.compareTo(BigDecimal.ZERO) > 0 ? new BigDecimal("100.00") : BigDecimal.ZERO;
+        }
+        boolean rateBreach = cfg.rate != null && cfg.rate.compareTo(BigDecimal.ZERO) > 0 && v.rate.compareTo(cfg.rate) > 0;
+        boolean absBreach = cfg.amount != null && cfg.amount.compareTo(BigDecimal.ZERO) > 0 && abs.compareTo(cfg.amount) > 0;
+        v.exceeded = rateBreach || absBreach;
+        return v;
+    }
+
+    /** 超阈拦截/提示文案(含划价/预估实发/差额/阈值/处置口径) */
+    private String priceDiffBlockMsg(PriceDiffVerdict v) {
+        StringBuilder sb = new StringBuilder("发药批次价差超容差: 划价 ").append(plain(v.billing))
+                .append(" 元, 预估实发 ").append(plain(v.est)).append(" 元, 差额 ").append(plain(v.diff))
+                .append("(率 ").append(plain(v.rate)).append("%)");
+        if (v.rateLimit != null && v.rateLimit.compareTo(BigDecimal.ZERO) > 0) {
+            sb.append(", 差率阈值 ").append(plain(v.rateLimit)).append("%");
+        }
+        if (v.amountLimit != null && v.amountLimit.compareTo(BigDecimal.ZERO) > 0) {
+            sb.append(", 绝对额阈值 ").append(plain(v.amountLimit)).append(" 元");
+        }
+        if ("override".equalsIgnoreCase(v.action)) {
+            sb.append("；按策略需主管放行(填写放行人与理由)后方可发药");
+        } else {
+            sb.append("；按策略已禁止发药，请改派有相近批次库存的药房或调整批次后重试");
+        }
+        return sb.toString();
+    }
+
+    /** 参数数值解析(空/非法返回 null) */
+    private static BigDecimal parseCfgNum(String s) {
+        if (!StringUtils.hasText(s)) {
+            return null;
+        }
+        try {
+            return new BigDecimal(s.trim());
+        } catch (NumberFormatException e) {
+            return null;
+        }
+    }
+
+    /** 将价差超阈放行留痕追写到发药备注(无留痕时保持原备注不变) */
+    private static String composePriceDiffRemark(String originRemark, String priceDiffNote) {
+        if (priceDiffNote == null) {
+            return originRemark;
+        }
+        return StringUtils.hasText(originRemark) ? originRemark + " | " + priceDiffNote : priceDiffNote;
     }
 
     /** BigDecimal 展示文本(去科学计数法, 错误提示/清单用) */
