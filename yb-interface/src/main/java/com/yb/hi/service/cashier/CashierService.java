@@ -1695,6 +1695,7 @@ public class CashierService {
                 m.put("qty", remain);
                 m.put("price", it.getPrice());
                 m.put("amount", amt);
+                m.put("itemType", it.getItemType());
                 remainingItems.add(m);
                 remainingTotal = remainingTotal.add(amt);
             }
@@ -1913,6 +1914,7 @@ public class CashierService {
                 for (Map<String, Object> it : ctx.remainingItems) {
                     HisChargeBillItem bi = new HisChargeBillItem();
                     bi.setBillId(rebill.getId());
+                    bi.setItemType(toInt(it.get("itemType")));
                     bi.setRefType(str(it.get("refType")));
                     bi.setRefId(toLong(it.get("refId")));
                     bi.setItemCode(str(it.get("itemCode")));
@@ -2072,6 +2074,7 @@ public class CashierService {
             m.put("qty", remain);
             m.put("price", it.getPrice());
             m.put("amount", amt);
+            m.put("itemType", it.getItemType());
             remaining.add(m);
             remainingTotal = remainingTotal.add(amt);
         }
