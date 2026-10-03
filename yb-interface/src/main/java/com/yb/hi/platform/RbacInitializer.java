@@ -144,6 +144,7 @@ public class RbacInitializer implements ApplicationRunner {
             ensureSystemParamMenu(menuIds);
             ensureVerifyConsoleMenu(menuIds);
             ensureUploadCenterMenu(menuIds);
+            ensureReconConsoleMenu(menuIds);
             mergeInpatientMenus(menuIds);
             ensureMedicalRecordMenus(menuIds);
             Map<String, Long> roleIds = seedGlobalRoles();
@@ -976,6 +977,38 @@ public class RbacInitializer implements ApplicationRunner {
         }
         menuIds.put("upload-center", m.getId());
     }
+
+    /**
+     * 幂等确保"医保对账台"菜单存在(批次4 M3: 3201/3202 对账任务与差异处置/2601 冲正确认,
+     * 后端 ReconController)。挂"医保字典"子目录末尾(与上报中心同域并列),
+     * ADMIN/ORG_ADMIN/SUPER_ADMIN 走 all_menus 自动可见; 收费员(CASHIER)需在角色权限页勾选授权后方可触发对账/处置。
+     */
+    private void ensureReconConsoleMenu(Map<String, Long> menuIds) {
+        SysMenu m = menuMapper.selectOne(new QueryWrapper<SysMenu>().eq("menu_key", "recon-console").last("LIMIT 1"));
+        if (m == null) {
+            SysMenu ybDir = menuMapper.selectOne(new QueryWrapper<SysMenu>().eq("menu_key", "yb-dict").last("LIMIT 1"));
+            if (ybDir == null) {
+                return;
+            }
+            int maxSort = 0;
+            for (SysMenu c : menuMapper.selectList(new QueryWrapper<SysMenu>().eq("parent_id", ybDir.getId()))) {
+                maxSort = Math.max(maxSort, c.getSortNo() == null ? 0 : c.getSortNo());
+            }
+            m = new SysMenu();
+            m.setParentId(ybDir.getId());
+            m.setMenuKey("recon-console");
+            m.setMenuName("医保对账台");
+            m.setMenuType(2);
+            m.setComp("ReconConsole");
+            m.setSortNo(maxSort + 1);
+            m.setVisible(1);
+            m.setStatus(1);
+            menuMapper.insert(m);
+            log.info("医保对账台菜单已补充(recon-console/ReconConsole)");
+        }
+        menuIds.put("recon-console", m.getId());
+    }
+
 
     /**
      * 幂等确保“挂号明细”菜单存在(挂号明细只读查询页, 排在挂号统计之后): 挂门诊挂号台目录,
