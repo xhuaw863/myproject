@@ -47,41 +47,110 @@ public class PharmacyPriceService {
         this.jdbcTemplate = jdbcTemplate;
     }
 
-    /* ================= 生效价 ================= */
+    /* ================= 划价/预览生效价(批次驱动) ================= */
 
-    /** 单药生效价: 药房覆盖价优先, 回落目录零售价; 目录也无价返回 null(调用方决定兜底) */
+    /** 单位价中间舍入精度(4 位), 明细金额再按 2 位单点舍入 */
+    private static final int PRICE_SCALE = 4;
+
+    /**
+     * 单药生效价(批次驱动预览): 药房 FIFO 头一批零售价优先, 回落目录零售价; 无价返回 null。
+     * 注: 覆盖价层 his_pharmacy_drug_price 不再参与任何定价(仅 药房定价 维护页过渡期保留, 三期下线)。
+     */
     public BigDecimal effectivePrice(Long pharmacyId, Long drugCatalogId) {
         if (drugCatalogId == null) {
             return null;
         }
-        BigDecimal override = pharmacyId == null ? null : overridePrice(pharmacyId, drugCatalogId);
-        if (override != null) {
-            return override;
-        }
-        HisDrugCatalog drug = drugCatalogMapper.selectById(drugCatalogId);
-        return drug == null ? null : drug.getRetailPrice();
+        Map<Long, BigDecimal> m = chargePriceBatch(pharmacyId,
+                Collections.singletonMap(drugCatalogId, BigDecimal.ONE));
+        return m.get(drugCatalogId);
     }
 
-    /** 批量生效价: 一次覆盖价批查 + 一次目录批查, 避免 N+1; 返回 drugId->价(无价条目不含) */
+    /** 批量生效价(浏览/展示, 无数量维度): 每药按 FIFO 头一批零售价 ?? 目录价; 覆盖价不再参与 */
     public Map<Long, BigDecimal> effectivePriceBatch(Long pharmacyId, Collection<Long> drugIds) {
+        if (drugIds == null || drugIds.isEmpty()) {
+            return new HashMap<>();
+        }
+        Map<Long, BigDecimal> qty = new LinkedHashMap<>();
+        for (Long id : new java.util.LinkedHashSet<>(drugIds)) {
+            qty.put(id, BigDecimal.ONE);
+        }
+        return chargePriceBatch(pharmacyId, qty);
+    }
+
+    /**
+     * 划价计费价(批次驱动单源): 逐药按发药药房 FIFO 吃批次得"精确加权单价"(Σ批次价×消耗量/数量),
+     * 在库不足或药房无库存位时回落目录零售价。数量口径=最小单位(min_unit), 与处方明细 quantity 一致。
+     * FIFO 排序与价表达式必须与 {@code PharmacyService.estimateFifo} 严格一致, 二者同步维护。
+     */
+    public Map<Long, BigDecimal> chargePriceBatch(Long pharmacyId, Map<Long, BigDecimal> qtyByDrug) {
+        Map<Long, BigDecimal> out = new HashMap<>();
+        if (qtyByDrug == null || qtyByDrug.isEmpty()) {
+            return out;
+        }
+        Long locId = pharmacyId == null ? null : stockLocationOf(pharmacyId);
+        Map<Long, BigDecimal> catalog = catalogPriceBatch(qtyByDrug.keySet());
+        for (Map.Entry<Long, BigDecimal> e : qtyByDrug.entrySet()) {
+            Long drugId = e.getKey();
+            BigDecimal price = locId == null ? null : fifoUnitPrice(locId, drugId, e.getValue());
+            if (price == null) {
+                price = catalog.get(drugId);
+            }
+            if (price != null) {
+                out.put(drugId, price);
+            }
+        }
+        return out;
+    }
+
+    /** 目录零售价批查: drugId -> retail_price(不含无价药) */
+    private Map<Long, BigDecimal> catalogPriceBatch(Collection<Long> drugIds) {
         Map<Long, BigDecimal> out = new HashMap<>();
         if (drugIds == null || drugIds.isEmpty()) {
             return out;
         }
         List<Long> ids = new ArrayList<>(new java.util.LinkedHashSet<>(drugIds));
-        Map<Long, BigDecimal> overrides = pharmacyId == null
-                ? Collections.emptyMap() : overrideBatch(pharmacyId, ids);
-        List<HisDrugCatalog> catalogs = drugCatalogMapper.selectBatchIds(ids);
-        for (HisDrugCatalog c : catalogs) {
-            BigDecimal p = overrides.get(c.getId());
-            if (p == null) {
-                p = c.getRetailPrice();
-            }
-            if (p != null) {
-                out.put(c.getId(), p);
+        for (HisDrugCatalog c : drugCatalogMapper.selectBatchIds(ids)) {
+            if (c.getRetailPrice() != null) {
+                out.put(c.getId(), c.getRetailPrice());
             }
         }
         return out;
+    }
+
+    /**
+     * 按 FIFO(效期升序, 同效期按入库序 id)吃批次消耗 need 个最小单位, 返回加权单价 = Σ(批次价×消耗量)/need。
+     * 无库存位、need<=0、或在库不足(有缺口)一律返回 null 交调用方回落目录价。
+     * 价表达式 IFNULL(retail_price, IFNULL(cost_price,0)) 与排序须与 PharmacyService.estimateFifo 一致。
+     */
+    private BigDecimal fifoUnitPrice(Long locId, Long drugId, BigDecimal need) {
+        if (locId == null || drugId == null || need == null || need.compareTo(BigDecimal.ZERO) <= 0) {
+            return null;
+        }
+        List<Map<String, Object>> batches = jdbcTemplate.queryForList(
+                "SELECT qty, IFNULL(retail_price, IFNULL(cost_price, 0)) price FROM his_drug_stock"
+                        + " WHERE tenant_id = ? AND warehouse_id = ? AND drug_catalog_id = ?"
+                        + " AND status = 1 AND deleted = 0 AND qty > 0"
+                        + " ORDER BY COALESCE(exp_date, '9999-12-31'), id",
+                tenantId(), locId, drugId);
+        BigDecimal remaining = need;
+        BigDecimal amount = BigDecimal.ZERO;
+        for (Map<String, Object> b : batches) {
+            if (remaining.compareTo(BigDecimal.ZERO) <= 0) {
+                break;
+            }
+            BigDecimal bq = toBd(b.get("qty"));
+            if (bq == null || bq.compareTo(BigDecimal.ZERO) <= 0) {
+                continue;
+            }
+            BigDecimal take = bq.min(remaining);
+            BigDecimal bp = toBd(b.get("price"));
+            amount = amount.add(take.multiply(bp == null ? BigDecimal.ZERO : bp));
+            remaining = remaining.subtract(take);
+        }
+        if (remaining.compareTo(BigDecimal.ZERO) > 0) {
+            return null;
+        }
+        return amount.divide(need, PRICE_SCALE, BigDecimal.ROUND_HALF_UP);
     }
 
     /* ================= 药房库存 ================= */
@@ -211,24 +280,6 @@ public class PharmacyPriceService {
     }
 
     /* ================= 内部 ================= */
-
-    private BigDecimal overridePrice(Long pharmacyId, Long drugCatalogId) {
-        HisPharmacyDrugPrice p = priceMapper.selectOne(Wrappers.<HisPharmacyDrugPrice>lambdaQuery()
-                .eq(HisPharmacyDrugPrice::getPharmacyId, pharmacyId)
-                .eq(HisPharmacyDrugPrice::getDrugCatalogId, drugCatalogId)
-                .last("LIMIT 1"));
-        return p == null ? null : p.getRetailPrice();
-    }
-
-    private Map<Long, BigDecimal> overrideBatch(Long pharmacyId, List<Long> drugIds) {
-        Map<Long, BigDecimal> out = new HashMap<>();
-        for (HisPharmacyDrugPrice p : priceMapper.selectList(Wrappers.<HisPharmacyDrugPrice>lambdaQuery()
-                .eq(HisPharmacyDrugPrice::getPharmacyId, pharmacyId)
-                .in(HisPharmacyDrugPrice::getDrugCatalogId, drugIds))) {
-            out.put(p.getDrugCatalogId(), p.getRetailPrice());
-        }
-        return out;
-    }
 
     private static Object[] buildArgs(long tenant, Long pharmacyId, long tenant2, Long locId, List<Object> tail) {
         List<Object> args = new ArrayList<>();

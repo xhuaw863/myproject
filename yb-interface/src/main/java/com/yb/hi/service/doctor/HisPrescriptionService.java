@@ -186,18 +186,23 @@ public class HisPrescriptionService extends ServiceImpl<HisPrescriptionMapper, H
         }
         p.setPharmacyId(pharmacyId);
 
-        // 服务端重算价(药房维度定价): 药品行按所选药房生效价覆盖前端传价(不信任客户端), 非药品行(drugId 空)保持原价
-        List<Long> drugIds = req.getItems().stream()
-                .map(HisPrescriptionItem::getDrugId).filter(java.util.Objects::nonNull)
-                .distinct().collect(Collectors.toList());
-        Map<Long, BigDecimal> effPrices = pharmacyPriceService.effectivePriceBatch(pharmacyId, drugIds);
+        // 服务端重算价(批次驱动): 药品行按发药药房 FIFO 批次加权价覆盖前端传价(不信任客户端),
+        // 在库不足/无库存位回落目录零售价; 非药品行(drugId 空)保持原价。数量口径=最小单位, 与明细 quantity 一致。
+        Map<Long, BigDecimal> qtyByDrug = new java.util.LinkedHashMap<>();
+        for (HisPrescriptionItem it : req.getItems()) {
+            if (it.getDrugId() != null) {
+                BigDecimal q = it.getQuantity() == null ? BigDecimal.ZERO : it.getQuantity();
+                qtyByDrug.merge(it.getDrugId(), q, BigDecimal::add);
+            }
+        }
+        Map<Long, BigDecimal> chargePrices = pharmacyPriceService.chargePriceBatch(pharmacyId, qtyByDrug);
 
         BigDecimal total = BigDecimal.ZERO;
         for (HisPrescriptionItem item : req.getItems()) {
             item.setId(null);
             BigDecimal price = item.getPrice() == null ? BigDecimal.ZERO : item.getPrice();
             if (item.getDrugId() != null) {
-                BigDecimal eff = effPrices.get(item.getDrugId());
+                BigDecimal eff = chargePrices.get(item.getDrugId());
                 if (eff != null) {
                     price = eff;
                     item.setPrice(eff);
