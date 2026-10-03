@@ -31,6 +31,7 @@
 
   HIS.views.MedicalTemplateManage = {
     name: 'MedicalTemplateManage',
+    components: { 'dept-tree-picker': HIS.components.DeptTreePicker },
     data: function () {
       return {
         tabs: TABS,
@@ -333,9 +334,7 @@
                 </el-radio-group>
               </el-form-item>
               <el-form-item label="科室" v-if="form.scope==='dept'">
-                <el-select v-model="form.deptId" filterable placeholder="选择科室" style="width:100%">
-                  <el-option v-for="d in depts" :key="d.id" :label="d.deptName" :value="d.id"></el-option>
-                </el-select>
+                <dept-tree-picker v-model="form.deptId" :options="depts" placeholder="选择科室" />
               </el-form-item>
               <el-form-item label="排序号"><el-input-number v-model="form.sortOrder" :min="0" :max="9999" controls-position="right" style="width:110px"></el-input-number></el-form-item>
               <el-form-item label="状态"><el-switch v-model="form.status" :active-value="1" :inactive-value="0" active-text="启用" inactive-text="停用"></el-switch></el-form-item>

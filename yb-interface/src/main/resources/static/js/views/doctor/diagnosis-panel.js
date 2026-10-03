@@ -30,9 +30,26 @@
     return /牙|齿|口|颌|龈/.test(nm);
   }
 
+  /* ===== P8a-3 中医诊断-证候组合工具 ===== */
+  /* 组合唯一键: 诊断码 + (证候码 或 证候名) */
+  function tcmKey(diagCode, syndromeCode, syndromeName) {
+    var sk = window.HIS.idKey(syndromeCode) || String(syndromeName == null ? '' : syndromeName).trim();
+    return window.HIS.idKey(diagCode) + '|' + sk;
+  }
+  /* 回拆已保存行"病名 证候证"(无空格/证候不以"证"结尾视为普通行, 不纳入组合协同) */
+  function splitTcmAssembled(text) {
+    var s = String(text == null ? '' : text).trim();
+    var i = s.indexOf(' ');
+    if (i <= 0) { return null; }
+    var name = s.slice(0, i).trim();
+    var syn = s.slice(i + 1).trim();
+    if (!name || !syn || syn.charAt(syn.length - 1) !== '证') { return null; }
+    return { diagName: name, syndromeName: syn };
+  }
+
   const DiagnosisPanel = {
     name: 'DwDiagnosisPanel',
-    components: { 'dw-tooth-chart': window.HIS.components.DwToothChart },
+    components: { 'dw-tooth-chart': window.HIS.components.DwToothChart, 'tcm-diag-selector': window.HIS.components.TcmDiagSelector },
     inject: ['currentVisit'],
     emits: ['update-diagnoses', 'apply-template'],
     provide: function () {
@@ -51,13 +68,16 @@
             <el-select v-model="diagClass" size="small" style="width:104px;flex:none" :disabled="readOnly" @change="onDiagClassChange">
               <el-option v-for="c in diagClasses" :key="c.v" :label="c.l" :value="c.v"></el-option>
             </el-select>
-            <el-select v-model="pickDiagCode" size="small" filterable remote reserve-keyword clearable :remote-method="remoteSearchDiag" :loading="loading" :disabled="readOnly" style="flex:1;min-width:0" placeholder="检索诊断：名称 / 编码 / 拼音简码，选中即添加" @change="onPickDiag">
+            <el-select v-if="!isTcmMode" v-model="pickDiagCode" size="small" filterable remote reserve-keyword clearable :remote-method="remoteSearchDiag" :loading="loading" :disabled="readOnly" style="flex:1;min-width:0" placeholder="检索诊断：名称 / 编码 / 拼音简码，选中即添加" @change="onPickDiag">
               <el-option v-for="r in results" :key="r.code" :label="r.name" :value="r.code">
                 <div class="dw-diag-opt"><span class="nm">{{ r.name }}</span><span class="code">{{ r.code }}</span><span class="extra">{{ r.extra || r.category || '' }}</span></div>
               </el-option>
             </el-select>
           </div>
-          <div class="dw-diag-common-wrap">
+          <!-- P8a-3 中医(tcm)/症候(symp)模式: 中医诊断-证候组合选择器替代普通诊断输入, 结果回写下方已选列表 -->
+          <tcm-diag-selector v-if="isTcmMode && !readOnly" v-model="tcmCombos" visit-type="outpatient" style="margin-top:8px"></tcm-diag-selector>
+          <div v-if="isTcmMode && readOnly" class="dim" style="font-size:12px;margin-top:6px">只读模式: 中医诊断-证候组合见下方已选列表</div>
+          <div class="dw-diag-common-wrap" v-if="!isTcmMode">
             <div class="dw-diag-tabs">
               <button class="dw-diag-tab" :class="{'is-active': commonTab==='personal'}" @click="switchCommonTab('personal')">我的常用</button>
               <button class="dw-diag-tab" :class="{'is-active': commonTab==='dept'}" @click="switchCommonTab('dept')">科室诊断</button>
@@ -158,6 +178,8 @@
         results: [],
         loading: false,
         selectedDiagnoses: [],
+        /* P8a-3 中医诊断-证候组合(真源; 与 selectedDiagnoses 中 _fromTcm 行双向收敛) */
+        tcmCombos: [],
         commonTab: 'personal',
         personalDiags: [],
         deptDiags: [],
@@ -180,6 +202,8 @@
       isExpanded: function () { return true; },
       readOnly: function () { return !this.currentVisit || Number(this.currentVisit.visitStatus) >= 3; },
       visitId: function () { return this.currentVisit && this.currentVisit.id; },
+      /* P8a-3 中医模式: 中医诊断/中医症候 类别时以组合选择器替代普通诊断检索 */
+      isTcmMode: function () { return this.diagClass === 'tcm' || this.diagClass === 'symp'; },
       patientId: function () { var v = this.currentVisit || {}; return v.patientId || null; },
       deptId: function () { var v = this.currentVisit || {}; return v.deptId || null; },
       staffId: function () { var v = this.currentVisit || {}; return v.staffId || v.drId || null; },
@@ -196,7 +220,9 @@
       visitId: {
         immediate: true,
         handler: function (id) { this.loadExisting(id); this.loadCommonDiags(); this.assistantLoaded = false; }
-      }
+      },
+      /* P8a-3 组合列表变更 → 诊断行幂等收敛(选择器 v-model / 删行回筛均经此) */
+      tcmCombos: function (nv) { this.syncTcmCombos(Array.isArray(nv) ? nv : []); }
     },
     methods: {
       isOral: isOralDiag,
@@ -264,6 +290,50 @@
         this.diagClass = 'symp';
         this.results = [];
         ElementPlus.ElMessage.info('已切换到"中医症候", 检索并添加证候即与上方病名配对(同存 his_diagnosis, 类别 symp)');
+      },
+
+      /* ---------- P8a-3 中医诊断-证候组合联动 ---------- */
+      /* 诊断行键(与组合键同构) */
+      tcmRowKeyOf: function (row) {
+        return tcmKey(row.diagCode, row._tcmSyndromeCode, row._tcmSyndromeName);
+      },
+      /* 组合 → 诊断行 构造(名称即拼装文本"病名 证候证", 落 his_diagnosis 单行) */
+      buildTcmRow: function (c) {
+        return {
+          _key: 'tcm-' + Date.now() + '-' + Math.random().toString(16).slice(2),
+          diagCode: c.diagCode,
+          diagName: c.assembledText || c.diagName,
+          diagClass: this.isTcmMode ? this.diagClass : 'tcm',
+          diagType: '1',
+          maindiagFlag: '0',
+          diagSrtNo: this.selectedDiagnoses.length + 1,
+          toothPosition: null,
+          mapped: !!c.diagCode,
+          _fromTcm: true,
+          _tcmSyndromeCode: c.syndromeCode || null,
+          _tcmSyndromeName: c.syndromeName || ''
+        };
+      },
+      /* 幂等收敛: 删除失联组合行, 补插缺失组合行(组合列表为真源; 值同则不动) */
+      syncTcmCombos: function (combos) {
+        var vm = this;
+        var want = {};
+        (combos || []).forEach(function (c) { want[tcmKey(c.diagCode, c.syndromeCode, c.syndromeName)] = true; });
+        var kept = vm.selectedDiagnoses.filter(function (row) {
+          return !row._fromTcm || !!want[vm.tcmRowKeyOf(row)];
+        });
+        var changed = kept.length !== vm.selectedDiagnoses.length;
+        if (changed) { vm.selectedDiagnoses = kept; }
+        var have = {};
+        vm.selectedDiagnoses.forEach(function (row) { if (row._fromTcm) { have[vm.tcmRowKeyOf(row)] = true; } });
+        (combos || []).forEach(function (c) {
+          var k = tcmKey(c.diagCode, c.syndromeCode, c.syndromeName);
+          if (have[k]) { return; }
+          have[k] = true;
+          changed = true;
+          vm.selectedDiagnoses.push(vm.buildTcmRow(c));
+        });
+        if (changed) { vm.normalize(); }
       },
       searchDiagnoses: function (addFirst) {
         var vm = this;
@@ -378,7 +448,15 @@
         }).catch(function (e) { if (window.HIS.notifyError) { window.HIS.notifyError(e); } }).finally(function () { vm.reportSaving = false; });
       },
       removeDiagnosis: function (index) {
-        var removedMain = this.selectedDiagnoses[index] && this.selectedDiagnoses[index].maindiagFlag === '1';
+        var row = this.selectedDiagnoses[index];
+        var removedMain = row && row.maindiagFlag === '1';
+        /* P8a-3 删组合行时同步从组合列表移除(经 watch 收敛), 避免选择器已选区残留 */
+        if (row && row._fromTcm) {
+          var key = this.tcmRowKeyOf(row);
+          this.tcmCombos = this.tcmCombos.filter(function (c) {
+            return tcmKey(c.diagCode, c.syndromeCode, c.syndromeName) !== key;
+          });
+        }
         this.selectedDiagnoses.splice(index, 1);
         if (removedMain && this.selectedDiagnoses.length) { this.selectedDiagnoses[0].maindiagFlag = '1'; }
         this.normalize();
@@ -415,6 +493,7 @@
       loadExisting: function (id) {
         var vm = this;
         vm.selectedDiagnoses = [];
+        vm.tcmCombos = [];
         vm.results = [];
         vm.keyword = '';
         vm.pickDiagCode = null;
@@ -422,12 +501,31 @@
         var requestedId = id;
         window.HIS.get('/api/his/visit/detail?id=' + encodeURIComponent(id)).then(function (data) {
           if (vm.visitId !== requestedId) { return; }
+          var combos = [];
           vm.selectedDiagnoses = ((data && data.diagnoses) || []).map(function (diag, index) {
-            return Object.assign({}, diag, { _key: 'saved-' + (diag.id || index), mapped: !!diag.diagCode });
+            var row = Object.assign({}, diag, { _key: 'saved-' + (diag.id || index), mapped: !!diag.diagCode });
+            /* P8a-3 中医行回拆"病名 证候证"重建组合(his_diagnosis 无证候列, 名称即拼装文本) */
+            if ((row.diagClass === 'tcm' || row.diagClass === 'symp') && row.diagName) {
+              var sp = splitTcmAssembled(row.diagName);
+              if (sp) {
+                row._fromTcm = true;
+                row._tcmSyndromeCode = null;
+                row._tcmSyndromeName = sp.syndromeName;
+                combos.push({
+                  diagCode: row.diagCode,
+                  diagName: sp.diagName,
+                  syndromeCode: null,
+                  syndromeName: sp.syndromeName,
+                  assembledText: row.diagName
+                });
+              }
+            }
+            return row;
           });
+          vm.tcmCombos = combos;
           vm.normalize(true);
           vm.notifyChange();
-        }).catch(function () { if (vm.visitId === requestedId) { vm.selectedDiagnoses = []; vm.notifyChange(); } });
+        }).catch(function () { if (vm.visitId === requestedId) { vm.selectedDiagnoses = []; vm.tcmCombos = []; vm.notifyChange(); } });
       }
     }
   };

@@ -8,6 +8,7 @@ import com.yb.hi.framework.common.R;
 import com.yb.hi.service.doctor.HisPrescriptionService;
 import org.springframework.web.bind.annotation.*;
 
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -58,5 +59,48 @@ public class HisPrescriptionController {
     @GetMapping("/print-data")
     public R<Map<String, Object>> printData(@RequestParam Long id) {
         return R.ok(service.printData(id));
+    }
+
+    /* ================= P8a-2: 草药方引用(病历编辑器引用草药处方, 前端 inp-emr-writer.js 已预埋调用) ================= */
+
+    /**
+     * 患者草药处方列表(供病历编辑器"引用草药方"选择):
+     * 返回 [{prescriptionId, id, rxNo, rxName, formulaName, rxType, drName, deptName, createTime, herbCount}]。
+     */
+    @GetMapping("/herb-formulas")
+    public R<List<Map<String, Object>>> herbFormulas(@RequestParam Long patientId,
+                                                    @RequestParam(required = false) Long visitId) {
+        return R.ok(service.listHerbFormulas(patientId, visitId));
+    }
+
+    /** 草药处方格式化引用文本: 返回 {prescriptionId, text}(text 为多行"【草药方】…"格式) */
+    @GetMapping("/formula-text")
+    public R<Map<String, Object>> formulaText(@RequestParam Long prescriptionId) {
+        Map<String, Object> out = new LinkedHashMap<>();
+        out.put("prescriptionId", prescriptionId);
+        out.put("text", service.formulaToText(prescriptionId));
+        return R.ok(out);
+    }
+
+    /** 草药方引用插入病历: body {recordId, prescriptionId}(追加段落至 his_inp_medical_record.content 密文轨) */
+    @PostMapping("/insert-formula-to-record")
+    public R<Void> insertFormulaToRecord(@RequestBody Map<String, Object> body) {
+        if (body == null) {
+            throw new IllegalArgumentException("请求体不能为空");
+        }
+        service.insertFormulaToRecord(toLong(body.get("recordId")), toLong(body.get("prescriptionId")));
+        return R.ok();
+    }
+
+    /** 请求体数值字段归一(数字/字符串均兼容) */
+    private static Long toLong(Object v) {
+        if (v == null) {
+            return null;
+        }
+        if (v instanceof Number) {
+            return ((Number) v).longValue();
+        }
+        String s = String.valueOf(v).trim();
+        return s.isEmpty() ? null : Long.valueOf(s);
     }
 }

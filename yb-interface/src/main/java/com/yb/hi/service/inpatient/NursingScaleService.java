@@ -13,8 +13,10 @@ import com.yb.hi.framework.common.BizException;
 import com.yb.hi.framework.common.Roles;
 import com.yb.hi.framework.tenant.LoginUser;
 import com.yb.hi.framework.tenant.UserContext;
+import com.yb.hi.framework.util.SafeJsonTool;
 import com.yb.hi.mapper.inpatient.HisInpNursingRecordMapper;
 import com.yb.hi.mapper.inpatient.HisInpVisitMapper;
+import com.yb.hi.service.emr.SseEmitterService;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.boot.context.event.ApplicationReadyEvent;
 import org.springframework.context.annotation.Lazy;
@@ -43,9 +45,13 @@ import java.util.Map;
  *    {score, scaleCode, scaleName, level, color, answers};
  * 3) 评分命中护理计划模板触发区间(trigger_scale_code + trigger_score_range)时自动创建计划实例,
  *    并回写记录的 plan_template_id(经 @Lazy 注入 NursingPlanService 防循环依赖);
- * 4) 启动种子(ApplicationReadyEvent, 在建表迁移之后执行): 按 scale_code 幂等补种 5 大标准量表
- *    (Braden压疮/Morse跌倒/Barthel ADL/NRS疼痛/Caprini VTE), 判存不含 deleted 条件
- *    (uk_scale_code 含 deleted, 墓碑行仍占键位)。
+ * 4) 启动种子(ApplicationReadyEvent, 在建表迁移之后执行): 按 scale_code 幂等补种 11 大标准量表
+ *    (Braden压疮/Morse跌倒/Barthel ADL/NRS疼痛/Caprini VTE/NRS-2002营养风险/GUSS吞咽/
+ *    SAS-SDS心理/保护性约束/烫伤风险/姑息PPS), 判存不含 deleted 条件
+ *    (uk_scale_code 含 deleted, 墓碑行仍占键位);
+ * 5) 智能触发(P4b-2): 评估风险档位(分级颜色归一 0-3)达阈值(红色系)时自动生成"推荐待确认"护理计划
+ *    (autoGeneratePlan, 与评分区间精确命中建执行中计划的路径互补);
+ *    风险分级较上次评估发生变化时广播 NURSING_RISK_CHANGE SSE 事件(失败静默不阻断评估)。
  */
 @Slf4j
 @Service
@@ -54,19 +60,30 @@ public class NursingScaleService {
     /** 记录类型: 2护理评估(对应 his_inp_nursing_record.record_type) */
     public static final int TYPE_ASSESSMENT = 2;
 
+    /** SSE 事件名: 护理评估风险分级变化(前端按事件名路由预警看板, 载荷携带 orgId/wardId 供过滤) */
+    public static final String EVENT_RISK_CHANGE = "NURSING_RISK_CHANGE";
+
+    /** 智能计划触发阈值: 风险档位≥2(红色系分级: 高危/极高危/重度等)时自动生成推荐护理计划 */
+    public static final int THRESHOLD_FOR_PLAN = 2;
+
     private static final DateTimeFormatter TIME_FMT = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm");
 
     private final HisInpNursingRecordMapper recordMapper;
     private final HisInpVisitMapper visitMapper;
     private final JdbcTemplate jdbcTemplate;
     private final NursingPlanService planService;
+    private final SseEmitterService sseEmitterService;
+    private final SafeJsonTool safeJsonTool;
 
     public NursingScaleService(HisInpNursingRecordMapper recordMapper, HisInpVisitMapper visitMapper,
-                               JdbcTemplate jdbcTemplate, @Lazy NursingPlanService planService) {
+                               JdbcTemplate jdbcTemplate, @Lazy NursingPlanService planService,
+                               SseEmitterService sseEmitterService, SafeJsonTool safeJsonTool) {
         this.recordMapper = recordMapper;
         this.visitMapper = visitMapper;
         this.jdbcTemplate = jdbcTemplate;
         this.planService = planService;
+        this.sseEmitterService = sseEmitterService;
+        this.safeJsonTool = safeJsonTool;
     }
 
     /* ================= 量表定义 ================= */
@@ -157,6 +174,32 @@ public class NursingScaleService {
             // 评估记录为主数据, 自动建计划失败仅告警不回滚(可手工创建计划)
             log.warn("评估[recordId={}] 自动创建护理计划失败: {}", rec.getId(), e.getMessage());
         }
+
+        // P4b-2 智能触发: 高风险自动生成"推荐待确认"护理计划 + 风险分级变化 SSE 推送(失败仅告警, 不阻断评估)
+        try {
+            String levelName = level == null ? null : level.getString("level");
+            int riskRank = riskRankOf(level == null ? null : level.getString("color"));
+            if (riskRank >= THRESHOLD_FOR_PLAN) {
+                HisNursingPlanInstance recommended = planService.autoGeneratePlan(visit.getId(),
+                        scale.getScaleCode(), riskRank,
+                        scale.getScaleName() + " " + total + "分" + (levelName == null ? "" : " " + levelName));
+                if (recommended != null && recommended.getTemplateId() != null && rec.getPlanTemplateId() == null) {
+                    recordMapper.update(null, Wrappers.<HisInpNursingRecord>lambdaUpdate()
+                            .eq(HisInpNursingRecord::getId, rec.getId())
+                            .set(HisInpNursingRecord::getPlanTemplateId, recommended.getTemplateId())
+                            .set(HisInpNursingRecord::getUpdateBy, currentUserName()));
+                    rec.setPlanTemplateId(recommended.getTemplateId());
+                }
+            }
+            String prevLevel = previousLevelName(visit.getId(), scale.getScaleCode(), rec);
+            if (levelName != null && prevLevel != null && !prevLevel.equals(levelName)) {
+                publishRiskChange(visit, rec, scale, total, prevLevel, levelName,
+                        level.getString("color"), riskRank);
+            }
+        } catch (Exception e) {
+            log.warn("评估[recordId={}] 智能计划推荐/风险分级变化推送失败(不影响评估): {}",
+                    rec.getId(), e.getMessage());
+        }
         return rec;
     }
 
@@ -189,6 +232,91 @@ public class NursingScaleService {
             out.add(row);
         }
         return out;
+    }
+
+    /* ================= 智能触发(P4b-2 内部) ================= */
+
+    /** 分级颜色 → 风险档位: 蓝绿(无险/低危)0 橙(中危/轻度)1 红(高危/中度)2 深红(极高危/重度/濒死)3; 未分级/未知 -1。 */
+    static int riskRankOf(String color) {
+        if (!StringUtils.hasText(color)) {
+            return -1;
+        }
+        switch (color.trim().toUpperCase()) {
+            case "#409EFF":
+            case "#67C23A":
+                return 0;
+            case "#E6A23C":
+                return 1;
+            case "#F56C6C":
+                return 2;
+            case "#B71C1C":
+                return 3;
+            default:
+                return -1;
+        }
+    }
+
+    /**
+     * 该量表最近一次评估的分级(排除当前记录, 且记录时间不晚于当前记录):
+     * 取 content 快照的 level 字段; 无历史/快照不可解析返回 null(回补历史评估不触发变化推送)。
+     */
+    private String previousLevelName(Long visitId, String scaleCode, HisInpNursingRecord current) {
+        List<HisInpNursingRecord> history = recordMapper.selectList(Wrappers.<HisInpNursingRecord>lambdaQuery()
+                .eq(HisInpNursingRecord::getInpVisitId, visitId)
+                .eq(HisInpNursingRecord::getRecordType, TYPE_ASSESSMENT)
+                .eq(HisInpNursingRecord::getScaleCode, scaleCode)
+                .ne(HisInpNursingRecord::getId, current.getId())
+                .le(HisInpNursingRecord::getRecordTime, current.getRecordTime())
+                .orderByDesc(HisInpNursingRecord::getRecordTime)
+                .orderByDesc(HisInpNursingRecord::getId));
+        if (history.isEmpty() || !StringUtils.hasText(history.get(0).getContent())) {
+            return null;
+        }
+        try {
+            return JSON.parseObject(history.get(0).getContent()).getString("level");
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    /** 风险分级变化 SSE 广播(事件名 NURSING_RISK_CHANGE, 载荷携带 orgId/wardId 供前端过滤; 失败静默不影响评估)。 */
+    private void publishRiskChange(HisInpVisit visit, HisInpNursingRecord rec, HisNursingScaleDef scale,
+                                   int score, String oldLevel, String newLevel, String newColor, int riskRank) {
+        try {
+            Map<String, Object> payload = new LinkedHashMap<>();
+            payload.put("inpVisitId", visit.getId());
+            payload.put("patientId", visit.getPatientId());
+            payload.put("patientName", patientNameOf(visit.getPatientId()));
+            payload.put("orgId", visit.getOrgId());
+            payload.put("wardId", visit.getWardId());
+            payload.put("scaleCode", scale.getScaleCode());
+            payload.put("scaleName", scale.getScaleName());
+            payload.put("score", score);
+            payload.put("oldLevel", oldLevel);
+            payload.put("newLevel", newLevel);
+            payload.put("newColor", newColor);
+            payload.put("riskRank", riskRank);
+            payload.put("recordTime", rec.getRecordTime() == null ? null : TIME_FMT.format(rec.getRecordTime()));
+            int sent = sseEmitterService.broadcast(EVENT_RISK_CHANGE, safeJsonTool.toJson(payload));
+            log.info("评估风险分级变化推送: visitId={}, scale={}, {} → {}, SSE送达连接数={}",
+                    visit.getId(), scale.getScaleCode(), oldLevel, newLevel, sent);
+        } catch (Exception e) {
+            log.warn("风险分级变化 SSE 推送失败(不影响评估): visitId={}, 原因={}", visit.getId(), e.getMessage());
+        }
+    }
+
+    /** 患者姓名回查(his_patient.name, 查不到返回 null; 仅用于 SSE 载荷展示)。 */
+    private String patientNameOf(Long patientId) {
+        if (patientId == null) {
+            return null;
+        }
+        try {
+            List<String> names = jdbcTemplate.queryForList(
+                    "SELECT name FROM his_patient WHERE id = ?", String.class, patientId);
+            return names.isEmpty() ? null : names.get(0);
+        } catch (Exception e) {
+            return null;
+        }
     }
 
     /* ================= 评分计算(内部) ================= */
@@ -347,7 +475,7 @@ public class NursingScaleService {
         return null;
     }
 
-    /* ================= 启动种子(5大标准量表) ================= */
+    /* ================= 启动种子(11大标准量表) ================= */
 
     /**
      * 量表种子初始化(ApplicationReadyEvent, 在 DictSchemaMigration 建表之后执行):
@@ -522,7 +650,172 @@ public class NursingScaleService {
             + "{\"min\":5,\"max\":99,\"level\":\"极高危\",\"color\":\"#F56C6C\"}"
             + "]";
 
-    /** 5大标准量表种子: {编码, 名称, 类型(1入院评估 2专科 3风险), 维度定义JSON, 分数→风险映射JSON, 必评频次} */
+    /* ---------- NRS-2002 营养风险筛查(3维度, 0-7分, ≥3分提示有营养风险) ---------- */
+    private static final String NRS2002_DIMENSIONS = "["
+            + "{\"key\":\"disease\",\"name\":\"疾病严重程度\",\"options\":["
+            + "{\"label\":\"0分-正常营养需要\",\"score\":0},"
+            + "{\"label\":\"1分-髋骨折/慢性病急性加重/肝硬化/COPD/血液透析/糖尿病/肿瘤\",\"score\":1},"
+            + "{\"label\":\"2分-腹部大手术/脑卒中/重症肺炎/血液系统恶性肿瘤\",\"score\":2},"
+            + "{\"label\":\"3分-颅脑损伤/骨髓移植/ICU患者(APACHEⅡ>10分)\",\"score\":3}]},"
+            + "{\"key\":\"nutrition\",\"name\":\"营养状况\",\"options\":["
+            + "{\"label\":\"0分-正常营养状态\",\"score\":0},"
+            + "{\"label\":\"1分-3个月内体重下降>5%或前1周进食量减少25%~50%\",\"score\":1},"
+            + "{\"label\":\"2分-2个月内体重下降>5%或BMI 18.5~20.5伴一般状况差\",\"score\":2},"
+            + "{\"label\":\"3分-1个月内体重下降>5%或BMI<18.5或前1周进食量减少75%以上\",\"score\":3}]},"
+            + "{\"key\":\"age\",\"name\":\"年龄(≥70岁加1分)\",\"options\":["
+            + "{\"label\":\"<70岁\",\"score\":0},{\"label\":\"≥70岁\",\"score\":1}]}"
+            + "]";
+    private static final String NRS2002_LEVELS = "["
+            + "{\"min\":0,\"max\":2,\"level\":\"无营养风险\",\"color\":\"#409EFF\"},"
+            + "{\"min\":3,\"max\":3,\"level\":\"有营养风险\",\"color\":\"#E6A23C\"},"
+            + "{\"min\":4,\"max\":7,\"level\":\"高营养风险\",\"color\":\"#F56C6C\"}"
+            + "]";
+
+    /* ---------- GUSS 吞咽障碍筛查(3维度, 0-20分, ≤14分提示吞咽障碍) ---------- */
+    private static final String SWALLOW_DIMENSIONS = "["
+            + "{\"key\":\"indirect\",\"name\":\"间接吞咽试验(意识/咳嗽/吞咽尝试/流涎/舌运动/声音)\",\"options\":["
+            + "{\"label\":\"正常(清醒/咳嗽有力/发音清亮)\",\"score\":5},"
+            + "{\"label\":\"轻度异常(咳嗽反射减弱)\",\"score\":3},"
+            + "{\"label\":\"明显异常(嗜睡/咳嗽微弱/流涎)\",\"score\":1},"
+            + "{\"label\":\"严重异常(昏迷或无吞咽咳嗽反射)\",\"score\":0}]},"
+            + "{\"key\":\"waterTrial\",\"name\":\"吞咽尝试(水试验)\",\"options\":["
+            + "{\"label\":\"顺利咽下无呛咳\",\"score\":5},"
+            + "{\"label\":\"咽下缓慢伴轻微呛咳\",\"score\":3},"
+            + "{\"label\":\"反复呛咳或需多次尝试\",\"score\":1},"
+            + "{\"label\":\"不能完成或呛咳剧烈\",\"score\":0}]},"
+            + "{\"key\":\"direct\",\"name\":\"直接吞咽试验(半固体/液体/固体)\",\"options\":["
+            + "{\"label\":\"三种性状均可顺利吞咽\",\"score\":10},"
+            + "{\"label\":\"仅一种性状吞咽困难\",\"score\":7},"
+            + "{\"label\":\"两种性状吞咽困难\",\"score\":4},"
+            + "{\"label\":\"三种性状均困难或不宜经口进食\",\"score\":0}]}"
+            + "]";
+    private static final String SWALLOW_LEVELS = "["
+            + "{\"min\":20,\"max\":20,\"level\":\"吞咽功能正常\",\"color\":\"#409EFF\"},"
+            + "{\"min\":15,\"max\":19,\"level\":\"轻度吞咽风险\",\"color\":\"#67C23A\"},"
+            + "{\"min\":10,\"max\":14,\"level\":\"吞咽障碍\",\"color\":\"#E6A23C\"},"
+            + "{\"min\":0,\"max\":9,\"level\":\"重度吞咽障碍\",\"color\":\"#F56C6C\"}"
+            + "]";
+
+    /* ---------- SAS/SDS 心理评估(焦虑/抑郁自评, 20条目×4级, 粗分20-80, 标准分=粗分×1.25) ---------- */
+    /** 20条目共用4级作答选项: 没有或很少时间(1)/少部分时间(2)/相当多时间(3)/绝大部分或全部时间(4) */
+    private static final String PSYCH_ITEM_OPTIONS = "["
+            + "{\"label\":\"没有或很少时间\",\"score\":1},{\"label\":\"少部分时间\",\"score\":2},"
+            + "{\"label\":\"相当多时间\",\"score\":3},{\"label\":\"绝大部分或全部时间\",\"score\":4}]";
+    private static final String PSYCH_DIMENSIONS = "["
+            + "{\"key\":\"item01\",\"name\":\"焦虑\",\"options\":" + PSYCH_ITEM_OPTIONS + "},"
+            + "{\"key\":\"item02\",\"name\":\"惊恐\",\"options\":" + PSYCH_ITEM_OPTIONS + "},"
+            + "{\"key\":\"item03\",\"name\":\"害怕\",\"options\":" + PSYCH_ITEM_OPTIONS + "},"
+            + "{\"key\":\"item04\",\"name\":\"发疯感\",\"options\":" + PSYCH_ITEM_OPTIONS + "},"
+            + "{\"key\":\"item05\",\"name\":\"不幸预感\",\"options\":" + PSYCH_ITEM_OPTIONS + "},"
+            + "{\"key\":\"item06\",\"name\":\"手足颤抖\",\"options\":" + PSYCH_ITEM_OPTIONS + "},"
+            + "{\"key\":\"item07\",\"name\":\"躯体疼痛\",\"options\":" + PSYCH_ITEM_OPTIONS + "},"
+            + "{\"key\":\"item08\",\"name\":\"乏力\",\"options\":" + PSYCH_ITEM_OPTIONS + "},"
+            + "{\"key\":\"item09\",\"name\":\"静坐不能\",\"options\":" + PSYCH_ITEM_OPTIONS + "},"
+            + "{\"key\":\"item10\",\"name\":\"心悸\",\"options\":" + PSYCH_ITEM_OPTIONS + "},"
+            + "{\"key\":\"item11\",\"name\":\"头昏\",\"options\":" + PSYCH_ITEM_OPTIONS + "},"
+            + "{\"key\":\"item12\",\"name\":\"晕厥感\",\"options\":" + PSYCH_ITEM_OPTIONS + "},"
+            + "{\"key\":\"item13\",\"name\":\"呼吸困难\",\"options\":" + PSYCH_ITEM_OPTIONS + "},"
+            + "{\"key\":\"item14\",\"name\":\"手足刺痛\",\"options\":" + PSYCH_ITEM_OPTIONS + "},"
+            + "{\"key\":\"item15\",\"name\":\"胃痛/消化不良\",\"options\":" + PSYCH_ITEM_OPTIONS + "},"
+            + "{\"key\":\"item16\",\"name\":\"尿意频数\",\"options\":" + PSYCH_ITEM_OPTIONS + "},"
+            + "{\"key\":\"item17\",\"name\":\"多汗\",\"options\":" + PSYCH_ITEM_OPTIONS + "},"
+            + "{\"key\":\"item18\",\"name\":\"面部潮红\",\"options\":" + PSYCH_ITEM_OPTIONS + "},"
+            + "{\"key\":\"item19\",\"name\":\"睡眠障碍\",\"options\":" + PSYCH_ITEM_OPTIONS + "},"
+            + "{\"key\":\"item20\",\"name\":\"噩梦\",\"options\":" + PSYCH_ITEM_OPTIONS + "}"
+            + "]";
+    private static final String PSYCH_LEVELS = "["
+            + "{\"min\":20,\"max\":39,\"level\":\"无明显焦虑/抑郁\",\"color\":\"#409EFF\"},"
+            + "{\"min\":40,\"max\":47,\"level\":\"轻度焦虑/抑郁(标准分50~59)\",\"color\":\"#E6A23C\"},"
+            + "{\"min\":48,\"max\":55,\"level\":\"中度焦虑/抑郁(标准分60~69)\",\"color\":\"#F56C6C\"},"
+            + "{\"min\":56,\"max\":80,\"level\":\"重度焦虑/抑郁(标准分≥70)\",\"color\":\"#B71C1C\"}"
+            + "]";
+
+    /* ---------- 保护性约束评估(4维度, 0-10分, 分级判定需约束/不需约束) ---------- */
+    private static final String RESTRAINT_DIMENSIONS = "["
+            + "{\"key\":\"consciousness\",\"name\":\"意识状态\",\"options\":["
+            + "{\"label\":\"清醒且配合治疗\",\"score\":0},"
+            + "{\"label\":\"嗜睡或淡漠\",\"score\":1},"
+            + "{\"label\":\"意识模糊伴躁动\",\"score\":2},"
+            + "{\"label\":\"谵妄\",\"score\":3}]},"
+            + "{\"key\":\"fallRisk\",\"name\":\"跌倒风险(Morse)\",\"options\":["
+            + "{\"label\":\"低危(<25分)\",\"score\":0},"
+            + "{\"label\":\"中危(25~44分)\",\"score\":1},"
+            + "{\"label\":\"高危(≥45分)\",\"score\":2}]},"
+            + "{\"key\":\"tubeRisk\",\"name\":\"管道风险\",\"options\":["
+            + "{\"label\":\"无管道或普通管道\",\"score\":0},"
+            + "{\"label\":\"1条重要管道\",\"score\":1},"
+            + "{\"label\":\"≥2条重要管道(气管插管/深静脉/引流管等)\",\"score\":2}]},"
+            + "{\"key\":\"behavior\",\"name\":\"行为评估\",\"options\":["
+            + "{\"label\":\"安静合作\",\"score\":0},"
+            + "{\"label\":\"偶有躁动可安抚\",\"score\":1},"
+            + "{\"label\":\"持续躁动或有自行拔管倾向\",\"score\":2},"
+            + "{\"label\":\"攻击性或自伤行为\",\"score\":3}]}"
+            + "]";
+    private static final String RESTRAINT_LEVELS = "["
+            + "{\"min\":0,\"max\":2,\"level\":\"不需约束\",\"color\":\"#409EFF\"},"
+            + "{\"min\":3,\"max\":5,\"level\":\"加强监护(慎约束)\",\"color\":\"#E6A23C\"},"
+            + "{\"min\":6,\"max\":10,\"level\":\"需保护性约束(须医嘱+知情同意)\",\"color\":\"#F56C6C\"}"
+            + "]";
+
+    /* ---------- 住院患者烫伤风险评估(4维度, 0-12分, ≥6分高危) ---------- */
+    private static final String BURN_DIMENSIONS = "["
+            + "{\"key\":\"age\",\"name\":\"年龄\",\"options\":["
+            + "{\"label\":\"婴幼儿(<3岁)或高龄(≥70岁)\",\"score\":3},"
+            + "{\"label\":\"儿童(3~12岁)或老年(60~69岁)\",\"score\":2},"
+            + "{\"label\":\"青少年/成人\",\"score\":0}]},"
+            + "{\"key\":\"consciousness\",\"name\":\"意识\",\"options\":["
+            + "{\"label\":\"昏迷或意识障碍\",\"score\":3},"
+            + "{\"label\":\"嗜睡或意识模糊\",\"score\":2},"
+            + "{\"label\":\"清醒伴认知障碍(痴呆)\",\"score\":1},"
+            + "{\"label\":\"清醒\",\"score\":0}]},"
+            + "{\"key\":\"skinSense\",\"name\":\"皮肤感觉\",\"options\":["
+            + "{\"label\":\"感觉丧失(糖尿病/神经病变等)\",\"score\":3},"
+            + "{\"label\":\"感觉迟钝\",\"score\":2},"
+            + "{\"label\":\"感觉减退\",\"score\":1},"
+            + "{\"label\":\"感觉正常\",\"score\":0}]},"
+            + "{\"key\":\"mobility\",\"name\":\"活动能力\",\"options\":["
+            + "{\"label\":\"完全不能自主活动\",\"score\":3},"
+            + "{\"label\":\"活动受限需协助\",\"score\":2},"
+            + "{\"label\":\"活动稍受限\",\"score\":1},"
+            + "{\"label\":\"活动自如\",\"score\":0}]}"
+            + "]";
+    private static final String BURN_LEVELS = "["
+            + "{\"min\":0,\"max\":5,\"level\":\"低危\",\"color\":\"#67C23A\"},"
+            + "{\"min\":6,\"max\":9,\"level\":\"高危\",\"color\":\"#F56C6C\"},"
+            + "{\"min\":10,\"max\":12,\"level\":\"极高危\",\"color\":\"#B71C1C\"}"
+            + "]";
+
+    /* ---------- 姑息护理 PPS 评估(5维度, 0-100%, 各维度20/10/0三档, 总分以10%递减) ---------- */
+    private static final String PALLIATIVE_DIMENSIONS = "["
+            + "{\"key\":\"activity\",\"name\":\"活动\",\"options\":["
+            + "{\"label\":\"正常活动/无明显受限\",\"score\":20},"
+            + "{\"label\":\"大部分时间卧床或坐椅\",\"score\":10},"
+            + "{\"label\":\"完全卧床\",\"score\":0}]},"
+            + "{\"key\":\"selfCare\",\"name\":\"日常生活\",\"options\":["
+            + "{\"label\":\"完全自理\",\"score\":20},"
+            + "{\"label\":\"需要部分帮助\",\"score\":10},"
+            + "{\"label\":\"完全依赖护理\",\"score\":0}]},"
+            + "{\"key\":\"consciousness\",\"name\":\"意识\",\"options\":["
+            + "{\"label\":\"清醒\",\"score\":20},"
+            + "{\"label\":\"意识模糊或嗜睡\",\"score\":10},"
+            + "{\"label\":\"昏迷\",\"score\":0}]},"
+            + "{\"key\":\"intake\",\"name\":\"口服摄入\",\"options\":["
+            + "{\"label\":\"正常进食\",\"score\":20},"
+            + "{\"label\":\"明显减少或仅流质\",\"score\":10},"
+            + "{\"label\":\"不能经口进食\",\"score\":0}]},"
+            + "{\"key\":\"disease\",\"name\":\"疾病程度(恶化证据)\",\"options\":["
+            + "{\"label\":\"病情稳定\",\"score\":20},"
+            + "{\"label\":\"进行性加重\",\"score\":10},"
+            + "{\"label\":\"快速恶化\",\"score\":0}]}"
+            + "]";
+    private static final String PALLIATIVE_LEVELS = "["
+            + "{\"min\":70,\"max\":100,\"level\":\"稳定期(以舒适照护为主)\",\"color\":\"#409EFF\"},"
+            + "{\"min\":40,\"max\":60,\"level\":\"恶化期\",\"color\":\"#E6A23C\"},"
+            + "{\"min\":10,\"max\":30,\"level\":\"临终期\",\"color\":\"#F56C6C\"},"
+            + "{\"min\":0,\"max\":0,\"level\":\"濒死期\",\"color\":\"#B71C1C\"}"
+            + "]";
+
+    /** 11大标准量表种子: {编码, 名称, 类型(1入院评估 2专科 3风险), 维度定义JSON, 分数→风险映射JSON, 必评频次} */
     private static final Object[][] SCALE_SEEDS = {
             {"braden", "Braden压疮评估量表", 3, BRADEN_DIMENSIONS, BRADEN_LEVELS,
                     "入院24小时内首次评估; 高危者每日复评, 中低危每周复评"},
@@ -533,7 +826,19 @@ public class NursingScaleService {
             {"nrs", "NRS疼痛数字评估量表", 2, NRS_DIMENSIONS, NRS_LEVELS,
                     "入院时及疼痛发作时评估; 镇痛处理后复评"},
             {"caprini", "Caprini静脉血栓栓塞(VTE)风险评估量表", 3, CAPRINI_DIMENSIONS, CAPRINI_LEVELS,
-                    "入院24小时内评估; 术后及病情变化时复评"}
+                    "入院24小时内评估; 术后及病情变化时复评"},
+            {"nrs2002", "NRS-2002营养风险筛查量表", 3, NRS2002_DIMENSIONS, NRS2002_LEVELS,
+                    "入院24小时内筛查; 有风险者每周复评, 营养支持期间每3天复评"},
+            {"swallowing", "GUSS吞咽障碍筛查量表", 2, SWALLOW_DIMENSIONS, SWALLOW_LEVELS,
+                    "脑卒中/意识障碍等高危患者入院时评估; 病情变化或进食方式调整前复评"},
+            {"psychology", "心理评估量表(SAS/SDS焦虑抑郁自评)", 2, PSYCH_DIMENSIONS, PSYCH_LEVELS,
+                    "入院时评估; 总分(粗分)×1.25=标准分, 粗分≥40(标准分≥50)提示焦虑/抑郁, 心理干预后复评"},
+            {"restraint", "保护性约束评估量表", 3, RESTRAINT_DIMENSIONS, RESTRAINT_LEVELS,
+                    "入院24小时内评估; 实施约束须医嘱+知情同意, 约束期间每班复评并记录"},
+            {"burn", "住院患者烫伤风险评估量表", 3, BURN_DIMENSIONS, BURN_LEVELS,
+                    "入院24小时内评估; 高危者每日复评, 使用热水袋/烤灯等热源前必须评估"},
+            {"palliative", "姑息护理PPS评估量表", 2, PALLIATIVE_DIMENSIONS, PALLIATIVE_LEVELS,
+                    "姑息照护患者入院时评估; 病情变化时每日复评, 临终期每班复评"}
     };
 
     /* ================= 内部工具 ================= */

@@ -10,6 +10,7 @@ import com.yb.hi.common.YbResponse;
 import com.yb.hi.dto.OutpatientRegisterCancelReq;
 import com.yb.hi.dto.OutpatientRegisterReq;
 import com.yb.hi.entity.basedata.HisDept;
+import com.yb.hi.entity.basedata.HisFeeTypeDict;
 import com.yb.hi.entity.basedata.HisSchedule;
 import com.yb.hi.entity.basedata.HisStaff;
 import com.yb.hi.entity.cashier.HisRegPayment;
@@ -21,9 +22,11 @@ import com.yb.hi.framework.tenant.UserContext;
 import com.yb.hi.mapper.cashier.HisRegPaymentMapper;
 import com.yb.hi.mapper.outpatient.HisRegistrationMapper;
 import com.yb.hi.service.OutpatientService;
+import com.yb.hi.service.basedata.FeeTypeDictService;
 import com.yb.hi.service.basedata.HisDeptService;
 import com.yb.hi.service.basedata.HisScheduleService;
 import com.yb.hi.service.basedata.HisStaffService;
+import com.yb.hi.service.basedata.PayMethodDictService;
 import com.yb.hi.service.doctor.HisVisitService;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -32,6 +35,7 @@ import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.StringUtils;
 
 import java.math.BigDecimal;
+import java.math.RoundingMode;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeParseException;
@@ -72,11 +76,14 @@ public class HisRegistrationService extends ServiceImpl<HisRegistrationMapper, H
     private final HisVisitService visitService;
     private final JdbcTemplate jdbcTemplate;
     private final HisRegPaymentMapper regPaymentMapper;
+    private final FeeTypeDictService feeTypeDictService;
+    private final PayMethodDictService payMethodDictService;
 
     public HisRegistrationService(HisPatientService patientService, HisScheduleService scheduleService,
                                   HisStaffService staffService, HisDeptService deptService,
                                   OutpatientService outpatientService, HisVisitService visitService,
-                                  JdbcTemplate jdbcTemplate, HisRegPaymentMapper regPaymentMapper) {
+                                  JdbcTemplate jdbcTemplate, HisRegPaymentMapper regPaymentMapper,
+                                  FeeTypeDictService feeTypeDictService, PayMethodDictService payMethodDictService) {
         this.patientService = patientService;
         this.scheduleService = scheduleService;
         this.staffService = staffService;
@@ -85,6 +92,8 @@ public class HisRegistrationService extends ServiceImpl<HisRegistrationMapper, H
         this.visitService = visitService;
         this.jdbcTemplate = jdbcTemplate;
         this.regPaymentMapper = regPaymentMapper;
+        this.feeTypeDictService = feeTypeDictService;
+        this.payMethodDictService = payMethodDictService;
     }
 
     /** 分页查询挂号记录(按日期区间/状态/患者关键字) */
@@ -154,8 +163,8 @@ public class HisRegistrationService extends ServiceImpl<HisRegistrationMapper, H
         if (dept == null) {
             throw new BizException("排班科室不存在或已删除, 不能挂号");
         }
-        if (!StringUtils.hasText(dept.getYbDeptCode())) {
-            throw new BizException("科室【" + dept.getDeptName() + "】未维护医保科室编码, 请先在[科室管理-编辑]从医保标准字典选择后再挂号");
+        if (!StringUtils.hasText(dept.getDeptCaty())) {
+            throw new BizException("科室【" + dept.getDeptName() + "】未维护医保科别, 请先在[科室管理-编辑]从医保标准字典选择后再挂号");
         }
         if (staff == null) {
             throw new BizException("排班医师不存在或已删除, 不能挂号");
@@ -183,9 +192,10 @@ public class HisRegistrationService extends ServiceImpl<HisRegistrationMapper, H
         String iptOtpNo = genNo("OT");
         String regNo = genNo("R");
 
-        // 减免判定与金额计算(calcDiscount): 前端优先 -> 年龄>=70自动age70free -> 默认none
+        // 减免判定与金额计算(calcDiscount): 前端优先 -> 年龄>=70自动age70free -> 费别字典优惠(未显式减免时) -> 默认none
         BigDecimal regFee = schedule.getRegFee() == null ? BigDecimal.ZERO : schedule.getRegFee();
         Object[] discount = calcDiscount(patient, regFee, discountType, discountAmount);
+        discount = applyFeeTypeDiscount(feeType, regFee, (String) discount[0], (BigDecimal) discount[1]);
         String effDiscountType = (String) discount[0];
         BigDecimal effDiscountAmount = (BigDecimal) discount[1];
         BigDecimal actualFee = regFee.subtract(effDiscountAmount);
@@ -206,8 +216,8 @@ public class HisRegistrationService extends ServiceImpl<HisRegistrationMapper, H
         req.setIptOtpNo(iptOtpNo);
         req.setAtddrNo(staff.getAtddrNo());
         req.setDrName(staff.getStaffName());
-        // 医保科室编码(守卫已保证非空): 不再回退院内 deptCode
-        req.setDeptCode(dept.getYbDeptCode());
+        // 医保科室映射(守卫已保证非空): 医保科别(dept_caty)为单一维护字段, 同时填充 dept_code 与 caty 两个必填槽位
+        req.setDeptCode(dept.getDeptCaty());
         req.setDeptName(dept.getDeptName());
         req.setCaty(dept.getDeptCaty());
         req.setMedType(StringUtils.hasText(medType) ? medType : "11");
@@ -258,7 +268,7 @@ public class HisRegistrationService extends ServiceImpl<HisRegistrationMapper, H
         reg.setDiscountReason(StringUtils.hasText(discountReason) ? discountReason.trim() : null);
         reg.setDiscountAmount(effDiscountAmount);
         reg.setActualFee(actualFee);
-        reg.setPayMethod(StringUtils.hasText(payMethod) ? payMethod.trim() : null);
+        reg.setPayMethod(StringUtils.hasText(payMethod) ? payMethodDictService.normalize(payMethod.trim()) : null);
         reg.setPayDetail(StringUtils.hasText(payDetail) ? payDetail.trim() : null);
         reg.setQueueNo(queueNo);
         save(reg);
@@ -346,7 +356,8 @@ public class HisRegistrationService extends ServiceImpl<HisRegistrationMapper, H
                     reg.getScheduleId());
         }
 
-        boolean needRefund = StringUtils.hasText(reg.getPayMethod()) && !"free".equals(reg.getPayMethod().trim());
+        boolean needRefund = StringUtils.hasText(reg.getPayMethod())
+                && !"free".equalsIgnoreCase(reg.getPayMethod().trim());
         log.info("退号成功: regNo={}, mdtrtId={}, needRefund={}", reg.getRegNo(), reg.getMdtrtId(), needRefund);
         Map<String, Object> result = new LinkedHashMap<>();
         result.put("id", reg.getId());
@@ -656,6 +667,39 @@ public class HisRegistrationService extends ServiceImpl<HisRegistrationMapper, H
             }
         }
         return new Object[]{effDiscountType, effDiscountAmount};
+    }
+
+    /**
+     * 费别字典优惠: 仅当前端未显式减免且未被年龄减免命中时生效。
+     * 按费别 discount_mode 对挂号费计算优惠(RATE按比例/AMOUNT固定/FULL全免), 留痕类型 feetype:<code>;
+     * 费别查无字典行(历史直传值)或 mode=NONE 时原样返回, 行为不变。
+     */
+    private Object[] applyFeeTypeDiscount(String feeType, BigDecimal regFee, String effType, BigDecimal effAmount) {
+        if (!DISCOUNT_NONE.equals(effType) || !StringUtils.hasText(feeType)) {
+            return new Object[]{effType, effAmount};
+        }
+        HisFeeTypeDict ft = feeTypeDictService.findByCode(feeType.trim());
+        if (ft == null || !StringUtils.hasText(ft.getDiscountMode()) || "NONE".equalsIgnoreCase(ft.getDiscountMode())) {
+            return new Object[]{effType, effAmount};
+        }
+        BigDecimal amt = BigDecimal.ZERO;
+        String mode = ft.getDiscountMode().toUpperCase();
+        if ("FULL".equals(mode)) {
+            amt = regFee;
+        } else if ("RATE".equals(mode) && ft.getDiscountRate() != null) {
+            amt = regFee.multiply(ft.getDiscountRate()).divide(BigDecimal.valueOf(100), 2, RoundingMode.HALF_UP);
+        } else if ("AMOUNT".equals(mode) && ft.getDiscountAmount() != null) {
+            amt = ft.getDiscountAmount();
+        } else {
+            return new Object[]{effType, effAmount};
+        }
+        if (amt.signum() <= 0) {
+            return new Object[]{effType, effAmount};
+        }
+        if (amt.compareTo(regFee) > 0) {
+            amt = regFee;
+        }
+        return new Object[]{"feetype:" + ft.getCode(), amt};
     }
 
     /** 生成候诊序号: 科室简码+4位流水号(当日同科室同时段内存计数+1, 如 NK-0015)。

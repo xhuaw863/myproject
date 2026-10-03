@@ -1,6 +1,7 @@
 package com.yb.hi.service.inpatient;
 
 import com.alibaba.fastjson2.JSON;
+import com.alibaba.fastjson2.JSONArray;
 import com.alibaba.fastjson2.JSONObject;
 import com.lowagie.text.Document;
 import com.lowagie.text.DocumentException;
@@ -14,13 +15,18 @@ import com.lowagie.text.Utilities;
 import com.lowagie.text.pdf.BaseFont;
 import com.lowagie.text.pdf.ColumnText;
 import com.lowagie.text.pdf.PdfContentByte;
+import com.lowagie.text.pdf.PdfCopy;
+import com.lowagie.text.pdf.PdfGState;
 import com.lowagie.text.pdf.PdfPCell;
 import com.lowagie.text.pdf.PdfPCellEvent;
 import com.lowagie.text.pdf.PdfPTable;
 import com.lowagie.text.pdf.PdfPageEventHelper;
+import com.lowagie.text.pdf.PdfReader;
+import com.lowagie.text.pdf.PdfStamper;
 import com.lowagie.text.pdf.PdfWriter;
 import com.yb.hi.framework.common.BizException;
 import com.yb.hi.framework.tenant.TenantContext;
+import com.yb.hi.service.emr.EmrDocumentService;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
@@ -33,6 +39,7 @@ import java.time.LocalDateTime;
 import java.time.LocalTime;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.regex.Matcher;
@@ -66,8 +73,34 @@ public class PdfExportService {
     private static final Color TEXT_DARK = new Color(0x33, 0x33, 0x33);
     private static final Color TEXT_GRAY = new Color(0x66, 0x66, 0x66);
 
-    /** 分钟级时间(体温记录) */
+    /** 分钟级时间(体温记录/打印时间) */
     private static final DateTimeFormatter DT_SHORT = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm");
+
+    /** 病历PDF页边距(pt): {左, 右, 上(留页眉), 下(留页脚)} */
+    private static final float[] EMR_MARGIN = {56f, 56f, 76f, 52f};
+
+    /** 归档章红色 */
+    private static final Color ARCHIVE_RED = new Color(0xC8, 0x2A, 0x2A);
+
+    /** 住院病历记录类型标签(1-15, 与 InpMedRecordService.RECORD_TYPE_LABELS 口径一致) */
+    private static final Map<Integer, String> EMR_RECORD_TYPES = new LinkedHashMap<>();
+    static {
+        EMR_RECORD_TYPES.put(1, "入院记录");
+        EMR_RECORD_TYPES.put(2, "首次病程记录");
+        EMR_RECORD_TYPES.put(3, "日常病程记录");
+        EMR_RECORD_TYPES.put(4, "查房记录");
+        EMR_RECORD_TYPES.put(5, "术前小结");
+        EMR_RECORD_TYPES.put(6, "手术记录");
+        EMR_RECORD_TYPES.put(7, "术后病程记录");
+        EMR_RECORD_TYPES.put(8, "出院小结");
+        EMR_RECORD_TYPES.put(9, "死亡记录");
+        EMR_RECORD_TYPES.put(10, "病案首页");
+        EMR_RECORD_TYPES.put(11, "交接班记录");
+        EMR_RECORD_TYPES.put(12, "转科记录");
+        EMR_RECORD_TYPES.put(13, "知情同意书");
+        EMR_RECORD_TYPES.put(14, "讨论记录");
+        EMR_RECORD_TYPES.put(15, "会诊记录");
+    }
 
     /** 中文字体(懒加载缓存) */
     private static volatile BaseFont cachedFont;
@@ -108,9 +141,11 @@ public class PdfExportService {
     };
 
     private final JdbcTemplate jdbcTemplate;
+    private final EmrDocumentService emrDocumentService;
 
-    public PdfExportService(JdbcTemplate jdbcTemplate) {
+    public PdfExportService(JdbcTemplate jdbcTemplate, EmrDocumentService emrDocumentService) {
         this.jdbcTemplate = jdbcTemplate;
+        this.emrDocumentService = emrDocumentService;
     }
 
     /* ==================== 对外入口 ==================== */
@@ -347,6 +382,18 @@ public class PdfExportService {
             addRight(doc, textOf(content), 10.5f, Font.NORMAL, Color.BLACK, 12f);
         } else if ("memo".equals(cls) || "grid-note".equals(cls)) {
             addLines(doc, textOf(content), 9f, Font.NORMAL, TEXT_GRAY, 8f, 1.5f);
+        } else if ("emr-sec".equals(cls)) {
+            /* 病历章节标题(一级, 来自 emrSection/heading): 左对齐加粗 */
+            addLines(doc, textOf(content), 12.5f, Font.BOLD, Color.BLACK, 4f, 1.6f);
+        } else if ("emr-sub".equals(cls)) {
+            /* 病历小节标题(嵌套 emrSection/heading): 左对齐加粗小号 */
+            addLines(doc, textOf(content), 11f, Font.BOLD, TEXT_DARK, 3f, 1.6f);
+        } else if ("emr-p".equals(cls)) {
+            /* 病历正文段落 */
+            addLines(doc, textOf(content), 10.5f, Font.NORMAL, Color.BLACK, 5f, 1.75f);
+        } else if ("emr-break".equals(cls)) {
+            /* 强制分页(emrPageBreak 节点) */
+            doc.newPage();
         } else if ("band".equals(cls)) {
             renderWristband(doc, content);
         } else {
@@ -871,5 +918,1050 @@ public class PdfExportService {
 
     private static String str(Object v) {
         return v == null ? "" : String.valueOf(v);
+    }
+
+    /* ==================== P7a-3 病历PDF(生成/归档/批量/选页) ==================== */
+
+    /**
+     * 病历PDF生成(Tiptap文档主链): his_inp_medical_record.content(AES-GCM 密文/历史明文)
+     * 解密 → 片段展开(EmrDocumentService.resolveFragmentsInDocument) → Tiptap JSON 转语义HTML
+     * (章节/段落/表格/条件块/分页符) → OpenPDF 渲染。
+     * 兼容回退: content 为富文书 HTML('<' 开头)走既有 HTML 语义管线; 密文不可读时回退 structureData(明文 JSON);
+     * 均不可用时按纯文本逐行输出。版式: A4 + 页眉(机构/科室) + 页脚(页码/打印时间) + 签名区。
+     */
+    public byte[] generateFromTiptap(Long recordId) {
+        if (recordId == null) {
+            throw new BizException(400, "病历ID不能为空");
+        }
+        Map<String, Object> rec = requireRecord(recordId);
+        Map<String, Object> visit = requireVisit(toLong(rec.get("inp_visit_id")));
+        String body = tiptapContentToHtml(
+                str(emrDocumentService.loadDocument(1, recordId, str(rec.get("content")))),
+                str(rec.get("structure_data")));
+        if (!StringUtils.hasText(body)) {
+            throw new BizException(400, "病历内容为空, 无法生成PDF");
+        }
+        final String title = StringUtils.hasText(str(rec.get("title"))) ? str(rec.get("title"))
+                : emrTypeName(toInteger(rec.get("record_type")));
+        final String hospital = orgName(toLong(visit.get("org_id")));
+        final String dept = deptName(toLong(visit.get("dept_id")));
+        final String printNote = "打印时间：" + LocalDateTime.now().format(DT_SHORT);
+        StringBuilder html = new StringBuilder();
+        html.append("<div class=\"doc-title\">").append(escapeHtml(title)).append("</div>");
+        if (StringUtils.hasText(hospital)) {
+            html.append("<div class=\"doc-sub\">").append(escapeHtml(hospital)).append("</div>");
+        }
+        html.append("<div class=\"info\">").append(escapeHtml(patientBrief(visit))).append("</div>");
+        html.append("<div class=\"memo\">").append(escapeHtml(recordMetaText(rec))).append("</div>");
+        html.append(body);
+        html.append("<div class=\"sign\">").append(escapeHtml(signatureText(rec))).append("</div>");
+        final String htmlFinal = html.toString();
+        return writeDoc(PageSize.A4, new EmrHeaderFooter(hospital, dept, printNote), EMR_MARGIN, new DocFiller() {
+            @Override
+            public void fill(Document doc, PdfWriter writer) throws DocumentException {
+                doc.addTitle(title);
+                renderElements(doc, htmlFinal);
+            }
+        });
+    }
+
+    /**
+     * 归档PDF(签名水印 + 归档章): 基于 {@link #generateFromTiptap} 生成正文后,
+     * 经 PdfStamper 逐页叠加: 半透明 45° 签名水印(书写/审核/主治/主任医师+时间, 未签以"未签名"占位)
+     * 与右下角红色双框"已归档"章(归档日期+归档人; 未归档时取当天)。
+     */
+    public byte[] generateArchivePdf(Long recordId) {
+        if (recordId == null) {
+            throw new BizException(400, "病历ID不能为空");
+        }
+        byte[] base = generateFromTiptap(recordId);
+        Map<String, Object> rec = requireRecord(recordId);
+        final List<String> marks = archiveMarkLines(rec);
+        String stampDate = fmtTime(rec.get("archive_time"));
+        if (!StringUtils.hasText(stampDate)) {
+            stampDate = LocalDate.now().toString();
+        }
+        String stampBy = str(rec.get("archive_by")).trim();
+        final String stampLine = stampBy.isEmpty() ? stampDate : stampDate + " · " + stampBy;
+        ByteArrayOutputStream baos = new ByteArrayOutputStream();
+        PdfReader reader = null;
+        try {
+            reader = new PdfReader(base);
+            PdfStamper stamper = new PdfStamper(reader, baos);
+            int pages = reader.getNumberOfPages();
+            for (int i = 1; i <= pages; i++) {
+                Rectangle size = reader.getPageSize(i);
+                PdfContentByte over = stamper.getOverContent(i);
+                drawSignatureWatermark(over, size, marks);
+                drawArchiveStamp(over, size, stampLine);
+            }
+            stamper.close();
+            return baos.toByteArray();
+        } catch (Exception e) {
+            log.warn("归档PDF叠章失败: {}", e.getMessage());
+            throw new BizException(500, "归档PDF生成失败: " + e.getMessage());
+        } finally {
+            if (reader != null) {
+                try {
+                    reader.close();
+                } catch (Exception ignore) {
+                    // 已由 stamper.close 关闭, 双重关闭无副作用
+                }
+            }
+        }
+    }
+
+    /**
+     * 批量生成合并PDF: 逐条 {@link #generateFromTiptap}(单份失败跳过并记日志),
+     * 经 PdfCopy 顺序合并为单文档; 单次上限60份防止内存峰值。
+     * 全部失败时抛业务异常; 仅1份成功时原样返回。
+     */
+    public byte[] batchGenerate(List<Long> recordIds) {
+        if (recordIds == null || recordIds.isEmpty()) {
+            throw new BizException(400, "批量打印病历ID列表不能为空");
+        }
+        if (recordIds.size() > 60) {
+            throw new BizException(400, "单次批量最多60份病历");
+        }
+        List<byte[]> docs = new ArrayList<>();
+        int failed = 0;
+        for (Long id : recordIds) {
+            if (id == null) {
+                continue;
+            }
+            try {
+                docs.add(generateFromTiptap(id));
+            } catch (Exception e) {
+                failed++;
+                log.warn("批量PDF跳过病历{}: {}", id, e.getMessage());
+            }
+        }
+        if (docs.isEmpty()) {
+            throw new BizException(500, "批量生成失败: " + failed + " 份病历均无法生成PDF");
+        }
+        if (docs.size() == 1) {
+            return docs.get(0);
+        }
+        ByteArrayOutputStream baos = new ByteArrayOutputStream();
+        Document merged = new Document();
+        PdfReader reader = null;
+        try {
+            PdfCopy copy = new PdfCopy(merged, baos);
+            merged.open();
+            for (byte[] doc : docs) {
+                reader = new PdfReader(doc);
+                int pages = reader.getNumberOfPages();
+                for (int i = 1; i <= pages; i++) {
+                    copy.addPage(copy.getImportedPage(reader, i));
+                }
+                copy.freeReader(reader);
+                reader.close();
+                reader = null;
+            }
+            merged.close();
+            return baos.toByteArray();
+        } catch (Exception e) {
+            log.warn("批量PDF合并失败: {}", e.getMessage());
+            throw new BizException(500, "批量PDF合并失败: " + e.getMessage());
+        } finally {
+            if (reader != null) {
+                try {
+                    reader.close();
+                } catch (Exception ignore) {
+                    // 双重关闭无副作用
+                }
+            }
+            if (merged.isOpen()) {
+                try {
+                    merged.close();
+                } catch (Exception ignore) {
+                    // 双重关闭无副作用
+                }
+            }
+        }
+    }
+
+    /**
+     * 选页导出: 生成完整PDF后经 PdfCopy 仅复制 [startPage, endPage] 页区间(超出总页数自动收敛)。
+     * startPage<1 / endPage<startPage / startPage 超出总页数时抛 400。
+     */
+    public byte[] selectivePages(Long recordId, int startPage, int endPage) {
+        if (recordId == null) {
+            throw new BizException(400, "病历ID不能为空");
+        }
+        if (startPage < 1 || endPage < startPage) {
+            throw new BizException(400, "选页范围无效: 起始页须≥1且不大于结束页");
+        }
+        byte[] full = generateFromTiptap(recordId);
+        ByteArrayOutputStream baos = new ByteArrayOutputStream();
+        PdfReader reader = null;
+        try {
+            reader = new PdfReader(full);
+            int total = reader.getNumberOfPages();
+            if (startPage > total) {
+                throw new BizException(400, "起始页超出总页数(" + total + "页)");
+            }
+            int end = Math.min(endPage, total);
+            Document out = new Document(reader.getPageSizeWithRotation(startPage));
+            PdfCopy copy = new PdfCopy(out, baos);
+            out.open();
+            for (int i = startPage; i <= end; i++) {
+                copy.addPage(copy.getImportedPage(reader, i));
+            }
+            out.close();
+            return baos.toByteArray();
+        } catch (BizException e) {
+            throw e;
+        } catch (Exception e) {
+            log.warn("选页PDF生成失败: {}", e.getMessage());
+            throw new BizException(500, "选页PDF生成失败: " + e.getMessage());
+        } finally {
+            if (reader != null) {
+                try {
+                    reader.close();
+                } catch (Exception ignore) {
+                    // 双重关闭无副作用
+                }
+            }
+        }
+    }
+
+    /* ==================== P7a-3 病历PDF内部支撑(数据/版式/绘制) ==================== */
+
+    /** 病历记录必读(含签名链与归档字段)。 */
+    private Map<String, Object> requireRecord(Long recordId) {
+        List<Map<String, Object>> rows = jdbcTemplate.queryForList(
+                "SELECT id, org_id, inp_visit_id, record_type, title, content, structure_data, status,"
+                        + " record_time, doctor_id, audit_doctor_id, audit_time,"
+                        + " attending_sign_id, attending_sign_time, director_sign_id, director_sign_time,"
+                        + " archive_time, archive_by"
+                        + " FROM his_inp_medical_record WHERE id = ? AND deleted = 0 AND tenant_id = ?",
+                recordId, tenantId());
+        if (rows.isEmpty()) {
+            throw new BizException(404, "病历记录不存在");
+        }
+        return rows.get(0);
+    }
+
+    /** 患者信息行: 姓名/性别/年龄/住院号/科室/床号(与体温单头同口径)。 */
+    private String patientBrief(Map<String, Object> visit) {
+        String name = "";
+        String gender = "";
+        String age = "";
+        if (visit.get("patient_id") != null) {
+            List<Map<String, Object>> ps = jdbcTemplate.queryForList(
+                    "SELECT name, IFNULL(gender_name, gender) gender, age FROM his_patient"
+                            + " WHERE id = ? AND deleted = 0 AND tenant_id = ?",
+                    visit.get("patient_id"), tenantId());
+            if (!ps.isEmpty()) {
+                Map<String, Object> p = ps.get(0);
+                name = str(p.get("name"));
+                String g = str(p.get("gender"));
+                gender = "1".equals(g) ? "男" : "2".equals(g) ? "女" : g;
+                age = p.get("age") == null ? "" : String.valueOf(p.get("age"));
+            }
+        }
+        return joinBits("姓名：" + name, gender,
+                age.isEmpty() ? "" : age + "岁",
+                "住院号：" + str(visit.get("inp_no")),
+                "科室：" + deptName(toLong(visit.get("dept_id"))),
+                "床号：" + bedNo(visit.get("bed_id")));
+    }
+
+    /** 病历元信息行: 记录类型/记录时间/状态。 */
+    private String recordMetaText(Map<String, Object> rec) {
+        return joinBits("记录类型：" + emrTypeName(toInteger(rec.get("record_type"))),
+                "记录时间：" + fmtTime(rec.get("record_time")),
+                "状态：" + statusName(toInteger(rec.get("status"))));
+    }
+
+    /** 签名行(已签名医师才列出; 全未签则留签名线)。 */
+    private String signatureText(Map<String, Object> rec) {
+        StringBuilder sb = new StringBuilder();
+        appendSign(sb, "记录医师", rec.get("doctor_id"), rec.get("record_time"));
+        appendSign(sb, "审核医师", rec.get("audit_doctor_id"), rec.get("audit_time"));
+        appendSign(sb, "主治医师", rec.get("attending_sign_id"), rec.get("attending_sign_time"));
+        appendSign(sb, "主任医师", rec.get("director_sign_id"), rec.get("director_sign_time"));
+        return sb.length() == 0 ? "医师签名：＿＿＿＿＿＿" : sb.toString();
+    }
+
+    private void appendSign(StringBuilder sb, String label, Object staffIdObj, Object timeObj) {
+        String name = staffName(toLong(staffIdObj));
+        if (!StringUtils.hasText(name)) {
+            return;
+        }
+        if (sb.length() > 0) {
+            sb.append("　　");
+        }
+        sb.append(label).append("：").append(name);
+        String time = fmtTime(timeObj);
+        if (StringUtils.hasText(time)) {
+            sb.append("（").append(time).append("）");
+        }
+    }
+
+    /** 归档水印行: 书写/审核/主治/主任医师 + 时间(未签以"未签名"占位提示补签)。 */
+    private List<String> archiveMarkLines(Map<String, Object> rec) {
+        List<String> lines = new ArrayList<>();
+        lines.add(markLine("记录医师", rec.get("doctor_id"), rec.get("record_time")));
+        lines.add(markLine("审核医师", rec.get("audit_doctor_id"), rec.get("audit_time")));
+        lines.add(markLine("主治医师", rec.get("attending_sign_id"), rec.get("attending_sign_time")));
+        lines.add(markLine("主任医师", rec.get("director_sign_id"), rec.get("director_sign_time")));
+        return lines;
+    }
+
+    private String markLine(String label, Object staffIdObj, Object timeObj) {
+        String name = staffName(toLong(staffIdObj));
+        if (!StringUtils.hasText(name)) {
+            return label + "：未签名";
+        }
+        String time = fmtTime(timeObj);
+        return label + "：" + name + (StringUtils.hasText(time) ? " " + time : "");
+    }
+
+    /** 职工姓名(查不到返回空串)。 */
+    private String staffName(Long staffId) {
+        if (staffId == null) {
+            return "";
+        }
+        List<String> names = jdbcTemplate.queryForList(
+                "SELECT staff_name FROM his_staff WHERE id = ? AND deleted = 0 AND tenant_id = ?",
+                String.class, staffId, tenantId());
+        return names.isEmpty() ? "" : names.get(0);
+    }
+
+    /** 病历类型名(未知回落"病历")。 */
+    private static String emrTypeName(Integer type) {
+        if (type == null) {
+            return "病历";
+        }
+        String name = EMR_RECORD_TYPES.get(type);
+        return name == null ? "病历" : name;
+    }
+
+    /** 病历状态名(1草稿/2已提交/3已审核/4已归档/5召回中/6已封存)。 */
+    private static String statusName(Integer status) {
+        if (status == null) {
+            return "";
+        }
+        switch (status) {
+            case 1:
+                return "草稿";
+            case 2:
+                return "已提交";
+            case 3:
+                return "已审核";
+            case 4:
+                return "已归档";
+            case 5:
+                return "召回中";
+            case 6:
+                return "已封存";
+            default:
+                return "状态" + status;
+        }
+    }
+
+    /** 时间格式化(分钟级): LocalDateTime/Date → "yyyy-MM-dd HH:mm"; ISO 串截断; 其余原样。 */
+    private static String fmtTime(Object v) {
+        if (v == null) {
+            return "";
+        }
+        if (v instanceof LocalDateTime) {
+            return ((LocalDateTime) v).format(DT_SHORT);
+        }
+        if (v instanceof java.util.Date) {
+            return new java.sql.Timestamp(((java.util.Date) v).getTime()).toLocalDateTime().format(DT_SHORT);
+        }
+        String s = String.valueOf(v).trim();
+        if (s.length() >= 16 && (s.charAt(10) == 'T' || s.charAt(10) == ' ')) {
+            return s.substring(0, 16).replace('T', ' ');
+        }
+        return s;
+    }
+
+    /** 整型转换(类型不符返回 null)。 */
+    private static Integer toInteger(Object v) {
+        if (v == null) {
+            return null;
+        }
+        if (v instanceof Number) {
+            return ((Number) v).intValue();
+        }
+        try {
+            return Integer.valueOf(String.valueOf(v).trim());
+        } catch (NumberFormatException e) {
+            return null;
+        }
+    }
+
+    /** HTML 实体转义(与 unescape 互逆)。 */
+    private static String escapeHtml(String s) {
+        if (s == null) {
+            return "";
+        }
+        return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+                .replace("\"", "&quot;").replace("'", "&#39;");
+    }
+
+    /** 是否 JSON 文档串(对象/数组开头)。 */
+    private static boolean isJsonDoc(String s) {
+        if (s == null) {
+            return false;
+        }
+        String t = s.trim();
+        return t.startsWith("{") || t.startsWith("[");
+    }
+
+    /** 是否 Base64 密文特征(长且仅含 Base64 字符、无空白; 解密失败透传原文时用于回退)。 */
+    private static boolean looksLikeCipher(String s) {
+        if (s == null || s.length() < 32) {
+            return false;
+        }
+        for (int i = 0; i < s.length(); i++) {
+            char ch = s.charAt(i);
+            boolean ok = (ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z')
+                    || (ch >= '0' && ch <= '9') || ch == '+' || ch == '/' || ch == '=';
+            if (!ok) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /** 依序取首个非空字符串属性。 */
+    private static String firstNonEmptyStr(JSONObject obj, String... keys) {
+        if (obj == null) {
+            return "";
+        }
+        for (String k : keys) {
+            Object v = obj.get(k);
+            if (v != null) {
+                String s = String.valueOf(v).trim();
+                if (!s.isEmpty()) {
+                    return s;
+                }
+            }
+        }
+        return "";
+    }
+
+    /** 病历文档骨架: 自定义页眉页脚事件 + 边距。 */
+    private byte[] writeDoc(Rectangle pageSize, PdfPageEventHelper event, float[] margins, DocFiller filler) {
+        ByteArrayOutputStream baos = new ByteArrayOutputStream();
+        Document doc = new Document(pageSize);
+        try {
+            PdfWriter writer = PdfWriter.getInstance(doc, baos);
+            if (event != null) {
+                writer.setPageEvent(event);
+            }
+            doc.setMargins(margins[0], margins[1], margins[2], margins[3]);
+            doc.open();
+            filler.fill(doc, writer);
+            doc.close();
+            return baos.toByteArray();
+        } catch (DocumentException e) {
+            log.warn("病历PDF生成失败(DocumentException): {}", e.getMessage());
+            throw new BizException(500, "病历PDF生成失败: " + e.getMessage());
+        } finally {
+            if (doc.isOpen()) {
+                try {
+                    doc.close();
+                } catch (Exception ignore) {
+                    // 双重关闭无副作用
+                }
+            }
+        }
+    }
+
+    /** 病历版式页眉页脚: 页眉=机构名左 / 科室名右 + 细分隔线; 页脚=页码居中 / 打印时间右。 */
+    private class EmrHeaderFooter extends PdfPageEventHelper {
+        private final String headLeft;
+        private final String headRight;
+        private final String footNote;
+
+        EmrHeaderFooter(String headLeft, String headRight, String footNote) {
+            this.headLeft = headLeft == null ? "" : headLeft;
+            this.headRight = headRight == null ? "" : headRight;
+            this.footNote = footNote == null ? "" : footNote;
+        }
+
+        @Override
+        public void onEndPage(PdfWriter w, Document d) {
+            try {
+                PdfContentByte cb = w.getDirectContent();
+                Font f = font(8.5f, Font.NORMAL, TEXT_GRAY);
+                if (StringUtils.hasText(headLeft)) {
+                    ColumnText.showTextAligned(cb, Element.ALIGN_LEFT, new Phrase(headLeft, f),
+                            d.left(), d.top() + 26f, 0);
+                }
+                if (StringUtils.hasText(headRight)) {
+                    ColumnText.showTextAligned(cb, Element.ALIGN_RIGHT, new Phrase(headRight, f),
+                            d.right(), d.top() + 26f, 0);
+                }
+                /* 页眉分隔线 */
+                cb.saveState();
+                cb.setColorStroke(new Color(0x99, 0x99, 0x99));
+                cb.setLineWidth(0.6f);
+                cb.moveTo(d.left(), d.top() + 18f);
+                cb.lineTo(d.right(), d.top() + 18f);
+                cb.stroke();
+                cb.restoreState();
+                /* 页脚: 页码居中 / 打印时间右 */
+                ColumnText.showTextAligned(cb, Element.ALIGN_CENTER,
+                        new Phrase("第 " + w.getPageNumber() + " 页", f),
+                        (d.left() + d.right()) / 2, d.bottom() - 24f, 0);
+                if (StringUtils.hasText(footNote)) {
+                    ColumnText.showTextAligned(cb, Element.ALIGN_RIGHT, new Phrase(footNote, f),
+                            d.right(), d.bottom() - 24f, 0);
+                }
+            } catch (Exception ignore) {
+                // 页眉页脚失败不影响正文
+            }
+        }
+    }
+
+    /** 45° 半透明签名水印: 各行绕页心居中排列(垂直偏移保持行距)。 */
+    private void drawSignatureWatermark(PdfContentByte over, Rectangle size, List<String> lines) {
+        if (lines == null || lines.isEmpty()) {
+            return;
+        }
+        try {
+            over.saveState();
+            PdfGState gs = new PdfGState();
+            gs.setFillOpacity(0.12f);
+            over.setGState(gs);
+            float cx = (size.getLeft() + size.getRight()) / 2;
+            float cy = (size.getBottom() + size.getTop()) / 2;
+            float lineH = 30f;
+            float startY = cy + (lines.size() - 1) * lineH / 2f;
+            Font f = font(14f, Font.NORMAL, TEXT_GRAY);
+            for (int i = 0; i < lines.size(); i++) {
+                ColumnText.showTextAligned(over, Element.ALIGN_CENTER,
+                        new Phrase(lines.get(i), f), cx, startY - i * lineH, 45);
+            }
+            over.restoreState();
+        } catch (Exception e) {
+            log.warn("签名水印绘制失败(跳过): {}", e.getMessage());
+        }
+    }
+
+    /** 右下角红色双框"已归档"章(归档日期 · 归档人)。 */
+    private void drawArchiveStamp(PdfContentByte over, Rectangle size, String stampLine) {
+        try {
+            over.saveState();
+            over.setColorStroke(ARCHIVE_RED);
+            over.setColorFill(ARCHIVE_RED);
+            float w = 130f;
+            float h = 48f;
+            float x = size.getRight() - 60f - w;
+            float y = size.getBottom() + 62f;
+            /* 外框 */
+            over.setLineWidth(1.8f);
+            over.rectangle(x, y, w, h);
+            over.stroke();
+            /* 内框 */
+            over.setLineWidth(0.7f);
+            over.rectangle(x + 3f, y + 3f, w - 6f, h - 6f);
+            over.stroke();
+            ColumnText.showTextAligned(over, Element.ALIGN_CENTER,
+                    new Phrase("已归档", font(15f, Font.BOLD, ARCHIVE_RED)),
+                    x + w / 2, y + h - 21f, 0);
+            if (StringUtils.hasText(stampLine)) {
+                ColumnText.showTextAligned(over, Element.ALIGN_CENTER,
+                        new Phrase(stampLine, font(8f, Font.NORMAL, ARCHIVE_RED)),
+                        x + w / 2, y + 9f, 0);
+            }
+            over.restoreState();
+        } catch (Exception e) {
+            log.warn("归档章绘制失败(跳过): {}", e.getMessage());
+        }
+    }
+
+    /* ==================== P7a-3 Tiptap JSON → 语义HTML ==================== */
+
+    /**
+     * 病历正文 → 语义HTML(供 renderElements 渲染):
+     * 富文书HTML('<'开头, 含 div/table 时原样透传) / Tiptap JSON('{'/'['开头, 片段展开后转换) /
+     * 其余(解密失败透传的密文或纯文本)优先取 structureData, 最终纯文本逐行。
+     */
+    private String tiptapContentToHtml(String content, String structure) {
+        String c = content == null ? "" : content.trim();
+        if (c.isEmpty()) {
+            return isJsonDoc(structure) ? tiptapJsonToHtml(structure) : plaintextToHtml(structure);
+        }
+        char first = c.charAt(0);
+        if (first == '<') {
+            String body = extractBody(c);
+            String lower = body.toLowerCase();
+            if (lower.contains("<div") || lower.contains("<table")) {
+                return body;
+            }
+            return plaintextToHtml(textOf(body));
+        }
+        if (first == '{' || first == '[') {
+            return tiptapJsonToHtml(c);
+        }
+        /* 密文不可解时透传原文: 回退结构化数据, 避免把 Base64 噪音铺进 PDF */
+        if (isJsonDoc(structure)) {
+            return tiptapJsonToHtml(structure);
+        }
+        return looksLikeCipher(c) ? plaintextToHtml(structure) : plaintextToHtml(c);
+    }
+
+    /** Tiptap JSON 串 → HTML(doc 解析失败回退纯文本)。 */
+    private String tiptapJsonToHtml(String json) {
+        try {
+            String resolved = emrDocumentService.resolveFragmentsInDocument(json);
+            JSONObject doc = JSON.parseObject(resolved);
+            if (doc == null) {
+                return plaintextToHtml(json);
+            }
+            return tiptapToHtml(doc);
+        } catch (Exception e) {
+            log.warn("Tiptap 解析失败, 按纯文本渲染: {}", e.getMessage());
+            return plaintextToHtml(json);
+        }
+    }
+
+    /** Tiptap 文档对象 → HTML: doc.content 块级遍历; 无 content 时按扁平 JSON 键值行渲染。 */
+    private String tiptapToHtml(JSONObject doc) {
+        JSONArray content = doc.getJSONArray("content");
+        if (content == null || content.isEmpty()) {
+            StringBuilder flat = new StringBuilder();
+            for (Map.Entry<String, Object> e : doc.entrySet()) {
+                Object v = e.getValue();
+                if (v == null || v instanceof JSONObject || v instanceof JSONArray) {
+                    continue;
+                }
+                flat.append("<div class=\"emr-p\">").append(escapeHtml(e.getKey()))
+                        .append("：").append(escapeHtml(fmtFieldValue(v))).append("</div>");
+            }
+            return flat.toString();
+        }
+        StringBuilder sb = new StringBuilder();
+        Map<String, Object> fields = new LinkedHashMap<>();
+        collectTiptapFieldValues(doc, fields);
+        walkTiptapBlocks(content, sb, 0, fields);
+        return sb.toString();
+    }
+
+    /** 块级节点遍历(深度上限防环): 段落/标题/章节/条件块/列表/表格/分页符等 → 语义 div/table。 */
+    private void walkTiptapBlocks(JSONArray nodes, StringBuilder sb, int depth, Map<String, Object> fields) {
+        if (nodes == null || depth > 12) {
+            return;
+        }
+        for (int i = 0; i < nodes.size(); i++) {
+            JSONObject node = nodes.getJSONObject(i);
+            if (node == null) {
+                continue;
+            }
+            String type = node.getString("type");
+            if (type == null) {
+                continue;
+            }
+            JSONObject attrs = node.getJSONObject("attrs");
+            switch (type) {
+                case "paragraph":
+                    appendInlineBlock(node.getJSONArray("content"), sb, depth, "emr-p", "");
+                    break;
+                case "heading": {
+                    int level = attrs == null ? 1 : Math.max(attrs.getIntValue("level"), 1);
+                    appendInlineBlock(node.getJSONArray("content"), sb, depth,
+                            level <= 2 ? "emr-sec" : "emr-sub", "");
+                    break;
+                }
+                case "emrSection": {
+                    /* 打印隐藏章节整段跳过(printHidden=true) */
+                    if (attrs != null && attrs.getBooleanValue("printHidden")) {
+                        break;
+                    }
+                    String title = attrs == null ? "" : firstNonEmptyStr(attrs, "title", "sectionKey");
+                    if (StringUtils.hasText(title)) {
+                        sb.append("<div class=\"").append(depth == 0 ? "emr-sec" : "emr-sub").append("\">")
+                                .append(escapeHtml(title)).append("</div>");
+                    }
+                    walkTiptapBlocks(node.getJSONArray("content"), sb, depth + 1, fields);
+                    break;
+                }
+                case "emrConditionalBlock":
+                    if (evalTiptapCondition(attrs, fields)) {
+                        walkTiptapBlocks(node.getJSONArray("content"), sb, depth + 1, fields);
+                    }
+                    break;
+                case "bulletList":
+                case "orderedList":
+                    renderTiptapList(node, sb, "orderedList".equals(type), depth);
+                    break;
+                case "blockquote": {
+                    StringBuilder inner = new StringBuilder();
+                    appendInline(node.getJSONArray("content"), inner, depth);
+                    for (String ln : inner.toString().split("<br>")) {
+                        if (!ln.trim().isEmpty()) {
+                            sb.append("<div class=\"emr-p\">　　").append(ln).append("</div>");
+                        }
+                    }
+                    break;
+                }
+                case "codeBlock":
+                    for (String ln : rawTextOf(node).split("\n")) {
+                        if (!ln.isEmpty()) {
+                            sb.append("<div class=\"memo\">").append(escapeHtml(ln)).append("</div>");
+                        }
+                    }
+                    break;
+                case "horizontalRule":
+                    sb.append("<div class=\"memo\">──────────────</div>");
+                    break;
+                case "emrPageBreak":
+                    sb.append("<div class=\"emr-break\"></div>");
+                    break;
+                case "table":
+                    renderTiptapTable(node, sb, depth);
+                    break;
+                case "emrDrawing":
+                    sb.append("<div class=\"memo\">［附图")
+                            .append(escapeHtml(attrs == null ? "" : firstNonEmptyStr(attrs, "title")))
+                            .append("］</div>");
+                    break;
+                case "emrFragment":
+                    /* resolveFragmentsInDocument 已展开片段; 残留节点以占位提示 */
+                    sb.append("<div class=\"memo\">［片段：")
+                            .append(escapeHtml(attrs == null ? "" : firstNonEmptyStr(attrs, "title", "fragmentId")))
+                            .append("］</div>");
+                    break;
+                case "emrField":
+                case "emrMacro": {
+                    StringBuilder line = new StringBuilder();
+                    appendInlineNode(node, line, depth);
+                    if (line.length() > 0) {
+                        sb.append("<div class=\"emr-p\">").append(line).append("</div>");
+                    }
+                    break;
+                }
+                default:
+                    /* 未知块级节点: 深挖 content 防丢内容 */
+                    walkTiptapBlocks(node.getJSONArray("content"), sb, depth + 1, fields);
+                    break;
+            }
+        }
+    }
+
+    /** 行内节点序列 → HTML(text/硬换行/字段/宏; 嵌套块递归)。 */
+    private void appendInline(JSONArray nodes, StringBuilder sb, int depth) {
+        if (nodes == null || depth > 12) {
+            return;
+        }
+        for (int i = 0; i < nodes.size(); i++) {
+            appendInlineNode(nodes.getJSONObject(i), sb, depth);
+        }
+    }
+
+    private void appendInlineNode(JSONObject node, StringBuilder sb, int depth) {
+        if (node == null) {
+            return;
+        }
+        String type = node.getString("type");
+        if ("text".equals(type)) {
+            sb.append(escapeHtml(node.getString("text")));
+            return;
+        }
+        if ("hardBreak".equals(type)) {
+            sb.append("<br>");
+            return;
+        }
+        if ("emrField".equals(type)) {
+            JSONObject a = node.getJSONObject("attrs");
+            String label = a == null ? "" : firstNonEmptyStr(a, "fieldName", "label", "fieldLabel", "fieldKey");
+            String val = a == null ? "" : fmtFieldValue(a.get("value"));
+            if (StringUtils.hasText(label)) {
+                sb.append(escapeHtml(label)).append("：");
+            }
+            sb.append(StringUtils.hasText(val) ? escapeHtml(val) : "＿＿＿＿");
+            return;
+        }
+        if ("emrMacro".equals(type)) {
+            JSONObject a = node.getJSONObject("attrs");
+            String resolved = a == null ? "" : firstNonEmptyStr(a, "resolvedValue");
+            if (StringUtils.hasText(resolved)) {
+                sb.append(escapeHtml(resolved));
+            } else if (a != null) {
+                sb.append("【").append(escapeHtml(firstNonEmptyStr(a, "macroCode"))).append("】");
+            }
+            return;
+        }
+        if ("emrDrawing".equals(type)) {
+            sb.append("［附图］");
+            return;
+        }
+        /* 嵌套块(段落/标题等): 递归提取并补换行分隔 */
+        appendInline(node.getJSONArray("content"), sb, depth + 1);
+        if ("paragraph".equals(type) || "heading".equals(type) || "blockquote".equals(type)) {
+            sb.append("<br>");
+        }
+    }
+
+    /** 行内序列包成块级 div(空内容跳过); prefix 为行前缀(引用缩进等)。 */
+    private void appendInlineBlock(JSONArray inline, StringBuilder sb, int depth, String cls, String prefix) {
+        StringBuilder line = new StringBuilder();
+        appendInline(inline, line, depth);
+        String html = line.toString();
+        /* 去除尾部换行分隔(hardBreak 的 <br> 保留) */
+        while (html.endsWith("<br>")) {
+            html = html.substring(0, html.length() - 4).trim();
+        }
+        html = html.trim();
+        if (html.isEmpty()) {
+            return;
+        }
+        sb.append("<div class=\"").append(cls).append("\">").append(prefix).append(html).append("</div>");
+    }
+
+    /** 表格 → HTML table(保留 th/td 与 colspan/rowspan; 单元格内块以 <br> 分隔)。 */
+    private void renderTiptapTable(JSONObject tableNode, StringBuilder sb, int depth) {
+        JSONArray rows = tableNode.getJSONArray("content");
+        if (rows == null || depth > 12) {
+            return;
+        }
+        StringBuilder t = new StringBuilder("<table>");
+        for (int i = 0; i < rows.size(); i++) {
+            JSONObject row = rows.getJSONObject(i);
+            if (row == null) {
+                continue;
+            }
+            t.append("<tr>");
+            JSONArray cells = row.getJSONArray("content");
+            if (cells != null) {
+                for (int j = 0; j < cells.size(); j++) {
+                    appendTableCell(cells.getJSONObject(j), t, depth);
+                }
+            }
+            t.append("</tr>");
+        }
+        t.append("</table>");
+        sb.append(t);
+    }
+
+    private void appendTableCell(JSONObject cell, StringBuilder t, int depth) {
+        if (cell == null) {
+            return;
+        }
+        boolean header = "tableHeader".equals(cell.getString("type"));
+        JSONObject attrs = cell.getJSONObject("attrs");
+        StringBuilder cellSb = new StringBuilder();
+        JSONArray cellContent = cell.getJSONArray("content");
+        if (cellContent != null) {
+            for (int k = 0; k < cellContent.size(); k++) {
+                JSONObject cn = cellContent.getJSONObject(k);
+                if (cn == null) {
+                    continue;
+                }
+                String ct = cn.getString("type");
+                if ("paragraph".equals(ct) || "heading".equals(ct)) {
+                    if (cellSb.length() > 0) {
+                        cellSb.append("<br>");
+                    }
+                    appendInline(cn.getJSONArray("content"), cellSb, depth + 1);
+                } else {
+                    appendInlineNode(cn, cellSb, depth + 1);
+                }
+            }
+        }
+        t.append('<').append(header ? "th" : "td");
+        if (attrs != null) {
+            int cs = attrs.getIntValue("colspan");
+            int rs = attrs.getIntValue("rowspan");
+            if (cs > 1) {
+                t.append(" colspan=\"").append(cs).append('"');
+            }
+            if (rs > 1) {
+                t.append(" rowspan=\"").append(rs).append('"');
+            }
+        }
+        t.append('>').append(cellSb).append("</").append(header ? "th" : "td").append('>');
+    }
+
+    /** 列表 → 前缀行(·/N.), 嵌套列表行缩进两全角。 */
+    private void renderTiptapList(JSONObject listNode, StringBuilder sb, boolean ordered, int depth) {
+        JSONArray items = listNode.getJSONArray("content");
+        if (items == null || depth > 12) {
+            return;
+        }
+        int idx = 1;
+        for (int i = 0; i < items.size(); i++) {
+            JSONObject item = items.getJSONObject(i);
+            if (item == null || !"listItem".equals(item.getString("type"))) {
+                continue;
+            }
+            String prefix = ordered ? (idx++) + ". " : "· ";
+            JSONArray itemContent = item.getJSONArray("content");
+            if (itemContent == null) {
+                continue;
+            }
+            for (int j = 0; j < itemContent.size(); j++) {
+                JSONObject child = itemContent.getJSONObject(j);
+                if (child == null) {
+                    continue;
+                }
+                String ct = child.getString("type");
+                if ("bulletList".equals(ct) || "orderedList".equals(ct)) {
+                    StringBuilder nested = new StringBuilder();
+                    renderTiptapList(child, nested, "orderedList".equals(ct), depth + 1);
+                    sb.append(nested.toString().replace("<div class=\"emr-p\">", "<div class=\"emr-p\">　　"));
+                } else {
+                    appendInlineBlock(child.getJSONArray("content"), sb, depth, "emr-p", prefix);
+                    /* 同项后续段落对齐到首个文字位 */
+                    prefix = "　";
+                }
+            }
+        }
+    }
+
+    /** 递归收集 emrField 的 fieldKey→value(条件块求值数据源, 与前端 collectFieldValuesFromDoc 同口径)。 */
+    private void collectTiptapFieldValues(JSONObject node, Map<String, Object> out) {
+        if (node == null) {
+            return;
+        }
+        if ("emrField".equals(node.getString("type"))) {
+            JSONObject a = node.getJSONObject("attrs");
+            if (a != null) {
+                String key = firstNonEmptyStr(a, "fieldKey");
+                if (StringUtils.hasText(key)) {
+                    out.put(key, a.get("value"));
+                }
+            }
+        }
+        JSONArray content = node.getJSONArray("content");
+        if (content != null) {
+            for (int i = 0; i < content.size(); i++) {
+                collectTiptapFieldValues(content.getJSONObject(i), out);
+            }
+        }
+    }
+
+    /** 条件块求值(与 emr-extensions.js evaluateCondition 同口径): eq/ne/contains/empty/notEmpty, 缺省可见。 */
+    private boolean evalTiptapCondition(JSONObject attrs, Map<String, Object> fields) {
+        if (attrs == null) {
+            return true;
+        }
+        String op = attrs.getString("conditionOperator");
+        if (!StringUtils.hasText(op)) {
+            return true;
+        }
+        Object raw = fields.get(attrs.getString("conditionFieldKey"));
+        String cv = attrs.getString("conditionValue");
+        cv = cv == null ? "" : cv;
+        String sv;
+        List<String> arr = new ArrayList<>();
+        if (raw instanceof JSONArray) {
+            JSONArray ja = (JSONArray) raw;
+            for (int i = 0; i < ja.size(); i++) {
+                arr.add(str(ja.get(i)));
+            }
+            sv = String.join(",", arr);
+        } else {
+            sv = raw == null ? "" : fmtFieldValue(raw);
+        }
+        switch (op) {
+            case "eq":
+                return sv.equals(cv);
+            case "ne":
+                return !sv.equals(cv);
+            case "contains":
+                return raw instanceof JSONArray ? arr.contains(cv) : (!cv.isEmpty() && sv.contains(cv));
+            case "empty":
+                return sv.isEmpty();
+            case "notEmpty":
+                return !sv.isEmpty();
+            default:
+                return true;
+        }
+    }
+
+    /** 节点提纯文本(text/字段/宏/硬换行, 深度递归)。 */
+    private String rawTextOf(JSONObject node) {
+        StringBuilder sb = new StringBuilder();
+        rawTextCollect(node, sb);
+        return sb.toString();
+    }
+
+    private void rawTextCollect(JSONObject node, StringBuilder sb) {
+        if (node == null) {
+            return;
+        }
+        String type = node.getString("type");
+        if ("text".equals(type)) {
+            sb.append(str(node.getString("text")));
+            return;
+        }
+        if ("hardBreak".equals(type)) {
+            sb.append('\n');
+            return;
+        }
+        if ("emrField".equals(type)) {
+            JSONObject a = node.getJSONObject("attrs");
+            if (a != null) {
+                String label = firstNonEmptyStr(a, "fieldName", "fieldKey");
+                if (StringUtils.hasText(label)) {
+                    sb.append(label).append("：");
+                }
+                sb.append(fmtFieldValue(a.get("value")));
+            }
+            return;
+        }
+        if ("emrMacro".equals(type)) {
+            JSONObject a = node.getJSONObject("attrs");
+            if (a != null) {
+                String resolved = firstNonEmptyStr(a, "resolvedValue");
+                sb.append(StringUtils.hasText(resolved) ? resolved
+                        : "【" + firstNonEmptyStr(a, "macroCode") + "】");
+            }
+            return;
+        }
+        JSONArray content = node.getJSONArray("content");
+        if (content != null) {
+            for (int i = 0; i < content.size(); i++) {
+                rawTextCollect(content.getJSONObject(i), sb);
+            }
+        }
+    }
+
+    /** 字段值 → 文本: 数组顿号拼接 / 对象取常识键 / 其他字符串化(与前端 String(v) 口径一致)。 */
+    private static String fmtFieldValue(Object v) {
+        if (v == null) {
+            return "";
+        }
+        if (v instanceof JSONArray) {
+            JSONArray ja = (JSONArray) v;
+            List<String> parts = new ArrayList<>();
+            for (int i = 0; i < ja.size(); i++) {
+                String s = fmtFieldValue(ja.get(i));
+                if (StringUtils.hasText(s)) {
+                    parts.add(s);
+                }
+            }
+            return String.join("、", parts);
+        }
+        if (v instanceof JSONObject) {
+            JSONObject jo = (JSONObject) v;
+            String s = firstNonEmptyStr(jo, "name", "label", "text", "value", "diagName", "itemName", "code");
+            return StringUtils.hasText(s) ? s : JSON.toJSONString(v);
+        }
+        return String.valueOf(v);
+    }
+
+    /** 纯文本 → 逐行 emr-p 段落。 */
+    private static String plaintextToHtml(String text) {
+        if (!StringUtils.hasText(text)) {
+            return "";
+        }
+        StringBuilder sb = new StringBuilder();
+        for (String ln : text.split("\r?\n")) {
+            if (ln.trim().isEmpty()) {
+                continue;
+            }
+            sb.append("<div class=\"emr-p\">").append(escapeHtml(ln.trim())).append("</div>");
+        }
+        return sb.toString();
     }
 }

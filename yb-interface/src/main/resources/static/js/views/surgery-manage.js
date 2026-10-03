@@ -1320,6 +1320,7 @@
   HIS.views.SurgeryManage = {
     mixins: [surgMixin],
     components: {
+      'dept-tree-picker': HIS.components.DeptTreePicker,
       'anesthesia-record': HIS.views.AnesthesiaRecord,
       'surgery-fee': HIS.views.SurgeryFee,
       'inp-order-panel': HIS.components.InpOrderPanel
@@ -1643,9 +1644,7 @@
       '            </el-select>',
       '          </el-form-item></el-col>',
       '          <el-col :span="12"><el-form-item label="手术科室">',
-      '            <el-select v-model="form.deptId" clearable filterable placeholder="选择科室" style="width:100%">',
-      '              <el-option v-for="d in refDepts" :key="d.id" :label="d.deptName" :value="d.id"></el-option>',
-      '            </el-select>',
+      '            <dept-tree-picker v-model="form.deptId" :options="refDepts" placeholder="选择科室" />',
       '          </el-form-item></el-col>',
       '        </el-row>',
       '      </el-form>',

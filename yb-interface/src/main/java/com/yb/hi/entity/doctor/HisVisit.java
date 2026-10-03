@@ -77,6 +77,10 @@ public class HisVisit extends BaseEntity {
     private String structure;
     /** 结构化病历模板ID(his_emr_template.id) */
     private Long emrTemplateId;
+    /** Tiptap JSON文档(AES-256加密存储; emrFormat=1 时有效, 空则回退扁平 structure/SOAP 文本列) */
+    private String content;
+    /** 病历格式: 0=扁平JSON旧格式 1=Tiptap */
+    private Integer emrFormat;
     /** 医疗类别(2203 medType, 自挂号同步: 11普通门诊 14急诊) */
     private String medType;
     /** 过敏史 */

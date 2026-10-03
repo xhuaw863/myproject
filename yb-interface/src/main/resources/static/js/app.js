@@ -25,7 +25,9 @@
             { key: 'catalog-map', label: '医保目录对照', comp: 'CatalogMap' },
             { key: 'diag-map', label: '医保疾病对照', comp: 'DiagMap' },
             { key: 'community-dict', label: '医共体字典', comp: 'CommunityDict' },
-            { key: 'supplier-dict', label: '企业字典', comp: 'SupplierDict' }
+            { key: 'supplier-dict', label: '企业字典', comp: 'SupplierDict' },
+            { key: 'fee-pay-dict', label: '费别与支付', comp: 'FeePayDict' },
+            { key: 'med-type-dict', label: '医疗类别', comp: 'MedTypeDict' }
           ]
         },
         {
@@ -89,7 +91,13 @@
         { key: 'emr-quality-rule', label: '质控规则维护', comp: 'EmrQualityRuleManage' },
         { key: 'emr-element-search', label: '病历检索上报', comp: 'EmrElementSearch' },
         { key: 'emr-quality-board', label: '质控评分看板', comp: 'EmrQualityBoard' },
-        { key: 'emr-audit-log', label: '病历审计日志', comp: 'EmrAuditLog' }
+        { key: 'emr-audit-log', label: '病历审计日志', comp: 'EmrAuditLog' },
+        /* P7a-4 归档工作台(comp=EmrArchive): 顶部KPI + 待归档/归档管理/封存管理/统计/Webhook订阅五页签;
+         * 动态菜单需 RbacInitializer 补种 emr-archive(后端任务), 此静态项为 /api/auth/menus 失败时兜底 */
+        { key: 'emr-archive', label: '归档工作台', comp: 'EmrArchive' },
+        /* P7b-3 等级自评(comp=EmrLevelAssess): 等级徽章+八维度SVG雷达+维度明细卡;
+         * 动态菜单需 RbacInitializer 补种 emr-level-assess, 此静态项为 /api/auth/menus 失败时兜底 */
+        { key: 'emr-level-assess', label: '等级自评', comp: 'EmrLevelAssess' }
       ]
     },
     {
@@ -241,11 +249,12 @@
      * 独立顶级目录 inp-pharm-group 废弃; pharm-station/inp-dispense-work/inp-discharge-pickup/inp-dispense-history
      * 四条静态兑底入口现列于"药房系统"组下, 与 RbacInitializer 动态菜单 ph-inp 子域同 key 同名。 */
     /* 临床路径与手术麻醉(2026-09 集成, 与 RbacInitializer 动态菜单同 key 同名):
-     * 路径模板管理(clinical-pathway.js)/手术管理·麻醉记录·手麻记费(surgery-manage.js);
-     * 手麻P0: 手术申请管理含通知管理(surgery-apply.js) */
+     * 路径模板管理(clinical-pathway.js)/路径统计质控(clinical-pathway-stats.js);
+     * 手术管理·麻醉记录·手麻记费(surgery-manage.js); 手麻P0: 手术申请管理含通知管理(surgery-apply.js) */
     {
       group: '临床路径', children: [
-        { key: 'pathway-template', label: '路径模板管理', comp: 'ClinicalPathwayManage' }
+        { key: 'pathway-template', label: '路径模板管理', comp: 'ClinicalPathwayManage' },
+        { key: 'pathway-stats', label: '路径统计质控', comp: 'ClinicalPathwayStats' }
       ]
     },
     {
@@ -271,6 +280,13 @@
       group: '移动护理', children: [
         { key: 'pda-simulation', label: 'PDA扫码', comp: 'pda-simulation' },
         { key: 'mobile-nurse', label: '移动护理', comp: 'mobile-nurse' }
+      ]
+    },
+    /* 会诊统一流程(P6, 与 RbacInitializer 动态菜单同 key 同名): 全院会诊流转驾驶舱
+     * (多维查询/统计分析/超时预警三页签, consultation-manage.js); 住院/门诊统一接口 /api/his/consultation */
+    {
+      group: '会诊管理', children: [
+        { key: 'consultation-manage', label: '会诊管理', comp: 'ConsultationManage' }
       ]
     }
   ];

@@ -65,6 +65,8 @@ public class HisStaff extends BaseEntity {
     private String drQualCertNo;
     /** 医师执业证书编码(执业注册) */
     private String pracCertNo;
+    /** 资质介绍(专业特长/学术任职/从业经历等说明) */
+    private String qualIntro;
     /** 联系电话 */
     private String phone;
     /** 是否可挂号: 1-是 0-否 */

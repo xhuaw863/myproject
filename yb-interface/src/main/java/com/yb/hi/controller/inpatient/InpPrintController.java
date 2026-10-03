@@ -189,4 +189,56 @@ public class InpPrintController {
         response.getOutputStream().write(bytes);
         response.getOutputStream().flush();
     }
+
+    /* ==================== P7a-3 病历PDF(生成/批量/选页) ==================== */
+
+    /**
+     * 病历PDF预览/下载: Tiptap content 解密 → 语义HTML → A4 PDF(页眉机构/科室, 页脚页码/打印时间)。
+     * download=false(缺省) inline 内联预览(浏览器PDF查看器); download=true 附件下载。
+     */
+    @GetMapping("/emr-pdf/{recordId}")
+    public void emrPdf(@PathVariable Long recordId,
+                       @RequestParam(required = false, defaultValue = "false") Boolean download,
+                       HttpServletResponse response) throws IOException {
+        byte[] pdf = pdfExportService.generateFromTiptap(recordId);
+        writePdfResponse(response, pdf, "病历_" + recordId + "_" + LocalDate.now() + ".pdf",
+                Boolean.TRUE.equals(download));
+    }
+
+    /**
+     * 批量病历PDF(合并单文档): recordIds 病历ID列表(JSON数组, 单次≤60份), 逐份生成后 PdfCopy 合并。
+     * 单份失败自动跳过(全部失败报错)。
+     */
+    @PostMapping("/batch-pdf")
+    public void batchPdf(@RequestBody List<Long> recordIds, HttpServletResponse response) throws IOException {
+        byte[] pdf = pdfExportService.batchGenerate(recordIds);
+        writePdfResponse(response, pdf, "批量病历_" + LocalDate.now() + ".pdf", true);
+    }
+
+    /**
+     * 病历选页导出: 生成完整PDF后仅输出 [startPage, endPage] 页区间(超出总页数自动收敛)。
+     * 参数经 query string 传递(recordId/startPage/endPage), 固定附件下载。
+     */
+    @PostMapping("/selective")
+    public void selectivePdf(@RequestParam Long recordId,
+                             @RequestParam int startPage,
+                             @RequestParam int endPage,
+                             HttpServletResponse response) throws IOException {
+        byte[] pdf = pdfExportService.selectivePages(recordId, startPage, endPage);
+        writePdfResponse(response, pdf,
+                "病历选页_" + recordId + "_" + startPage + "-" + endPage + ".pdf", true);
+    }
+
+    /** PDF 响应统一写流: attachment(下载)/inline(预览) + UTF-8 文件名 + 跨域暴露头。 */
+    private void writePdfResponse(HttpServletResponse response, byte[] bytes, String fname, boolean attachment)
+            throws IOException {
+        response.setContentType("application/pdf");
+        response.setCharacterEncoding("UTF-8");
+        String enc = URLEncoder.encode(fname, "UTF-8").replace("+", "%20");
+        response.setHeader("Content-Disposition",
+                (attachment ? "attachment" : "inline") + "; filename=\"" + enc + "\"; filename*=UTF-8''" + enc);
+        response.setHeader("Access-Control-Expose-Headers", "Content-Disposition");
+        response.getOutputStream().write(bytes);
+        response.getOutputStream().flush();
+    }
 }

@@ -67,7 +67,7 @@ public class NursingPlanController {
 
     /* ================= 计划实例 ================= */
 
-    /** 患者计划列表(按就诊): 可选状态筛选(1执行中 2已评价 3已关闭), 开始时间倒序。 */
+    /** 患者计划列表(按就诊): 可选状态筛选(0推荐待确认 1执行中 2已评价 3已关闭), 开始时间倒序。 */
     @GetMapping("/list")
     public R<List<HisNursingPlanInstance>> list(@RequestParam Long visitId,
                                                 @RequestParam(required = false) Integer status) {
@@ -78,6 +78,13 @@ public class NursingPlanController {
     @PostMapping("/")
     public R<HisNursingPlanInstance> create(@RequestBody NursingPlanInstanceDTO dto) {
         return R.ok(planService.createInstance(dto));
+    }
+
+    /** 确认采纳推荐计划(status 0→1, P4b-2): 评估智能推荐的计划经护士确认后进入执行中。 */
+    @PutMapping("/{id}/confirm")
+    public R<Void> confirm(@PathVariable Long id) {
+        planService.confirmPlan(id);
+        return R.ok();
     }
 
     /** 记录措施执行: body 为单条措施 JSON 对象(缺 time 字段自动补记录时间), 追加到实际措施数组。 */
@@ -94,10 +101,16 @@ public class NursingPlanController {
         return R.ok();
     }
 
-    /** 关闭计划(status→3): 执行中/已评价均可关闭。 */
+    /** 关闭计划(status→3): 执行中/已评价/推荐均可关闭(推荐关闭即婉拒推荐)。 */
     @PutMapping("/{id}/close")
     public R<Void> close(@PathVariable Long id) {
         planService.closePlan(id);
         return R.ok();
+    }
+
+    /** 计划摘要文本(P4b-2): 诊断→目标→计划措施→已执行措施→评价结果, 可整段插入护理记录单。 */
+    @GetMapping("/{id}/summary-text")
+    public R<String> summaryText(@PathVariable Long id) {
+        return R.ok(planService.generatePlanSummaryText(id));
     }
 }

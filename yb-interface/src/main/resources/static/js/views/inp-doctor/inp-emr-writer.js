@@ -21,6 +21,16 @@
  *   - GET/POST 常用语: /api/his/emr/phrase/list, /api/his/emr/phrase/use/{id}
  *   - GET/POST 签名: /api/emr/sign/chain/{recordType}, /api/emr/sign/status/1/{id},
  *                    /api/emr/sign/1/{id}/rule?stage=
+ *   - P8b-2 多方式签名: POST /api/emr/ca-sign/sign-image|sign-ca(手写/CA, 文字签名走原规则链),
+ *                    POST /api/emr/ca-sign/verify/{signatureId}(单条验签),
+ *                    POST /api/emr/ca-sign/patient-sign/{signatureId}(患者/家属签名留存),
+ *                    GET  /api/emr/ca-sign/sign-info/{recordId}(签名记录: 方式/验签标签)
+ *   - P5a-4 签名质控: 签名响应附带 qcResult{passed,warnings[],blocks[],forbidden[]},
+ *                    禁止/拦截级阻断签名(弹整改抽屉), 提醒级放行(通知+质控页签展示)
+ *   - P5b-4 质控页签: GET  /api/his/emr/quality/defects/{recordId}  缺陷记录(整改状态闭环),
+ *                    GET /api/his/emr/timeliness/check/{recordId}   时效检查(倒计时展示);
+ *                    SSE 订阅 EMR_QC_DEADLINE_WARN/EMR_QC_OVERDUE/EMR_QC_NOTICE/EMR_QC_APPEAL_RESULT
+ *                    (HIS.EmrSseClient, recordId 匹配当前病历才刷新页签, 组件卸载退订)
  *   - POST /api/his/emr/cdss/evaluate-document      CDSS 文档级评估
  *   - GET  /api/his/emr/timeline/patient/{pid}      患者全景时间线(可选, 失败降级)
  *   - GET  /api/medtech/reports/patient/{pid}       检查检验报告(可选, 失败降级)
@@ -152,6 +162,21 @@
       '.iew-sign-step.is-done + .iew-sign-step .iew-sign-line { background:var(--yb-success,#3c862d); }',
       '.iew-sign-main { flex:1; min-width:0; padding-bottom:12px; }',
       '.iew-sign-name { font-size:13px; font-weight:600; color:var(--yb-ink-1,#1c2430); display:flex; align-items:center; gap:6px; flex-wrap:wrap; }',
+      /* ---- P5a-4 质控拦截抽屉 ---- */
+      '.iew-qc-panel { display:flex; flex-direction:column; gap:8px; }',
+      '.iew-qc-tip { font-size:12px; line-height:1.7; color:var(--yb-ink-2,#3a4757); background:var(--yb-warning-bg,#fbf3e6); border:1px solid #f0ddc0; border-radius:6px; padding:8px 10px; }',
+      /* ---- P5b-4 质控页签: 时效条/缺陷记录卡 ---- */
+      '.iew-qc-timeliness { display:flex; align-items:center; gap:8px; font-size:12px; line-height:1.6; border-radius:6px; padding:7px 10px; border:1px solid transparent; }',
+      '.iew-qc-timeliness.is-over { color:var(--yb-danger,#c74f4f); background:var(--yb-danger-bg,#fdf0f0); border-color:#f2c8c8; }',
+      '.iew-qc-timeliness.is-warn { color:var(--yb-warning,#a26b1b); background:var(--yb-warning-bg,#fbf3e6); border-color:#f0ddc0; }',
+      '.iew-qc-timeliness.is-ok { color:var(--yb-success,#3c862d); background:var(--yb-success-bg,#eef6ec); border-color:#d5e8cf; }',
+      '.iew-qc-timeliness-main { flex:1; min-width:0; }',
+      '.iew-qc-timeliness-sub { font-size:11px; opacity:.85; margin-top:1px; }',
+      '.iew-qc-sec-title { font-size:12px; font-weight:600; color:var(--yb-ink-3,#5a6a7e); display:flex; align-items:center; gap:4px; margin-top:4px; }',
+      '.iew-qc-defect { border:1px solid var(--yb-border-light,#ebeff4); border-radius:6px; padding:7px 9px; display:flex; flex-direction:column; gap:4px; }',
+      '.iew-qc-defect-head { display:flex; align-items:center; gap:6px; flex-wrap:wrap; }',
+      '.iew-qc-defect-name { font-size:13px; font-weight:600; color:var(--yb-ink-1,#1c2430); flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }',
+      '.iew-qc-defect-meta { font-size:11px; color:var(--yb-ink-4,#8994a5); }',
       '.iew-sign-info { font-size:11px; color:var(--yb-ink-4,#8994a5); margin-top:2px; }',
       /* ---- Tab6 版本 ---- */
       '.iew-ver-card { display:flex; align-items:center; gap:8px; padding:7px 9px; border:1px solid var(--yb-border-light,#ebeff4); border-radius:6px; cursor:pointer; }',
@@ -186,6 +211,25 @@
       '.iew-create-tpl-name { font-size:13px; font-weight:600; color:var(--yb-ink-1,#1c2430); }',
       '.iew-create-tpl-desc { font-size:11px; color:var(--yb-ink-4,#8994a5); margin-top:2px; }',
       '.iew-create-tpl-empty { font-size:12px; color:var(--yb-ink-4,#8994a5); text-align:center; padding:12px 0; }',
+      /* ---- P8a-3 引用草药方对话框 ---- */
+      '.iew-herb-pick { cursor:pointer; }',
+      '.iew-herb-on td.el-table__cell { background:var(--yb-brand-bg,#eaf3fb); }',
+      '.iew-herb-name { font-size:13px; font-weight:600; color:var(--yb-ink-1,#1c2430); }',
+      '.iew-herb-preview { max-height:220px; overflow:auto; padding:10px 12px; border:1px dashed var(--yb-border,#dfe4eb); border-radius:6px; background:var(--yb-surface-2,#f7f9fc); white-space:pre-wrap; word-break:break-all; font-size:13px; line-height:1.8; color:var(--yb-ink-1,#1c2430); }',
+      '.iew-herb-hint { font-size:12px; color:var(--yb-ink-4,#8994a5); margin-top:6px; }',
+      /* ---- P8b-2 多方式签名: 下拉触发角标/签名记录卡/CA 弹窗 ---- */
+      '.iew-dd-caret { display:inline-flex; width:11px; height:11px; vertical-align:-1px; transform:rotate(90deg); }',
+      '.iew-sign-rec-card { border:1px solid var(--yb-border-light,#ebeff4); border-radius:6px; padding:7px 9px; display:flex; flex-direction:column; gap:6px; }',
+      '.iew-sign-rec-head { display:flex; align-items:center; gap:6px; flex-wrap:wrap; font-size:12px; }',
+      '.iew-sign-rec-title { font-weight:600; color:var(--yb-ink-1,#1c2430); }',
+      '.iew-sign-rec-meta { color:var(--yb-ink-4,#8994a5); font-size:11px; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }',
+      '.iew-sign-rec-tags { margin-left:auto; display:flex; gap:4px; flex:none; }',
+      '.iew-sign-rec-ops { display:flex; gap:2px; }',
+      '.iew-sign-rec-ops .el-button + .el-button { margin-left:0; }',
+      '.iew-sign-rec-imgs { display:flex; gap:8px; flex-wrap:wrap; align-items:flex-end; }',
+      '.iew-sign-rec-img { border:1px solid var(--yb-border-light,#ebeff4); border-radius:4px; background:#fff; max-height:40px; padding:1px; }',
+      '.iew-ca-tip { display:flex; align-items:flex-start; gap:6px; font-size:12px; line-height:1.7; color:var(--yb-ink-2,#3a4757); background:var(--yb-warning-bg,#fbf3e6); border:1px solid #f0ddc0; border-radius:6px; padding:8px 10px; margin-bottom:10px; }',
+      '.iew-ca-tip .iew-icon { flex:none; margin-top:3px; }',
       /* ---- 滚动条 ---- */
       '.iew-left .iew-groups::-webkit-scrollbar, .iew-editor-host::-webkit-scrollbar, .iew-right .el-tabs__content::-webkit-scrollbar { width:6px; }',
       '.iew-left .iew-groups::-webkit-scrollbar-thumb, .iew-editor-host::-webkit-scrollbar-thumb, .iew-right .el-tabs__content::-webkit-scrollbar-thumb { background:var(--yb-border-strong,#ccd4de); border-radius:3px; }'
@@ -254,7 +298,8 @@
     activity: svg('<polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/>'),
     user: svg('<path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/>'),
     panel: svg('<rect x="3" y="3" width="18" height="18" rx="2" ry="2"/><line x1="15" y1="3" x2="15" y2="21"/>'),
-    bed: svg('<path d="M2 4v16"/><path d="M2 8h18a2 2 0 0 1 2 2v10"/><path d="M2 17h20"/><path d="M6 8v9"/>')
+    bed: svg('<path d="M2 4v16"/><path d="M2 8h18a2 2 0 0 1 2 2v10"/><path d="M2 17h20"/><path d="M6 8v9"/>'),
+    leaf: svg('<path d="M11 20A7 7 0 0 1 9.8 6.1C15.5 5 17 4.48 19 2c1 2 2 4.18 2 8 0 5.5-4.78 10-10 10Z"/><path d="M2 21c0-3 1.85-5.36 5.08-6C9.5 14.52 12 13 13 12"/>')
   };
 
   /* ================= 纯工具函数 ================= */
@@ -287,6 +332,11 @@
       return EP.ElMessageBox.confirm(text, title || '确认', opts || {});
     }
     return global.Promise ? global.Promise.reject(new Error('cancel')) : null;
+  }
+  /* P5b-4 SSE 事件类型判定: 整改通知/申诉结果需独立弹窗(不随当前病历过滤, 全量知会) */
+  function typeIsNoticeOrAppeal(env) {
+    var t = env && env.type;
+    return t === 'EMR_QC_NOTICE' || t === 'EMR_QC_APPEAL_RESULT';
   }
 
   /* ---- 旧内容归一化为 Tiptap 文档 ---- */
@@ -394,6 +444,25 @@
         signRules: [],
         signLoading: false,
         signing: false,
+        /* P8b-2 多方式签名: CA 弹窗 + 签名记录(方式/验签标签) */
+        caVisible: false,
+        caPin: '',
+        caStage: '',
+        caSignList: [],
+        caSignLoading: false,
+        verifyLoadingId: null,
+        /* P5a-4 签名质控(由签名响应 qcResult 驱动) */
+        qcForbidden: [],
+        qcBlocks: [],
+        qcWarnings: [],
+        showQcPanel: false,
+        /* P5b-4 质控页签: 持久化缺陷记录 + 时效检查(刷新按钮/切页签/SSE 事件触发) */
+        qcDefects: [],
+        qcDefectLoading: false,
+        qcLoaded: false,
+        timeliness: null,
+        timelinessAt: 0,
+        timelinessLoading: false,
         /* Tab6 版本 */
         versions: [],
         versionLoading: false,
@@ -405,6 +474,13 @@
         versionPreview: null,
         versionPreviewLoading: false,
         versionPreviewTitle: '',
+        /* P8a-3 引用药方(住院草药处方, 端点在 P8a-2 HisPrescriptionService) */
+        herbVisible: false,
+        herbLoading: false,
+        herbList: [],
+        herbSelRow: null,
+        herbText: '',
+        herbTextLoading: false,
         /* 身份与杂项 */
         myStaffId: null,
         myTitleCode: null,
@@ -524,6 +600,40 @@
           return tpl && tpl.templateCategory != null && Number(tpl.templateCategory) === t;
         });
       },
+      /* P5b-4 质控缺陷记录: severity 降序(禁止3→拦截2→提醒1), 同级新近在前 */
+      qcSortedDefects: function () {
+        return (this.qcDefects || []).slice().sort(function (a, b) {
+          var d = (Number(b.severity) || 0) - (Number(a.severity) || 0);
+          if (d !== 0) { return d; }
+          return String(b.createTime || '').localeCompare(String(a.createTime || ''));
+        });
+      },
+      /* 时效条样式档: overdue/warn/ok/null(未检查或无时限) */
+      timelinessCls: function () {
+        var st = this.timeliness && this.timeliness.status;
+        if (st === 'overdue') { return 'is-over'; }
+        if (st === 'warning') { return 'is-warn'; }
+        if (st === 'normal') { return 'is-ok'; }
+        return null;
+      },
+      /* 时效主文案: 剩余分钟随本地时钟逐分钟递减(timelinessAt 为检查基准时刻) */
+      timelinessMain: function () {
+        var t = this.timeliness;
+        if (!t || !t.deadlineTime) { return ''; }
+        var remain = this.remainMinutes();
+        if (remain == null) { return ''; }
+        if (remain <= 0) { return '⏰ 已超过书写时限 ' + Math.abs(Math.round(remain)) + ' 分钟'; }
+        if (remain < 60) { return '⏰ 距书写截止还有 ' + Math.max(1, Math.round(remain)) + ' 分钟'; }
+        return '⏰ 距书写截止还有 ' + Math.floor(remain / 60) + ' 小时 ' + Math.round(remain % 60) + ' 分钟';
+      },
+      timelinessSub: function () {
+        var t = this.timeliness;
+        if (!t) { return ''; }
+        var txt = '截止 ' + fmtDT(t.deadlineTime);
+        var rules = (t.rules || []).length;
+        if (rules) { txt += ' · 匹配 ' + rules + ' 条时限规则'; }
+        return txt;
+      },
       /* 时限状态: null 无 / 'over' 已超时 / 'warn' 2小时内 */
       currentDeadline: function () {
         var dl = this.current && this.current.deadlineTime;
@@ -544,6 +654,8 @@
         if (tab === 'sign' && vm.current && vm.current.id) { vm.loadSignInfo(); }
         if (tab === 'version' && vm.current && vm.current.id && !vm.versions.length) { vm.loadVersions(); }
         if (tab === 'cdss' && vm.current && !vm.cdssEvaluated) { vm.evaluateCdssTab(); }
+        /* P5b-4: 首次切入质控页签时拉取缺陷记录与时效检查(后续由刷新按钮/SSE 事件驱动) */
+        if (tab === 'qc' && vm.current && vm.current.id && !vm.qcLoaded) { vm.refreshQcData(); }
       }
     },
     created: function () {
@@ -555,6 +667,16 @@
           if (vm.current && vm.canEdit) { vm.save(false, false); }
         }
       };
+      /* P5b-4: 订阅 SSE 质控事件(HIS.EmrSseClient.on 返回退订函数, 卸载时逐个调用)。
+       * 弹窗提示由铃铛统一弹出, 此处仅处理与当前病历相关的页签数据刷新。 */
+      vm._sseUnsubs = [];
+      var sse = HIS.EmrSseClient;
+      if (sse && typeof sse.on === 'function') {
+        ['EMR_QC_DEADLINE_WARN', 'EMR_QC_OVERDUE', 'EMR_QC_NOTICE', 'EMR_QC_APPEAL_RESULT'].forEach(function (t) {
+          var off = sse.on(t, function (env) { vm.onQcSseEvent(env); });
+          if (typeof off === 'function') { vm._sseUnsubs.push(off); }
+        });
+      }
     },
     mounted: function () {
       var vm = this;
@@ -574,6 +696,9 @@
       var vm = this;
       if (vm._deadlineTimer) { clearInterval(vm._deadlineTimer); vm._deadlineTimer = null; }
       global.document.removeEventListener('keydown', vm._onKeydown);
+      /* P5b-4: 退订 SSE 质控事件, 防止组件销毁后回调访问已失效实例 */
+      (vm._sseUnsubs || []).forEach(function (off) { try { off(); } catch (e) { /* noop */ } });
+      vm._sseUnsubs = null;
       vm.destroyEditor();
     },
 
@@ -672,6 +797,9 @@
         vm.totalRecords = 0;
         vm.searchKey = '';
         vm.signStatus = null; vm.signRules = [];
+        vm.caSignList = []; vm.caVisible = false; vm.caPin = ''; vm.caStage = '';
+        vm.qcForbidden = []; vm.qcBlocks = []; vm.qcWarnings = []; vm.showQcPanel = false;
+        vm.resetQcTabData();
         vm.versions = []; vm.versionSel = [];
         vm.cdssAlerts = []; vm.cdssEvaluated = false; vm.cdssFailed = false;
         vm.draftSavedText = '';
@@ -690,6 +818,8 @@
         vm.legacyMode = false;
         vm.dirty = false;
         vm.draftSavedText = '';
+        vm.qcForbidden = []; vm.qcBlocks = []; vm.qcWarnings = []; vm.showQcPanel = false;
+        vm.resetQcTabData();
         vm.editorLoading = true;
         HIS.get('/api/his/inp/record/' + HIS.idParam(row.id))
           .then(function (rec) {
@@ -1160,6 +1290,76 @@
         if (vm.insertAtCursor(lines.join('\n'))) { toast('success', '已插入报告摘要'); }
       },
 
+      /* ================= P8a-3: 引用草药方 ================= */
+      /* 打开"引用草药方"对话框: 拉取患者本次就诊的草药处方列表 */
+      openHerbFormulas: function () {
+        var vm = this;
+        vm.herbVisible = true;
+        vm.herbSelRow = null;
+        vm.herbText = '';
+        vm.loadHerbFormulas();
+      },
+      /* 草药处方列表(端点由 P8a-2 提供; 兼容数组/records/list 信封, 字段命名渐进收敛) */
+      loadHerbFormulas: function () {
+        var vm = this;
+        vm.herbList = [];
+        vm.herbLoading = true;
+        var q = '/api/his/prescription/herb-formulas?patientId=' + HIS.idParam(vm.patientId)
+          + '&visitId=' + HIS.idParam(vm.inpVisitId);
+        HIS.get(q).then(function (data) {
+          vm.herbList = Array.isArray(data) ? data : ((data && (data.records || data.list)) || []);
+        }).catch(function (e) {
+          vm.herbList = [];
+          if (vm.herbVisible) { HIS.notifyError(e); }
+        }).finally(function () { vm.herbLoading = false; });
+      },
+      /* 行字段访问器: 兼容 P8a-2 最终字段命名(方名/日期/药味数) */
+      herbRowId: function (r) { return r ? (r.prescriptionId != null ? r.prescriptionId : r.id) : null; },
+      herbRowName: function (r) {
+        if (!r) { return '-'; }
+        return r.formulaName || r.prescriptionName || r.name || r.title || '草药处方';
+      },
+      herbRowDate: function (r) {
+        if (!r) { return '-'; }
+        return fmtDT(r.formulaTime || r.prescriptionTime || r.prescribeTime || r.visitDate || r.createTime);
+      },
+      herbRowCount: function (r) {
+        if (!r) { return '-'; }
+        var n = r.herbCount != null ? r.herbCount : (r.itemCount != null ? r.itemCount : (r.count != null ? r.count : r.num));
+        return n == null ? '-' : n;
+      },
+      herbRowClass: function (obj) {
+        var row = obj && obj.row;
+        var isOn = this.herbSelRow && row && HIS.sameId(this.herbRowId(this.herbSelRow), this.herbRowId(row));
+        return isOn ? 'iew-herb-pick iew-herb-on' : 'iew-herb-pick';
+      },
+      /* 选中行 → 取格式化文本(兼容 string 与 {text|formulaText|content} 信封) */
+      pickHerb: function (row) {
+        var vm = this;
+        if (!row) { return; }
+        vm.herbSelRow = row;
+        vm.herbText = '';
+        var pid = vm.herbRowId(row);
+        if (pid == null || pid === '') { return; }
+        vm.herbTextLoading = true;
+        HIS.get('/api/his/prescription/formula-text?prescriptionId=' + HIS.idParam(pid))
+          .then(function (data) {
+            if (typeof data === 'string') { vm.herbText = data; return; }
+            vm.herbText = data && (data.text || data.formulaText || data.content) ? String(data.text || data.formulaText || data.content) : '';
+          })
+          .catch(function (e) { vm.herbText = ''; HIS.notifyError(e); })
+          .finally(function () { vm.herbTextLoading = false; });
+      },
+      /* 插入编辑器光标处 */
+      insertHerbFormula: function () {
+        var vm = this;
+        if (!vm.herbText) { toast('warning', '请先选择草药处方'); return; }
+        if (vm.insertAtCursor(vm.herbText)) {
+          toast('success', '已插入草药方');
+          vm.herbVisible = false;
+        }
+      },
+
       /* ================= Tab4: CDSS ================= */
       /* 文档级 CDSS 评估(与 emr-editor.js 同端点; 此处独立渲染卡片) */
       evaluateCdssTab: function () {
@@ -1193,7 +1393,7 @@
       /* 规则链 + 实际状态并行拉取(任一失败保持空态) */
       loadSignInfo: function () {
         var vm = this;
-        if (!vm.current || !vm.current.id) { vm.signStatus = null; vm.signRules = []; return; }
+        if (!vm.current || !vm.current.id) { vm.signStatus = null; vm.signRules = []; vm.caSignList = []; return; }
         vm.signLoading = true;
         var rt = vm.current.recordType != null ? Number(vm.current.recordType) : 0;
         global.Promise.all([
@@ -1203,6 +1403,17 @@
           vm.signRules = Array.isArray(rs[0]) ? rs[0] : [];
           vm.signStatus = rs[1] || null;
         }).finally(function () { vm.signLoading = false; });
+        vm.loadCaSignInfo();   /* P8b-2: 多方式签名记录(方式/验签标签) */
+      },
+      /* P8b-2 签名记录(多方式签名与验签状态); 失败静默(签名表扩展列未迁移时详情仍可用) */
+      loadCaSignInfo: function () {
+        var vm = this;
+        if (!vm.current || !vm.current.id) { vm.caSignList = []; return global.Promise ? global.Promise.resolve() : null; }
+        vm.caSignLoading = true;
+        return HIS.get('/api/emr/ca-sign/sign-info/' + HIS.idParam(vm.current.id))
+          .then(function (list) { vm.caSignList = Array.isArray(list) ? list : []; })
+          .catch(function () { vm.caSignList = []; })
+          .finally(function () { vm.caSignLoading = false; });
       },
       stageText: function (s) { return STAGE_LABELS[s] || s || '-'; },
       /* 阶段可签预判: 职称档位(后端规则链校验为准); 实习医生不可签任何阶段 */
@@ -1219,7 +1430,8 @@
         if (this.myTitleCode === '') { return true; }      /* 职称未知放行, 后端兜底 */
         return Number(this.myTitleCode) <= max;
       },
-      /* 规则驱动签署: 先 SignaturePad 捕获手写(可用时), 再 POST /rule?stage= */
+      /* 规则驱动签署(文字签名, 原有 EmrSignatureService 流程): 先 SignaturePad 捕获手写(可用时),
+       * 再 POST /rule?stage=; P8b-2 起由签名方式下拉触发 */
       doSignRule: function (stage) {
         var vm = this;
         if (!vm.current || !vm.current.id || vm.signing) { return; }
@@ -1228,11 +1440,7 @@
           vm.signing = true;
           return HIS.post('/api/emr/sign/1/' + HIS.idParam(vm.current.id) + '/rule?stage=' + encodeURIComponent(stage),
             signImg ? { signImg: signImg } : {})
-            .then(function (res) {
-              var done = res && res.allComplete;
-              HIS.notifySuccess(done ? vm.stageText(stage) + '签名完成, 签名链已闭环' : vm.stageText(stage) + '签名完成');
-              return vm.loadSignInfo();
-            })
+            .then(function (res) { return vm.handleSignResult(res, stage); })
             .catch(HIS.notifyError)
             .finally(function () { vm.signing = false; });
         };
@@ -1247,12 +1455,262 @@
           apply(null);
         }
       },
+      /* P5a-4/P8b-2 签名响应统一处理: qcResult 三档(禁止/拦截/提醒) + 成功提示 + 状态与签名记录刷新;
+       * 三种签名方式(文字规则链/手写 sign-image/CA sign-ca)共用 */
+      handleSignResult: function (res, stage) {
+        var vm = this;
+        /* P5a-4: 签名响应附带质控结果(qcResult 兼容顶层/信封 data 两种形态) */
+        var qc = res && (res.qcResult || (res.data && res.data.qcResult));
+        if (qc && Array.isArray(qc.forbidden) && qc.forbidden.length) {
+          vm.qcForbidden = qc.forbidden; vm.qcBlocks = qc.blocks || []; vm.qcWarnings = qc.warnings || [];
+          vm.activeTab = 'qc';
+          toast('error', '签名被禁止: ' + qc.forbidden.map(function (d) { return d.ruleName || d.ruleCode || '质控规则'; }).join('、'));
+          return null;
+        }
+        if (qc && Array.isArray(qc.blocks) && qc.blocks.length) {
+          vm.qcForbidden = qc.forbidden || []; vm.qcBlocks = qc.blocks; vm.qcWarnings = qc.warnings || [];
+          vm.showQcPanel = true;
+          toast('warning', '存在 ' + qc.blocks.length + ' 项拦截级缺陷, 请整改后重新签名');
+          return null;
+        }
+        if (qc && Array.isArray(qc.warnings) && qc.warnings.length) {
+          vm.qcForbidden = []; vm.qcBlocks = []; vm.qcWarnings = qc.warnings;
+          var EP = global.ElementPlus;
+          if (EP && EP.ElNotification) {
+            EP.ElNotification({ title: '质控提醒', message: '存在 ' + qc.warnings.length + ' 项待整改缺陷, 详见右侧「质控」页签', type: 'warning', duration: 5000 });
+          }
+        }
+        var done = res && res.allComplete;
+        var extra = res && res.signModeName ? ' · ' + res.signModeName : '';   /* P8b-2: 响应附签名方式名 */
+        HIS.notifySuccess(vm.stageText(stage) + '签名完成' + extra + (done ? ', 签名链已闭环' : ''));
+        return vm.loadSignInfo();
+      },
+      /* P8b-2 签名方式下拉指令分发: text=原规则链(文字) / image=ca-sign sign-image(手写) / ca=PIN 码弹窗 */
+      onSignCommand: function (mode, stage) {
+        var vm = this;
+        if (mode === 'image') { vm.doSignImage(stage); return; }
+        if (mode === 'ca') { vm.openCaSign(stage); return; }
+        vm.doSignRule(stage);
+      },
+      /* P8b-2 手写签名: SignaturePad 捕获手写图(载荷 signImg 为 base64) → POST /api/emr/ca-sign/sign-image */
+      doSignImage: function (stage) {
+        var vm = this;
+        if (!vm.current || !vm.current.id || vm.signing) { return; }
+        if (!vm.canSignStage(stage)) { toast('warning', '当前职称不可签署该环节'); return; }
+        if (!HIS.SignaturePad || typeof HIS.SignaturePad.open !== 'function') {
+          toast('warning', '签名板组件未加载(signature-pad.js)');
+          return;
+        }
+        HIS.SignaturePad.open({ actionType: 'emr_ca_image_sign', refType: 'medical_record', refId: HIS.id(vm.current.id) })
+          .then(function (r) {
+            /* SignaturePad 成功载荷: signImg(手写 base64, P8b-2 新增; 预设签名时为 URL 均可提交) */
+            var img = r && (r.signImg || r.signImgUrl);
+            if (!img) { toast('warning', '未获取到手写签名图'); return null; }
+            vm.signing = true;
+            return HIS.post('/api/emr/ca-sign/sign-image', {
+              recordId: HIS.id(vm.current.id),
+              signerId: vm.myStaffId ? HIS.id(vm.myStaffId) : null,
+              imageBase64: img
+            }).then(function (res) { return vm.handleSignResult(res, stage); });
+          })
+          .catch(function (e) {
+            if (e === 'cancelled') { toast('info', '已取消签名'); }
+            else if (e !== 'busy') { HIS.notifyError(e); }
+          })
+          .finally(function () { vm.signing = false; });
+      },
+      /* P8b-2 CA数字签名: 打开 PIN 码弹窗(模拟模式 certSn=SIMULATED, 算法 SM2) */
+      openCaSign: function (stage) {
+        var vm = this;
+        if (!vm.current || !vm.current.id) { return; }
+        if (!vm.canSignStage(stage)) { toast('warning', '当前职称不可签署该环节'); return; }
+        vm.caStage = stage;
+        vm.caPin = '';
+        vm.caVisible = true;
+        vm.$nextTick(function () {
+          var i = vm.$refs.caPinInput;
+          if (i && i.focus) { i.focus(); }
+        });
+      },
+      /* CA 确认签名; 预留 window.caClientCallback 回调点(外部注入时由真实 UKey 客户端交互,
+       * done(err, {certSn, signatureAlgorithm}) 回传证书信息, 未注入走模拟模式 SIMULATED/SM2) */
+      submitCaSign: function () {
+        var vm = this;
+        if (!vm.current || !vm.current.id || vm.signing) { return; }
+        if (!vm.caPin) { toast('warning', '请输入UKey PIN码'); return; }
+        var stage = vm.caStage;
+        var finish = function (certSn, algo) {
+          vm.signing = true;
+          HIS.post('/api/emr/ca-sign/sign-ca', {
+            recordId: HIS.id(vm.current.id),
+            signerId: vm.myStaffId ? HIS.id(vm.myStaffId) : null,
+            certSn: certSn || 'SIMULATED',
+            signatureAlgorithm: algo || 'SM2'
+          }).then(function (res) {
+            vm.caVisible = false;
+            return vm.handleSignResult(res, stage);
+          }).catch(HIS.notifyError).finally(function () { vm.signing = false; });
+        };
+        if (typeof global.caClientCallback === 'function') {
+          try {
+            global.caClientCallback({
+              recordId: HIS.id(vm.current.id),
+              stage: stage,
+              pin: vm.caPin,
+              done: function (err, cert) {
+                if (err) { toast('error', 'CA客户端交互失败: ' + (err && err.message ? err.message : err)); return; }
+                finish(cert && cert.certSn, cert && cert.signatureAlgorithm);
+              }
+            });
+          } catch (e) { toast('error', 'CA客户端调用异常'); }
+        } else {
+          finish('SIMULATED', 'SM2');
+        }
+      },
+      /* P8b-2 单条验签: POST verify/{signatureId}, 结果回写 verifyResult/verifyTime 后刷新标签 */
+      verifyCaSign: function (sig) {
+        var vm = this;
+        if (!sig || sig.id == null || vm.verifyLoadingId != null) { return; }
+        vm.verifyLoadingId = sig.id;
+        HIS.post('/api/emr/ca-sign/verify/' + HIS.idParam(sig.id))
+          .then(function (r) {
+            if (r && r.message) { toast(r.passed === false ? 'error' : 'success', r.message); }
+            return vm.loadCaSignInfo();
+          })
+          .catch(HIS.notifyError)
+          .finally(function () { vm.verifyLoadingId = null; });
+      },
+      /* P8b-2 患者/家属签名留存: 双签名板(患者无法签字时仅家属) → POST patient-sign/{signatureId} */
+      patientSign: function (sig) {
+        var vm = this;
+        if (!sig || sig.id == null || vm.signing) { return; }
+        if (!HIS.SignaturePad || typeof HIS.SignaturePad.openPatientSign !== 'function') {
+          toast('warning', '签名板组件未加载或不支持患者签名');
+          return;
+        }
+        HIS.SignaturePad.openPatientSign({
+          title: '患者/家属签名 · ' + vm.stageText(sig.stage),
+          onSave: function (imgs) {
+            vm.signing = true;
+            HIS.post('/api/emr/ca-sign/patient-sign/' + HIS.idParam(sig.id), {
+              patientImage: (imgs && imgs.patientImage) || null,
+              familyImage: (imgs && imgs.familyImage) || null
+            }).then(function () {
+              HIS.notifySuccess('患者/家属签名已留存');
+              return vm.loadCaSignInfo();
+            }).catch(HIS.notifyError).finally(function () { vm.signing = false; });
+          }
+        });
+      },
+      /* 签名方式标签: signMode 1文字/2手写(图片)/3CA(与 his_emr_signature.sign_mode 同口径) */
+      signModeText: function (m) {
+        var n = Number(m);
+        return n === 3 ? 'CA签名' : (n === 2 ? '手写签名' : '文字签名');
+      },
+      signModeTag: function (m) {
+        var n = Number(m);
+        return n === 3 ? '' : (n === 2 ? 'warning' : 'info');
+      },
+      /* 验签状态标签: verifyResult 0未验(灰)/1已验(绿)/2验证失败(红) */
+      verifyTextOf: function (v) {
+        var n = Number(v);
+        return n === 1 ? '已验' : (n === 2 ? '验证失败' : '未验');
+      },
+      verifyTagOf: function (v) {
+        var n = Number(v);
+        return n === 1 ? 'success' : (n === 2 ? 'danger' : 'info');
+      },
       goSignTab: function () {
         var vm = this;
         if (!vm.current || !vm.current.id) { toast('warning', '请先保存草稿'); return; }
         vm.panelVisible = true;
         vm.activeTab = 'sign';
         vm.loadSignInfo();
+      },
+      /* P5a-4: 整改后重签(关闭拦截抽屉并定位签名页签) */
+      reSignAfterRectify: function () {
+        this.showQcPanel = false;
+        this.goSignTab();
+      },
+
+      /* ================= P5b-4: 质控页签(SSE 联动 + 缺陷记录 + 时效倒计时) ================= */
+      /* 切换病历/就诊时重置页签数据(qcLoaded 归零, 下次切入重新拉取) */
+      resetQcTabData: function () {
+        this.qcDefects = [];
+        this.qcLoaded = false;
+        this.timeliness = null;
+        this.timelinessAt = 0;
+      },
+      /* SSE 质控事件处理: 信封 data.recordId 与当前病历匹配才刷新页签;
+       * 整改通知/申诉结果直接弹窗(可能与当前病历无关, 需即时知晓), 其余仅刷新 */
+      onQcSseEvent: function (env) {
+        var vm = this;
+        var data = (env && env.data && typeof env.data === 'object') ? env.data : {};
+        var msg = data.message || data.msg || '';
+        var EP = global.ElementPlus;
+        if (typeIsNoticeOrAppeal(env)) {
+          if (EP && EP.ElNotification) {
+            var isAppeal = env.type === 'EMR_QC_APPEAL_RESULT';
+            EP.ElNotification({
+              title: isAppeal ? '申诉结果' : '整改通知',
+              message: msg || (isAppeal ? '缺陷申诉已审核, 请查看质控结果' : '收到整改通知单, 请及时整改缺陷'),
+              type: isAppeal ? 'info' : 'warning',
+              duration: 0,
+              position: 'top-right'
+            });
+          }
+        }
+        /* recordId 未携带或不匹配当前病历时不刷新页签(避免误覆盖其它病历的数据;
+         * 后端 String.valueOf(null) 会产出 "null" 字符串, 一并排除) */
+        if (!vm.current || !vm.current.id || data.recordId == null || data.recordId === 'null') { return; }
+        if (!HIS.sameId(HIS.id(data.recordId), vm.current.id)) { return; }
+        vm.refreshQcData();
+        /* 时效预警/超时: 若质控页签未展开, 切过去让医生第一时间看到缺陷明细 */
+        if (!typeIsNoticeOrAppeal(env) && vm.activeTab !== 'qc') { vm.activeTab = 'qc'; vm.panelVisible = true; }
+      },
+      /* 并行拉取缺陷记录 + 时效检查(独立 catch, 一个失败不拖垮另一个) */
+      refreshQcData: function () {
+        var vm = this;
+        if (!vm.current || !vm.current.id) { return; }
+        var rid = HIS.idParam(vm.current.id);
+        vm.qcDefectLoading = true;
+        vm.timelinessLoading = true;
+        HIS.get('/api/his/emr/quality/defects/' + rid)
+          .then(function (list) { vm.qcDefects = Array.isArray(list) ? list : []; vm.qcLoaded = true; })
+          .catch(function () { vm.qcDefects = []; vm.qcLoaded = true; })
+          .finally(function () { vm.qcDefectLoading = false; });
+        HIS.get('/api/his/emr/timeliness/check/' + rid)
+          .then(function (t) {
+            vm.timeliness = (t && t.deadlineTime) ? t : null;
+            vm.timelinessAt = Date.now();
+          })
+          .catch(function () { vm.timeliness = null; vm.timelinessAt = 0; })
+          .finally(function () { vm.timelinessLoading = false; });
+      },
+      /* 剩余分钟 = 后端检查时的剩余值 - 距今流逝分钟(依赖 nowTs 每分钟跳动, 倒计时感) */
+      remainMinutes: function () {
+        var t = this.timeliness;
+        if (!t || t.remainingMinutes == null || !this.timelinessAt) { return null; }
+        var elapsed = (this.nowTs - this.timelinessAt) / 60000;
+        return Number(t.remainingMinutes) - elapsed;
+      },
+      /* 缺陷严重度(1提醒/2拦截/3禁止)→ 文案与样式档 */
+      severityTextOf: function (v) {
+        var s = Number(v);
+        return s === 3 ? '禁止' : (s === 2 ? '拦截' : (s === 1 ? '提醒' : '未知'));
+      },
+      severityTagOf: function (v) {
+        var s = Number(v);
+        return s === 3 ? 'danger' : (s === 2 ? 'warning' : 'info');
+      },
+      /* 缺陷整改状态(0未整改/1已整改/2已申诉/3申诉驳回/4豁免)→ 文案与样式档 */
+      defectStatusTextOf: function (v) {
+        var s = Number(v);
+        return s === 1 ? '已整改' : (s === 2 ? '已申诉' : (s === 3 ? '申诉驳回' : (s === 4 ? '已豁免' : '未整改')));
+      },
+      defectStatusTagOf: function (v) {
+        var s = Number(v);
+        return s === 1 ? 'success' : (s === 2 ? 'warning' : (s === 3 ? 'danger' : (s === 4 ? 'info' : 'danger')));
       },
 
       /* ================= Tab6: 版本 ================= */
@@ -1367,6 +1825,7 @@
       '        <el-button size="small" type="success" :disabled="!canSubmit || submitting" :loading="submitting" @click="submitRecord"><span class="iew-icon" v-html="icons.send"></span> 提交</el-button>',
       '        <el-button size="small" type="warning" plain v-if="canSignNow" @click="goSignTab"><span class="iew-icon" v-html="icons.pen"></span> 签名</el-button>',
       '        <el-button size="small" @click="printRecord"><span class="iew-icon" v-html="icons.printer"></span> 打印</el-button>',
+      '        <el-button size="small" :disabled="!canEdit" @click="openHerbFormulas"><span class="iew-icon" v-html="icons.leaf"></span> 引用药方</el-button>',
       '        <el-button size="small" @click="openTimeline"><span class="iew-icon" v-html="icons.clock"></span> 全景时间线</el-button>',
       '        <el-button size="small" text @click="togglePanel" :title="panelVisible ? \'收起助手\' : \'展开助手\'"><span class="iew-icon" v-html="icons.panel"></span></el-button>',
       '      </div>',
@@ -1564,11 +2023,86 @@
       '                      <div class="iew-sign-name">{{ stageText(s.stage) }}<el-tag v-if="s.completed" size="small" type="success" disable-transitions>已签</el-tag><el-tag v-else-if="s.required === false" size="small" type="info" disable-transitions>可选</el-tag></div>',
       '                      <div class="iew-sign-info">{{ s.completed ? ((s.signerName || "-") + " · " + fmtDT(s.signTime)) : "待签署" }}</div>',
       '                      <div v-if="!s.completed && s.required !== false && current && current.id" style="margin-top:4px">',
-      '                        <el-button size="small" type="primary" plain :disabled="!canSignStage(s.stage) || signing" :loading="signing && pendingStage && pendingStage.stage === s.stage" @click="doSignRule(s.stage)">签署</el-button>',
+      '                        <el-dropdown trigger="click" @command="onSignCommand($event, s.stage)">',
+      '                          <el-button size="small" type="primary" plain :disabled="!canSignStage(s.stage) || signing" :loading="signing && pendingStage && pendingStage.stage === s.stage">签署方式 <span class="iew-icon iew-dd-caret" v-html="icons.chevron"></span></el-button>',
+      '                          <template #dropdown>',
+      '                            <el-dropdown-menu>',
+      '                              <el-dropdown-item command="text">文字签名(密码验证)</el-dropdown-item>',
+      '                              <el-dropdown-item command="image">手写签名(签名板)</el-dropdown-item>',
+      '                              <el-dropdown-item command="ca">CA数字签名(UKey)</el-dropdown-item>',
+      '                            </el-dropdown-menu>',
+      '                          </template>',
+      '                        </el-dropdown>',
       '                      </div>',
       '                    </div>',
       '                  </div>',
       '                </div>',
+      /* P8b-2 签名记录: 方式标签 + 验签状态标签 + 单条验签/患者家属签名入口 */
+      '                <div v-if="caSignList.length" class="iew-sign-recs">',
+      '                  <div class="iew-qc-sec-title"><span class="iew-icon" v-html="icons.pen"></span> 签名记录 ({{ caSignList.length }})</div>',
+      '                  <div v-for="sig in caSignList" :key="sig.id" class="iew-sign-rec-card">',
+      '                    <div class="iew-sign-rec-head">',
+      '                      <span class="iew-sign-rec-title">{{ stageText(sig.stage) }}</span>',
+      '                      <span class="iew-sign-rec-meta">{{ sig.signerName || "-" }} · {{ fmtDT(sig.signTime) }}</span>',
+      '                      <span class="iew-sign-rec-tags">',
+      '                        <el-tag size="small" :type="signModeTag(sig.signMode)" disable-transitions>{{ signModeText(sig.signMode) }}</el-tag>',
+      '                        <el-tag size="small" :type="verifyTagOf(sig.verifyResult)" effect="plain" disable-transitions>{{ verifyTextOf(sig.verifyResult) }}</el-tag>',
+      '                      </span>',
+      '                    </div>',
+      '                    <div v-if="sig.signImage || sig.patientSignImage || sig.familySignImage" class="iew-sign-rec-imgs">',
+      '                      <img v-if="sig.signImage" class="iew-sign-rec-img" :src="sig.signImage" alt="手写签名">',
+      '                      <img v-if="sig.patientSignImage" class="iew-sign-rec-img" :src="sig.patientSignImage" alt="患者签名">',
+      '                      <img v-if="sig.familySignImage" class="iew-sign-rec-img" :src="sig.familySignImage" alt="家属签名">',
+      '                    </div>',
+      '                    <div class="iew-sign-rec-ops">',
+      '                      <el-button size="small" text type="primary" :loading="verifyLoadingId === sig.id" @click="verifyCaSign(sig)">验签</el-button>',
+      '                      <el-button size="small" text type="primary" :disabled="signing" @click="patientSign(sig)">患者/家属签名</el-button>',
+      '                    </div>',
+      '                  </div>',
+      '                </div>',
+      '              </div>',
+      '            </div>',
+      '          </el-tab-pane>',
+      /* Tab7 质控(P5a-4 签名质控结果 + P5b-4 缺陷记录/时效倒计时/SSE 联动) */
+      '          <el-tab-pane name="qc">',
+      '            <template #label><span class="iew-icon" v-html="icons.check"></span> 质控</template>',
+      '            <div class="iew-tab-body">',
+      '              <div class="iew-tab-tool">',
+      '                <div class="iew-cdss-summary">',
+      '                  <span class="iew-cdss-chip is-block">禁止 {{ qcForbidden.length }}</span>',
+      '                  <span class="iew-cdss-chip is-warning">拦截 {{ qcBlocks.length }}</span>',
+      '                  <span class="iew-cdss-chip is-info">提醒 {{ qcWarnings.length }}</span>',
+      '                </div>',
+      '                <el-button size="small" text style="margin-left:auto" :loading="qcDefectLoading || timelinessLoading" @click="refreshQcData"><span v-if="!(qcDefectLoading || timelinessLoading)" class="iew-icon" v-html="icons.refresh"></span> 刷新质控</el-button>',
+      '              </div>',
+      '              <div v-if="timelinessMain" class="iew-qc-timeliness" :class="timelinessCls">',
+      '                <div class="iew-qc-timeliness-main">',
+      '                  <div>{{ timelinessMain }}</div>',
+      '                  <div class="iew-qc-timeliness-sub">{{ timelinessSub }}</div>',
+      '                </div>',
+      '              </div>',
+      '              <div v-if="!qcForbidden.length && !qcBlocks.length && !qcWarnings.length && !qcSortedDefects.length" class="iew-tab-empty">暂无质控结果(签名时自动检查)</div>',
+      '              <div v-for="(d, i) in qcForbidden" :key="\'f\' + i" class="iew-cdss-alert is-block">',
+      '                <div class="iew-cdss-alert-name">⛔ {{ d.ruleName || d.ruleCode || "质控规则" }}<span class="iew-cdss-level">禁止·一票否决</span></div>',
+      '                <div v-if="d.defectDesc" class="iew-cdss-msg">{{ d.defectDesc }}</div>',
+      '              </div>',
+      '              <div v-for="(d, i) in qcBlocks" :key="\'b\' + i" class="iew-cdss-alert is-warning">',
+      '                <div class="iew-cdss-alert-name">🟡 {{ d.ruleName || d.ruleCode || "质控规则" }}<span class="iew-cdss-level">拦截{{ d.deductScore != null ? "·扣" + d.deductScore + "分" : "" }}</span></div>',
+      '                <div v-if="d.defectDesc" class="iew-cdss-msg">{{ d.defectDesc }}</div>',
+      '              </div>',
+      '              <div v-for="(d, i) in qcWarnings" :key="\'w\' + i" class="iew-cdss-alert is-info">',
+      '                <div class="iew-cdss-alert-name">🔵 {{ d.ruleName || d.ruleCode || "质控规则" }}<span class="iew-cdss-level">提醒</span></div>',
+      '                <div v-if="d.defectDesc" class="iew-cdss-msg">{{ d.defectDesc }}</div>',
+      '              </div>',
+      '              <div v-if="qcSortedDefects.length" class="iew-qc-sec-title"><span class="iew-icon" v-html="icons.alert"></span> 质控缺陷记录 ({{ qcSortedDefects.length }})</div>',
+      '              <div v-for="d in qcSortedDefects" :key="d.id" class="iew-qc-defect">',
+      '                <div class="iew-qc-defect-head">',
+      '                  <span class="iew-qc-defect-name" :title="d.ruleName || d.ruleCode || \'质控缺陷\'">{{ d.ruleName || d.ruleCode || "质控缺陷" }}</span>',
+      '                  <el-tag size="small" :type="severityTagOf(d.severity)" disable-transitions>{{ severityTextOf(d.severity) }}</el-tag>',
+      '                  <el-tag size="small" :type="defectStatusTagOf(d.status)" effect="plain" disable-transitions>{{ defectStatusTextOf(d.status) }}</el-tag>',
+      '                </div>',
+      '                <div v-if="d.defectDesc" class="iew-cdss-msg">{{ d.defectDesc }}</div>',
+      '                <div class="iew-qc-defect-meta">{{ d.defectType || "-" }}<span v-if="d.deductScore != null"> · 扣 {{ d.deductScore }} 分</span><span v-if="d.createTime"> · {{ fmtDT(d.createTime) }}</span><span v-if="Number(d.status) === 1 && d.rectifyTime"> · 整改于 {{ fmtDT(d.rectifyTime) }}</span></div>',
       '              </div>',
       '            </div>',
       '          </el-tab-pane>',
@@ -1646,6 +2180,35 @@
       '      <el-button size="small" type="primary" :disabled="!quoteText || !quoteTarget" @click="insertQuote(quoteTarget); quoteVisible = false">插入引用</el-button>',
       '    </template>',
       '  </el-dialog>',
+      /* ---- P8a-3 引用草药方对话框 ---- */
+      '  <el-dialog v-model="herbVisible" title="引用草药方" width="680px" append-to-body>',
+      '    <div class="iew-herb-hint" style="margin:0 0 8px">选择本次就诊的草药处方, 预览格式化文本后插入到当前光标处</div>',
+      '    <el-table :data="herbList" size="small" height="240" v-loading="herbLoading" highlight-current-row :row-class-name="herbRowClass" @row-click="pickHerb">',
+      '      <el-table-column label="方名" min-width="180" show-overflow-tooltip>',
+      '        <template #default="{ row }"><span class="iew-herb-name">{{ herbRowName(row) }}</span></template>',
+      '      </el-table-column>',
+      '      <el-table-column label="日期" width="150"><template #default="{ row }">{{ herbRowDate(row) }}</template></el-table-column>',
+      '      <el-table-column label="药味数" width="80"><template #default="{ row }">{{ herbRowCount(row) }}</template></el-table-column>',
+      '    </el-table>',
+      '    <div v-if="herbSelRow" style="margin-top:10px">',
+      '      <div class="iew-herb-preview" v-loading="herbTextLoading">{{ herbText || "(未获取到格式化文本)" }}</div>',
+      '      <div class="iew-herb-hint">插入后可在编辑器中继续编辑; 文本来源于草药处方明细</div>',
+      '    </div>',
+      '    <div v-else-if="!herbLoading && !herbList.length" class="iew-herb-hint" style="margin-top:10px">暂无可引用的草药处方, 可先在处方/医嘱中开具草药方</div>',
+      '    <template #footer>',
+      '      <el-button size="small" @click="herbVisible = false">取消</el-button>',
+      '      <el-button size="small" type="primary" :disabled="!herbSelRow || !herbText || herbTextLoading" @click="insertHerbFormula">插入</el-button>',
+      '    </template>',
+      '  </el-dialog>',
+      /* ---- P8b-2 CA数字签名弹窗(模拟模式, 预留 window.caClientCallback 回调点) ---- */
+      '  <el-dialog v-model="caVisible" title="CA数字签名认证" width="430px" append-to-body :close-on-click-modal="false">',
+      '    <div class="iew-ca-tip"><span class="iew-icon" v-html="icons.alert"></span> 请插入UKey并输入PIN码完成CA数字签名(当前为模拟模式: 证书序列号 SIMULATED, 算法 SM2)。</div>',
+      '    <el-input ref="caPinInput" v-model="caPin" type="password" show-password placeholder="UKey PIN码" @keyup.enter="submitCaSign"></el-input>',
+      '    <template #footer>',
+      '      <el-button size="small" @click="caVisible = false">取消</el-button>',
+      '      <el-button size="small" type="primary" :loading="signing" @click="submitCaSign">确认签名</el-button>',
+      '    </template>',
+      '  </el-dialog>',
       /* ---- 版本对比对话框 ---- */
       '  <el-dialog v-model="diffVisible" title="版本对比" width="860px" append-to-body>',
       '    <div v-loading="diffLoading" style="min-height:120px">',
@@ -1676,6 +2239,20 @@
       '    <div class="iew-ver-preview" v-loading="versionPreviewLoading">{{ versionPreview }}</div>',
       '    <template #footer><el-button size="small" @click="versionVisible = false">关闭</el-button></template>',
       '  </el-dialog>',
+      /* ---- P5a-4 质控拦截抽屉(卡签名整改面板) ---- */
+      '  <el-drawer v-model="showQcPanel" title="质控拦截 · 签名被阻断" size="420px" append-to-body>',
+      '    <div class="iew-qc-panel">',
+      '      <div class="iew-qc-tip">存在拦截级质控缺陷，签名已被阻断。请按下方缺陷整改后，点击「整改后重签」重新发起签名。</div>',
+      '      <div v-for="(d, i) in qcBlocks" :key="i" class="iew-cdss-alert is-warning">',
+      '        <div class="iew-cdss-alert-name">🟡 {{ d.ruleName || d.ruleCode || "质控规则" }}<span class="iew-cdss-level">{{ d.deductScore != null ? "扣 " + d.deductScore + " 分" : "拦截级" }}</span></div>',
+      '        <div v-if="d.defectDesc" class="iew-cdss-msg">{{ d.defectDesc }}</div>',
+      '      </div>',
+      '      <div v-if="qcForbidden.length" class="iew-cdss-alert is-block">',
+      '        <div class="iew-cdss-alert-name">⛔ 另有 {{ qcForbidden.length }} 项禁止级缺陷<span class="iew-cdss-level">须联系质控员豁免</span></div>',
+      '      </div>',
+      '      <el-button type="primary" style="width:100%; margin-top:4px" @click="reSignAfterRectify">整改后重签</el-button>',
+      '    </div>',
+      '  </el-drawer>',
       '</div>'
     ].join('\n')
   };

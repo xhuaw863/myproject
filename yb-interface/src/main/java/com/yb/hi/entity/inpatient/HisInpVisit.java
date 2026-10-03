@@ -56,6 +56,8 @@ public class HisInpVisit extends BaseEntity {
     private String psnNo;
     /** 险种类型 */
     private String insutype;
+    /** 费别编码(his_fee_type_dict.code, 住院场景 scope 含 IPT) */
+    private String feeType;
     /** 医保就诊ID */
     private String mdtrtId;
     /* ---------- 模型增强扩展列(DictSchemaMigration 幂等补列) ---------- */

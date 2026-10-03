@@ -214,6 +214,7 @@
 
   const ClinicalPathwayManage = {
     name: 'ClinicalPathwayManage',
+    components: { 'dept-tree-picker': HIS.components.DeptTreePicker },
     data() {
       return {
         /* 左栏列表 */
@@ -925,9 +926,7 @@
               <el-form-item label="诊断编码"><el-input v-model="tplForm.diseaseCode" placeholder="ICD-10 编码"></el-input></el-form-item>
               <el-form-item label="诊断名称"><el-input v-model="tplForm.diseaseName" placeholder="可检索回填或手填"></el-input></el-form-item>
               <el-form-item label="适用科室">
-                <el-select v-model="tplForm.deptId" filterable clearable placeholder="选择科室" style="width:100%">
-                  <el-option v-for="d in depts" :key="d.id" :label="d.deptName" :value="d.id"></el-option>
-                </el-select>
+                <dept-tree-picker v-model="tplForm.deptId" :options="depts" placeholder="选择科室" />
               </el-form-item>
               <el-form-item label="平均住院日"><el-input-number v-model="tplForm.avgLength" :min="1" :max="365" controls-position="right" style="width:130px"></el-input-number></el-form-item>
               <el-form-item label="预估费用">

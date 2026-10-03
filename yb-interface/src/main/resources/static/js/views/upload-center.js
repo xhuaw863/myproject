@@ -1,6 +1,7 @@
 /* 医保上报中心(M5): 上传管线状态机(his_upload_status)监控台。
  * 按业务类型/状态筛选逐单状态, 失败待补(status=2)可手动重传(复位退避后立即补传一次);
- * 定时扫描(UploadStatusSweeper)自动补传 VISIT 就诊上传(2203), 指数退避 1/5/15/60min, 满 6 次转人工。
+ * 定时扫描(UploadStatusSweeper)自动补传纯上传类: VISIT(2203)/INP_REG(2401入院)/INP_DISCH(2402出院), 指数退避 1/5/15/60min, 满 6 次转人工。
+ * 住院 INP_SETL(2304结算)/INP_FEE(2301明细) 为资金补偿跟踪行, 归 CompTaskSweeper 收敛, 只读展示不可重传。
  * 写操作(手动重传)ADMIN 角色鉴权(BizRoleInterceptor)。
  */
 (function () {
@@ -14,8 +15,14 @@
     { v: 'RX', l: '处方' },
     { v: 'FEE', l: '费用明细(2204)' },
     { v: 'SETL', l: '结算(2207/2208)' },
-    { v: 'CANCEL', l: '撤销(2202)' }
+    { v: 'CANCEL', l: '撤销(2202)' },
+    { v: 'INP_REG', l: '住院入院登记(2401)' },
+    { v: 'INP_DISCH', l: '住院出院办理(2402)' },
+    { v: 'INP_FEE', l: '住院费用明细(2301)' },
+    { v: 'INP_SETL', l: '住院结算跟踪(2304)' }
   ];
+  /* 本监控台可手动重传的纯上传类型(其余为补偿/业务跟踪行) */
+  var RETRYABLE = ['VISIT', 'INP_REG', 'INP_DISCH'];
   var STATUSES = [
     { v: null, l: '全部状态' },
     { v: 0, l: '待传' },
@@ -62,6 +69,9 @@
         if (v === 3) { return 'info'; }
         return 'warning';
       },
+      canRetry: function (row) {
+        return row.status === 2 && RETRYABLE.indexOf(row.bizType) >= 0;
+      },
       load: function () {
         var vm = this;
         this.loading = true;
@@ -100,7 +110,7 @@
       onSize: function (s) { this.size = s; this.page = 1; this.load(); },
       retry: function (row) {
         var vm = this;
-        ElementPlus.ElMessageBox.confirm('确认立即重传该记录(2203)? 失败将按退避策略继续自动重试。', '手动重传', { type: 'warning' })
+        ElementPlus.ElMessageBox.confirm('确认立即重传该记录(' + vm.bizText(row.bizType) + ')? 失败将按退避策略继续自动重试。', '手动重传', { type: 'warning' })
           .then(function () {
             vm.retrying = row.id;
             HIS.post('/api/yb/upload-status/' + row.id + '/retry', {})
@@ -133,7 +143,7 @@
       '        VISIT 就诊上传(2203)未成功时收费入口强制补传。</span>' +
       '    </div>' +
       '    <div style="margin-bottom:10px">' +
-      '      <el-select v-model="bizType" placeholder="业务类型" size="small" style="width:180px;margin-right:8px" @change="onFilter">' +
+      '      <el-select v-model="bizType" placeholder="业务类型" size="small" style="width:210px;margin-right:8px" @change="onFilter">' +
       '        <el-option v-for="b in bizTypes" :key="b.v" :label="b.l" :value="b.v"></el-option>' +
       '      </el-select>' +
       '      <el-select v-model="status" placeholder="状态" size="small" style="width:140px;margin-right:8px" @change="onFilter">' +
@@ -144,7 +154,7 @@
       '    <el-table :data="list" v-loading="loading" size="small" border stripe max-height="calc(100vh - 320px)">' +
       '      <el-table-column prop="id" label="ID" width="70"></el-table-column>' +
       '      <el-table-column label="业务" width="150"><template #default="s">{{ bizText(s.row.bizType) }}</template></el-table-column>' +
-      '      <el-table-column prop="bizId" label="业务ID(就诊)" width="110"></el-table-column>' +
+      '      <el-table-column prop="bizId" label="业务ID" width="110"></el-table-column>' +
       '      <el-table-column prop="mdtrtId" label="医保就诊ID" width="150" show-overflow-tooltip></el-table-column>' +
       '      <el-table-column label="状态" width="100"><template #default="s"><el-tag :type="statusTag(s.row.status)" size="small">{{ statusText(s.row.status) }}</el-tag></template></el-table-column>' +
       '      <el-table-column prop="retryCount" label="重试" width="60"></el-table-column>' +
@@ -154,7 +164,8 @@
       '      <el-table-column prop="updateTime" label="更新时间" width="150"></el-table-column>' +
       '      <el-table-column label="操作" width="110" fixed="right">' +
       '        <template #default="s">' +
-      '          <el-button v-if="s.row.status === 2" type="primary" size="small" :loading="retrying === s.row.id" @click="retry(s.row)">手动重传</el-button>' +
+      '          <el-button v-if="canRetry(s.row)" type="primary" size="small" :loading="retrying === s.row.id" @click="retry(s.row)">手动重传</el-button>' +
+      '          <span v-else-if="s.row.status === 2" style="color:#909399;font-size:12px">补偿任务收敛</span>' +
       '        </template>' +
       '      </el-table-column>' +
       '    </el-table>' +

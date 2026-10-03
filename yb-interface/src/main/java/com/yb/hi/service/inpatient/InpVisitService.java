@@ -24,6 +24,8 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 import org.springframework.util.StringUtils;
 
 import java.math.BigDecimal;
@@ -61,11 +63,13 @@ public class InpVisitService {
     private final InpAllergyService allergyService;
     private final JdbcTemplate jdbcTemplate;
     private final HisAdmissionCertMapper admissionCertMapper;
+    private final InpUploadService inpUploadService;
 
     public InpVisitService(HisInpVisitMapper visitMapper, HisInpDiagnosisMapper diagnosisMapper,
                            HisBedMapper bedMapper, HisWardMapper wardMapper,
                            InpBedService bedService, InpAllergyService allergyService,
-                           JdbcTemplate jdbcTemplate, HisAdmissionCertMapper admissionCertMapper) {
+                           JdbcTemplate jdbcTemplate, HisAdmissionCertMapper admissionCertMapper,
+                           InpUploadService inpUploadService) {
         this.visitMapper = visitMapper;
         this.diagnosisMapper = diagnosisMapper;
         this.bedMapper = bedMapper;
@@ -74,6 +78,7 @@ public class InpVisitService {
         this.allergyService = allergyService;
         this.jdbcTemplate = jdbcTemplate;
         this.admissionCertMapper = admissionCertMapper;
+        this.inpUploadService = inpUploadService;
     }
 
     /* ==================== 入院登记 ==================== */
@@ -131,6 +136,7 @@ public class InpVisitService {
         visit.setMedType(dto.getMedType());
         visit.setPsnNo(dto.getPsnNo());
         visit.setInsutype(dto.getInsutype());
+        visit.setFeeType(dto.getFeeType());
         visit.setAdmissionCertId(cert == null ? null : cert.getId());
         visitMapper.insert(visit);
 
@@ -173,6 +179,10 @@ public class InpVisitService {
         log.info("入院登记成功: inpNo={}, patientId={}, patientName={}, bedNo={}, visitId={}, certId={}",
                 visit.getInpNo(), dto.getPatientId(), patientName, bed.getBedNo(), visit.getId(),
                 cert == null ? null : cert.getId());
+        // 入院登记上报(2401): 事务提交后触发, 不持有 admit 事务行锁做医保 IO; 失败落 INP_REG 待补传不阻断业务
+        final Long admitTenantId = tenantId();
+        final Long admitVisitId = visit.getId();
+        afterCommit(() -> inpUploadService.reportAdmission(admitTenantId, admitVisitId));
         return visit;
     }
 
@@ -443,7 +453,35 @@ public class InpVisitService {
         if (affected == 0) {
             throw new BizException("该就诊不在院或已提交出院申请, 无法重复操作");
         }
+        // 出院办理上报(2402): 事务提交后触发, 不持有出院事务行锁做医保 IO; 失败落 INP_DISCH 待补传不阻断业务
+        final Long dischTenantId = tenantId();
+        afterCommit(() -> inpUploadService.reportDischarge(dischTenantId, id));
         return visitMapper.selectById(id);
+    }
+
+    /**
+     * 事务提交后执行副作用(医保 2401/2402 上报等): 有活动事务则注册 afterCommit 回调(吞异常),
+     * 无事务上下文则直接执行(吞异常)。确保医保网络 IO 不持有业务事务行锁, 上报失败不回滚业务。
+     */
+    private void afterCommit(Runnable action) {
+        if (TransactionSynchronizationManager.isSynchronizationActive()) {
+            TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+                @Override
+                public void afterCommit() {
+                    runQuietly(action);
+                }
+            });
+        } else {
+            runQuietly(action);
+        }
+    }
+
+    private void runQuietly(Runnable action) {
+        try {
+            action.run();
+        } catch (Exception e) {
+            log.warn("事务提交后上报回调异常(已吞, 不阻断业务): {}", e.getMessage());
+        }
     }
 
     /**
@@ -504,6 +542,7 @@ public class InpVisitService {
         visit.setMedType(dto.getMedType());
         visit.setPsnNo(dto.getPsnNo());
         visit.setInsutype(dto.getInsutype());
+        visit.setFeeType(dto.getFeeType());
         visitMapper.insert(visit);
 
         saveContactInfo(visit, dto);
@@ -566,6 +605,9 @@ public class InpVisitService {
         }
         log.info("预入院确认入院: visitId={}, inpNo={}, bedId={}, 患者={}",
                 visitId, visit.getInpNo(), bedId, patientName);
+        // 确认入院同样触发 2401 上报(事务提交后, 失败不阻断)
+        final Long confirmTenantId = tenantId();
+        afterCommit(() -> inpUploadService.reportAdmission(confirmTenantId, visitId));
         return visitMapper.selectById(visitId);
     }
 

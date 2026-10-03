@@ -72,18 +72,33 @@ public class EmrTemplateService implements ApplicationRunner {
             {"EMR_DISCHARGE", "出院小结", "7", "7", "1"},
             {"EMR_DEATH", "死亡记录", "1", "8", "1"},
             {"EMR_OUTP_GENERAL", "门诊病历(通用)", "2", "21", "2"},
+            {"EMR_OUTP_TCM", "中医门诊病历", "2", "22", "2"},
             /* P2 扩展: 10-15 类文书(病案首页/交接班/转科/知情同意/讨论/会诊), record_type 与签名规则口径一致 */
             {"EMR_HOMEPAGE", "病案首页", "10", "10", "1"},
             {"EMR_HANDOVER", "交接班记录", "11", "11", "1"},
             {"EMR_TRANSFER", "转科记录", "12", "12", "1"},
             {"EMR_CONSENT", "知情同意书", "13", "13", "1"},
             {"EMR_DISCUSSION", "疑难病例讨论记录", "14", "14", "1"},
-            {"EMR_CONSULTATION", "会诊记录", "15", "15", "1"}
+            {"EMR_CONSULTATION", "会诊记录", "15", "15", "1"},
+            /* P8 中医三模板: 与西医同文书类型并列(templateCategory 与 record_type 同值), 医生选"入院记录/日常病程/病案首页"时中西医模板同屏可选 */
+            {"EMR_TCM_HOMEPAGE", "中医病案首页", "10", "10", "1"},
+            {"EMR_TCM_ADMIT", "中医入院记录", "1", "1", "1"},
+            {"EMR_TCM_PROG", "中医病程记录", "3", "3", "1"}
     };
 
-    /** 播种时附加 Tiptap 文档骨架的模板编码(P2 新增 10-15 类): 由种子字段定义生成章节/数据元节点, 书写器可直接渲染 */
+    /** 播种时附加 Tiptap 文档骨架的模板编码(P2 新增 10-15 类 + P3 门诊两模板): 由种子字段定义生成章节/数据元节点, 书写器可直接渲染 */
     private static final Set<String> SEED_DOC_CODES = new HashSet<>(Arrays.asList(
-            "EMR_HOMEPAGE", "EMR_HANDOVER", "EMR_TRANSFER", "EMR_CONSENT", "EMR_DISCUSSION", "EMR_CONSULTATION"));
+            "EMR_HOMEPAGE", "EMR_HANDOVER", "EMR_TRANSFER", "EMR_CONSENT", "EMR_DISCUSSION", "EMR_CONSULTATION",
+            "EMR_OUTP_GENERAL", "EMR_OUTP_TCM",
+            "EMR_TCM_HOMEPAGE", "EMR_TCM_ADMIT", "EMR_TCM_PROG"));
+
+    /** 中医三模板文档编码(P8): 走 buildTcmSeedDocument 逐章节生成(与 SEED_OUTP_CODES 同级分流) */
+    private static final Set<String> SEED_TCM_CODES = new HashSet<>(Arrays.asList(
+            "EMR_TCM_HOMEPAGE", "EMR_TCM_ADMIT", "EMR_TCM_PROG"));
+
+    /** 门诊多章节(SOAP)文档编码: 走 buildOutpSeedDocument 逐章节生成(其余为单章节骨架); 章节标识与前端编辑器 sectionKey/后端 attrs.key 双写一致 */
+    private static final Set<String> SEED_OUTP_CODES = new HashSet<>(Arrays.asList(
+            "EMR_OUTP_GENERAL", "EMR_OUTP_TCM"));
 
     /** Tiptap 节点类型常量 */
     private static final String NODE_DOC = "doc";
@@ -167,6 +182,7 @@ public class EmrTemplateService implements ApplicationRunner {
             boolean localExists = !templateMapper.selectList(Wrappers.<HisEmrTemplate>lambdaQuery()
                     .eq(HisEmrTemplate::getTemplateCode, code)).isEmpty();
             if (localExists) {
+                backfillSeedDocIfMissing(code); // 存量行缺 Tiptap 文档则幂等回填(P3 门诊升级/早期漏种), 不覆盖已有文档
                 continue;
             }
             if (existsGlobal(code)) {
@@ -186,6 +202,7 @@ public class EmrTemplateService implements ApplicationRunner {
                 }
                 t.setDeptId(0L);
                 t.setScope(Integer.valueOf(def[4]));
+                t.setScopeLevel(0); // 全院级种子(与 DDL 默认一致, 显式声明)
                 t.setVersion(1);
                 t.setStatus(1);
                 templateMapper.insert(t);
@@ -221,6 +238,31 @@ public class EmrTemplateService implements ApplicationRunner {
         Integer n = jdbcTemplate.queryForObject(
                 "SELECT COUNT(*) FROM his_emr_template WHERE template_code = ? AND deleted = 0", Integer.class, code);
         return n != null && n > 0;
+    }
+
+    /**
+     * 存量模板 Tiptap 文档幂等补种: SEED_DOC_CODES 命中且本地已存在但 document 为空的模板回填种子文档
+     * (老库升级新种子编码时逐码判空会跳过已存在行, 此处保证存量行也能拿到 P3 门诊文档/早期漏种的文档骨架)。
+     * 仅补空不覆盖已有文档; 失败只告警不阻断后续种子。
+     */
+    private void backfillSeedDocIfMissing(String code) {
+        if (!SEED_DOC_CODES.contains(code)) {
+            return;
+        }
+        try {
+            List<HisEmrTemplate> missing = templateMapper.selectList(Wrappers.<HisEmrTemplate>lambdaQuery()
+                    .eq(HisEmrTemplate::getTemplateCode, code)
+                    .and(w -> w.isNull(HisEmrTemplate::getDocument).or().eq(HisEmrTemplate::getDocument, "")));
+            for (HisEmrTemplate t : missing) {
+                HisEmrTemplate upd = new HisEmrTemplate();
+                upd.setId(t.getId());
+                upd.setDocument(buildSeedDocument(code, t.getTemplateName()));
+                templateMapper.updateById(upd); // 仅非 null 字段更新, 只回填 document
+                log.info("模板[{}] 存量行缺 Tiptap 文档, 已回填种子文档", code);
+            }
+        } catch (Exception e) {
+            log.warn("模板[{}] Tiptap 文档补种跳过: {}", code, e.getMessage());
+        }
     }
 
     /* ================= 模板查询 ================= */
@@ -1525,6 +1567,18 @@ public class EmrTemplateService implements ApplicationRunner {
                 a.add(f("treatmentOpinion", "处理意见", "textarea", true));
                 a.add(f("followupNote", "随访建议", "textarea", false));
                 break;
+            case "EMR_OUTP_TCM":
+                a.add(f("chiefComplaint", "主诉", "textarea", true, "maxLength", 200));
+                a.add(f("presentIllness", "现病史", "textarea", true));
+                a.add(f("pastHistory", "既往史", "textarea", false, "defaultMacro", "past_history"));
+                a.add(f("allergyHistory", "过敏史", "textarea", false, "defaultMacro", "allergy_info"));
+                a.add(f("fourExams", "四诊合参(望闻问切)", "textarea", false));
+                a.add(f("syndromeAnalysis", "辨证分析", "textarea", false));
+                a.add(f("physicalExam", "体格检查", "textarea", true));
+                a.add(f("auxExam", "辅助检查", "textarea", false));
+                a.add(f("treatmentOpinion", "处理意见", "textarea", true));
+                a.add(f("followupNote", "随访备注", "textarea", false));
+                break;
             /* ---------- P2 扩展: 10-15 类文书 ---------- */
             case "EMR_HOMEPAGE": {
                 JSONArray outcomeOpts = new JSONArray();
@@ -1617,6 +1671,36 @@ public class EmrTemplateService implements ApplicationRunner {
                 a.add(f("consultTime", "会诊完成时间", "datetime", false));
                 break;
             }
+            /* ---------- P8 中医三模板: 数据元 key 与前端中医辨证书写器口径一致 ---------- */
+            case "EMR_TCM_HOMEPAGE": {
+                JSONArray tcmTreatOpts = new JSONArray();
+                tcmTreatOpts.add("辨证论治");
+                tcmTreatOpts.add("辨病论治");
+                tcmTreatOpts.add("其他");
+                a.add(f("sec_1", "中医诊断", "section", false));
+                a.add(f("tcm_outpatient_diag", "门急诊诊断(中医)", "textarea", true));
+                a.add(f("tcm_discharge_diag", "出院诊断(中医)", "textarea", true));
+                a.add(f("sec_2", "治疗与辨证施护", "section", false));
+                a.add(f("tcm_treatment_type", "中医治疗类别", "select", true, "options", tcmTreatOpts));
+                a.add(f("tcm_syndrome_nursing", "辨证施护", "textarea", false));
+                break;
+            }
+            case "EMR_TCM_ADMIT":
+                a.add(f("sec_1", "四诊合参", "section", false));
+                a.add(f("tcm_inspection", "望诊", "textarea", false));
+                a.add(f("tcm_auscultation", "闻诊", "textarea", false));
+                a.add(f("tcm_inquiry", "问诊", "textarea", false));
+                a.add(f("tcm_palpation", "切诊", "textarea", false));
+                a.add(f("sec_2", "辨证论治", "section", false));
+                a.add(f("tcm_syndrome_analysis", "证候分析", "textarea", true));
+                a.add(f("tcm_treatment_method", "治法", "textarea", true));
+                a.add(f("tcm_prescription", "方药", "textarea", true));
+                break;
+            case "EMR_TCM_PROG":
+                a.add(f("tcm_syndrome_reasoning", "辨证思路", "textarea", true));
+                a.add(f("tcm_prescription_adjust", "方药调整", "textarea", false));
+                a.add(f("tcm_efficacy_evaluation", "疗效评价", "textarea", true));
+                break;
             default:
                 break;
         }
@@ -1625,12 +1709,177 @@ public class EmrTemplateService implements ApplicationRunner {
 
     /* ================= 种子文档骨架(P2 新增 10-15 类) ================= */
 
+    /** 门诊 SOAP 章节定义(P3): {章节标识(后端 attrs.key 与编辑器 sectionKey 双写同值), 章节标题, valueType, 是否必填} */
+    private static final String[][] OUTP_SOAP_SECTIONS = {
+            {"chiefComplaint", "主诉", "text", "1"},
+            {"presentIllness", "现病史", "text", "1"},
+            {"pastHistory", "既往史", "text", "0"},
+            {"allergyHistory", "过敏史", "text", "0"},
+            {"physicalExam", "体格检查", "text", "0"},
+            {"auxExam", "辅助检查", "text", "0"},
+            {"treatmentOpinion", "处理意见", "text", "1"},
+            {"followupNote", "随访备注", "text", "0"}
+    };
+
+    /** 中医门诊追加章节(P8 中医辨证书写器占位): 四诊合参/辨证分析, 插在过敏史之后、体格检查之前 */
+    private static final String[][] OUTP_TCM_EXTRA_SECTIONS = {
+            {"fourExams", "四诊合参(望闻问切)", "text", "0"},
+            {"syndromeAnalysis", "辨证分析", "text", "0"}
+    };
+
+    /**
+     * 门诊模板 Tiptap 文档(P3): 逐章节生成 emrSection(每章节独立标题, 内含单个数据元段落)。
+     * 章节 attrs 双写 key=sectionKey(前端编辑器 schema 读 sectionKey, 后端 propagate/batchReplaceSection 以 attrs.key 命中,
+     * 与设计器保存归一口径一致); 段落为 [文本标签 + emrField 内联节点], 节点口径与住院种子/前端 emrField 渲染器一致
+     * (emrField 为 inline 节点, 须经 paragraph 包裹才满足 emrSection 的 block+ 内容规格)。
+     */
+    private static String buildOutpSeedDocument(String code) {
+        JSONArray sections = new JSONArray();
+        for (String[] s : OUTP_SOAP_SECTIONS) {
+            sections.add(s);
+        }
+        if ("EMR_OUTP_TCM".equals(code)) {
+            for (int i = 0; i < OUTP_TCM_EXTRA_SECTIONS.length; i++) {
+                sections.add(4 + i, OUTP_TCM_EXTRA_SECTIONS[i]); // 插在过敏史(索引3)之后
+            }
+        }
+        JSONArray docContent = new JSONArray();
+        for (int i = 0; i < sections.size(); i++) {
+            String[] s = (String[]) sections.get(i);
+            JSONObject fieldNode = new JSONObject();
+            fieldNode.put("type", NODE_FIELD);
+            JSONObject attrs = new JSONObject();
+            attrs.put("fieldKey", s[0]);
+            attrs.put("fieldName", s[1]);
+            attrs.put("valueType", s[2]);
+            attrs.put("required", "1".equals(s[3]));
+            attrs.put("value", null);
+            fieldNode.put("attrs", attrs);
+            JSONObject label = new JSONObject();
+            label.put("type", "text");
+            label.put("text", s[1] + "：");
+            JSONArray pContent = new JSONArray();
+            pContent.add(label);
+            pContent.add(fieldNode);
+            JSONObject paragraph = new JSONObject();
+            paragraph.put("type", "paragraph");
+            paragraph.put("content", pContent);
+            JSONArray sContent = new JSONArray();
+            sContent.add(paragraph);
+            JSONObject section = new JSONObject();
+            section.put("type", NODE_SECTION);
+            JSONObject sectionAttrs = new JSONObject();
+            sectionAttrs.put("key", s[0]);
+            sectionAttrs.put("sectionKey", s[0]); // 编辑器 schema 键(设计器保存归一双写 key=sectionKey)
+            sectionAttrs.put("title", s[1]);
+            sectionAttrs.put("editMode", "mixed");
+            sectionAttrs.put("locked", false);
+            section.put("attrs", sectionAttrs);
+            section.put("content", sContent);
+            docContent.add(section);
+        }
+        JSONObject doc = new JSONObject();
+        doc.put("type", NODE_DOC);
+        doc.put("content", docContent);
+        return JSON.toJSONString(doc);
+    }
+
+    /* ================= P8 中医三模板文档(多章节) ================= */
+
+    /**
+     * P8 中医模板 Tiptap 文档: 中医病案首页(中医诊断 + 治疗与辨证施护)与中医入院记录(四诊合参 + 辨证论治)
+     * 为多章节结构, 中医病程记录为单章节; 章节标识供前端书写器 sectionKey 定位, 数据元 key 与种子字段定义一致。
+     */
+    private static String buildTcmSeedDocument(String code) {
+        JSONArray docContent = new JSONArray();
+        switch (code) {
+            case "EMR_TCM_HOMEPAGE":
+                docContent.add(buildSeedSection("tcmDiag", "中医诊断", new String[][]{
+                        {"tcm_outpatient_diag", "门急诊诊断(中医)", "text", "1"},
+                        {"tcm_discharge_diag", "出院诊断(中医)", "text", "1"}}));
+                docContent.add(buildSeedSection("tcmTreat", "治疗与辨证施护", new String[][]{
+                        {"tcm_treatment_type", "中医治疗类别", "select", "1"},
+                        {"tcm_syndrome_nursing", "辨证施护", "text", "0"}}));
+                break;
+            case "EMR_TCM_ADMIT":
+                docContent.add(buildSeedSection("tcmFourExams", "四诊合参", new String[][]{
+                        {"tcm_inspection", "望诊", "text", "0"},
+                        {"tcm_auscultation", "闻诊", "text", "0"},
+                        {"tcm_inquiry", "问诊", "text", "0"},
+                        {"tcm_palpation", "切诊", "text", "0"}}));
+                docContent.add(buildSeedSection("tcmSyndrome", "辨证论治", new String[][]{
+                        {"tcm_syndrome_analysis", "证候分析", "text", "1"},
+                        {"tcm_treatment_method", "治法", "text", "1"},
+                        {"tcm_prescription", "方药", "text", "1"}}));
+                break;
+            case "EMR_TCM_PROG":
+            default:
+                docContent.add(buildSeedSection("tcmProg", "辨证记录", new String[][]{
+                        {"tcm_syndrome_reasoning", "辨证思路", "text", "1"},
+                        {"tcm_prescription_adjust", "方药调整", "text", "0"},
+                        {"tcm_efficacy_evaluation", "疗效评价", "text", "1"}}));
+                break;
+        }
+        JSONObject doc = new JSONObject();
+        doc.put("type", NODE_DOC);
+        doc.put("content", docContent);
+        return JSON.toJSONString(doc);
+    }
+
+    /**
+     * 构建单个中医章节节点: 每字段一行段落 [文本标签 + emrField 内联节点], 节点口径与 buildOutpSeedDocument 一致;
+     * 章节 attrs 双写 key=sectionKey(前端编辑器 schema 读 sectionKey, 后端章节维护以 attrs.key 命中)。
+     * fields 每行: {fieldKey, 中文标签, valueType, required(1/0)}。
+     */
+    private static JSONObject buildSeedSection(String sectionKey, String title, String[][] fields) {
+        JSONArray sContent = new JSONArray();
+        for (String[] s : fields) {
+            JSONObject fieldNode = new JSONObject();
+            fieldNode.put("type", NODE_FIELD);
+            JSONObject attrs = new JSONObject();
+            attrs.put("fieldKey", s[0]);
+            attrs.put("fieldName", s[1]);
+            attrs.put("valueType", s[2]);
+            attrs.put("required", "1".equals(s[3]));
+            attrs.put("value", null);
+            fieldNode.put("attrs", attrs);
+            JSONObject label = new JSONObject();
+            label.put("type", "text");
+            label.put("text", s[1] + "：");
+            JSONArray pContent = new JSONArray();
+            pContent.add(label);
+            pContent.add(fieldNode);
+            JSONObject paragraph = new JSONObject();
+            paragraph.put("type", "paragraph");
+            paragraph.put("content", pContent);
+            sContent.add(paragraph);
+        }
+        JSONObject section = new JSONObject();
+        section.put("type", NODE_SECTION);
+        JSONObject sectionAttrs = new JSONObject();
+        sectionAttrs.put("key", sectionKey);
+        sectionAttrs.put("sectionKey", sectionKey); // 编辑器 schema 键(设计器保存归一双写 key=sectionKey)
+        sectionAttrs.put("title", title);
+        sectionAttrs.put("editMode", "mixed");
+        sectionAttrs.put("locked", false);
+        section.put("attrs", sectionAttrs);
+        section.put("content", sContent);
+        return section;
+    }
+
     /**
      * 由种子字段定义生成 Tiptap 文档骨架: 单章节 emrSection(editMode=mixed) 内含各字段段落
      * (文本标签 + emrField 内联节点), 节点口径与 createFromDataset 的 buildTiptapDocument 一致,
      * 书写器可直接渲染; section 的 key 取模板编码小写(如 emr_homepage), section 分组标记不生成数据元节点。
+     * 门诊两模板(P3)分流至 buildOutpSeedDocument 逐章节生成 SOAP 多章节文档。
      */
     private static String buildSeedDocument(String code, String title) {
+        if (SEED_OUTP_CODES.contains(code)) {
+            return buildOutpSeedDocument(code);
+        }
+        if (SEED_TCM_CODES.contains(code)) {
+            return buildTcmSeedDocument(code);
+        }
         JSONArray fields = JSON.parseArray(buildSeedFields(code));
         JSONArray paragraphs = new JSONArray();
         for (int i = 0; i < fields.size(); i++) {

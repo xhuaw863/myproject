@@ -21,6 +21,11 @@
  *   markDailyBillPrinted(visitId, date)  静默标记日清单已打印(GET 单据取 id → PUT /{id}/printed)
  *   exportPdf(type, params, fileName)    单据PDF导出(带令牌下载)  GET /api/his/inp/print/pdf/{type}
  *                                        type=daily-bill|settlement|orders|nursing|emr|wristband|temp-chart
+ *   emrPdfBlob(recordId)                 P7a-3 病历PDF生成(blob, 供内嵌预览)  GET .../emr-pdf/{recordId}
+ *   emrPdf(recordId)                     P7a-3 病历PDF下载(attachment)
+ *   batchEmrPdf(recordIds, opts)         P7a-3 批量病历PDF(合并单文档) POST .../batch-pdf
+ *                                        opts.preview=true 返回 {blob,name} 供预览, 缺省直接下载并返回文件名
+ *   selectiveEmrPdf(recordId, s, e)      P7a-3 病历选页PDF下载  POST .../selective(recordId/startPage/endPage)
  *
  * 实现要点:
  *   - 预览对话框由首次调用时动态挂载的独立 Vue 应用承载(#inp-print-host, 与主应用解耦);
@@ -62,7 +67,16 @@
       '.ipr-pv-empty { height:100%; display:flex; align-items:center; justify-content:center; color:var(--yb-ink-4); text-align:center; font-size:13px; line-height:1.9; }',
       '.ipr-preview-foot { display:flex; justify-content:flex-end; gap:8px; margin-top:10px; }',
       '.ipr-batch-row { display:flex; gap:10px; align-items:center; flex-wrap:wrap; }',
-      '.ipr-actions { margin-top:4px; display:flex; gap:8px; flex-wrap:wrap; }'
+      '.ipr-actions { margin-top:4px; display:flex; gap:8px; flex-wrap:wrap; }',
+      /* P7a-3 批量病历选择 + PDF全屏预览 + 双面提示 */
+      '.ipr-batch-grid { display:grid; grid-template-columns:140px 1fr; gap:14px; }',
+      '.ipr-batch-tools { display:flex; align-items:center; gap:8px; margin-bottom:8px; }',
+      '.ipr-batch-list { max-height:320px; overflow:auto; display:flex; flex-direction:column; gap:2px; border:1px solid var(--yb-border-light); border-radius:var(--yb-r-sm); padding:8px 10px; }',
+      '.ipr-batch-item { margin-right:0; height:auto; }',
+      '.ipr-pdf-body { height:80vh; border:1px solid var(--yb-border); border-radius:var(--yb-r-sm); overflow:hidden; background:#fff; }',
+      '.ipr-pdf-body iframe { width:100%; height:100%; border:0; }',
+      '.ipr-page-range { float:left; display:inline-flex; align-items:center; gap:6px; font-size:12px; color:var(--yb-ink-2); }',
+      '.ipr-duplex-hint { float:left; font-size:12px; color:var(--yb-ink-3); line-height:32px; }'
     ].join('\n');
     document.head.appendChild(st);
   })();
@@ -98,6 +112,60 @@
     if (s && d < s) { return false; }
     if (e && d > e) { return false; }
     return true;
+  }
+
+  /* P7a-3 带令牌二进制请求(GET/POST): JSON 错误体拆包为 Error; 返回 { blob, name } */
+  function fetchBlob(url, opts) {
+    opts = opts || {};
+    var headers = {};
+    var token = HIS.getToken();
+    if (token) { headers['Authorization'] = 'Bearer ' + token; }
+    if (opts.body) { headers['Content-Type'] = 'application/json'; }
+    return fetch(url, { method: opts.method || 'GET', headers: headers, body: opts.body })
+      .then(function (resp) {
+        if (!resp.ok) { throw new Error('请求失败(HTTP ' + resp.status + ')'); }
+        var ct = resp.headers.get('Content-Type') || '';
+        if (ct.indexOf('json') >= 0) {
+          return resp.json().then(function (j) { throw new Error((j && j.msg) || 'PDF生成失败'); });
+        }
+        var cd = resp.headers.get('Content-Disposition') || '';
+        var name = opts.fallbackName || 'document.pdf';
+        var m = /filename\*=UTF-8''([^;]+)/i.exec(cd) || /filename="?([^";]+)"?/i.exec(cd);
+        if (m) { try { name = decodeURIComponent(m[1]); } catch (e) { name = m[1]; } }
+        return resp.blob().then(function (b) { return { blob: b, name: name }; });
+      });
+  }
+
+  /* Blob 触发浏览器保存, 返回文件名 */
+  function saveBlob(r) {
+    var a = document.createElement('a');
+    var u = URL.createObjectURL(r.blob);
+    a.href = u;
+    a.download = r.name || 'document.pdf';
+    document.body.appendChild(a);
+    a.click();
+    setTimeout(function () { URL.revokeObjectURL(u); a.parentNode && a.parentNode.removeChild(a); }, 1000);
+    return r.name;
+  }
+
+  /* P7a-3 单双面配置(localStorage 持久化): 1单面 2双面短边翻 3双面长边翻;
+   * 浏览器不允许编程设置双面, 打印时在系统打印对话框按提示选择对应模式 */
+  var DUPLEX_KEY = 'print_duplex_config';
+  function loadDuplex() {
+    try {
+      var n = Number(localStorage.getItem(DUPLEX_KEY));
+      return (n === 1 || n === 2 || n === 3) ? n : 1;
+    } catch (e) { return 1; }
+  }
+  function saveDuplex(v) {
+    try { localStorage.setItem(DUPLEX_KEY, String(v)); } catch (e) { /* 隐私模式静默 */ }
+  }
+  /* 打印对话框提示文案(单面不提示) */
+  function duplexPrintHint() {
+    var v = loadDuplex();
+    if (v === 2) { return '双面模式：请在打印对话框中选择「双面 · 短边翻转」'; }
+    if (v === 3) { return '双面模式：请在打印对话框中选择「双面 · 长边翻转」'; }
+    return '';
   }
 
   /* 合并多个渲染文档为单文档: <style> 文本去重 + body 拼接 + 页间强制分页 */
@@ -183,7 +251,7 @@
     el.id = 'inp-print-host';
     document.body.appendChild(el);
     /* 共享状态: 外部(HIS.print.*)只改状态, 渲染由宿主应用承载 */
-    var state = Vue.reactive({ visible: false, title: '', html: '', autoPrint: false });
+    var state = Vue.reactive({ visible: false, title: '', html: '', autoPrint: false, duplexText: '' });
     var app = Vue.createApp({
       data: function () { return { s: state }; },
       methods: {
@@ -217,6 +285,7 @@
         '    <iframe ref="frame" :srcdoc="s.html" @load="onFrameLoad"></iframe>',
         '  </div>',
         '  <template #footer>',
+        '    <span v-if="s.duplexText" class="ipr-duplex-hint">{{ s.duplexText }}</span>',
         '    <el-button @click="openWindow">新窗口打开</el-button>',
         '    <el-button @click="close">关闭</el-button>',
         '    <el-button type="primary" @click="doPrint">打印</el-button>',
@@ -239,6 +308,7 @@
       s.title = title || '打印预览';
       s.html = html || '';
       s.autoPrint = !!(opts && opts.autoPrint);
+      s.duplexText = duplexPrintHint();
       s.visible = true;
       return host;
     },
@@ -355,18 +425,56 @@
     exportPdf: function (type, params, fileName) {
       return HIS.download('/api/his/inp/print/pdf/' + type + qs(params),
         fileName || ('住院单据_' + today() + '.pdf'));
+    },
+
+    /* ==================== P7a-3 病历PDF(生成/批量/选页) ==================== */
+
+    /* 病历PDF生成(blob): 供内嵌预览(认证走 Authorization 头, iframe 不能直接 src) */
+    emrPdfBlob: function (recordId) {
+      return fetchBlob('/api/his/inp/print/emr-pdf/' + HIS.idParam(recordId) + qs({ download: false }),
+        { fallbackName: '病历_' + HIS.idKey(recordId) + '.pdf' });
+    },
+
+    /* 病历PDF下载(attachment) */
+    emrPdf: function (recordId) {
+      return HIS.download('/api/his/inp/print/emr-pdf/' + HIS.idParam(recordId) + qs({ download: true }),
+        '病历_' + HIS.idKey(recordId) + '.pdf');
+    },
+
+    /* 批量病历PDF(合并单文档): opts.preview=true 返回 {blob,name} 供预览; 缺省直接触发下载, 返回文件名 */
+    batchEmrPdf: function (recordIds, opts) {
+      var body = JSON.stringify((recordIds || []).map(function (id) { return HIS.idKey(id); }));
+      return fetchBlob('/api/his/inp/print/batch-pdf', { method: 'POST', body: body })
+        .then(function (r) { return (opts && opts.preview) ? r : saveBlob(r); });
+    },
+
+    /* 病历选页PDF下载(POST + query 参数): 仅输出 [startPage, endPage] 页区间 */
+    selectiveEmrPdf: function (recordId, startPage, endPage) {
+      return fetchBlob('/api/his/inp/print/selective'
+        + qs({ recordId: HIS.idKey(recordId), startPage: startPage, endPage: endPage }),
+        { method: 'POST' })
+        .then(saveBlob);
     }
   };
 
 
   /* ==================== 住院打印中心(独立管理页) ==================== */
 
-  /* 病历类型 / 状态字典(对齐后端 InpPrintService.MED_RECORD_TYPES) */
+  /* 病历类型 / 状态字典(对齐后端 InpMedRecordService.RECORD_TYPE_LABELS / EmrArchiveService) */
   var RECORD_TYPE_NAMES = {
-    1: '入院记录', 2: '首次病程', 3: '日常病程', 4: '查房记录', 5: '术前小结',
-    6: '手术记录', 7: '术后病程', 8: '出院小结', 9: '死亡记录'
+    1: '入院记录', 2: '首次病程记录', 3: '日常病程记录', 4: '查房记录', 5: '术前小结',
+    6: '手术记录', 7: '术后病程记录', 8: '出院小结', 9: '死亡记录', 10: '病案首页',
+    11: '交接班记录', 12: '转科记录', 13: '知情同意书', 14: '讨论记录', 15: '会诊记录'
   };
-  var RECORD_STATUS_NAMES = { 1: '草稿', 2: '已提交', 3: '已审核' };
+  var RECORD_STATUS_NAMES = { 1: '草稿', 2: '已提交', 3: '已审核', 4: '已归档', 5: '召回中', 6: '已封存' };
+
+  /* P7a-3 批量打印类别分组(与后端 InpMedRecordService 分组口径一致) */
+  var RECORD_GROUPS = [
+    { key: 'admit', label: '入院出院', types: [1, 8, 9, 10] },
+    { key: 'course', label: '病程记录', types: [2, 3, 4, 7] },
+    { key: 'surgery', label: '手术相关', types: [5, 6] },
+    { key: 'other', label: '其他文书', types: [11, 12, 13, 14, 15] }
+  ];
 
   /* ------------------------------------------------------------------------
    * 布局: 左(打印类型 7 项) + 中(参数) + 右(iframe 实时预览) + 底部(批量日清单)。
@@ -420,7 +528,24 @@
         batchLoading: false,
 
         /* PDF导出 */
-        pdfLoading: false
+        pdfLoading: false,
+
+        /* P7a-3 批量打印病历(类别过滤 + 多选) */
+        showBatchDialog: false,
+        recordGroups: RECORD_GROUPS,
+        batchGroups: { admit: true, course: true, surgery: true, other: true },
+        batchSelected: [],
+        batchPdfLoading: false,
+
+        /* P7a-3 PDF 全屏预览(blob URL + iframe) */
+        pdfPreviewVisible: false,
+        pdfPreviewUrl: '',
+        pdfPreviewFileName: '',
+        pdfPreviewLoading: false,
+        pdfPageRange: [1, 1],
+
+        /* P7a-3 单双面配置(1单面 2双面短边翻转 3双面长边翻转, localStorage 持久化) */
+        duplex: 1
       };
     },
 
@@ -446,6 +571,18 @@
         if (this.type === 'settle') { return !!this.settleId; }
         if (this.type === 'emr') { return !!(this.visitId && this.recordId); }
         return !!this.visitId;
+      },
+      /* P7a-3 批量打印候选: 当前患者病历按左侧类别勾选过滤 */
+      batchCandidates: function () {
+        var groups = this.batchGroups || {};
+        return (this.records || []).filter(function (r) {
+          var t = Number(r.recordType);
+          for (var i = 0; i < RECORD_GROUPS.length; i++) {
+            var g = RECORD_GROUPS[i];
+            if (g.types.indexOf(t) >= 0) { return !!groups[g.key]; }
+          }
+          return !!groups.other;
+        });
       }
     },
 
@@ -639,12 +776,107 @@
         HIS.download(url, vm.currentTypeLabel + '.pdf').then(function (name) {
           HIS.notifySuccess('已导出: ' + name);
         }).catch(HIS.notifyError).finally(function () { vm.pdfLoading = false; });
+      },
+
+      /* ==================== P7a-3 批量打印病历 / PDF预览 / 单双面 ==================== */
+
+      /* 单双面切换: 持久化本机(浏览器不允许编程设置双面, 打印对话框按提示选择) */
+      onDuplexChange: function () {
+        saveDuplex(Number(this.duplex) || 1);
+      },
+      /* 打开批量打印病历对话框(需先选患者; 病历未加载时补拉) */
+      openBatchDialog: function () {
+        if (this.visitId == null) {
+          HIS.notifyError(new Error('请先选择患者, 再进入批量打印'));
+          return;
+        }
+        this.batchSelected = [];
+        this.showBatchDialog = true;
+        if (!this.records.length) { this.loadRecords(); }
+      },
+      /* 全选当前过滤条件下的候选病历 */
+      batchSelectAll: function () {
+        this.batchSelected = this.batchCandidates.map(function (r) { return r.id; });
+      },
+      /* 反选(仅切换当前过滤条件下的候选, 不动未显示的勾选) */
+      batchInvert: function () {
+        var cur = this.batchSelected || [];
+        this.batchSelected = this.batchCandidates.map(function (r) { return r.id; })
+          .filter(function (id) {
+            return !cur.some(function (x) { return HIS.sameId(x, id); });
+          });
+      },
+      /* 批量预览: 生成合并PDF(blob) → 全屏 iframe 预览 */
+      batchPreviewPdf: function () {
+        var sel = this.batchSelected || [];
+        if (!sel.length) { HIS.notifyError(new Error('请先勾选要打印的病历')); return; }
+        var vm = this;
+        vm.pdfPreviewLoading = true;
+        HIS.print.batchEmrPdf(sel, { preview: true }).then(function (r) {
+          vm.openPdfBlob(r);
+        }).catch(HIS.notifyError).finally(function () { vm.pdfPreviewLoading = false; });
+      },
+      /* 批量下载: 合并单文档PDF(各病历连续分页) */
+      batchDownloadPdf: function () {
+        var sel = this.batchSelected || [];
+        if (!sel.length) { HIS.notifyError(new Error('请先勾选要打印的病历')); return; }
+        var vm = this;
+        vm.batchPdfLoading = true;
+        HIS.print.batchEmrPdf(sel).then(function (name) {
+          HIS.notifySuccess('已导出: ' + name + '（共' + sel.length + '份）');
+        }).catch(HIS.notifyError).finally(function () { vm.batchPdfLoading = false; });
+      },
+      /* 单份病历PDF预览(blob → 全屏 iframe; iframe 不能直接带 Authorization 头) */
+      openPdfPreview: function () {
+        if (this.recordId == null) { return; }
+        var vm = this;
+        vm.pdfPreviewLoading = true;
+        HIS.print.emrPdfBlob(this.recordId).then(function (r) {
+          vm.openPdfBlob(r);
+        }).catch(HIS.notifyError).finally(function () { vm.pdfPreviewLoading = false; });
+      },
+      /* Blob → 对象URL → 打开全屏PDF预览对话框 */
+      openPdfBlob: function (r) {
+        if (!r || !r.blob) { return; }
+        this.revokePdfUrl();
+        this.pdfPreviewUrl = URL.createObjectURL(r.blob);
+        this.pdfPreviewFileName = r.name || '病历.pdf';
+        this.pdfPageRange = [1, 1];
+        this.pdfPreviewVisible = true;
+      },
+      /* 释放对象URL(对话框关闭时调用) */
+      revokePdfUrl: function () {
+        if (this.pdfPreviewUrl) {
+          URL.revokeObjectURL(this.pdfPreviewUrl);
+          this.pdfPreviewUrl = '';
+        }
+      },
+      /* 下载当前预览的PDF(复用已生成 blob, 不重复请求后端) */
+      downloadPreviewPdf: function () {
+        var vm = this;
+        if (!this.pdfPreviewUrl) { return; }
+        fetch(this.pdfPreviewUrl).then(function (resp) { return resp.blob(); }).then(function (b) {
+          saveBlob({ blob: b, name: vm.pdfPreviewFileName || '病历.pdf' });
+        }).catch(HIS.notifyError);
+      },
+      /* 选页下载: 仅病历类型且已选具体病历时可用(基于完整PDF抽取页区间) */
+      selectiveDownload: function () {
+        if (this.type !== 'emr' || this.recordId == null) { return; }
+        var range = this.pdfPageRange || [1, 1];
+        var s = Math.max(1, Number(range[0]) || 1);
+        var e = Math.max(s, Number(range[1]) || s);
+        var vm = this;
+        vm.pdfPreviewLoading = true;
+        HIS.print.selectiveEmrPdf(this.recordId, s, e).then(function (name) {
+          HIS.notifySuccess('已导出选页(第' + s + '-' + e + '页): ' + name);
+        }).catch(HIS.notifyError).finally(function () { vm.pdfPreviewLoading = false; });
       }
     },
 
     mounted: function () {
       this.loadWards();
       this.loadPatients();
+      this.duplex = loadDuplex();
     },
 
     template: [
@@ -719,6 +951,10 @@
       '        <el-button :disabled="!canPreview" @click="previewAndPrint">预览并打印</el-button>',
       '        <el-button type="primary" plain size="small" :loading="pdfLoading" :disabled="!canPreview" @click="exportPdfCurrent">导出PDF</el-button>',
       '      </div>',
+      '      <div v-if="type === \'emr\'" class="ipr-actions">',
+      '        <el-button size="small" :loading="pdfPreviewLoading" :disabled="!recordId" @click="openPdfPreview">PDF预览</el-button>',
+      '        <el-button size="small" :disabled="!visitId" @click="openBatchDialog">批量打印病历</el-button>',
+      '      </div>',
       '    </div>',
 
       /* 右栏: 实时预览 */
@@ -747,6 +983,61 @@
       '      <span class="ipr-hint">对所选病区在院患者批量生成日清单, 每患者一页合并展示, 一次打印全部。</span>',
       '    </div>',
       '  </div>',
+
+      /* ---- 打印机配置(P7a-3 单双面, 配置存本机) ---- */
+      '  <div class="ipr-col">',
+      '    <div class="ipr-card-title">打印机配置</div>',
+      '    <div class="ipr-batch-row">',
+      '      <el-radio-group v-model="duplex" @change="onDuplexChange">',
+      '        <el-radio-button :label="1">单面</el-radio-button>',
+      '        <el-radio-button :label="2">双面 · 短边翻转</el-radio-button>',
+      '        <el-radio-button :label="3">双面 · 长边翻转</el-radio-button>',
+      '      </el-radio-group>',
+      '      <span class="ipr-hint">浏览器不允许程序设置双面打印, 打印时请在系统打印对话框中按提示选择对应模式。</span>',
+      '    </div>',
+      '  </div>',
+
+      /* ---- P7a-3 批量打印病历对话框 ---- */
+      '  <el-dialog v-model="showBatchDialog" title="批量打印病历" width="680px" append-to-body :close-on-click-modal="false" class="ipr-dialog">',
+      '    <div class="ipr-batch-grid">',
+      '      <div>',
+      '        <div class="ipr-hint" style="margin-bottom:6px;">类别过滤</div>',
+      '        <el-checkbox v-for="g in recordGroups" :key="g.key" v-model="batchGroups[g.key]" style="display:flex;margin-bottom:6px;">{{ g.label }}</el-checkbox>',
+      '      </div>',
+      '      <div>',
+      '        <div class="ipr-batch-tools">',
+      '          <el-button size="small" @click="batchSelectAll">全选</el-button>',
+      '          <el-button size="small" @click="batchInvert">反选</el-button>',
+      '          <span class="ipr-hint">已选 {{ batchSelected.length }} / 候选 {{ batchCandidates.length }} 份</span>',
+      '        </div>',
+      '        <el-checkbox-group v-model="batchSelected" class="ipr-batch-list">',
+      '          <el-checkbox v-for="r in batchCandidates" :key="r.id" :label="r.id" class="ipr-batch-item">{{ recordLabel(r) }}</el-checkbox>',
+      '        </el-checkbox-group>',
+      '        <div v-if="!batchCandidates.length" class="ipr-hint" style="margin-top:8px;">当前过滤条件下无病历, 请调整类别或检查该患者病历。</div>',
+      '      </div>',
+      '    </div>',
+      '    <template #footer>',
+      '      <el-button @click="showBatchDialog = false">关闭</el-button>',
+      '      <el-button :loading="pdfPreviewLoading" @click="batchPreviewPdf">预览</el-button>',
+      '      <el-button type="primary" :loading="batchPdfLoading" @click="batchDownloadPdf">下载PDF</el-button>',
+      '    </template>',
+      '  </el-dialog>',
+
+      /* ---- P7a-3 PDF 全屏预览对话框(选页下载 + 下载) ---- */
+      '  <el-dialog v-model="pdfPreviewVisible" :title="pdfPreviewFileName || \'PDF预览\'" fullscreen append-to-body destroy-on-close :close-on-click-modal="false" class="ipr-dialog" @closed="revokePdfUrl">',
+      '    <div class="ipr-pdf-body">',
+      '      <iframe v-if="pdfPreviewUrl" :src="pdfPreviewUrl"></iframe>',
+      '    </div>',
+      '    <template #footer>',
+      '      <span class="ipr-page-range">',
+      '        选页 <el-input-number v-model="pdfPageRange[0]" :min="1" size="small" controls-position="right" style="width:90px;"></el-input-number>',
+      '        - <el-input-number v-model="pdfPageRange[1]" :min="1" size="small" controls-position="right" style="width:90px;"></el-input-number>',
+      '        <el-button size="small" :loading="pdfPreviewLoading" :disabled="type !== \'emr\' || !recordId" @click="selectiveDownload">下载所选页</el-button>',
+      '      </span>',
+      '      <el-button @click="downloadPreviewPdf">下载PDF</el-button>',
+      '      <el-button @click="pdfPreviewVisible = false">关闭</el-button>',
+      '    </template>',
+      '  </el-dialog>',
       '</div>'
     ].join('\n')
   };

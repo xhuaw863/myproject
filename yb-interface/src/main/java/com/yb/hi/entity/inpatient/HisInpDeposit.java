@@ -26,8 +26,8 @@ public class HisInpDeposit extends BaseEntity {
     private Long inpVisitId;
     /** 金额 */
     private BigDecimal amount;
-    /** 支付方式: 1现金 2微信 3支付宝 4银行卡 */
-    private Integer payType;
+    /** 支付方式(his_pay_method_dict.code 规范码; 历史行可能为数字/小写旧值, 经字典 legacy_codes 回显) */
+    private String payType;
     /** 方向: 1缴纳 2退还 */
     private Integer direction;
     /** 操作后余额 */

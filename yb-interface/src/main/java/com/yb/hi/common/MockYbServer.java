@@ -86,9 +86,17 @@ public class MockYbServer {
             case "2204": case "2301":
                 output = mockFeeDetail(input);
                 break;
-            case "2206": case "2303": case "2304":
-                // 预结算/上传结算: 不落模拟流水
+            case "2302":
+                // 住院费用明细撤销(批次4 M2): 规范输出无节点, infcode=0 即成功; mock 明细不落库, 仅记录全撤/逐行撤痕迹
+                mockFeeDetailRevoke(input);
+                break;
+            case "2206": case "2303":
+                // 预结算(2206/2303): 不落模拟流水
                 output = mockSettlement(input, msgid, false);
+                break;
+            case "2304":
+                // 住院正式结算: 落模拟流水(medins_setl_id=msgid), 供 2305 撤销/2601 冲正/UNKNOWN 补偿核对(与 2207 同口径)
+                output = mockSettlement(input, msgid, true);
                 break;
             case "2207": {
                 // 结算: 落模拟流水(medins_setl_id=msgid), 供 2208/2601/补偿核对;
@@ -576,6 +584,29 @@ public class MockYbServer {
         JSONObject output = new JSONObject();
         output.put("result", result);
         return output;
+    }
+
+    /** 住院费用明细撤销(2302): mock 明细不落库, 仅按 feedetl_sn("0000"=全撤)记录撤销痕迹 */
+    private void mockFeeDetailRevoke(JSONObject input) {
+        JSONArray rows = input == null ? null : input.getJSONArray("data");
+        if (rows == null || rows.isEmpty()) {
+            log.info("【模拟医保平台】2302 明细撤销: 无输入行");
+            return;
+        }
+        for (int i = 0; i < rows.size(); i++) {
+            JSONObject r = rows.getJSONObject(i);
+            if (r == null) {
+                continue;
+            }
+            String sn = r.getString("feedetl_sn");
+            if ("0000".equals(sn)) {
+                log.info("【模拟医保平台】2302 全撤该就诊未结算明细: mdtrt_id={}, psn_no={}",
+                        r.getString("mdtrt_id"), r.getString("psn_no"));
+            } else {
+                log.info("【模拟医保平台】2302 撤销明细: mdtrt_id={}, feedetl_sn={}",
+                        r.getString("mdtrt_id"), sn);
+            }
+        }
     }
 
     /** 结算/预结算: 按70%统筹比例模拟基金支付; store=true(2207)时落模拟流水 */

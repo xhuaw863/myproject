@@ -42,4 +42,9 @@ public class HisInpNursingRecord extends BaseEntity {
     private String scaleDetail;
     /** 护理计划模板ID(his_nursing_plan_template.id) */
     private Long planTemplateId;
+    /* ---------- 富文本双轨扩展列(P4a-5, DictSchemaMigration 幂等补列) ---------- */
+    /** 护理文书模板ID(his_nursing_template.id, P4a-5 富文本轨) */
+    private Long templateId;
+    /** 结构化字段扁平JSON(fieldKey→值, P4a-5 富文本双轨派生; 配合 content 密文轨) */
+    private String structureData;
 }

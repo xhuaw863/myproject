@@ -30,6 +30,14 @@ public class HisUploadStatus extends BaseEntity {
     public static final String BIZ_TRACE_DEL = "TRACE_DEL";
     /** 业务类型: 追溯码采购入库报送(3503A, 批次5 M5; 一明细行一状态行 biz_id=his_stock_in_item.id) */
     public static final String BIZ_TRACE_PURC = "TRACE_PURC";
+    /** 业务类型: 住院结算(2301->2304, 独立串避免与门诊 SETL 撞号; biz_id=his_inp_settle.id) */
+    public static final String BIZ_INP_SETL = "INP_SETL";
+    /** 业务类型: 住院费用明细上传(2301; biz_id=his_inp_settle.id) */
+    public static final String BIZ_INP_FEE = "INP_FEE";
+    /** 业务类型: 住院入院登记上报(2401; biz_id=his_inp_visit.id) */
+    public static final String BIZ_INP_REG = "INP_REG";
+    /** 业务类型: 住院出院办理上报(2402; biz_id=his_inp_visit.id) */
+    public static final String BIZ_INP_DISCH = "INP_DISCH";
 
     public static final int STATUS_PENDING = 0;
     public static final int STATUS_UPLOADED = 1;

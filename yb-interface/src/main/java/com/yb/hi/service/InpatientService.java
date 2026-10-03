@@ -52,6 +52,19 @@ public class InpatientService {
     }
 
     /**
+     * 【2302】住院费用明细撤销
+     * 输入节点: data(多行) ; 输出: 无。
+     * feedetl_sn="0000" 删除该就诊全部未结算明细(全撤, 规范语义幂等, 重试安全);
+     * 已参与结算的明细不能撤销(规范), 须先 2305 撤销结算。用于住院退费/明细调整前先撤旧明细的重结路径。
+     */
+    public YbResponse feeDetailRevoke(List<InpFeeDetailRevokeReq> rows) {
+        log.info("住院费用明细撤销: 撤销{}行", rows == null ? 0 : rows.size());
+        Map<String, Object> input = new LinkedHashMap<>();
+        input.put("data", rows);
+        return ybHttpClient.call("2302", input);
+    }
+
+    /**
      * 【2303】住院预结算
      * 输入节点: data ; 输出节点: setlinfo + setldetail
      */

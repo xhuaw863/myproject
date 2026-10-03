@@ -9,6 +9,7 @@
 
   HIS.views.MrBorrow = {
     mixins: [HIS.kwSelectMixin],
+    components: { 'dept-tree-picker': HIS.components.DeptTreePicker },
     data: function () {
       return {
         loading: false,
@@ -20,6 +21,7 @@
         deptId: null,
         keyword: '',
         depts: [],
+        deptRaw: [],
         deptsLoading: false,
         statusOpts: [
           { value: 1, label: '借出' },
@@ -56,17 +58,18 @@
         var vm = this;
         vm.deptsLoading = true;
         HIS.get('/api/his/dept/tree').then(function (d) {
-          var out = [];
+          var out = []; var raw = [];
           (function walk(list, depth) {
             (list || []).forEach(function (n) {
               var pad = '';
               for (var i = 0; i < depth; i++) { pad += '　'; }
               out.push({ id: n.id, label: pad + (n.deptName || ('科室' + n.id)), deptName: n.deptName, deptCode: n.deptCode });
+              raw.push({ id: n.id, parentId: n.parentId, orgId: n.orgId, deptLevel: n.deptLevel, deptName: n.deptName, deptCode: n.deptCode, pyCode: n.pyCode, abbrCode: n.abbrCode });
               if (n.children && n.children.length) { walk(n.children, depth + 1); }
             });
           })(d || [], 0);
-          vm.depts = out;
-        }).catch(function () { vm.depts = []; }).finally(function () { vm.deptsLoading = false; });
+          vm.depts = out; vm.deptRaw = raw;
+        }).catch(function () { vm.depts = []; vm.deptRaw = []; }).finally(function () { vm.deptsLoading = false; });
       },
       loadList: function () {
         var vm = this;
@@ -220,9 +223,7 @@
       '  <el-form label-width="90px" size="default" style="margin-top:8px;">',
       '    <el-form-item label="借阅人" required><el-input v-model="lend.borrowerName" placeholder="借阅人姓名" style="width:220px;"></el-input></el-form-item>',
       '    <el-form-item label="借阅科室">',
-      '      <el-select v-model="lend.borrowerDeptId" filterable clearable placeholder="借阅人科室" style="width:220px" :loading="deptsLoading" :filter-method="kwFilter(\'ldept\')">',
-      '        <el-option v-for="d in kwOptions(\'ldept\', depts, [\'label\',\'deptName\',\'deptCode\'])" :key="idKey(d.id)" :label="d.label" :value="d.id"></el-option>',
-      '      </el-select>',
+      '      <dept-tree-picker v-model="lend.borrowerDeptId" :options="deptRaw" width="260px" placeholder="借阅人科室" />',
       '    </el-form-item>',
       '    <el-form-item label="应还日期"><el-date-picker v-model="lend.expectReturnDate" type="date" placeholder="默认借出后7天" value-format="YYYY-MM-DD" style="width:220px;"></el-date-picker></el-form-item>',
       '    <el-form-item label="借阅事由"><el-input v-model="lend.purpose" type="textarea" :rows="2" placeholder="选填"></el-input></el-form-item>',

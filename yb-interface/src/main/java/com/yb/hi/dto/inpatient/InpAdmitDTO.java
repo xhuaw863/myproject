@@ -28,6 +28,8 @@ public class InpAdmitDTO {
     private String psnNo;
     /** 险种类型 */
     private String insutype;
+    /** 费别编码(his_fee_type_dict.code, 住院场景) */
+    private String feeType;
 
     /* ---------- 入院登记扩展: 联系人/担保人/过敏史(模型增强配套) ---------- */
     /** 联系人姓名 */

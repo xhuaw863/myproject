@@ -4,6 +4,9 @@ target/
 *.jar
 *.war
 
+# ===== Node toolchain (offline vendor bundler _tiptap_build) =====
+node_modules/
+
 # ===== Logs =====
 *.log
 logs/

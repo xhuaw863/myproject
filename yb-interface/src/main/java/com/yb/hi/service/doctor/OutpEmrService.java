@@ -21,6 +21,7 @@ import com.yb.hi.mapper.inpatient.HisEmrTemplateMapper;
 import com.yb.hi.mapper.outpatient.HisPatientMapper;
 import com.yb.hi.framework.tenant.LoginUser;
 import com.yb.hi.framework.tenant.UserContext;
+import com.yb.hi.service.emr.EmrDocumentService;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
@@ -34,8 +35,12 @@ import java.time.LocalTime;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 /**
  * 门诊结构化病历引擎服务(Phase B): 复用住院侧 EMR 引擎(his_emr_template scope=2 / EmrField / his_emr_version scope=2),
@@ -51,6 +56,9 @@ import java.util.Map;
 @Service
 public class OutpEmrService {
 
+    /** Tiptap 文档宏占位符 {macroCode}(与住院 InpMedRecordService.MACRO_TOKEN 同口径) */
+    private static final Pattern MACRO_TOKEN = Pattern.compile("\\{([A-Za-z0-9_]+)\\}");
+
     private final HisVisitMapper visitMapper;
     private final HisEmrTemplateMapper templateMapper;
     private final HisPatientMapper patientMapper;
@@ -58,11 +66,13 @@ public class OutpEmrService {
     private final HisDeptMapper deptMapper;
     private final HisEmrMacroMapper macroMapper;
     private final HisDiagnosisService diagnosisService;
+    // P3 Tiptap 双轨: emrFormat=1 时完整性取值源经密文 content 解密抽取
+    private final EmrDocumentService emrDocumentService;
 
     public OutpEmrService(HisVisitMapper visitMapper, HisEmrTemplateMapper templateMapper,
                           HisPatientMapper patientMapper, HisStaffMapper staffMapper,
                           HisDeptMapper deptMapper, HisEmrMacroMapper macroMapper,
-                          HisDiagnosisService diagnosisService) {
+                          HisDiagnosisService diagnosisService, EmrDocumentService emrDocumentService) {
         this.visitMapper = visitMapper;
         this.templateMapper = templateMapper;
         this.patientMapper = patientMapper;
@@ -70,6 +80,7 @@ public class OutpEmrService {
         this.deptMapper = deptMapper;
         this.macroMapper = macroMapper;
         this.diagnosisService = diagnosisService;
+        this.emrDocumentService = emrDocumentService;
     }
 
     /* ================= 完整性质控 ================= */
@@ -98,7 +109,18 @@ public class OutpEmrService {
         result.put("hasStructure", true);
         HisEmrTemplate tpl = templateMapper.selectById(v.getEmrTemplateId());
         JSONArray fields = tpl == null ? new JSONArray() : parseArraySafe(tpl.getFields());
-        JSONObject structure = parseObjectSafe(v.getStructure());
+        // P3 Tiptap 双轨: emrFormat=1 以密文 content 解密抽取的 fieldMap 为取值源(单一真源), 旧格式回退扁平 structure
+        JSONObject structure;
+        if (v.getEmrFormat() != null && v.getEmrFormat() == 1 && StringUtils.hasText(v.getContent())) {
+            structure = new JSONObject();
+            Map<String, String> fieldMap = emrDocumentService.extractFieldMap(
+                    emrDocumentService.loadDocument(2, v.getId(), v.getContent()));
+            if (fieldMap != null) {
+                fieldMap.forEach(structure::put);
+            }
+        } else {
+            structure = parseObjectSafe(v.getStructure());
+        }
         int totalRequired = 0;
         int filledRequired = 0;
         List<Map<String, Object>> missing = new ArrayList<>();
@@ -159,6 +181,109 @@ public class OutpEmrService {
             result.put(m.getMacroCode(), resolveOne(m, ctx));
         }
         return R.ok(result);
+    }
+
+    /**
+     * Tiptap JSON 门诊宏解析(P3 双轨, 递归遍历文档树):
+     * 1) emrMacro 节点(attrs.macroCode)→ 批量解析后回写 attrs.resolvedValue(与前端 resolveEmrMacro 回写口径一致,
+     *    编辑器渲染已解析值且宏节点仍可交互); 2) 字符串叶值中的 {macroCode} 占位符 → 原位替换(与住院同口径);
+     * 宏取值复用 {@link #resolveMacros} 门诊三源(患者/就诊/诊断)。未收录宏保留原样; 解析失败原样返回不阻断主流程。
+     */
+    public String resolveMacrosInTiptap(String tiptapJson, Long visitId) {
+        if (!StringUtils.hasText(tiptapJson) || visitId == null) {
+            return tiptapJson;
+        }
+        try {
+            JSONObject doc = JSON.parseObject(tiptapJson);
+            if (doc == null) {
+                return tiptapJson;
+            }
+            Set<String> codes = new LinkedHashSet<>();
+            collectMacroCodes(doc, codes);
+            if (codes.isEmpty()) {
+                return tiptapJson;
+            }
+            R<Map<String, String>> resolved = resolveMacros(visitId, new ArrayList<>(codes));
+            Map<String, String> values = resolved == null ? null : resolved.getData();
+            if (values == null || values.isEmpty()) {
+                return tiptapJson;
+            }
+            applyMacroValues(doc, values);
+            return doc.toJSONString();
+        } catch (Exception e) {
+            log.warn("Tiptap 文档门诊宏解析失败(原样返回): visitId={}, err={}", visitId, e.getMessage());
+            return tiptapJson;
+        }
+    }
+
+    /** 递归收集: emrMacro 节点取 attrs.macroCode, 其余字符串叶值中的 {macroCode} 占位符 */
+    private static void collectMacroCodes(Object node, Set<String> out) {
+        if (node instanceof JSONObject) {
+            JSONObject obj = (JSONObject) node;
+            if ("emrMacro".equalsIgnoreCase(text(obj.get("type")))) {
+                JSONObject attrs = obj.getJSONObject("attrs");
+                String code = attrs == null ? "" : text(attrs.get("macroCode")).trim();
+                if (!code.isEmpty()) {
+                    out.add(code);
+                }
+            }
+            for (Map.Entry<String, Object> e : new ArrayList<>(obj.entrySet())) {
+                collectMacroCodes(e.getValue(), out);
+            }
+        } else if (node instanceof JSONArray) {
+            JSONArray arr = (JSONArray) node;
+            for (int i = 0; i < arr.size(); i++) {
+                collectMacroCodes(arr.get(i), out);
+            }
+        } else if (node instanceof String) {
+            Matcher m = MACRO_TOKEN.matcher((String) node);
+            while (m.find()) {
+                out.add(m.group(1));
+            }
+        }
+    }
+
+    /** 递归回写: emrMacro 节点置 attrs.resolvedValue, 字符串叶值中的 {macroCode} 原位替换(未知宏保留原样) */
+    private static void applyMacroValues(Object node, Map<String, String> values) {
+        if (node instanceof JSONObject) {
+            JSONObject obj = (JSONObject) node;
+            if ("emrMacro".equalsIgnoreCase(text(obj.get("type")))) {
+                JSONObject attrs = obj.getJSONObject("attrs");
+                if (attrs != null) {
+                    String code = text(attrs.get("macroCode")).trim();
+                    if (!code.isEmpty() && values.containsKey(code)) {
+                        attrs.put("resolvedValue", values.get(code));
+                    }
+                }
+            }
+            for (Map.Entry<String, Object> e : new ArrayList<>(obj.entrySet())) {
+                obj.put(e.getKey(), applyNodeValue(e.getValue(), values));
+            }
+        } else if (node instanceof JSONArray) {
+            JSONArray arr = (JSONArray) node;
+            for (int i = 0; i < arr.size(); i++) {
+                arr.set(i, applyNodeValue(arr.get(i), values));
+            }
+        }
+    }
+
+    /** 单值处理: 容器递归回写, 字符串替换宏占位符, 其余原样 */
+    private static Object applyNodeValue(Object v, Map<String, String> values) {
+        if (v instanceof JSONObject || v instanceof JSONArray) {
+            applyMacroValues(v, values);
+            return v;
+        }
+        if (v instanceof String) {
+            Matcher m = MACRO_TOKEN.matcher((String) v);
+            StringBuffer sb = new StringBuffer();
+            while (m.find()) {
+                String val = values.get(m.group(1));
+                m.appendReplacement(sb, Matcher.quoteReplacement(val != null ? val : m.group(0)));
+            }
+            m.appendTail(sb);
+            return sb.toString();
+        }
+        return v;
     }
 
     /** 单宏解析: 门诊已知编码直取, 其余按 dataSource(1患者/2就诊/3诊断) 反射回落; 住院特有源返回空。 */

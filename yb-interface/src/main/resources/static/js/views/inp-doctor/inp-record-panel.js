@@ -918,7 +918,28 @@
             return HIS.post('/api/his/inp/record/' + HIS.idParam(vm.current.id)
               + '/sign?signLevel=' + encodeURIComponent(level));
           })
-          .then(function () {
+          .then(function (rec) {
+            /* P5a-4: 签名响应附带质控结果(qcResult), 禁止/拦截级阻断签名时不下发成功提示 */
+            var qc = rec && (rec.qcResult || (rec.data && rec.data.qcResult));
+            if (qc && qc.forbidden && qc.forbidden.length) {
+              ElementPlus.ElMessage.error('签名被禁止: '
+                + qc.forbidden.map(function (d) { return d.ruleName || '质控规则'; }).join('、'));
+              vm.load();
+              vm.reloadCurrent();
+              return;
+            }
+            if (qc && qc.blocks && qc.blocks.length) {
+              ElementPlus.ElMessage.warning('存在 ' + qc.blocks.length + ' 项拦截级缺陷, 请整改后重新签名');
+              ElementPlus.ElMessageBox.alert(
+                qc.blocks.map(function (d) { return '· ' + (d.ruleName || '质控规则') + (d.defectDesc ? ('：' + d.defectDesc) : ''); }).join('；'),
+                '质控拦截 · 签名被阻断', { confirmButtonText: '知道了' }).catch(function () {});
+              vm.load();
+              vm.reloadCurrent();
+              return;
+            }
+            if (qc && qc.warnings && qc.warnings.length && ElementPlus.ElNotification) {
+              ElementPlus.ElNotification({ title: '质控提醒', message: '存在 ' + qc.warnings.length + ' 项待整改缺陷', type: 'warning', duration: 5000 });
+            }
             HIS.notifySuccess(label + '完成');
             vm.load();
             vm.reloadCurrent();

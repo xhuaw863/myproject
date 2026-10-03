@@ -730,6 +730,7 @@
    * 关联药库选项: GET /api/his/stock/warehouse-def(启用中的药库, 与后端保存校验同口径)。
    */
   HIS.views.PharmacyDef = {
+    components: { 'dept-tree-picker': HIS.components.DeptTreePicker },
     data: function () {
       return {
         lead: HIS.isLead(),
@@ -877,9 +878,7 @@
       '        </el-select>',
       '      </el-form-item>',
       '      <el-form-item label="归属科室">',
-      '        <el-select v-model="form.deptId" clearable placeholder="选择归属科室(与科室一一对应)" style="width:100%">',
-      '          <el-option v-for="d in deptDefs" :key="d.id" :label="d.deptName" :value="d.id"></el-option>',
-      '        </el-select>',
+      '        <dept-tree-picker v-model="form.deptId" :options="deptDefs" placeholder="选择归属科室(与科室一一对应)" />',
       '      </el-form-item>',
       '      <el-form-item label="位置"><el-input v-model="form.location" placeholder="如 1楼取药窗口" maxlength="64"></el-input></el-form-item>',
       '      <el-form-item label="排序号"><el-input-number v-model="form.sortNo" :min="0" :max="9999" controls-position="right" style="width:140px"></el-input-number></el-form-item>',

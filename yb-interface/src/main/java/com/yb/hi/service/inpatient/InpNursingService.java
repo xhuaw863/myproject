@@ -1,6 +1,7 @@
 package com.yb.hi.service.inpatient;
 
 import com.alibaba.fastjson2.JSON;
+import com.alibaba.fastjson2.JSONArray;
 import com.alibaba.fastjson2.JSONObject;
 import com.baomidou.mybatisplus.core.toolkit.Wrappers;
 import com.yb.hi.dto.inpatient.InpNursingDTO;
@@ -13,6 +14,9 @@ import com.yb.hi.framework.tenant.TenantContext;
 import com.yb.hi.framework.tenant.UserContext;
 import com.yb.hi.mapper.inpatient.HisInpNursingRecordMapper;
 import com.yb.hi.mapper.inpatient.HisInpVisitMapper;
+import com.yb.hi.service.emr.EmrAuditService;
+import com.yb.hi.service.emr.EmrDocumentService;
+import com.yb.hi.service.emr.EmrElementService;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
@@ -33,7 +37,10 @@ import java.util.Map;
  * 1) 记录按 inpVisitId 归属就诊, 写操作校验就诊归属机构与当前登录机构一致(平台超管放行);
  * 2) content 为 JSON 文本, 体温单(recordType=1)结构约定
  *    {time, temperature, pulse, respiration, systolicBp, diastolicBp}(兼容 blood_pressure "120/80");
- * 3) 体温单数据解析失败的单条跳过(容错, 不阻断整图)。
+ * 3) 体温单数据解析失败的单条跳过(容错, 不阻断整图);
+ * 4) P4a-5 富文本双轨: content 为 Tiptap 文档(顶层 type=doc)时服务端 AES-GCM 加密落库(密文轨) + 派生
+ *    扁平 structure_data(fieldKey→值, 向后兼容), 同步 his_emr_element(scope=3)与审计留痕(scope=3);
+ *    列表返回前自动解密回明文, 存量明文记录原样透传。
  */
 @Slf4j
 @Service
@@ -49,19 +56,29 @@ public class InpNursingService {
     private final HisInpNursingRecordMapper recordMapper;
     private final HisInpVisitMapper visitMapper;
     private final JdbcTemplate jdbcTemplate;
+    private final EmrDocumentService emrDocumentService;
+    private final EmrAuditService emrAuditService;
+    private final EmrElementService emrElementService;
 
     public InpNursingService(HisInpNursingRecordMapper recordMapper, HisInpVisitMapper visitMapper,
-                             JdbcTemplate jdbcTemplate) {
+                             JdbcTemplate jdbcTemplate,
+                             EmrDocumentService emrDocumentService,
+                             EmrAuditService emrAuditService,
+                             EmrElementService emrElementService) {
         this.recordMapper = recordMapper;
         this.visitMapper = visitMapper;
         this.jdbcTemplate = jdbcTemplate;
+        this.emrDocumentService = emrDocumentService;
+        this.emrAuditService = emrAuditService;
+        this.emrElementService = emrElementService;
     }
 
     /* ================= 列表 / CRUD ================= */
 
     /**
      * 护理记录列表(按就诊): 可选 recordType 筛选, 记录时间倒序(最新在前);
-     * 附带返回记录内容原文(content JSON 由前端按类型解析渲染)。
+     * 附带返回记录内容原文(content JSON 由前端按类型解析渲染; Tiptap 密文轨已解密回明文)。
+     * Tiptap 记录附 textSummary(纯文本摘要)供前端列表/引用展示, 避免裸 JSON。
      */
     public List<Map<String, Object>> listByVisit(Long visitId, Integer recordType) {
         HisInpVisit visit = requireVisit(visitId);
@@ -72,17 +89,25 @@ public class InpNursingService {
                 .orderByDesc(HisInpNursingRecord::getId));
         List<Map<String, Object>> out = new ArrayList<>(recs.size());
         for (HisInpNursingRecord r : recs) {
+            String content = decryptQuietly(r.getId(), r.getContent());
             Map<String, Object> row = new LinkedHashMap<>();
             row.put("id", r.getId());
             row.put("inpVisitId", r.getInpVisitId());
             row.put("recordType", r.getRecordType());
-            row.put("content", r.getContent());
+            row.put("content", content);
             row.put("recordTime", r.getRecordTime() == null ? null
                     : TIME_FMT.format(r.getRecordTime()));
             row.put("nurseId", r.getNurseId());
             row.put("createBy", r.getCreateBy());
             row.put("createTime", r.getCreateTime() == null ? null
                     : TIME_FMT.format(r.getCreateTime()));
+            /* P4a-5 富文本轨: 附纯文本摘要(前端列表优先展示, 避免裸 JSON) */
+            if (isTiptapDocument(content)) {
+                String summary = tiptapSummary(content);
+                if (StringUtils.hasText(summary)) {
+                    row.put("textSummary", summary);
+                }
+            }
             out.add(row);
         }
         return out;
@@ -106,10 +131,23 @@ public class InpNursingService {
         rec.setOrgId(visit.getOrgId());
         rec.setInpVisitId(visit.getId());
         rec.setRecordType(dto.getRecordType());
-        rec.setContent(dto.getContent());
+        /* P4a-5 富文本双轨: Tiptap 文档 → AES-GCM 密文落 content + 派生扁平 structure_data(前端缺省时); 其余原文口径不变 */
+        boolean tiptap = isTiptapDocument(dto.getContent());
+        if (tiptap) {
+            rec.setContent(emrDocumentService.encrypt(dto.getContent()));
+            rec.setTemplateId(dto.getTemplateId());
+            rec.setStructureData(deriveStructure(dto.getContent(), dto.getStructure()));
+        } else {
+            rec.setContent(dto.getContent());
+        }
         rec.setRecordTime(LocalDateTime.now());
         rec.setNurseId(nurseId);
         recordMapper.insert(rec);
+        if (tiptap) {
+            auditQuietly(rec.getId(), "CREATE", null);
+            /* 要素同步须在插入后(按 recordId 先删后插); 失败不影响主流程 */
+            emrElementService.syncFromTiptap(EmrAuditService.SCOPE_NURSING, rec.getId(), dto.getContent());
+        }
 
         Map<String, Object> out = new LinkedHashMap<>();
         out.put("id", rec.getId());
@@ -134,20 +172,47 @@ public class InpNursingService {
                 throw new BizException(400, "记录类型无效(1-5)");
             }
         }
-        String content = StringUtils.hasText(dto.getContent()) ? dto.getContent() : rec.getContent();
-        if (!StringUtils.hasText(content)) {
+        Integer recordType = dto.getRecordType() != null ? dto.getRecordType() : rec.getRecordType();
+        if (!StringUtils.hasText(dto.getContent()) && !StringUtils.hasText(rec.getContent())) {
             throw new BizException(400, "记录内容不能为空");
         }
-        Integer recordType = dto.getRecordType() != null ? dto.getRecordType() : rec.getRecordType();
-        validateContentJson(recordType, content);
-
-        int n = recordMapper.update(null, Wrappers.<HisInpNursingRecord>lambdaUpdate()
-                .eq(HisInpNursingRecord::getId, id)
-                .set(HisInpNursingRecord::getRecordType, recordType)
-                .set(HisInpNursingRecord::getContent, content)
-                .set(HisInpNursingRecord::getUpdateBy, currentUserName()));
-        if (n == 0) {
-            throw new BizException(409, "记录已变更或不存在, 请刷新后重试");
+        int n;
+        if (StringUtils.hasText(dto.getContent())) {
+            String content = dto.getContent();
+            validateContentJson(recordType, content);
+            if (isTiptapDocument(content)) {
+                /* P4a-5 富文本双轨: 覆写密文轨 + 重派生 structure_data(前端缺省时), 附审计与要素同步 */
+                n = recordMapper.update(null, Wrappers.<HisInpNursingRecord>lambdaUpdate()
+                        .eq(HisInpNursingRecord::getId, id)
+                        .set(HisInpNursingRecord::getRecordType, recordType)
+                        .set(HisInpNursingRecord::getContent, emrDocumentService.encrypt(content))
+                        .set(HisInpNursingRecord::getStructureData, deriveStructure(content, dto.getStructure()))
+                        .set(dto.getTemplateId() != null, HisInpNursingRecord::getTemplateId, dto.getTemplateId())
+                        .set(HisInpNursingRecord::getUpdateBy, currentUserName()));
+                if (n == 0) {
+                    throw new BizException(409, "记录已变更或不存在, 请刷新后重试");
+                }
+                auditQuietly(id, "UPDATE", null);
+                emrElementService.syncFromTiptap(EmrAuditService.SCOPE_NURSING, id, content);
+            } else {
+                n = recordMapper.update(null, Wrappers.<HisInpNursingRecord>lambdaUpdate()
+                        .eq(HisInpNursingRecord::getId, id)
+                        .set(HisInpNursingRecord::getRecordType, recordType)
+                        .set(HisInpNursingRecord::getContent, content)
+                        .set(HisInpNursingRecord::getUpdateBy, currentUserName()));
+                if (n == 0) {
+                    throw new BizException(409, "记录已变更或不存在, 请刷新后重试");
+                }
+            }
+        } else {
+            /* dto 未携带内容(仅改类型): 库中原文(含存量密文轨)原样保留 */
+            n = recordMapper.update(null, Wrappers.<HisInpNursingRecord>lambdaUpdate()
+                    .eq(HisInpNursingRecord::getId, id)
+                    .set(HisInpNursingRecord::getRecordType, recordType)
+                    .set(HisInpNursingRecord::getUpdateBy, currentUserName()));
+            if (n == 0) {
+                throw new BizException(409, "记录已变更或不存在, 请刷新后重试");
+            }
         }
         Map<String, Object> out = new LinkedHashMap<>();
         out.put("id", id);
@@ -155,13 +220,14 @@ public class InpNursingService {
         return out;
     }
 
-    /** 删除护理记录(逻辑删除)。 */
+    /** 删除护理记录(逻辑删除; P4a-5 附 DELETE 审计留痕)。 */
     public void delete(Long id) {
         if (id == null) {
             throw new BizException(400, "记录ID不能为空");
         }
         requireRecord(id);
         recordMapper.deleteById(id);
+        auditQuietly(id, "DELETE", null);
     }
 
     /* ================= 体温单 ================= */
@@ -270,6 +336,163 @@ public class InpNursingService {
                         + " AND o.order_category = 1 AND e.deleted = 0 AND e.tenant_id = ?"
                         + " ORDER BY e.exec_time ASC, e.id ASC",
                 visit.getId(), day, tenantId());
+    }
+
+    /* ================= 富文本双轨(P4a-5) ================= */
+
+    /** Tiptap/ProseMirror 文档判定: JSON 解析后顶层 type=doc(与住院病历/门诊同口径) */
+    private static boolean isTiptapDocument(String json) {
+        if (!StringUtils.hasText(json)) {
+            return false;
+        }
+        String s = json.trim();
+        if (s.isEmpty() || s.charAt(0) != '{') {
+            return false;
+        }
+        try {
+            JSONObject obj = JSON.parseObject(s);
+            return obj != null && "doc".equals(String.valueOf(obj.get("type")));
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    /** 富文本双轨派生扁平结构: 优先采用前端提交的 structure, 缺省由 Tiptap 文档服务端抽取(fieldKey→值) */
+    private String deriveStructure(String tiptapJson, String submittedStructure) {
+        if (StringUtils.hasText(submittedStructure)) {
+            return submittedStructure;
+        }
+        return JSON.toJSONString(emrDocumentService.extractFieldMap(tiptapJson));
+    }
+
+    /** 内容解密(静默): 密文轨(格式探测)解密回明文; 失败/密钥缺失仅告警并返回原文, 不阻断列表 */
+    private String decryptQuietly(Long recordId, String content) {
+        if (!StringUtils.hasText(content)) {
+            return content;
+        }
+        String s = content.trim();
+        char c = s.charAt(0);
+        if (c == '<' || c == '{' || c == '[' || !looksLikeEncrypted(s)) {
+            return content;
+        }
+        try {
+            return emrDocumentService.decrypt(content);
+        } catch (Exception e) {
+            log.warn("护理记录内容解密失败(原样返回): recordId={}, err={}", recordId, e.getMessage());
+            return content;
+        }
+    }
+
+    /** 密文特征预检: 仅含 Base64 字符集且长度≥24(IV12+密文+tag16 的 Base64 最短 40 字符), 避免明文误入解密告警 */
+    private static boolean looksLikeEncrypted(String s) {
+        if (s == null || s.length() < 24) {
+            return false;
+        }
+        for (int i = 0; i < s.length(); i++) {
+            char c = s.charAt(i);
+            boolean ok = (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9')
+                    || c == '+' || c == '/' || c == '=' || c == '\n' || c == '\r';
+            if (!ok) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /** 审计留痕(静默, scope=3 护理文书): 失败仅告警, 不阻断护理记录主流程 */
+    private void auditQuietly(Long recordId, String action, String detail) {
+        try {
+            emrAuditService.log(EmrAuditService.SCOPE_NURSING, recordId, action, detail);
+        } catch (Exception e) {
+            log.warn("护理记录审计留痕失败(不影响主流程): recordId={}, action={}, err={}", recordId, action, e.getMessage());
+        }
+    }
+
+    /** Tiptap 文档纯文本摘要(递归收集 text 节点与 emrField 值, 归一空白并截断 120 字符) */
+    private static String tiptapSummary(String tiptapJson) {
+        StringBuilder sb = new StringBuilder();
+        try {
+            collectTiptapText(JSON.parseObject(tiptapJson), sb);
+        } catch (Exception e) {
+            return null;
+        }
+        String s = sb.toString().trim();
+        if (s.isEmpty()) {
+            return null;
+        }
+        return s.length() > 120 ? s.substring(0, 120) + "…" : s;
+    }
+
+    /** 递归收集 Tiptap 节点树文本: text 节点取 text, emrField 取 attrs.value 标量 */
+    private static void collectTiptapText(Object node, StringBuilder sb) {
+        if (node instanceof JSONArray) {
+            for (Object child : (JSONArray) node) {
+                collectTiptapText(child, sb);
+            }
+            return;
+        }
+        if (!(node instanceof JSONObject)) {
+            return;
+        }
+        JSONObject o = (JSONObject) node;
+        String type = o.getString("type");
+        if ("text".equals(type)) {
+            appendSummary(sb, o.getString("text"));
+        } else if ("emrField".equals(type)) {
+            JSONObject attrs = o.getJSONObject("attrs");
+            if (attrs != null) {
+                appendSummary(sb, scalarText(attrs.get("value")));
+            }
+        }
+        collectTiptapText(o.getJSONArray("content"), sb);
+    }
+
+    /** 标量值文本(数组以「、」连接; 对象取 name/label/text/value 首个非空) */
+    private static String scalarText(Object v) {
+        if (v == null) {
+            return null;
+        }
+        if (v instanceof JSONArray) {
+            StringBuilder sb = new StringBuilder();
+            for (Object item : (JSONArray) v) {
+                String t = scalarText(item);
+                if (!StringUtils.hasText(t)) {
+                    continue;
+                }
+                if (sb.length() > 0) {
+                    sb.append("、");
+                }
+                sb.append(t);
+            }
+            return sb.length() == 0 ? null : sb.toString();
+        }
+        if (v instanceof JSONObject) {
+            JSONObject o = (JSONObject) v;
+            for (String k : new String[]{"name", "label", "text", "value"}) {
+                String t = scalarText(o.get(k));
+                if (StringUtils.hasText(t)) {
+                    return t;
+                }
+            }
+            return null;
+        }
+        String s = String.valueOf(v).trim();
+        return s.isEmpty() ? null : s;
+    }
+
+    /** 摘要追加(空白片段跳过, 以空格分词) */
+    private static void appendSummary(StringBuilder sb, String part) {
+        if (!StringUtils.hasText(part)) {
+            return;
+        }
+        String t = part.trim();
+        if (t.isEmpty()) {
+            return;
+        }
+        if (sb.length() > 0) {
+            sb.append(' ');
+        }
+        sb.append(t);
     }
 
     /* ================= 内部工具 ================= */

@@ -30,6 +30,8 @@ public class VisitDraftReq {
     private String structure;
     /** 结构化病历模板ID(his_emr_template.id) */
     private Long emrTemplateId;
+    /** Tiptap JSON 文档(明文, 由服务端 AES-GCM 加密落 his_visit.content); 非空且为 doc 文档时启用双轨, structure 仍由服务端派生维护 */
+    private String content;
     /* ---------- 医保字段(2203 mdtrtinfo) ---------- */
     /** 病种类型代码 */
     private String diseTypeCode;

@@ -555,6 +555,7 @@
 
   /* ================= 3. 治疗设备台账 ================= */
   HIS.views.TreatmentEquipment = {
+    components: { 'dept-tree-picker': HIS.components.DeptTreePicker },
     data: function () {
       return {
         loading: false, list: [], deptDefs: [], deptId: null, keyword: '',
@@ -684,9 +685,7 @@
       '        </el-select>',
       '      </el-form-item>',
       '      <el-form-item label="所属科室">',
-      '        <el-select v-model="dlg.form.deptId" clearable filterable placeholder="选择科室" style="width:240px;">',
-      '          <el-option v-for="dp in deptDefs" :key="dp.id" :label="dp.deptName" :value="dp.id"></el-option>',
-      '        </el-select>',
+      '        <dept-tree-picker v-model="dlg.form.deptId" :options="deptDefs" width="300px" placeholder="选择科室" />',
       '      </el-form-item>',
       '      <el-form-item label="状态">',
       '        <el-radio-group v-model="dlg.form.status">',

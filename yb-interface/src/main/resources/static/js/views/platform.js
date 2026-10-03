@@ -124,6 +124,7 @@
   /* ============ 用户管理 ============ */
   HIS.views.UserManage = {
     mixins: [HIS.kwSelectMixin],
+    components: { 'dept-tree-picker': HIS.components.DeptTreePicker },
     data: function () {
       return {
         loading: false,
@@ -249,19 +250,21 @@
           return { id: d.id, label: (on && on !== '-' ? on + ' / ' : '') + d.deptName };
         });
       },
-      /* 授权科室分组选项: 按科室大类分组(门诊/住院/病区护理/医技/行政后勤);
-       * 大类节点(level=1)仅作分组容器不可选, 三级窗口/诊室缩进展示 */
+      /* 授权科室分组选项: 按科室主大类分组(大类支持多选, 存为逗号串, 首个=主大类);
+       * 大类节点(level=1)仅作分组容器不可选, 三级窗口/诊室缩进展示, 多类科室标签透出全部大类 */
       deptGroups: function () {
         var vm = this;
         var groups = {};
         var order = [];
         (vm.depts || []).forEach(function (d) {
           if (d.deptLevel === 1) { return; }
-          var cat = d.deptCategory || '其他';
+          var cats = String(d.deptCategory || '').split(',').filter(Boolean);
+          var cat = cats[0] || '其他';
           if (!groups[cat]) { groups[cat] = []; order.push(cat); }
           var prefix = d.deptLevel === 3 ? '　└ ' : '';
+          var multi = cats.length > 1 ? ' [' + cats.join('、') + ']' : '';
           var on = vm.orgName(d.orgId);
-          groups[cat].push({ id: d.id, label: prefix + d.deptName + (on && on !== '-' ? ' (' + on + ')' : ''), pyCode: d.pyCode, abbrCode: d.abbrCode });
+          groups[cat].push({ id: d.id, label: prefix + d.deptName + multi + (on && on !== '-' ? ' (' + on + ')' : ''), pyCode: d.pyCode, abbrCode: d.abbrCode });
         });
         return order.map(function (c) { return { category: c, options: groups[c] }; });
       }
@@ -727,8 +730,8 @@
       '      </el-tab-pane>',
       '      <el-tab-pane label="科室权限" name="dept">',
       '        <el-form :model="form" label-width="90px">',
-      '          <el-form-item label="主属科室"><el-select v-model="form.deptId" style="width:100%" clearable filterable placeholder="该账号编制主属科室(可输拼音简码)" :filter-method="kwFilter(\'uDept\')"><el-option-group v-for="g in kwGroupOptions(\'uDept\', deptGroups, [\'label\',\'pyCode\',\'abbrCode\'])" :key="g.category" :label="g.category"><el-option v-for="d in g.options" :key="d.id" :label="d.label" :value="d.id"></el-option></el-option-group></el-select></el-form-item>',
-      '          <el-form-item label="授权科室"><el-select v-model="deptScopeArr" multiple clearable filterable style="width:100%" placeholder="可登录/执业的多个科室(数据权限); 留空=仅主属科室; 可输拼音简码" :filter-method="kwFilter(\'uScope\')"><el-option-group v-for="g in kwGroupOptions(\'uScope\', deptGroups, [\'label\',\'pyCode\',\'abbrCode\'])" :key="g.category" :label="g.category"><el-option v-for="d in g.options" :key="d.id" :label="d.label" :value="d.id"></el-option></el-option-group></el-select></el-form-item>',
+      '          <el-form-item label="主属科室"><dept-tree-picker v-model="form.deptId" :options="depts" :org-id="form.orgId" placeholder="该账号编制主属科室(可输拼音简码/树选)" /></el-form-item>',
+      '          <el-form-item label="授权科室"><dept-tree-picker v-model="deptScopeArr" :options="depts" :org-id="form.orgId" multiple placeholder="可登录/执业的多个科室(数据权限); 留空=仅主属科室" /></el-form-item>',
       '          <el-form-item label=" "><span style="color:var(--yb-ink-2);font-size:12px;">已授权 {{ deptScopeArr.length }} 个科室。一个医生可登录多个住院科室、护士可进多个病区、药师可进多个药房。科室权限决定账号可见的就诊/患者数据范围(数据权限), 与角色菜单权限(功能权限)相互独立。</span></el-form-item>',
       '        </el-form>',
       '      </el-tab-pane>',

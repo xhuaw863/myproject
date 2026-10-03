@@ -46,8 +46,13 @@
     var m = /退费原因[:：]\s*([^;]+)/.exec(remark || '');
     return m ? m[1].trim() : '-';
   }
-  /* 支付方式中文映射(未知值原样展示, 空值 --) */
-  function payMethodLabel(v) { return (v === null || v === undefined || v === '') ? '--' : (PAY_METHODS[v] || v); }
+  /* 支付方式中文映射(字典优先, 未知值原样展示, 空值 --) */
+  function payMethodLabel(v) {
+    if (v === null || v === undefined || v === '') { return '--'; }
+    var d = (window.HIS && HIS.payMethodLabel) ? HIS.payMethodLabel(v) : null;
+    if (d && d !== String(v)) { return d; }
+    return PAY_METHODS[v] || v;
+  }
   /* 退费单类型: 备注含"部分退费"标记=部分退费, 否则全额退费(全额/部分退费单均带 originBillId, 不能用其区分) */
   function refundKindOf(row) { return /部分退费/.test((row && row.remark) || '') ? 'partial' : 'full'; }
   /* ISO 时间串 -> yyyy-MM-dd HH:mm:ss */
@@ -185,7 +190,17 @@
         refreshTimer: null
       };
     },
-    created: function () { this.load(); this.startAutoRefresh(); },
+    created: function () {
+      var vm = this;
+      vm.load(); vm.startAutoRefresh();
+      /* 支付方式改由机构字典驱动(排除 INSURANCE: 医保结算自动落库不可手选); 字典空则保留内置回落 */
+      HIS.loadFeePayDict('OTP').then(function () {
+        var dict = HIS.payMethodOpts('OTP') || [];
+        var opts = dict.filter(function (p) { return String(p.code).toUpperCase() !== 'INSURANCE'; })
+          .map(function (p) { return { v: p.code, l: p.name }; });
+        if (opts.length) { vm.payMethodOpts = opts; }
+      });
+    },
     beforeUnmount: function () { this.stopAutoRefresh(); },
     beforeDestroy: function () { this.stopAutoRefresh(); },
     computed: {

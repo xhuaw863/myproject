@@ -1,0 +1,22 @@
+# 住院医保上报端到端集成测试隔离库配置(批次4 M5)
+# 与共享开发库 yb_interface 物理隔离: 独立库 ybtest_it, 资金写只打本库, 验后 DROP DATABASE 无痕。
+# 前置(必须先备表结构, DictSchemaMigration 启动只 ADD COLUMN 补列、不建基础表):
+#   mysqldump --no-data --single-transaction -uroot -p yb_interface > ybtest_it_schema.sql   # 克隆全 244 表结构(无行=无资金数据)
+#   mysql -uroot -p -e "CREATE DATABASE ybtest_it CHARACTER SET utf8mb4" && mysql -uroot -p ybtest_it -e "source ybtest_it_schema.sql"
+# 运行(两步法, 规避 clean test 单命令下 surefire 与 fresh 编译产物的类加载竞态):
+#   mvn -q clean test-compile   &&   mvn -q surefire:test -Dtest=InpatientYbFlowIT
+spring:
+  datasource:
+    driver-class-name: com.mysql.cj.jdbc.Driver
+    url: jdbc:mysql://localhost:3306/ybtest_it?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai&useSSL=false&allowPublicKeyRetrieval=true&rewriteBatchedStatements=true&createDatabaseIfNotExist=true&allowMultiQueries=true
+    username: root
+    password: ${DB_PASSWORD:bsoft}
+
+# 全链路走本地模拟医保平台(响应确定, 无外部前置机依赖)
+yb:
+  mock-enabled: true
+
+logging:
+  level:
+    com.yb.hi: info
+    org.springframework: warn

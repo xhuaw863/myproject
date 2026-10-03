@@ -23,6 +23,7 @@ import com.yb.hi.mapper.inpatient.HisPathwayNodeMapper;
 import com.yb.hi.mapper.inpatient.HisPathwayTaskMapper;
 import com.yb.hi.mapper.inpatient.HisPathwayTemplateMapper;
 import com.yb.hi.platform.service.OrgAccessGuard;
+import com.yb.hi.service.StdDictQueryService;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -57,11 +58,13 @@ public class PathwayInstanceService extends ServiceImpl<HisPathwayInstanceMapper
     private final HisInpOrderMapper orderMapper;
     private final InpOrderService inpOrderService;
     private final OrgAccessGuard guard;
+    private final StdDictQueryService stdDict;
 
     public PathwayInstanceService(HisPathwayTemplateMapper templateMapper, HisPathwayNodeMapper nodeMapper,
                                   HisPathwayTaskMapper taskMapper, HisPathwayExecMapper execMapper,
                                   HisInpVisitMapper visitMapper, HisInpOrderMapper orderMapper,
-                                  InpOrderService inpOrderService, OrgAccessGuard guard) {
+                                  InpOrderService inpOrderService, OrgAccessGuard guard,
+                                  StdDictQueryService stdDict) {
         this.templateMapper = templateMapper;
         this.nodeMapper = nodeMapper;
         this.taskMapper = taskMapper;
@@ -70,6 +73,7 @@ public class PathwayInstanceService extends ServiceImpl<HisPathwayInstanceMapper
         this.orderMapper = orderMapper;
         this.inpOrderService = inpOrderService;
         this.guard = guard;
+        this.stdDict = stdDict;
     }
 
     /* ==================== 入径启动 ==================== */
@@ -238,6 +242,8 @@ public class PathwayInstanceService extends ServiceImpl<HisPathwayInstanceMapper
                     tm.put("execDate", e.getExecDate());
                     tm.put("orderId", e.getOrderId());
                     tm.put("varianceReason", e.getVarianceReason());
+                    tm.put("varianceType", e.getVarianceType());
+                    tm.put("varianceTypeName", e.getVarianceTypeName());
                     tm.put("operatorId", e.getOperatorId());
                     tm.put("taskType", t == null ? null : t.getTaskType());
                     tm.put("orderType", t == null ? null : t.getOrderType());
@@ -335,21 +341,25 @@ public class PathwayInstanceService extends ServiceImpl<HisPathwayInstanceMapper
         return getById(id);
     }
 
-    /** 退出路径: 1/4 → 3已退出, 记录 exit_reason(乐观更新) */
+    /** 退出路径: 1/4 → 3已退出, 记录 exit_reason(乐观更新); type 为标准化退出原因分类码, 服务端回填名称 */
     @Transactional(rollbackFor = Exception.class)
-    public HisPathwayInstance exit(Long id, String reason) {
+    public HisPathwayInstance exit(Long id, String reason, String type) {
         requireInstance(id);
+        String typeCode = StringUtils.hasText(type) ? type.trim() : null;
         boolean ok = lambdaUpdate()
                 .set(HisPathwayInstance::getStatus, 3)
                 .set(HisPathwayInstance::getExitReason,
                         StringUtils.hasText(reason) ? reason.trim() : null)
+                .set(HisPathwayInstance::getExitType, typeCode)
+                .set(HisPathwayInstance::getExitTypeName,
+                        typeCode == null ? null : stdDict.nameOf("cv_code", "pathway_exit_reason", typeCode))
                 .eq(HisPathwayInstance::getId, id)
                 .in(HisPathwayInstance::getStatus, 1, 4)
                 .update();
         if (!ok) {
             throw new BizException("路径已结束, 不能退出");
         }
-        log.info("临床路径退出: instanceId={}, reason={}", id, reason);
+        log.info("临床路径退出: instanceId={}, type={}, reason={}", id, typeCode, reason);
         return getById(id);
     }
 
@@ -466,13 +476,17 @@ public class PathwayInstanceService extends ServiceImpl<HisPathwayInstanceMapper
         return execMapper.selectById(execId);
     }
 
-    /** 标记变异: exec_status 1待执行 → 4变异, 记录 variance_reason(乐观更新) */
+    /** 标记变异: exec_status 1待执行 → 4变异, 记录 variance_reason(乐观更新); type 为标准化变异原因分类码, 服务端回填名称 */
     @Transactional(rollbackFor = Exception.class)
-    public HisPathwayExec markVariance(Long execId, String reason) {
+    public HisPathwayExec markVariance(Long execId, String reason, String type) {
         requireExec(execId);
+        String typeCode = StringUtils.hasText(type) ? type.trim() : null;
         int affected = execMapper.update(null, new LambdaUpdateWrapper<HisPathwayExec>()
                 .set(HisPathwayExec::getExecStatus, 4)
                 .set(HisPathwayExec::getVarianceReason, StringUtils.hasText(reason) ? reason.trim() : null)
+                .set(HisPathwayExec::getVarianceType, typeCode)
+                .set(HisPathwayExec::getVarianceTypeName,
+                        typeCode == null ? null : stdDict.nameOf("cv_code", "pathway_var_reason", typeCode))
                 .set(HisPathwayExec::getExecDate, LocalDate.now())
                 .set(HisPathwayExec::getOperatorId, currentStaffId())
                 .eq(HisPathwayExec::getId, execId)
@@ -480,7 +494,7 @@ public class PathwayInstanceService extends ServiceImpl<HisPathwayInstanceMapper
         if (affected == 0) {
             throw new BizException("仅待执行的任务可登记变异, 请刷新后重试");
         }
-        log.info("临床路径任务变异登记: execId={}, reason={}", execId, reason);
+        log.info("临床路径任务变异登记: execId={}, type={}, reason={}", execId, typeCode, reason);
         return execMapper.selectById(execId);
     }
 

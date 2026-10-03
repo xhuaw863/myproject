@@ -694,7 +694,7 @@ public class HisScheduleService extends ServiceImpl<HisScheduleMapper, HisSchedu
         if (dOrg == null || dOrg.longValue() != orgId.longValue()) {
             throw new BizException("排班科室必须属于本机构, 不可跨机构排班");
         }
-        if (!"门诊科室".equals(str(d.get("dept_category")))) {
+        if (!HisDeptService.hasCategory(str(d.get("dept_category")), "门诊科室")) {
             throw new BizException("仅「门诊科室」可排班: " + str(d.get("dept_name")));
         }
         Integer lv = toInt(d.get("dept_level"));

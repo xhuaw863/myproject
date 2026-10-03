@@ -4,7 +4,9 @@
  *       PUT /{id}/accept | PUT /{id}/complete {opinion} | PUT /{id}/reject {reason} | PUT /{id}/cancel
  * 状态机: 1已申请(可受理/拒绝/取消) → 2已受理(可完成) → 3已完成; 1→4已拒绝 / 1→5已取消
  * 参考数据: /api/his/dept/list · /api/his/staff/list?staffType=医师(按科室前端筛选)
- * 注册: HIS.components.InpConsultPanel (须在 inp-doctor.js 之前加载) */
+ * 注册: HIS.components.InpConsultPanel (须在 inp-doctor.js 之前加载)
+ * P6-4 医生站集成: 会诊范围(consultCategory 科内/科间/院外/MDT) + 完成自动建档提示 + 双向评价 +
+ *   响应时限超时标签; 新功能走统一会诊流 /api/his/consultation(P6-2), 未就绪回退旧住院接口(向后兼容) */
 ;(function () {
   const HIS = (window.HIS = window.HIS || {});
   HIS.components = HIS.components || {};
@@ -15,6 +17,12 @@
   const CONSULT_STATUS_TAG = { 1: '', 2: 'warning', 3: 'success', 4: 'danger', 5: 'info' };
   const URGENCY = { 1: '普通', 2: '紧急', 3: '特急' };
   const URGENCY_TAG = { 1: 'info', 2: 'warning', 3: 'danger' };
+  /* P6-4 统一会诊流接口(P6-2 ConsultationFlowController): 新功能调用, 旧住院接口保持向后兼容 */
+  const CONSULT_API = '/api/his/consultation';
+  /* P6-4 会诊范围(consult_category): 科内/科间/院外/MDT, 默认科间;
+   * 主口径为字符串码(实体 String 型), 兼容数字码 1/2/3/4(P6-3 管理页预估口径) —— 集成轮对齐前双编码兼容 */
+  const CONSULT_CATEGORY = { within_dept: '科内', cross_dept: '科间', external: '院外', mdt: 'MDT', '1': '科内', '2': '科间', '3': '院外', '4': 'MDT' };
+  const CONSULT_CATEGORY_TAG = { within_dept: 'info', cross_dept: '', external: 'warning', mdt: 'success', '1': 'info', '2': '', '3': 'warning', '4': 'success' };
 
   /* 内联 SVG 图标(项目未引入图标库, 统一 24 视框 / currentColor 染色), 经 v-html 渲染 */
   const ICONS = {
@@ -23,7 +31,9 @@
     ban: '<svg class="iw-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M5.7 5.7l12.6 12.6"/></svg>',
     edit: '<svg class="iw-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 3a2.8 2.8 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5L17 3z"/></svg>',
     /* T48 远程视频会诊: 摄像机(发起视频, consultType=3 MDT/远程会诊专属) */
-    video: '<svg class="iw-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="6.5" width="13" height="11" rx="2"/><path d="m15.5 10.5 4.6-2.8a.65.65 0 0 1 1 .55v7.5a.65.65 0 0 1-1 .55l-4.6-2.8"/></svg>'
+    video: '<svg class="iw-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="6.5" width="13" height="11" rx="2"/><path d="m15.5 10.5 4.6-2.8a.65.65 0 0 1 1 .55v7.5a.65.65 0 0 1-1 .55l-4.6-2.8"/></svg>',
+    /* P6-4 双向评价: 星形(选中态由 .is-on 类金fill) */
+    star: '<svg class="iw-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m12 2.8 2.9 5.9 6.5.95-4.7 4.6 1.1 6.45L12 17.65 6.2 20.7l1.1-6.45-4.7-4.6 6.5-.95z"/></svg>'
   };
 
   function timeText(value) {
@@ -75,8 +85,41 @@
     document.head.appendChild(st);
   })();
 
+  /* P6-4 双向评价/超时高亮样式(面板私有, 一次性注入不碰公共 css) */
+  (function ensureConsultEvalStyles() {
+    if (document.getElementById('inp-consult-eval-style')) { return; }
+    const st = document.createElement('style');
+    st.id = 'inp-consult-eval-style';
+    st.textContent = [
+      /* 评价区: 虚线框软底, 双列(窄屏回落单列) */
+      '.ic-eval { margin-top:8px; padding:10px 12px; border:1px dashed var(--yb-divider); border-radius:8px;',
+      ' background:var(--yb-bg-soft, #f6f8fb); }',
+      '.ic-eval-cap { color:var(--yb-ink-2); font-weight:700; font-size:12px; letter-spacing:.04em; margin-bottom:8px; }',
+      '.ic-eval-grid { display:grid; grid-template-columns:1fr 1fr; gap:0 18px; }',
+      '@media (max-width:820px) { .ic-eval-grid { grid-template-columns:1fr; } }',
+      '.ic-eval-cell .k { color:var(--yb-ink-3); font-size:12px; margin-bottom:4px; }',
+      '.ic-eval-cell .v { color:var(--yb-ink-1); font-size:13px; line-height:1.7; }',
+      /* 星形: 16px, 选中态金fill; is-btn 为可点击选择态 */
+      '.ic-star { display:inline-flex; margin-right:2px; }',
+      '.ic-star .iw-ico { width:16px; height:16px; color:var(--yb-ink-3); }',
+      '.ic-star.is-on .iw-ico { color:#f5a623; fill:currentColor; }',
+      '.ic-star.is-btn { cursor:pointer; padding:1px; border:none; background:none; border-radius:3px; }',
+      '.ic-star.is-btn:hover .iw-ico { color:#f5a623; }',
+      /* 评价入口按钮与表单行 */
+      '.ic-eval-btn { font-size:12px; color:var(--yb-primary, #3a6ea5); cursor:pointer; background:none; border:none; padding:0; }',
+      '.ic-eval-btn:hover { text-decoration:underline; }',
+      '.ic-eval-form { margin-top:4px; }',
+      '.ic-eval-row { display:flex; gap:8px; margin-top:6px; }',
+      '.ic-eval-row .el-input { flex:1; }',
+      /* 超时会诊行淡红底 */
+      '.iw-table-scroll .el-table .is-overdue td.el-table__cell { background:#fef3f2; }'
+    ].join('\n');
+    document.head.appendChild(st);
+  })();
+
   const InpConsultPanel = {
     name: 'InpConsultPanel',
+    components: { 'dept-tree-picker': HIS.components.DeptTreePicker },
     props: { visitId: { type: [String, Number], default: null } },
     data() {
       return {
@@ -93,7 +136,10 @@
         /* 申请对话框 */
         applyVisible: false,
         applying: false,
-        form: { consultType: 1, targetDeptId: null, targetDoctorId: null, applyReason: '', urgencyLevel: 1 },
+        form: { consultType: 1, consultCategory: 'cross_dept', targetDeptId: null, targetDoctorId: null, applyReason: '', urgencyLevel: 1 },
+        /* P6-4 双向评价(展开行内联表单, 同一时刻仅一行处于编辑态) */
+        evalForm: { rowId: null, type: '', score: 0, note: '' },
+        evaluating: false,
         /* T48 远程视频会诊占位(consultType=3): 会诊行 + 患者摘要 + 时长计时 */
         videoVisible: false,
         videoRow: null,
@@ -120,6 +166,11 @@
         const vm = this;
         if (vm.form.targetDeptId == null) { return []; }
         return (vm.doctors || []).filter(function (d) { return HIS.sameId(d.deptId, vm.form.targetDeptId); });
+      },
+      /* P6-4 当前登录医师ID(评价资格判定: 申请方/受邀方) */
+      myStaffId() {
+        const u = HIS.getUser();
+        return u && u.staffId != null ? HIS.idKey(u.staffId) : '';
       }
     },
     watch: {
@@ -180,7 +231,7 @@
       openApply() {
         const vm = this;
         if (!vm.visitId) { ElementPlus.ElMessage.warning('请先从左侧选择患者'); return; }
-        vm.form = { consultType: 1, targetDeptId: null, targetDoctorId: null, applyReason: '', urgencyLevel: 1 };
+        vm.form = { consultType: 1, consultCategory: 'cross_dept', targetDeptId: null, targetDoctorId: null, applyReason: '', urgencyLevel: 1 };
         vm.applyVisible = true;
         if (!vm.depts.length || !vm.doctors.length) { vm.loadRefs(); }
       },
@@ -189,19 +240,27 @@
         if (!vm.form.targetDeptId) { ElementPlus.ElMessage.warning('请选择目标科室'); return; }
         if (!String(vm.form.applyReason || '').trim()) { ElementPlus.ElMessage.warning('请填写申请原因'); return; }
         vm.applying = true;
-        HIS.post('/api/his/inp/consultation', {
+        const payload = {
           inpVisitId: HIS.id(vm.visitId),
+          visitType: 1,
+          visitId: HIS.id(vm.visitId),
           consultType: vm.form.consultType,
+          consultCategory: vm.form.consultCategory,
           targetDeptId: HIS.id(vm.form.targetDeptId),
           targetDoctorId: HIS.id(vm.form.targetDoctorId),
           applyReason: String(vm.form.applyReason).trim(),
           urgencyLevel: vm.form.urgencyLevel
-        }).then(function () {
+        };
+        const onOk = function () {
           HIS.notifySuccess('会诊申请已提交');
           vm.applyVisible = false;
           vm.page = 1;
           vm.load();
-        }).catch(HIS.notifyError)
+        };
+        /* P6-4: 优先统一会诊流接口(consultCategory 落库), 未就绪时回退旧住院接口(扩展字段被忽略) */
+        HIS.post(CONSULT_API + '/apply', payload).then(onOk)
+          .catch(function () { return HIS.post('/api/his/inp/consultation', payload).then(onOk); })
+          .catch(HIS.notifyError)
           .finally(function () { vm.applying = false; });
       },
       accept(row) {
@@ -253,12 +312,75 @@
           inputValidator: function (v) { return !!(v && String(v).trim()) || '会诊意见不能为空'; }
         }).then(function (r) {
           return HIS.put('/api/his/inp/consultation/' + HIS.idParam(row.id) + '/complete', { opinion: String(r.value).trim() });
-        }).then(function () {
-          HIS.notifySuccess('会诊已完成, 意见已存档');
+        }).then(function (data) {
           vm.load();
+          /* P6-4 自动建档: 响应体直接携带 consultRecordId(统一接口)则即时提示, 否则经统一详情接口回查 */
+          if (data && data.consultRecordId != null) { vm.afterComplete(data.consultRecordId); return; }
+          HIS.get(CONSULT_API + '/' + HIS.idParam(row.id))
+            .then(function (d) { vm.afterComplete(d ? d.consultRecordId : null); })
+            .catch(function () { vm.afterComplete(null); });
         }).catch(function (e) {
           if (e !== 'cancel' && e !== 'close') { HIS.notifyError(e); }
         });
+      },
+      /* ================= P6-4 会诊范围 / 响应时限 / 双向评价 ================= */
+      categoryText(v) { return CONSULT_CATEGORY[v] || '-'; },
+      categoryTag(v) { const t = CONSULT_CATEGORY_TAG[v]; return t === undefined ? 'info' : t; },
+      /* 响应时限: 仅 status∈(1,2) 且 responseDeadline 存在时计算; 超时红标 / 临近(≤60分钟)黄标 */
+      deadlineInfo(row) {
+        if (!row || !row.responseDeadline) { return null; }
+        const st = Number(row.status);
+        if (st !== 1 && st !== 2) { return null; }
+        /* '/' 分隔日期全浏览器按本地时区解析(后端 ISO 'yyyy-MM-ddTHH:mm:ss') */
+        const t = new Date(String(row.responseDeadline).replace('T', ' ').replace(/-/g, '/')).getTime();
+        if (isNaN(t)) { return null; }
+        const diff = t - Date.now();
+        const mins = Math.ceil(Math.abs(diff) / 60000);
+        if (diff < 0) { return { tone: 'danger', text: '已超时 ' + mins + '分钟' }; }
+        if (mins <= 60) { return { tone: 'warning', text: '剩余 ' + mins + '分钟' }; }
+        const hours = Math.floor(mins / 60);
+        return { tone: 'info', text: '剩余 ' + hours + '小时' + (mins % 60 ? '+' : '') };
+      },
+      rowClassName(info) {
+        const d = this.deadlineInfo(info && info.row);
+        return d && d.tone === 'danger' ? 'is-overdue' : '';
+      },
+      isApplicant(row) { return !!this.myStaffId && HIS.sameId(this.myStaffId, row.applyDoctorId); },
+      isInvitee(row) { return !!this.myStaffId && HIS.sameId(this.myStaffId, row.targetDoctorId); },
+      evalActive(row) { return this.evalForm.rowId != null && HIS.sameId(this.evalForm.rowId, row.id); },
+      /* 只读星级条: 5颗星按分值点亮 */
+      starBar(n) {
+        const v = Number(n) || 0;
+        const out = [];
+        for (let i = 1; i <= 5; i++) { out.push('<span class="ic-star' + (i <= v ? ' is-on' : '') + '">' + ICONS.star + '</span>'); }
+        return out.join('');
+      },
+      startEval(row, type) { this.evalForm = { rowId: HIS.idKey(row.id), type: type, score: 0, note: '' }; },
+      cancelEval() { this.evalForm = { rowId: null, type: '', score: 0, note: '' }; },
+      /* 提交评价: PUT {统一接口}/{id}/evaluate?evaluatorType=applicant|invitee&score=1-5&note=xx */
+      submitEval(row) {
+        const vm = this;
+        if (!vm.evalForm.score) { ElementPlus.ElMessage.warning('请先点亮星级评分(1-5星)'); return; }
+        vm.evaluating = true;
+        const url = CONSULT_API + '/' + HIS.idParam(row.id) + '/evaluate?evaluatorType=' + encodeURIComponent(vm.evalForm.type)
+          + '&score=' + Number(vm.evalForm.score) + '&note=' + encodeURIComponent(String(vm.evalForm.note || '').trim());
+        HIS.put(url).then(function () {
+          HIS.notifySuccess('评价已提交');
+          vm.cancelEval();
+          vm.load();
+        }).catch(HIS.notifyError).finally(function () { vm.evaluating = false; });
+      },
+      /* 完成后自动建档提示: 已生成直接确认; 未生成可选引导手动补录 */
+      afterComplete(recordId) {
+        if (recordId != null && recordId !== '') {
+          HIS.notifySuccess('会诊已完成, 已自动生成会诊记录');
+          return;
+        }
+        ElementPlus.ElMessageBox.confirm('会诊意见已存档。是否手动创建会诊记录(病历)?', '完成会诊', {
+          type: 'info', confirmButtonText: '去补录', cancelButtonText: '暂不'
+        }).then(function () {
+          ElementPlus.ElMessage.info('请在本患者「病历」页签中补录会诊记录');
+        }).catch(function () { });
       },
       /* ================= T48 远程视频会诊占位(consultType=3 MDT/远程) ================= */
       /* 会诊时长 mm:ss */
@@ -321,7 +443,7 @@
         </div>
 
         <div class="iw-table-scroll" v-loading="loading">
-          <el-table :data="rows" height="100%" size="small" border :row-key="row => row.id">
+          <el-table :data="rows" height="100%" size="small" border :row-key="row => row.id" :row-class-name="rowClassName">
             <el-table-column type="expand">
               <template #default="s">
                 <div style="padding:6px 14px;font-size:13px;color:var(--yb-ink-2);line-height:1.9">
@@ -330,12 +452,48 @@
                   <div>申请理由: {{ s.row.applyReason || '-' }}</div>
                   <div v-if="s.row.consultOpinion">意见 / 回执: {{ s.row.consultOpinion }}</div>
                   <div>受理时间 {{ s.row.responseTime ? timeText(s.row.responseTime) : '-' }} · 完成时间 {{ s.row.consultTime ? timeText(s.row.consultTime) : '-' }}</div>
+                  <!-- P6-4 双向评价: 申请方评会诊质量 / 受邀方评申请规范性, 已评显示结果 -->
+                  <div v-if="Number(s.row.status) === 3" class="ic-eval">
+                    <div class="ic-eval-cap">双向评价</div>
+                    <div class="ic-eval-grid">
+                      <div class="ic-eval-cell">
+                        <div class="k">会诊质量 · 申请方评</div>
+                        <div class="v" v-if="s.row.evalByApplicant != null"><span v-html="starBar(s.row.evalByApplicant)"></span><span v-if="s.row.evalByApplicantNote" style="margin-left:6px">{{ s.row.evalByApplicantNote }}</span></div>
+                        <div class="v" v-else-if="isApplicant(s.row)">
+                          <div class="ic-eval-form" v-if="evalActive(s.row)">
+                            <div><button type="button" v-for="n in 5" :key="'es'+n" class="ic-star is-btn" :class="{'is-on': n <= evalForm.score}" @click="evalForm.score = n" v-html="icons.star"></button></div>
+                            <div class="ic-eval-row"><el-input v-model="evalForm.note" size="small" maxlength="200" placeholder="评价说明(可选)"></el-input><el-button size="small" type="primary" :loading="evaluating" @click="submitEval(s.row)">提交</el-button><el-button size="small" @click="cancelEval">取消</el-button></div>
+                          </div>
+                          <button v-else type="button" class="ic-eval-btn" @click="startEval(s.row, 'applicant')">评价会诊质量</button>
+                        </div>
+                        <div class="v" v-else style="color:var(--yb-ink-3)">待评价</div>
+                      </div>
+                      <div class="ic-eval-cell">
+                        <div class="k">申请规范性 · 受邀方评</div>
+                        <div class="v" v-if="s.row.evalByInvitee != null"><span v-html="starBar(s.row.evalByInvitee)"></span><span v-if="s.row.evalByInviteeNote" style="margin-left:6px">{{ s.row.evalByInviteeNote }}</span></div>
+                        <div class="v" v-else-if="isInvitee(s.row)">
+                          <div class="ic-eval-form" v-if="evalActive(s.row)">
+                            <div><button type="button" v-for="n in 5" :key="'is'+n" class="ic-star is-btn" :class="{'is-on': n <= evalForm.score}" @click="evalForm.score = n" v-html="icons.star"></button></div>
+                            <div class="ic-eval-row"><el-input v-model="evalForm.note" size="small" maxlength="200" placeholder="评价说明(可选)"></el-input><el-button size="small" type="primary" :loading="evaluating" @click="submitEval(s.row)">提交</el-button><el-button size="small" @click="cancelEval">取消</el-button></div>
+                          </div>
+                          <button v-else type="button" class="ic-eval-btn" @click="startEval(s.row, 'invitee')">评价申请规范性</button>
+                        </div>
+                        <div class="v" v-else style="color:var(--yb-ink-3)">待评价</div>
+                      </div>
+                    </div>
+                  </div>
                 </div>
               </template>
             </el-table-column>
             <el-table-column label="会诊类型" width="104" align="center">
               <template #default="s">
                 <el-tag size="small" :type="typeTag(s.row.consultType)" disable-transitions>{{ typeText(s.row.consultType) }}</el-tag>
+              </template>
+            </el-table-column>
+            <el-table-column label="会诊范围" width="80" align="center">
+              <template #default="s">
+                <el-tag v-if="s.row.consultCategory" size="small" :type="categoryTag(s.row.consultCategory)" disable-transitions>{{ categoryText(s.row.consultCategory) }}</el-tag>
+                <span v-else class="iw-dim">-</span>
               </template>
             </el-table-column>
             <el-table-column label="紧急" width="72" align="center">
@@ -351,6 +509,12 @@
             </el-table-column>
             <el-table-column label="申请时间" width="140">
               <template #default="s">{{ timeText(s.row.applyTime) }}</template>
+            </el-table-column>
+            <el-table-column label="响应时限" width="100" align="center">
+              <template #default="s">
+                <el-tag v-if="deadlineInfo(s.row)" size="small" :type="deadlineInfo(s.row).tone || 'info'" disable-transitions>{{ deadlineInfo(s.row).text }}</el-tag>
+                <span v-else class="iw-dim">-</span>
+              </template>
             </el-table-column>
             <el-table-column label="状态" width="86" align="center">
               <template #default="s">
@@ -440,11 +604,18 @@
               </el-radio-group>
             </div>
             <div class="iw-form-row">
+              <span class="lb">会诊范围</span>
+              <el-radio-group v-model="form.consultCategory" size="small">
+                <el-radio-button label="within_dept">科内</el-radio-button>
+                <el-radio-button label="cross_dept">科间</el-radio-button>
+                <el-radio-button label="external">院外</el-radio-button>
+                <el-radio-button label="mdt">MDT</el-radio-button>
+              </el-radio-group>
+            </div>
+            <div class="iw-form-row">
               <span class="lb">目标科室</span>
-              <el-select v-model="form.targetDeptId" size="small" filterable clearable style="width:240px"
-                         placeholder="选择受邀科室" @change="form.targetDoctorId = null">
-                <el-option v-for="d in depts" :key="d.id" :label="d.deptName" :value="d.id"></el-option>
-              </el-select>
+              <dept-tree-picker v-model="form.targetDeptId" :options="depts" size="small" width="320px"
+                                placeholder="选择受邀科室" @change="form.targetDoctorId = null" />
             </div>
             <div class="iw-form-row">
               <span class="lb">目标医生</span>

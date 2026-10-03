@@ -1,6 +1,7 @@
 package com.yb.hi.entity.inpatient;
 
 import com.baomidou.mybatisplus.annotation.IdType;
+import com.baomidou.mybatisplus.annotation.TableField;
 import com.baomidou.mybatisplus.annotation.TableId;
 import com.baomidou.mybatisplus.annotation.TableName;
 import com.yb.hi.framework.entity.BaseEntity;
@@ -9,6 +10,7 @@ import lombok.EqualsAndHashCode;
 
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
+import java.util.Map;
 
 /**
  * 住院病历(九类结构化文书, 草稿→已提交→已审核三级审核流)
@@ -65,4 +67,33 @@ public class HisInpMedicalRecord extends BaseEntity {
     private Long directorSignId;
     /** 主任医师签名时间 */
     private LocalDateTime directorSignTime;
+    /* ---------- P7a 归档/封存/召回(DictSchemaMigration 幂等补列) ---------- */
+    /** 归档时间 */
+    private LocalDateTime archiveTime;
+    /** 归档操作人 */
+    private String archiveBy;
+    /** 封存时间 */
+    private LocalDateTime sealTime;
+    /** 封存操作人 */
+    private String sealBy;
+    /** 封存原因 */
+    private String sealReason;
+    /** 最近召回时间 */
+    private LocalDateTime recallTime;
+    /** 召回操作人 */
+    private String recallBy;
+    /** 召回原因 */
+    private String recallReason;
+    /** 召回审批: 0待审/1通过/2驳回 */
+    private Integer recallApproved;
+    /** 召回审批人 */
+    private String recallApprover;
+    /** 归档PDF路径 */
+    private String pdfPath;
+    /** 归档PDF生成时间 */
+    private LocalDateTime pdfGeneratedTime;
+    /* ---------- P5a-4 签名质控(非落库字段, 仅 signRecord 响应附带) ---------- */
+    /** 签名前质控检查结果: {passed, warnings[], blocks[], forbidden[]} */
+    @TableField(exist = false)
+    private Map<String, Object> qcResult;
 }

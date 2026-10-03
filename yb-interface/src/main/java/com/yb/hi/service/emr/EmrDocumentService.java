@@ -188,6 +188,22 @@ public class EmrDocumentService {
     }
 
     /**
+     * 抽取 Tiptap JSON 全部 emrField 为 fieldKey→valueText 扁平映射(P3 门诊双轨):
+     * 门诊 his_visit.structure 仍维护扁平 JSON(EmrStructureReader 下游兼容), 本方法即双轨派生口径。
+     * 同 fieldKey 多值(如 multiSelect)以「、」连接保序; 无有效值的键不入映射。
+     */
+    public Map<String, String> extractFieldMap(String tiptapJson) {
+        Map<String, String> out = new LinkedHashMap<>();
+        for (EmrFieldValue f : parseTiptapFields(tiptapJson)) {
+            if (f == null || !StringUtils.hasText(f.getFieldKey()) || !StringUtils.hasText(f.getValueText())) {
+                continue;
+            }
+            out.merge(f.getFieldKey(), f.getValueText(), (a, b) -> a + "、" + b);
+        }
+        return out;
+    }
+
+    /**
      * 静态抽取实现(供 EmrElementService 等复用, 避免服务间循环依赖):
      * 解析 ProseMirror 文档树 {type:"doc", content:[{type:"emrSection", content:[{type:"emrField", attrs:{...}}]}]},
      * 递归任意深度收集 type=emrField 的节点; value 为数组(multiSelect/table 类)时逐元素展开为多行。

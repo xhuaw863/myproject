@@ -36,8 +36,12 @@ public class HisPathwayExec extends BaseEntity {
     private Integer execStatus;
     /** 关联医嘱ID(his_inp_order.id) */
     private Long orderId;
-    /** 变异原因 */
+    /** 变异原因(自由文本备注) */
     private String varianceReason;
+    /** 变异原因分类码(cv_code:pathway_var_reason), 供质控柏拉图构成分析 */
+    private String varianceType;
+    /** 变异原因分类名称(字典回填) */
+    private String varianceTypeName;
     /** 操作员ID(his_staff.id) */
     private Long operatorId;
 }

@@ -21,6 +21,7 @@ import com.yb.hi.platform.mapper.SysOrgMapper;
 import com.yb.hi.platform.service.AuthService;
 import com.yb.hi.platform.service.SysTenantService;
 import com.yb.hi.service.pharmacy.PharmacyDefService;
+import com.yb.hi.service.inpatient.EmrQualityService;
 import com.yb.hi.service.warehouse.WarehouseDefService;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
@@ -52,6 +53,8 @@ import java.util.Set;
  * 2026-10 扩展: CDSS 临床决策支持规则种子(8条: 主诉超长/性别描述不符/阿司匹林禁忌/重复检查/危急值未处置/诊断必填/补钾浓度/高血压血压)。
  * 2026-10 EMR扩展: 病历NLG生成模板种子(4条常用章节: 主诉/现病史/既往史/体格检查) + 医学图示模板(SVG标注底图)。
  * 2026-10 病历P2基座: 病历签名规则链种子(15类文书 author/resident/attending/director 链) + 病历常用语种子(14条全局)。
+ * 2026-10 病历P5a: 病历质控评分标准种子(卫健委五类20条: 时效/完整/逻辑/规范/内涵)。
+ * 2026-10 病历P5a-3: 内涵质控规则种子(400+条: 五大类型矩阵 item_value/item_compare/disease/calculation/event + 病种专项)。
  * 库存/收费/三模块种子均在基础数据已就绪的库上生效(药品目录已导入/已完成就诊存在/机构已建):
  * 全新库首次启动时 RBAC(@Order(3)) 尚未建机构、目录/就诊未导入, 自然跳过, 满足条件后重启补种。
  */
@@ -71,6 +74,7 @@ public class DemoDataInitializer implements ApplicationRunner {
     private final JdbcTemplate jdbcTemplate;
     private final WarehouseDefService warehouseDefService;
     private final PharmacyDefService pharmacyDefService;
+    private final EmrQualityService emrQualityService;
 
     @Value("${his.demo-data.enabled:true}")
     private boolean enabled;
@@ -80,7 +84,7 @@ public class DemoDataInitializer implements ApplicationRunner {
                                HisChargeBillMapper billMapper, HisChargeBillItemMapper billItemMapper,
                                HisVisitMapper visitMapper, SysOrgMapper orgMapper,
                                JdbcTemplate jdbcTemplate, WarehouseDefService warehouseDefService,
-                               PharmacyDefService pharmacyDefService) {
+                               PharmacyDefService pharmacyDefService, EmrQualityService emrQualityService) {
         this.tenantService = tenantService;
         this.authService = authService;
         this.stockMapper = stockMapper;
@@ -92,6 +96,7 @@ public class DemoDataInitializer implements ApplicationRunner {
         this.jdbcTemplate = jdbcTemplate;
         this.warehouseDefService = warehouseDefService;
         this.pharmacyDefService = pharmacyDefService;
+        this.emrQualityService = emrQualityService;
     }
 
     @Override
@@ -156,11 +161,24 @@ public class DemoDataInitializer implements ApplicationRunner {
                 } catch (Exception e) {
                     log.warn("租户[{}] 病历签名规则/常用语种子跳过(可能表未建): {}", t.getId(), e.getMessage());
                 }
-                // CDSS 临床决策支持规则种子(8条, 五类): 独立 try 防表未建时拖累其他种子
+                // 病历质控评分标准种子(P5a, 卫健委五类20条): 独立 try 防表未建时拖累其他种子
+                try {
+                    seedScoreStandards(t.getId());
+                } catch (Exception e) {
+                    log.warn("租户[{}] 病历评分标准种子跳过(可能表未建): {}", t.getId(), e.getMessage());
+                }
+                // CDSS 临床决策支持规则种子(8条, 五类): 独立 try 防表未建拖累其他种子
                 try {
                     seedCdssRules(t.getId());
                 } catch (Exception e) {
                     log.warn("租户[{}] CDSS规则种子跳过(可能表未建): {}", t.getId(), e.getMessage());
+                }
+                // 病历内涵质控规则种子(P5a-3, 400+条五大类型矩阵+病种专项): 独立 try 防表未建拖累其他种子,
+                // 逐条幂等(按 rule_code 判存含墓碑), 已有编码保持手工修改不动
+                try {
+                    emrQualityService.seedContentRules(t.getId());
+                } catch (Exception e) {
+                    log.warn("租户[{}] 内涵质控规则种子跳过(可能表未建): {}", t.getId(), e.getMessage());
                 } finally {
                     if (prev != null) {
                         TenantContext.set(prev);
@@ -1133,6 +1151,71 @@ public class DemoDataInitializer implements ApplicationRunner {
         }
         if (added > 0) {
             log.info("租户[{}] 病历常用语种子: 补种 {} 条常用语(全局作用域, 已有保持不动)", tenantId, added);
+        }
+    }
+
+    /* ===================== 病历质控评分标准种子(P5a) ===================== */
+
+    /**
+     * 病历质控评分标准种子: 按卫健委电子病历应用水平(五级)建立五类 20 条分类评分标准
+     * (时效5/完整5/逻辑4/规范3/内涵3), weight 权重 × base_score 基准分, 供质控评分引擎按标准打分。
+     * 幂等: 按 (tenant_id, standard_code) 判存且不带 deleted 条件——唯一键 idx_standard_code 不含 deleted,
+     * 软删墓碑仍占键位, 命中任何行(含墓碑)即跳过, 避免重复插入触发唯一键冲突; 机构未建时跳过下次启动补种。
+     */
+    private void seedScoreStandards(Long tenantId) {
+        Long orgId = leadOrgId();
+        if (orgId == null) {
+            return; // 机构未建(RBAC初始化未执行), 下次启动补种
+        }
+        // 列序: {标准编码, 标准名称, 分类, 权重, 基准分, 说明}
+        Object[][] standards = {
+                /* ---- 时效类(5) ---- */
+                {"TIMELINESS_ADMISSION", "入院记录时效", "时效", "1.0", "15", "入院记录须在患者入院后24小时内完成"},
+                {"TIMELINESS_FIRST_COURSE", "首次病程时效", "时效", "1.0", "10", "首次病程记录须在患者入院后8小时内完成"},
+                {"TIMELINESS_ATTENDING", "上级查房时效", "时效", "1.5", "15", "上级医师首次查房须在入院48小时内完成(一票否决项)"},
+                {"TIMELINESS_OPERATION", "手术记录时效", "时效", "1.0", "10", "手术记录须在手术结束后24小时内完成"},
+                {"TIMELINESS_DISCHARGE", "出院小结时效", "时效", "0.8", "10", "出院小结须在患者出院后3日内完成"},
+                /* ---- 完整性类(5) ---- */
+                {"COMPLETENESS_REQUIRED", "必填项完整性", "完整", "1.0", "20", "病历各文书必填项不得缺项"},
+                {"COMPLETENESS_SIGNATURE", "签名完整性", "完整", "1.2", "10", "各级医师签名须完整(作者/上级/主任链)"},
+                {"COMPLETENESS_DIAGNOSIS", "诊断完整性", "完整", "1.0", "10", "诊断信息(主诊断/编码/入院病情)须完整"},
+                {"COMPLETENESS_ORDERS", "医嘱完整性", "完整", "0.8", "5", "医嘱记录须与诊疗过程一致且完整"},
+                {"COMPLETENESS_CONSENT", "知情同意完整", "完整", "1.0", "5", "知情同意书须完整(谈话/签字/时间)"},
+                /* ---- 逻辑性类(4) ---- */
+                {"LOGIC_DATE_SEQUENCE", "日期逻辑", "逻辑", "1.0", "10", "关键时间节点须满足先后顺序(入院→查房→手术→出院)"},
+                {"LOGIC_DIAG_MATCH", "诊断前后一致", "逻辑", "1.0", "10", "入院/病程/出院诊断须前后一致或记录变更依据"},
+                {"LOGIC_AGE_DISEASE", "年龄疾病合理", "逻辑", "0.8", "5", "诊断与患者年龄/性别须合理匹配"},
+                {"LOGIC_TREATMENT_DIAG", "治疗诊断吻合", "逻辑", "1.0", "5", "治疗/用药须与诊断相符"},
+                /* ---- 规范性类(3) ---- */
+                {"FORMAT_TERMINOLOGY", "医学术语规范", "规范", "0.6", "5", "须使用规范医学术语, 避免口语化表述"},
+                {"FORMAT_RECORD_STRUCTURE", "病历结构规范", "规范", "0.8", "5", "文书章节结构须符合规范要求"},
+                {"FORMAT_ABBREVIATION", "缩写规范", "规范", "0.5", "5", "医学缩写须规范且首次出现给出全称"},
+                /* ---- 内涵类(3) ---- */
+                {"CONTENT_CLINICAL_LOGIC", "临床逻辑", "内涵", "1.2", "15", "病情分析/诊治措施须体现临床思维逻辑"},
+                {"CONTENT_EVIDENCE_BASED", "循证医学", "内涵", "1.0", "10", "诊疗决策须有循证依据支持"},
+                {"CONTENT_DIFFERENTIAL", "鉴别诊断充分", "内涵", "1.0", "10", "鉴别诊断须充分并有分析依据"}
+        };
+        // 一次捞出该租户已有标准编码(含软删墓碑, 唯一键不含 deleted), 回程判存避免逐行查询
+        List<Map<String, Object>> existRows = jdbcTemplate.queryForList(
+                "SELECT standard_code AS sc FROM his_emr_score_standard WHERE tenant_id = ?", tenantId);
+        Set<String> existCodes = new HashSet<>();
+        for (Map<String, Object> row : existRows) {
+            existCodes.add(String.valueOf(row.get("sc")));
+        }
+        int added = 0;
+        for (Object[] s : standards) {
+            if (existCodes.contains(s[0])) {
+                continue;
+            }
+            jdbcTemplate.update(
+                    "INSERT INTO his_emr_score_standard (tenant_id, org_id, standard_code, standard_name, category,"
+                            + " base_score, weight, description, status, create_by, create_time, update_by, update_time, deleted)"
+                            + " VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, 'demo-seed', NOW(), 'demo-seed', NOW(), 0)",
+                    tenantId, orgId, s[0], s[1], s[2], new BigDecimal((String) s[4]), new BigDecimal((String) s[3]), s[5]);
+            added++;
+        }
+        if (added > 0) {
+            log.info("租户[{}] 病历质控评分标准种子: 补种 {} 条评分标准(卫健委五类, 已有保持不动)", tenantId, added);
         }
     }
 

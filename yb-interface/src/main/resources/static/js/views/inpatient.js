@@ -187,6 +187,9 @@
     { v: '21', l: '普通住院' }, { v: '22', l: '单病种' }, { v: '23', l: '日间手术' },
     { v: '24', l: '意外伤害' }, { v: '25', l: '工伤' }, { v: '26', l: '生育' }
   ];
+  /* 医疗类别本地回退码→名映射(供 med_type 字典未命中时回落) */
+  var MED_TYPE_MAP = {};
+  MED_TYPE_FALLBACK.forEach(function (o) { MED_TYPE_MAP[o.v] = o.l; });
 
   /* ===== 工具函数 ===== */
   function money(v) { return (v === null || v === undefined || v === '') ? '0.00' : Number(v).toFixed(2); }
@@ -212,7 +215,12 @@
     for (var i = 0; i < list.length; i++) { if (list[i][prop] === v) { return list[i]; } }
     return null;
   }
-  function payTypeLabel(v) { var o = findIn(PAY_TYPES, 'v', v); return o ? o.l : orDash(v); }
+  function payTypeLabel(v) {
+    var d = (window.HIS && HIS.payMethodLabel) ? HIS.payMethodLabel(v) : null;
+    if (d && d !== String(v)) { return d; }
+    var o = findIn(PAY_TYPES, 'v', v);
+    return o ? o.l : orDash(v);
+  }
   function directionLabel(v) { var o = findIn(DIRECTIONS, 'v', v); return o ? o.l : orDash(v); }
   function nursingLevelLabel(v) { return NURSING_LEVELS[v] || orDash(v); }
   function nursingLevelTag(v) { var t = NURSING_LEVEL_TAG[v]; return t === undefined ? 'info' : t; }
@@ -388,6 +396,7 @@
    * ====================================================================== */
   HIS.views.InpAdmission = {
     mixins: [refMixin],
+    components: { 'dept-tree-picker': HIS.components.DeptTreePicker },
     template: [
       '<div class="inp-admission">',
       '  <el-tabs v-model="tab">',
@@ -442,9 +451,7 @@
       '  <el-form :model="form" label-width="96px" style="max-width:880px">',
       '    <el-row :gutter="16">',
       '      <el-col :span="preHint ? 24 : 12"><el-form-item label="住院科室" required>',
-      '        <el-select v-model="form.deptId" filterable placeholder="选择住院科室" style="width:100%" @change="onDeptChange">',
-      '          <el-option v-for="d in inpDepts" :key="d.id" :label="d.deptName" :value="d.id"></el-option>',
-      '        </el-select>',
+      '        <dept-tree-picker v-model="form.deptId" :options="inpDepts" placeholder="选择住院科室" @change="onDeptChange" />',
       '      </el-form-item></el-col>',
       '      <el-col :span="12" v-if="!preHint"><el-form-item label="病区" required>',
       '        <el-select v-model="form.wardId" filterable placeholder="选择病区" style="width:100%" @change="onWardChange">',
@@ -473,6 +480,13 @@
       '      </el-form-item></el-col>',
       '      <el-col :span="12"><el-form-item label="医保人员编号">',
       '        <el-input v-model="form.psnNo" placeholder="选填; 选择患者后自动带入"></el-input>',
+      '      </el-form-item></el-col>',
+      '    </el-row>',
+      '    <el-row :gutter="16">',
+      '      <el-col :span="12"><el-form-item label="患者费别">',
+      '        <el-select v-model="form.feeType" clearable placeholder="选择费别" style="width:100%">',
+      '          <el-option v-for="f in feeTypeOpts" :key="f.code" :label="f.name" :value="f.code"></el-option>',
+      '        </el-select>',
       '      </el-form-item></el-col>',
       '    </el-row>',
       '    <el-row :gutter="16">',
@@ -614,7 +628,7 @@
       return {
         patientKw: '', patientOptions: [], searching: false, patient: null,
         form: {
-          deptId: null, wardId: null, bedId: null, doctorId: null, admitDiag: '', medType: '21', psnNo: '',
+          deptId: null, wardId: null, bedId: null, doctorId: null, admitDiag: '', medType: '21', feeType: '', psnNo: '',
           contactName: '', contactPhone: '', contactRelation: '',
           guarantorName: '', guarantorPhone: '', guarantorIdNo: '',
           bloodType: '', admitSource: null, nursingLevel: null, dietType: '',
@@ -626,6 +640,8 @@
         contactRelations: CONTACT_RELATIONS, bloodTypes: BLOOD_TYPE_OPTIONS, admitSources: ADMIT_SOURCE_OPTIONS,
         nursingLevels: NURSING_LEVEL_OPTIONS, allergyTypes: ALLERGY_TYPE_OPTIONS, allergySeverities: ALLERGY_SEVERITY_OPTIONS,
         wards: [], beds: [], medTypes: MED_TYPE_FALLBACK.slice(),
+        /* 患者费别字典(IPT 场景, mounted 拉机构字典; 空则下拉无项) */
+        feeTypeOpts: [],
         submitting: false,
         tab: 'admit', preHint: false,
         preList: [], preListLoading: false, preDeptId: null,
@@ -728,7 +744,8 @@
       },
       loadMedTypes: function () {
         var vm = this;
-        HIS.stdValues('cv_code', 'med_type').then(function (list) {
+        /* 优先取医共体 med_type 字典(IPT 场景启用且按本级开放), 空/失败保留 MED_TYPE_FALLBACK */
+        HIS.loadMedTypeDict('IPT').then(function (list) {
           if (list && list.length) {
             vm.medTypes = list.map(function (o) { return { v: o.code, l: o.name }; });
           }
@@ -759,7 +776,7 @@
           wardId: HIS.id(vm.preHint ? (vm.form.wardId || null) : vm.form.wardId),
           bedId: HIS.id(vm.preHint ? null : vm.form.bedId),
           doctorId: HIS.id(vm.form.doctorId), admitDiag: vm.form.admitDiag.trim(),
-          medType: vm.form.medType || null, psnNo: vm.form.psnNo || null,
+          medType: vm.form.medType || null, feeType: vm.form.feeType || null, psnNo: vm.form.psnNo || null,
           insutype: vm.patient.insutype || null,
           contactName: vm.form.contactName || null, contactPhone: vm.form.contactPhone || null,
           contactRelation: vm.form.contactRelation || null,
@@ -855,7 +872,7 @@
         this.patientKw = ''; this.patientOptions = []; this.patient = null; this.beds = []; this.allergRows = [];
         this.certList = []; this.certId = null;
         this.form = {
-          deptId: null, wardId: null, bedId: null, doctorId: null, admitDiag: '', medType: this.form.medType, psnNo: '',
+          deptId: null, wardId: null, bedId: null, doctorId: null, admitDiag: '', medType: this.form.medType, feeType: '', psnNo: '',
           contactName: '', contactPhone: '', contactRelation: '',
           guarantorName: '', guarantorPhone: '', guarantorIdNo: '',
           bloodType: '', admitSource: null, nursingLevel: null, dietType: '',
@@ -868,9 +885,12 @@
       tab: function (v) { if (v === 'pre') { this.loadPreAdmissions(); } }
     },
     mounted: function () {
-      this.loadRefs();
-      this.loadWards();
-      this.loadMedTypes();
+      var vm = this;
+      vm.loadRefs();
+      vm.loadWards();
+      vm.loadMedTypes();
+      /* 入院费别下拉改由机构字典驱动(IPT 场景启用项) */
+      HIS.loadFeePayDict('IPT').then(function () { vm.feeTypeOpts = HIS.feeTypeOpts('IPT') || []; });
     }
   };
 
@@ -879,7 +899,7 @@
    * ====================================================================== */
   HIS.views.InpPatientList = {
     mixins: [refMixin, listMixin, pageMixin],
-    components: Object.assign({}, INP_ICONS),
+    components: Object.assign({ 'dept-tree-picker': HIS.components.DeptTreePicker }, INP_ICONS),
     template: [
       '<div class="inp-patient-list cd-fill is-cascade">',
       '  <div class="toolbar">',
@@ -967,6 +987,7 @@
       '          <el-descriptions-item label="住院号">{{ orDash(detail.visit.inpNo) }}</el-descriptions-item>',
       '          <el-descriptions-item label="状态"><el-tag :type="statusTag(detail.visit.visitStatus)" size="small">{{ statusLabel(detail.visit.visitStatus) }}</el-tag></el-descriptions-item>',
       '          <el-descriptions-item label="医疗类别">{{ orDash(medTypeLabel(detail.visit.medType)) }}</el-descriptions-item>',
+      '          <el-descriptions-item label="患者费别">{{ patFeeTypeLabel(detail.visit.feeType) }}</el-descriptions-item>',
       '          <el-descriptions-item label="住院科室">{{ detailDeptName() }}</el-descriptions-item>',
       '          <el-descriptions-item label="病区">{{ detail.ward ? detail.ward.wardName : orDash(detail.visit.wardId) }}</el-descriptions-item>',
       '          <el-descriptions-item label="床位">{{ detailBedText() }}</el-descriptions-item>',
@@ -1036,9 +1057,7 @@
       '        <div v-if="transferForm.targetWardId && !transferBeds.length" style="color:var(--yb-warning);font-size:12px;margin-top:4px">该病区当前无空床</div>',
       '      </el-form-item>',
       '      <el-form-item label="目标科室">',
-      '        <el-select v-model="transferForm.targetDeptId" filterable clearable placeholder="不变更则留空" style="width:100%">',
-      '          <el-option v-for="d in inpDepts" :key="d.id" :label="d.deptName" :value="d.id"></el-option>',
-      '        </el-select>',
+      '        <dept-tree-picker v-model="transferForm.targetDeptId" :options="inpDepts" placeholder="不变更则留空" />',
       '      </el-form-item>',
       '      <el-form-item label="主治医生">',
       '        <el-select v-model="transferForm.targetDoctorId" filterable clearable placeholder="不变更则留空" style="width:100%">',
@@ -1100,8 +1119,12 @@
       /* 医疗类别显示: 字典值与本地回退皆可读 */
       medTypeLabel: function (v) {
         if (v === null || v === undefined || v === '') { return '-'; }
-        var o = findIn(MED_TYPE_FALLBACK, 'v', v);
-        return o ? o.l : v;
+        return HIS.medTypeLabel(v, MED_TYPE_MAP);
+      },
+      /* 患者费别标签(机构字典优先, 内置 self/insurance 中文回退, 未知原样) */
+      patFeeTypeLabel: function (v) {
+        if (v === null || v === undefined || v === '') { return '-'; }
+        return (window.HIS && HIS.feeTypeLabel) ? HIS.feeTypeLabel(v) : v;
       },
       /* ---- Task#30 经营统计卡片: 数据源 /api/his/inp/dashboard/patient-stats ---- */
       loadStats: function () {
@@ -1303,6 +1326,7 @@
       this.loadRefs();
       this.loadWards();
       this.load();
+      HIS.loadFeePayDict('IPT');
       /* Task#30 统计卡片 30s 轮询刷新 */
       this._glanceTimer = setInterval(function () { vm.loadStats(); }, 30000);
     },
@@ -1347,8 +1371,7 @@
         var v = (this.ext || {}).medType;
         if (v === undefined || v === null || v === '') { v = (this.pat || {}).med_type; }
         if (v === undefined || v === null || v === '') { return ''; }
-        var o = findIn(MED_TYPE_FALLBACK, 'v', v);
-        return o ? o.l : String(v);
+        return HIS.medTypeLabel(v, MED_TYPE_MAP);
       },
       diagText: function () {
         var d = (this.ext || {}).admitDiag || (this.pat || {}).admit_diag;
@@ -2079,9 +2102,23 @@
       }
     },
     mounted: function () {
-      this.loadRefs();
-      this.loadVisits();
-      this.loadAlerts();
+      var vm = this;
+      vm.loadRefs();
+      vm.loadVisits();
+      vm.loadAlerts();
+      /* 预交金支付方式改由机构字典驱动(IPT 场景, 排除医保/免收: 缴纳为真金充值); 字典空则保留内置数字码回落 */
+      HIS.loadFeePayDict('IPT').then(function () {
+        var dict = HIS.payMethodOpts('IPT') || [];
+        var opts = dict.filter(function (p) { var c = String(p.code).toUpperCase(); return c !== 'INSURANCE' && c !== 'FREE' && c !== 'DEPOSIT'; })
+          .map(function (p) { return { v: p.code, l: p.name }; });
+        if (opts.length) {
+          vm.payTypes = opts;
+          if (!opts.some(function (o) { return o.v === vm.form.payType; })) {
+            var cash = opts.filter(function (o) { return String(o.v).toUpperCase() === 'CASH'; })[0];
+            vm.form.payType = (cash || opts[0]).v;
+          }
+        }
+      });
     }
   };
 

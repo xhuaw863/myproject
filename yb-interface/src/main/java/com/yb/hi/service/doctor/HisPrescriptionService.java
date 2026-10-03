@@ -1,5 +1,8 @@
 package com.yb.hi.service.doctor;
 
+import com.alibaba.fastjson2.JSON;
+import com.alibaba.fastjson2.JSONArray;
+import com.alibaba.fastjson2.JSONObject;
 import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
 import com.yb.hi.common.DateUtil;
 import com.yb.hi.dto.doctor.PrescriptionBatchReq;
@@ -11,19 +14,27 @@ import com.yb.hi.entity.doctor.HisVisit;
 import com.yb.hi.entity.outpatient.HisPatient;
 import com.yb.hi.framework.common.BizException;
 import com.yb.hi.framework.tenant.LoginUser;
+import com.yb.hi.framework.tenant.TenantContext;
 import com.yb.hi.framework.tenant.UserContext;
+import com.yb.hi.service.emr.EmrDocumentService;
 import com.yb.hi.service.pharmacy.PharmacyDefService;
 import com.yb.hi.service.pharmacy.PharmacyPriceService;
 import com.yb.hi.mapper.doctor.HisPrescriptionItemMapper;
 import com.yb.hi.mapper.doctor.HisPrescriptionMapper;
 import com.yb.hi.mapper.outpatient.HisPatientMapper;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.jdbc.BadSqlGrammarException;
+import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.CollectionUtils;
 import org.springframework.util.StringUtils;
 
 import java.math.BigDecimal;
+import java.sql.ResultSet;
+import java.sql.SQLException;
+import java.time.LocalDateTime;
+import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -47,11 +58,16 @@ public class HisPrescriptionService extends ServiceImpl<HisPrescriptionMapper, H
     private final PharmacyDefService pharmacyDefService;
     private final PharmacyPriceService pharmacyPriceService;
     private final HisOrderFreqService orderFreqService;
+    /* P8a-2 草药方引用: JdbcTemplate 直查/直写显式携带 tenant_id(绕开租户插件);
+     * 病历 content 为 AES-GCM 密文轨, 追加段落须经 EmrDocumentService 加解密 */
+    private final JdbcTemplate jdbcTemplate;
+    private final EmrDocumentService emrDocumentService;
 
     public HisPrescriptionService(HisVisitService visitService, HisDiagnosisService diagnosisService,
                                   HisPrescriptionItemMapper itemMapper, HisPatientMapper patientMapper,
                                   PharmacyDefService pharmacyDefService, PharmacyPriceService pharmacyPriceService,
-                                  HisOrderFreqService orderFreqService) {
+                                  HisOrderFreqService orderFreqService, JdbcTemplate jdbcTemplate,
+                                  EmrDocumentService emrDocumentService) {
         this.visitService = visitService;
         this.diagnosisService = diagnosisService;
         this.itemMapper = itemMapper;
@@ -59,6 +75,8 @@ public class HisPrescriptionService extends ServiceImpl<HisPrescriptionMapper, H
         this.pharmacyDefService = pharmacyDefService;
         this.pharmacyPriceService = pharmacyPriceService;
         this.orderFreqService = orderFreqService;
+        this.jdbcTemplate = jdbcTemplate;
+        this.emrDocumentService = emrDocumentService;
     }
 
     /** 查询某次就诊的处方列表 */
@@ -298,5 +316,371 @@ public class HisPrescriptionService extends ServiceImpl<HisPrescriptionMapper, H
     private String genNo(String prefix) {
         int s = SEQ.incrementAndGet() % 1000;
         return prefix + DateUtil.currentTimeCompact() + String.format("%03d", s);
+    }
+
+    /* ================= P8a-2: 草药方引用(病历引用草药处方) ================= */
+
+    /** 草药处方时间格式化口径 */
+    private static final DateTimeFormatter HERB_DT = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm");
+
+    /**
+     * 查询患者当前住院/门诊的草药处方列表(P8a-2, 供病历编辑器"引用草药方"选择)。
+     *
+     * 检索口径: 按患者维度取草药方(rx_type 含 中药/草药/饮片, 即门诊开方落库的"中药饮片处方"等标识),
+     * 排除已作废(status<0), 限近 50 条。visitId 非空时先精确过滤(his_prescription.visit_id 为门诊
+     * 就诊ID, 门诊场景直接命中); 未命中回退患者全量 —— 住院病历引用时前端传的是 inpVisitId(住院就诊ID),
+     * 与门诊 visit_id 不同源, 等值过滤必然空, 回退保证跨场景可用。
+     *
+     * 返回行: {prescriptionId, id, rxNo, rxName, formulaName, rxType, drName, deptName, createTime, herbCount}
+     */
+    public List<Map<String, Object>> listHerbFormulas(Long patientId, Long visitId) {
+        if (patientId == null) {
+            throw new BizException(400, "患者ID不能为空");
+        }
+        Long tid = TenantContext.require();
+        String baseSql = "SELECT p.id, p.rx_no, p.rx_type, p.patient_name, p.dr_name, p.dept_name, p.create_time, "
+                + "(SELECT COUNT(*) FROM his_prescription_item i "
+                + " WHERE i.prescription_id = p.id AND i.deleted = 0) AS herb_count "
+                + "FROM his_prescription p "
+                + "WHERE p.tenant_id = ? AND p.deleted = 0 AND p.patient_id = ? "
+                + "AND (p.status IS NULL OR p.status >= 0) "
+                + "AND (p.rx_type LIKE '%中药%' OR p.rx_type LIKE '%草药%' OR p.rx_type LIKE '%饮片%')";
+        try {
+            if (visitId != null) {
+                List<Map<String, Object>> byVisit = jdbcTemplate.query(
+                        baseSql + " AND p.visit_id = ? ORDER BY p.create_time DESC, p.id DESC LIMIT 50",
+                        (rs, i) -> herbFormulaRow(rs), tid, patientId, visitId);
+                if (!byVisit.isEmpty()) {
+                    return byVisit;
+                }
+            }
+            return jdbcTemplate.query(
+                    baseSql + " ORDER BY p.create_time DESC, p.id DESC LIMIT 50",
+                    (rs, i) -> herbFormulaRow(rs), tid, patientId);
+        } catch (BadSqlGrammarException e) {
+            log.warn("草药处方查询失败(表/列缺失): patientId={}, {}", patientId, e.getMessage());
+            return new ArrayList<>();
+        }
+    }
+
+    /** 草药处方行映射(前端 inp-emr-writer.js 预埋字段兼容: prescriptionId/id 双键 + formulaName/rxName 双名) */
+    private static Map<String, Object> herbFormulaRow(ResultSet rs) throws SQLException {
+        Map<String, Object> m = new LinkedHashMap<>();
+        Long id = rs.getLong("id");
+        String rxNo = rs.getString("rx_no");
+        java.sql.Timestamp ts = rs.getTimestamp("create_time");
+        m.put("prescriptionId", id);
+        m.put("id", id);
+        m.put("rxNo", rxNo);
+        m.put("rxName", "草药方 " + (rxNo == null ? String.valueOf(id) : rxNo));
+        m.put("formulaName", "草药方 " + (rxNo == null ? String.valueOf(id) : rxNo));
+        m.put("rxType", rs.getString("rx_type"));
+        m.put("drName", rs.getString("dr_name"));
+        m.put("deptName", rs.getString("dept_name"));
+        m.put("createTime", ts == null ? null : ts.toLocalDateTime());
+        m.put("herbCount", rs.getInt("herb_count"));
+        return m;
+    }
+
+    /**
+     * 将草药处方转为病历引用文本格式(P8a-2):
+     * 【草药方】处方号（处方类型） + 开方信息行 + 药味明细(每味一行: 药名 剂量 [煎法/炮制标注])
+     * + 用法 + 服法(X剂 频次), 含膏方说明(药名/药剂形式含"膏"时)。
+     */
+    public String formulaToText(Long prescriptionId) {
+        if (prescriptionId == null) {
+            throw new BizException(400, "处方ID不能为空");
+        }
+        Long tid = TenantContext.require();
+        try {
+            List<Map<String, Object>> heads = jdbcTemplate.query(
+                    "SELECT id, rx_no, rx_type, dr_name, dept_name, create_time "
+                            + "FROM his_prescription WHERE id = ? AND tenant_id = ? AND deleted = 0",
+                    (rs, i) -> {
+                        Map<String, Object> m = new LinkedHashMap<>();
+                        m.put("id", rs.getLong("id"));
+                        m.put("rxNo", rs.getString("rx_no"));
+                        m.put("rxType", rs.getString("rx_type"));
+                        m.put("drName", rs.getString("dr_name"));
+                        m.put("deptName", rs.getString("dept_name"));
+                        java.sql.Timestamp ts = rs.getTimestamp("create_time");
+                        m.put("createTime", ts == null ? null : ts.toLocalDateTime());
+                        return m;
+                    }, prescriptionId, tid);
+            if (heads.isEmpty()) {
+                throw new BizException(400, "草药处方不存在: " + prescriptionId);
+            }
+            List<Map<String, Object>> items = jdbcTemplate.query(
+                    "SELECT item_name, dosage, dosage_unit, quantity, unit, usage_method, frequency, days, "
+                            + "decoction, processing, herb_form "
+                            + "FROM his_prescription_item WHERE prescription_id = ? AND tenant_id = ? AND deleted = 0 "
+                            + "ORDER BY id",
+                    (rs, i) -> {
+                        Map<String, Object> m = new LinkedHashMap<>();
+                        m.put("itemName", rs.getString("item_name"));
+                        m.put("dosage", rs.getString("dosage"));
+                        m.put("dosageUnit", rs.getString("dosage_unit"));
+                        m.put("quantity", rs.getBigDecimal("quantity"));
+                        m.put("unit", rs.getString("unit"));
+                        m.put("usageMethod", rs.getString("usage_method"));
+                        m.put("frequency", rs.getString("frequency"));
+                        m.put("days", rs.getObject("days"));
+                        m.put("decoction", rs.getString("decoction"));
+                        m.put("processing", rs.getString("processing"));
+                        m.put("herbForm", rs.getString("herb_form"));
+                        return m;
+                    }, prescriptionId, tid);
+            return buildFormulaText(heads.get(0), items);
+        } catch (BadSqlGrammarException e) {
+            log.warn("草药处方文本化失败(表/列缺失): prescriptionId={}, {}", prescriptionId, e.getMessage());
+            throw new BizException(500, "处方表结构异常, 无法生成草药方文本");
+        }
+    }
+
+    /** 草药方文本拼装(任务规范格式; 明细剂量优先单次剂量 dosage+单位, 回退数量 quantity+单位) */
+    private static String buildFormulaText(Map<String, Object> head, List<Map<String, Object>> items) {
+        StringBuilder sb = new StringBuilder();
+        sb.append("【草药方】").append(str(head.get("rxNo")) != null ? str(head.get("rxNo")) : str(head.get("id")));
+        String rxType = str(head.get("rxType"));
+        if (rxType != null) {
+            sb.append("（").append(rxType).append("）");
+        }
+        sb.append('\n');
+        LocalDateTime ct = (LocalDateTime) head.get("createTime");
+        if (ct != null || str(head.get("drName")) != null || str(head.get("deptName")) != null) {
+            sb.append("开方信息：");
+            if (ct != null) {
+                sb.append(ct.format(HERB_DT));
+            }
+            if (str(head.get("drName")) != null) {
+                sb.append("  医师：").append(str(head.get("drName")));
+            }
+            if (str(head.get("deptName")) != null) {
+                sb.append("  科室：").append(str(head.get("deptName")));
+            }
+            sb.append('\n');
+        }
+        sb.append("药味明细").append(items.isEmpty() ? "：" : "（共" + items.size() + "味）：").append('\n');
+        for (Map<String, Object> it : items) {
+            sb.append("- ").append(str(it.get("itemName")) != null ? str(it.get("itemName")) : "-");
+            String dose = herbDoseOf(it);
+            if (dose != null) {
+                sb.append(' ').append(dose);
+            }
+            String note = herbNoteOf(it);
+            if (note != null) {
+                sb.append(note);
+            }
+            sb.append('\n');
+        }
+        String usage = str(firstHerbItem(items, "usageMethod"));
+        sb.append("用法：").append(usage != null ? usage : "水煎服").append('\n');
+        String freq = str(firstHerbItem(items, "frequency"));
+        Object days = firstHerbItem(items, "days");
+        sb.append("服法：");
+        if (days instanceof Number && ((Number) days).intValue() > 0) {
+            sb.append(((Number) days).intValue()).append("剂 ");
+        }
+        sb.append(freq != null ? freq : "遵医嘱").append('\n');
+        if (isGaoFang(items)) {
+            sb.append("（膏方：本方含膏类用药，按膏方熬制工艺制备，遵医嘱服用）\n");
+        }
+        return sb.toString();
+    }
+
+    /** 单味剂量文本: 优先单次剂量 dosage+dosageUnit(如 30g), 回退数量 quantity+unit */
+    private static String herbDoseOf(Map<String, Object> it) {
+        String dosage = str(it.get("dosage"));
+        if (dosage != null) {
+            String unit = str(it.get("dosageUnit"));
+            return dosage + (unit != null ? unit : "g");
+        }
+        BigDecimal qty = (BigDecimal) it.get("quantity");
+        if (qty != null) {
+            String unit = str(it.get("unit"));
+            return qty.stripTrailingZeros().toPlainString() + (unit != null ? unit : "g");
+        }
+        return null;
+    }
+
+    /** 煎法/炮制标注(如 （先煎/酒制）; 两项均缺返回 null) */
+    private static String herbNoteOf(Map<String, Object> it) {
+        String decoction = str(it.get("decoction"));
+        String processing = str(it.get("processing"));
+        if (decoction == null && processing == null) {
+            return null;
+        }
+        StringBuilder note = new StringBuilder("（");
+        if (decoction != null) {
+            note.append(decoction);
+        }
+        if (processing != null) {
+            if (decoction != null) {
+                note.append('/');
+            }
+            note.append(processing);
+        }
+        return note.append('）').toString();
+    }
+
+    /** 膏方判定: 任一味药剂形式或药名含"膏" */
+    private static boolean isGaoFang(List<Map<String, Object>> items) {
+        for (Map<String, Object> it : items) {
+            String form = str(it.get("herbForm"));
+            String name = str(it.get("itemName"));
+            if ((form != null && form.contains("膏")) || (name != null && name.contains("膏"))) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /** 首条非空明细字段值(用法/频次/天数等处方级语义取首味口径) */
+    private static Object firstHerbItem(List<Map<String, Object>> items, String key) {
+        for (Map<String, Object> it : items) {
+            Object v = it.get(key);
+            if (v != null && StringUtils.hasText(String.valueOf(v))) {
+                return v;
+            }
+        }
+        return null;
+    }
+
+    /**
+     * 将草药方引用插入病历 content(P8a-2):
+     * 读取 his_inp_medical_record(优先明文 structure_data, 否则解密 content)→ 解析 Tiptap JSON
+     * → 在文档 content 数组末尾按行追加 paragraph 节点 → 重新加密回写 content + structure_data。
+     * 仅草稿态病历可插入(与病历编辑权限口径一致); 老库 structure_data 列缺失/明文兼容均逐段兑底。
+     */
+    @Transactional(rollbackFor = Exception.class)
+    public void insertFormulaToRecord(Long recordId, Long prescriptionId) {
+        if (recordId == null) {
+            throw new BizException(400, "病历记录ID不能为空");
+        }
+        if (prescriptionId == null) {
+            throw new BizException(400, "处方ID不能为空");
+        }
+        Long tid = TenantContext.require();
+        String text = formulaToText(prescriptionId);
+        try {
+            List<Map<String, Object>> rows = jdbcTemplate.query(
+                    "SELECT content, status FROM his_inp_medical_record "
+                            + "WHERE id = ? AND tenant_id = ? AND deleted = 0",
+                    (rs, i) -> {
+                        Map<String, Object> m = new LinkedHashMap<>();
+                        m.put("content", rs.getString("content"));
+                        m.put("status", rs.getObject("status"));
+                        return m;
+                    }, recordId, tid);
+            if (rows.isEmpty()) {
+                throw new BizException(400, "病历记录不存在: " + recordId);
+            }
+            Object status = rows.get(0).get("status");
+            if (status instanceof Number && ((Number) status).intValue() != 1) {
+                throw new BizException("仅草稿状态的病历可插入草药方引用, 当前状态: " + status);
+            }
+            String content = str(rows.get(0).get("content"));
+            String structure = queryStructureDataQuietly(recordId, tid);
+            /* 明文优先(双轨明文 structure_data), 否则解密 content(历史明文兼容透传) */
+            String plain = StringUtils.hasText(structure) ? structure : emrDocumentService.decrypt(content);
+            if (!StringUtils.hasText(plain)) {
+                plain = "{\"type\":\"doc\",\"content\":[]}";   /* 空白病历构造空文档骨架 */
+            }
+            String newJson = appendFormulaParagraphs(plain, text);
+            /* 存量明文病历(以 {/[ 开头且从未加密)保持明文回写, 其余统一加密落库 */
+            boolean wasPlain = looksLikeJson(content);
+            String newContent = wasPlain ? newJson : emrDocumentService.encrypt(newJson);
+            jdbcTemplate.update(
+                    "UPDATE his_inp_medical_record SET content = ?, update_time = NOW() "
+                            + "WHERE id = ? AND tenant_id = ?",
+                    newContent, recordId, tid);
+            updateStructureDataQuietly(recordId, tid, newJson);
+            log.info("草药方引用插入病历: recordId={}, prescriptionId={}, 段落数={}",
+                    recordId, prescriptionId, countLines(text));
+        } catch (BadSqlGrammarException e) {
+            log.warn("草药方引用插入病历失败(表/列缺失): recordId={}, {}", recordId, e.getMessage());
+            throw new BizException(500, "病历表结构异常, 草药方引用插入失败");
+        }
+    }
+
+    /** 读取病历明文轨 structure_data(列缺失/无值返回 null, 不阻断主链路) */
+    private String queryStructureDataQuietly(Long recordId, Long tid) {
+        try {
+            List<String> rows = jdbcTemplate.query(
+                    "SELECT structure_data FROM his_inp_medical_record WHERE id = ? AND tenant_id = ? AND deleted = 0",
+                    (rs, i) -> rs.getString(1), recordId, tid);
+            return rows.isEmpty() ? null : rows.get(0);
+        } catch (BadSqlGrammarException e) {
+            log.debug("structure_data 列缺失, 草药方引用按密文轨处理: recordId={}", recordId);
+            return null;
+        }
+    }
+
+    /** 回写病历明文轨 structure_data(列缺失仅告警, 不阻断主链路) */
+    private void updateStructureDataQuietly(Long recordId, Long tid, String newJson) {
+        try {
+            jdbcTemplate.update(
+                    "UPDATE his_inp_medical_record SET structure_data = ? WHERE id = ? AND tenant_id = ?",
+                    newJson, recordId, tid);
+        } catch (BadSqlGrammarException e) {
+            log.warn("structure_data 回写跳过(列缺失): recordId={}, {}", recordId, e.getMessage());
+        }
+    }
+
+    /** 解析 Tiptap 文档并在 content 数组末尾按行追加 paragraph 节点; 非 JSON 文档拒绝并提示 */
+    private static String appendFormulaParagraphs(String plainJson, String text) {
+        JSONObject doc;
+        try {
+            doc = JSON.parseObject(plainJson);
+        } catch (Exception e) {
+            throw new BizException(400, "病历内容不是结构化 Tiptap 文档, 无法插入草药方引用");
+        }
+        if (doc == null) {
+            throw new BizException(400, "病历内容为空, 无法插入草药方引用");
+        }
+        JSONArray content = doc.getJSONArray("content");
+        if (content == null) {
+            content = new JSONArray();
+            doc.put("content", content);
+        }
+        for (String line : text.split("\n")) {
+            JSONObject para = new JSONObject();
+            para.put("type", "paragraph");
+            if (!line.isEmpty()) {
+                JSONArray children = new JSONArray();
+                JSONObject t = new JSONObject();
+                t.put("type", "text");
+                t.put("text", line);
+                children.add(t);
+                para.put("content", children);
+            }
+            content.add(para);
+        }
+        return doc.toJSONString();
+    }
+
+    /** 明文 JSON 特征判定(与 EmrDocumentService 口径一致: 以 { 或 [ 开头) */
+    private static boolean looksLikeJson(String s) {
+        if (!StringUtils.hasText(s)) {
+            return false;
+        }
+        char c = s.trim().charAt(0);
+        return c == '{' || c == '[';
+    }
+
+    /** 非空行计数(日志用) */
+    private static int countLines(String text) {
+        int n = 0;
+        for (String line : text.split("\n")) {
+            if (!line.trim().isEmpty()) {
+                n++;
+            }
+        }
+        return n;
+    }
+
+    /** null 安全 trim 字符串 */
+    private static String str(Object v) {
+        return v == null ? null : String.valueOf(v).trim();
     }
 }

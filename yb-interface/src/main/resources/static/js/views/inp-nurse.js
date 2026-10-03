@@ -10,6 +10,9 @@
  * 量表评估 /assess 请求体 {inpVisitId, scaleCode, scaleDetail: JSON.stringify(answers)}(answers 值取选项 label, 多选维度传 label 数组);
  * 计划评价走 query ?result=xx; 记录措施 body {intervention, nurse}, time 由后端自动补。
  * InpNursingAssessment(量表工作台)/InpNursingPlan(计划管理) 为护士站页签子组件局部注册, 不挂 HIS.views。
+ * P4b-4 集成: 批量体征录入 Tab(nursing-batch-input.js, @saved 回执刷待办); 出入量面板切结构化服务 /api/his/inp/nursing/io
+ * (list 按日闭区间 / summary 24h 汇总含分类明细 / POST 单条 / DELETE 逻辑删); 评估提交触发"推荐待确认"计划(status=0)时弹采纳确认
+ * (PUT /api/his/inp/nursing-plan/{id}/confirm), 护理计划页签补"推荐待确认"区(采纳/婉拒, 婉拒即 close)。
  */
 (function () {
   var HIS = (window.HIS = window.HIS || {});
@@ -150,6 +153,8 @@
       '.np-ivs { display:flex; flex-direction:column; gap:2px; }',
       '.np-iv { display:flex; align-items:flex-start; gap:6px; color:var(--yb-ink-1); font-size:var(--yb-fs-base); }',
       '.np-iv.done { color:var(--yb-ink-3); }',
+      /* P4b-4 推荐待确认计划卡(琥珀左边条, 区别于执行中蓝条) */
+      '.np-card.is-reco { border-left-color: var(--yb-fill-warning); }',
       '.np-act { display:flex; align-items:baseline; gap:8px; padding:3px 0; border-bottom:1px dashed var(--yb-divider); font-size:var(--yb-fs-sm); }',
       '.np-act:last-child { border-bottom:none; }',
       '.np-act .tm { flex:none; color:var(--yb-ink-3); font-variant-numeric:tabular-nums; }',
@@ -239,6 +244,10 @@
       '.inp-io-form { display:flex; align-items:flex-end; gap:12px; flex-wrap:wrap; }',
       '.inp-io-form .fld { display:flex; flex-direction:column; gap:4px; }',
       '.inp-io-form .fld .cap { font-size:var(--yb-fs-sm); font-weight:600; color:var(--yb-ink-1); }',
+      /* ---- P4b-4 结构化出入量: 24h 分类构成小剔 ---- */
+      '.io-cat-wrap { display:flex; flex-wrap:wrap; gap:6px; margin:0 0 12px; }',
+      '.io-cat { font-size:12px; color:var(--yb-ink-3); background:var(--yb-surface-2); border:1px solid var(--yb-border-light); border-radius:var(--yb-r-pill); padding:1px 9px; }',
+      '.io-cat b { color:var(--yb-ink-1); font-variant-numeric:tabular-nums; margin-left:2px; }',
       /* ================= 一体化升级私有样式: 页签分组带/入出转/费用/病人360/床卡右键与拖拽 ================= */
       /* 左侧患者视图 segment(在区/待入区/转出待办) */
       '.inp-seg { display:flex; gap:0; margin-top:8px; border:1px solid var(--yb-border-light); border-radius:var(--yb-r-sm); overflow:hidden; }',
@@ -358,6 +367,8 @@
   var BED_TYPES = { 1: '普通', 2: '抢救', 3: '监护', 4: '隔离' };
   /* 欠费预警处理结果: 1已催缴 2已减免 3已结清 4忽略 */
   var FEE_ALERT_HANDLE = { 1: '已催缴', 2: '已减免', 3: '已结清', 4: '暂不处理' };
+  /* P4a-5 富文本护理文书(书写器字符串) → 既有五类记录 Integer: 护理记录→4措施, 评估单→2评估, 护理计划→3, 交接单→5总结, 告知书→4措施 */
+  var NURSING_TIPTAP_TYPES = { nursing_record: 4, assessment: 2, nursing_plan: 3, transfer: 5, consent: 4 };
   /* 一体化主页页签配置(顺序可自定义, localStorage 持久化): group 归组、iconKey 无则纯文字 */
   var HOME_TABS = [
     { key: 'flow', label: '入出转', group: '流转' },
@@ -370,6 +381,12 @@
     { key: 'med', label: '给药记录', group: '护理' },
     { key: 'assess', label: '护理评估', group: '护理' },
     { key: 'plan', label: '护理计划', group: '护理' },
+    { key: 'vital-chart', label: '体温单', group: '护理' },
+    { key: 'batch', label: '批量录入', group: '护理' },
+    { key: 'pipe', label: '管道管理', group: '护理' },
+    { key: 'transfer', label: '交接单', group: '护理' },
+    { key: 'consent', label: '告知书', group: '护理' },
+    { key: 'education', label: '宣教记录', group: '护理' },
     { key: 'shift', label: '交接班', group: '病区' },
     { key: 'bed', label: '床位一览', group: '病区' }
   ];
@@ -490,6 +507,8 @@
     return s.length ? s.join(' · ') : '-';
   }
   function nursingSummary(row) {
+    /* P4a-5 富文本轨: 服务端已派生纯文本摘要, 优先展示(避免裸 JSON) */
+    if (row.textSummary) { return row.textSummary; }
     if (row.recordType === 1) { return tempSummary(row.content); }
     /* 量表评估记录(content 快照 {score, scaleCode, scaleName, level, color, answers}): 展示评分与风险等级, 避免裸 JSON */
     if (row.recordType === 2) {
@@ -1145,6 +1164,12 @@
             return;
           }
         }
+        /* P4a-5 富文本护理文书(Tiptap 文档): 由「富文本模式」改写, 禁止经典文本编辑覆盖结构化内容 */
+        var to = parseJson(row.content);
+        if (row.recordType !== 1 && to && to.type === 'doc') {
+          ElementPlus.ElMessage.info('该记录为富文本护理文书, 请在页签顶部切换「富文本模式」查看');
+          return;
+        }
         if (row.recordType === 1) {
           var f = tempFields(row.content);
           vm.tempId = row.id;
@@ -1349,6 +1374,11 @@
   };
 
   /* ================= 5. 交接班(当前班次统计 / SBAR结构化交班 / 接班确认 / 历史) ================= */
+  /* P4c-4 自动交班报告(nursing-shift-report)映射: 班次字符串/状态机/临床事件类型中文名(模板经方法取值) */
+  var SR_SHIFT_LABEL = { day: '白班', evening: '小夜班', night: '大夜班' };
+  var SR_STATUS_LABEL = { 0: '草稿', 1: '已交班', 2: '已接班' };
+  var SR_STATUS_TYPE = { 0: 'info', 1: 'warning', 2: 'success' };
+  var SR_EVENT_LABEL = { admission: '入院', discharge: '出院', death: '死亡', surgery: '手术', transfer_in: '转入', transfer_out: '转出', delivery: '分娩', resuscitation: '抢救' };
   HIS.views.InpShiftHandover = {
     name: 'InpShiftHandover',
     props: { wardId: { type: [String, Number], default: null } },
@@ -1364,7 +1394,11 @@
         patList: [], patTotal: 0, patPage: 1, patSize: 20, patLoading: false, patKeyword: '',
         selVisitId: null, prefilling: false, prefillFor: null,
         viewRow: null, viewVisible: false,
-        histRecords: [], histTotal: 0, page: 1, size: 20
+        histRecords: [], histTotal: 0, page: 1, size: 20,
+        /* P4c-4 自动交班报告: 班次/日期(默认按时段推断) + 当前报告与近7天列表 + 各操作进行态 */
+        srShiftType: 'day', srShiftDate: '',
+        srReport: null, srContent: null,
+        srList: [], srLoading: false, srGenerating: false, srHanding: false, srReceiving: false
       };
     },
     computed: {
@@ -1410,6 +1444,7 @@
         this.patPage = 1;
         this.selVisitId = null;
         this.load();
+        this.loadShiftReports();
         if (this.mode === 'patient') { this.loadPatients(); }
       },
       /* 切换到按患者交接时按需加载患者名单 */
@@ -1417,7 +1452,7 @@
         if (m === 'patient' && !this.patList.length) { this.loadPatients(); }
       }
     },
-    created: function () { this.load(); },
+    created: function () { this.load(); this.initShiftReport(); },
     methods: {
       fmtTime: fmtTime,
       shiftLabel: function (v) { return v == null ? '-' : (SHIFT_TYPE[v] || v); },
@@ -1567,6 +1602,101 @@
       openView: function (row) {
         this.viewRow = row;
         this.viewVisible = true;
+      },
+
+      /* ================= P4c-4 自动交班报告(一键汇总/交班/接班) =================
+       * 端点: POST /generate?wardId&shiftType&shiftDate(病区×班次×日期唯一, 草稿覆盖重算) /
+       * PUT /{id}/handover?receiverName(接班人必填) / PUT /{id}/receive / GET /list?wardId&start&end;
+       * content JSON(概况/新入院/转科/手术/MEWS高危/临床事件)由后端汇总固化, 前端只读展示。 */
+      srShiftLabel: function (v) { return v == null ? '-' : (SR_SHIFT_LABEL[v] || v); },
+      srStatusLabel: function (v) { return v == null ? '-' : (SR_STATUS_LABEL[v] || v); },
+      srStatusType: function (v) { return SR_STATUS_TYPE[v] || 'info'; },
+      srEventLabel: function (v) { return v == null ? '-' : (SR_EVENT_LABEL[v] || v); },
+      /* 初始化: 班次按时段自动推断(8-16白班/16-24小夜/0-8大夜), 日期默认今天, 拉近7天列表 */
+      initShiftReport: function () {
+        var h = new Date().getHours();
+        this.srShiftType = (h >= 8 && h < 16) ? 'day' : (h >= 16 ? 'evening' : 'night');
+        var d = new Date();
+        this.srShiftDate = d.getFullYear() + '-' + pad2(d.getMonth() + 1) + '-' + pad2(d.getDate());
+        this.loadShiftReports();
+      },
+      loadShiftReports: function () {
+        var vm = this;
+        if (!vm.wardId) { vm.srList = []; return; }
+        vm.srLoading = true;
+        var end = new Date();
+        var start = new Date(end.getTime() - 6 * 86400000);
+        function dp(d) { return d.getFullYear() + '-' + pad2(d.getMonth() + 1) + '-' + pad2(d.getDate()); }
+        var url = '/api/his/inp/nursing/shift-report/list?wardId=' + HIS.idParam(vm.wardId) +
+          '&start=' + dp(start) + '&end=' + dp(end);
+        HIS.get(url).then(function (rows) { vm.srList = rows || []; })
+          .catch(HIS.notifyError).finally(function () { vm.srLoading = false; });
+      },
+      showSrReport: function (r) {
+        this.srReport = r || null;
+        this.srContent = r ? (parseJson(r.content) || {}) : null;
+      },
+      generateReport: function () {
+        var vm = this;
+        if (!vm.wardId || !vm.srShiftType || !vm.srShiftDate) { return; }
+        /* 已交班/已接班报告后端拒绝重生成: 同班次终态命中时直接展示 */
+        var rows = vm.srList || [];
+        for (var i = 0; i < rows.length; i++) {
+          var r0 = rows[i];
+          if (r0.shiftDate === vm.srShiftDate && r0.shiftType === vm.srShiftType && r0.status !== 0) {
+            vm.showSrReport(r0);
+            ElementPlus.ElMessage.info('该班次报告已' + (r0.status === 2 ? '接班' : '交班') + ', 已为你展示');
+            return;
+          }
+        }
+        vm.srGenerating = true;
+        var url = '/api/his/inp/nursing/shift-report/generate?wardId=' + HIS.idParam(vm.wardId) +
+          '&shiftType=' + encodeURIComponent(vm.srShiftType) + '&shiftDate=' + encodeURIComponent(vm.srShiftDate);
+        HIS.post(url).then(function (r) {
+          vm.showSrReport(r);
+          HIS.notifySuccess('交班报告已生成(草稿), 请核对后交班');
+          vm.loadShiftReports();
+        }).catch(HIS.notifyError).finally(function () { vm.srGenerating = false; });
+      },
+      /* 交班: 接班人必填(后端校验 receiverId/receiverName 至少其一), 弹窗录入接班人姓名 */
+      srHandover: function () {
+        var vm = this;
+        var r = vm.srReport;
+        if (!r || r.status !== 0) { return; }
+        ElementPlus.ElMessageBox.prompt('请输入接班护士姓名', '交班确认', {
+          confirmButtonText: '确认交班', cancelButtonText: '取消',
+          inputPattern: /\S/, inputErrorMessage: '接班人姓名不能为空'
+        }).then(function (res) {
+          vm.srHanding = true;
+          var name = encodeURIComponent(String((res && res.value) || '').trim());
+          return HIS.put('/api/his/inp/nursing/shift-report/' + HIS.idParam(r.id) + '/handover?receiverName=' + name)
+            .then(function (nr) {
+              HIS.notifySuccess('交班完成, 等待接班护士接班确认');
+              vm.showSrReport(nr || r);
+              vm.loadShiftReports();
+            }).catch(HIS.notifyError).finally(function () { vm.srHanding = false; });
+        }).catch(function () { /* 取消输入 */ });
+      },
+      /* 接班: 以当前登录护士身份确认(后端回填实际接班人, status→2 闭环) */
+      srReceive: function (row) {
+        var vm = this;
+        var r = (row && row.id != null) ? row : vm.srReport;
+        if (!r || r.status !== 1) { return; }
+        ElementPlus.ElMessageBox.confirm('确认以当前登录护士身份接班该班次报告？', '接班确认', {
+          type: 'info', confirmButtonText: '确认接班', cancelButtonText: '再想想'
+        }).then(function () {
+          vm.srReceiving = true;
+          return HIS.put('/api/his/inp/nursing/shift-report/' + HIS.idParam(r.id) + '/receive')
+            .then(function (nr) {
+              HIS.notifySuccess('接班确认完成, 本班次交接闭环');
+              vm.showSrReport(nr || r);
+              vm.loadShiftReports();
+            }).catch(HIS.notifyError).finally(function () { vm.srReceiving = false; });
+        }).catch(function () { /* 取消 */ });
+      },
+      /* 列表行点击/查看按钮: 上方面板切换展示该报告 */
+      srView: function (row) {
+        if (row) { this.showSrReport(row); }
       }
     },
     template: [
@@ -1583,6 +1713,97 @@
       '        <el-col :span="4"><div class="inp-stat"><div class="v">{{ criticalShown }}</div><div class="k">危重</div></div></el-col>',
       '        <el-col :span="4"><div class="inp-stat"><div class="v" style="font-size:14px;">{{ (cur.startTime || \'\').substring(11, 16) }} - {{ (cur.endTime || \'\').substring(11, 16) }}</div><div class="k">班次时段</div></div></el-col>',
       '      </el-row>',
+      '    </div>',
+      '    <div class="inp-panel">',
+      '      <h4>自动交班报告(一键汇总)</h4>',
+      '      <div style="display:flex;align-items:center;gap:10px;margin-bottom:10px;flex-wrap:wrap;">',
+      '        <el-radio-group v-model="srShiftType" size="small">',
+      '          <el-radio-button label="day">白班(08-16)</el-radio-button>',
+      '          <el-radio-button label="evening">小夜班(16-24)</el-radio-button>',
+      '          <el-radio-button label="night">大夜班(00-08)</el-radio-button>',
+      '        </el-radio-group>',
+      '        <el-date-picker v-model="srShiftDate" type="date" value-format="YYYY-MM-DD" :clearable="false" size="small" style="width:136px;"></el-date-picker>',
+      '        <el-button size="small" type="primary" :loading="srGenerating" @click="generateReport">生成交班报告</el-button>',
+      '        <el-button size="small" @click="loadShiftReports">刷新</el-button>',
+      '        <span style="color:var(--yb-ink-4);font-size:12px;">按病区×班次×日期一键汇总固化, 同班次重生成覆盖草稿</span>',
+      '      </div>',
+      '      <template v-if="srReport && srContent">',
+      '        <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;flex-wrap:wrap;">',
+      '          <el-tag size="small" :type="srStatusType(srReport.status)">{{ srStatusLabel(srReport.status) }}</el-tag>',
+      '          <span style="font-weight:700;color:var(--yb-ink-1);">{{ srReport.shiftDate }} {{ srShiftLabel(srReport.shiftType) }}</span>',
+      '          <span style="color:var(--yb-ink-3);font-size:12px;">{{ srContent.range ? srContent.range.start : \'\' }} ~ {{ srContent.range ? srContent.range.end : \'\' }} · 交班人 {{ srReport.reporterName || \'-\' }} · 接班人 {{ srReport.receiverName || \'-\' }}</span>',
+      '        </div>',
+      '        <el-row :gutter="12" style="margin-bottom:10px;">',
+      '          <el-col :span="4"><div class="inp-stat"><div class="v">{{ (srContent.patients && srContent.patients.total) || 0 }}</div><div class="k">在科总数</div></div></el-col>',
+      '          <el-col :span="4"><div class="inp-stat"><div class="v">{{ (srContent.patients && srContent.patients.critical) || 0 }}</div><div class="k">危重</div></div></el-col>',
+      '          <el-col :span="4"><div class="inp-stat"><div class="v">{{ (srContent.patients && srContent.patients.serious) || 0 }}</div><div class="k">病重</div></div></el-col>',
+      '          <el-col :span="4"><div class="inp-stat"><div class="v">{{ srReport.newAdmitCount || 0 }}</div><div class="k">新入院</div></div></el-col>',
+      '          <el-col :span="4"><div class="inp-stat"><div class="v">{{ (srReport.transferInCount || 0) + \' / \' + (srReport.transferOutCount || 0) }}</div><div class="k">转入/转出</div></div></el-col>',
+      '          <el-col :span="4"><div class="inp-stat"><div class="v">{{ srReport.surgeryCount || 0 }}</div><div class="k">手术</div></div></el-col>',
+      '        </el-row>',
+      '        <div v-if="srContent.newAdmissions && srContent.newAdmissions.length" style="margin-bottom:10px;">',
+      '          <div style="font-weight:700;margin-bottom:4px;">新入院患者</div>',
+      '          <el-table :data="srContent.newAdmissions" border size="small" max-height="200">',
+      '            <el-table-column label="时间" width="130" prop="admitTime"></el-table-column>',
+      '            <el-table-column label="患者" min-width="80" prop="patientName"></el-table-column>',
+      '            <el-table-column label="床位" width="64" align="center"><template #default="s">{{ s.row.bedId || \'-\' }}</template></el-table-column>',
+      '            <el-table-column label="住院号" width="120" prop="inpNo"></el-table-column>',
+      '            <el-table-column label="入院诊断" min-width="140" show-overflow-tooltip prop="admitDiag"></el-table-column>',
+      '          </el-table>',
+      '        </div>',
+      '        <div v-if="srContent.surgeries && srContent.surgeries.length" style="margin-bottom:10px;">',
+      '          <div style="font-weight:700;margin-bottom:4px;">手术患者</div>',
+      '          <el-table :data="srContent.surgeries" border size="small" max-height="200">',
+      '            <el-table-column label="患者" min-width="80" prop="patientName"></el-table-column>',
+      '            <el-table-column label="手术名称" min-width="160" show-overflow-tooltip prop="surgeryName"></el-table-column>',
+      '            <el-table-column label="手术间" width="90" align="center" prop="roomNo"></el-table-column>',
+      '            <el-table-column label="日期" width="100" align="center" prop="scheduleDate"></el-table-column>',
+      '          </el-table>',
+      '        </div>',
+      '        <div v-if="srContent.mewsAlerts && srContent.mewsAlerts.length" style="margin-bottom:10px;">',
+      '          <div style="font-weight:700;margin-bottom:4px;color:var(--yb-danger-strong,#c0392b);">MEWS 高危患者(≥5分)</div>',
+      '          <el-table :data="srContent.mewsAlerts" border size="small" max-height="200">',
+      '            <el-table-column label="患者" min-width="80" prop="patientName"></el-table-column>',
+      '            <el-table-column label="床位" width="64" align="center"><template #default="s">{{ s.row.bedId || \'-\' }}</template></el-table-column>',
+      '            <el-table-column label="MEWS" width="70" align="center" prop="mewsScore"></el-table-column>',
+      '            <el-table-column label="末次评分时间" width="140" align="center" prop="recordTime"></el-table-column>',
+      '          </el-table>',
+      '        </div>',
+      '        <div v-if="srContent.keyEvents && srContent.keyEvents.length" style="margin-bottom:10px;">',
+      '          <div style="font-weight:700;margin-bottom:4px;">关键临床事件</div>',
+      '          <div class="inp-sbar-view" style="max-height:170px;overflow:auto;">',
+      '            <div v-for="(e, ei) in srContent.keyEvents" :key="ei" style="padding:1px 0;">[{{ srEventLabel(e.eventType) }}] {{ e.eventTime }} · {{ e.patientName || \'-\' }}{{ e.bedId != null ? \'(\' + e.bedId + \'床)\' : \'\' }} {{ e.eventDesc || \'\' }}</div>',
+      '          </div>',
+      '        </div>',
+      '        <div style="margin-top:2px;display:flex;align-items:center;gap:10px;">',
+      '          <el-button v-if="srReport.status === 0" type="warning" :loading="srHanding" @click="srHandover">交班(指定接班人)</el-button>',
+      '          <el-button v-if="srReport.status === 1" type="success" :loading="srReceiving" @click="srReceive()">接班确认</el-button>',
+      '          <span v-if="srReport.status === 2" style="color:var(--yb-success-strong,#27ae60);font-size:12px;">本班次交接闭环完成</span>',
+      '        </div>',
+      '      </template>',
+      '      <el-empty v-else description="选择班次与日期后点击「生成交班报告」一键汇总病区概况/新入院/转科/手术/MEWS高危/临床事件" :image-size="56"></el-empty>',
+      '      <div style="margin-top:12px;">',
+      '        <div style="font-weight:700;margin-bottom:4px;">近7天报告(点击行查看)</div>',
+      '        <el-table :data="srList" border stripe size="small" v-loading="srLoading" highlight-current-row @row-click="srView">',
+      '          <el-table-column label="日期" width="106" align="center" prop="shiftDate"></el-table-column>',
+      '          <el-table-column label="班次" width="86" align="center"><template #default="s">{{ srShiftLabel(s.row.shiftType) }}</template></el-table-column>',
+      '          <el-table-column label="状态" width="86" align="center"><template #default="s"><el-tag size="small" :type="srStatusType(s.row.status)">{{ srStatusLabel(s.row.status) }}</el-tag></template></el-table-column>',
+      '          <el-table-column label="在科" width="64" align="center" prop="totalPatients"></el-table-column>',
+      '          <el-table-column label="危重" width="64" align="center" prop="criticalCount"></el-table-column>',
+      '          <el-table-column label="新入院" width="68" align="center" prop="newAdmitCount"></el-table-column>',
+      '          <el-table-column label="转入/出" width="76" align="center"><template #default="s">{{ (s.row.transferInCount || 0) + \'/\' + (s.row.transferOutCount || 0) }}</template></el-table-column>',
+      '          <el-table-column label="手术" width="60" align="center" prop="surgeryCount"></el-table-column>',
+      '          <el-table-column label="交班人" width="96" align="center"><template #default="s">{{ s.row.reporterName || \'-\' }}</template></el-table-column>',
+      '          <el-table-column label="接班人" width="96" align="center"><template #default="s">{{ s.row.receiverName || \'-\' }}</template></el-table-column>',
+      '          <el-table-column label="操作" width="120" align="center" fixed="right">',
+      '            <template #default="s">',
+      '              <el-button size="small" text type="primary" @click.stop="srView(s.row)">查看</el-button>',
+      '              <el-button v-if="s.row.status === 1" size="small" text type="success" @click.stop="srReceive(s.row)">接班</el-button>',
+      '            </template>',
+      '          </el-table-column>',
+      '        </el-table>',
+      '        <el-empty v-if="!srLoading && !srList.length" description="近7天暂无交班报告" :image-size="46"></el-empty>',
+      '      </div>',
       '    </div>',
       '    <div class="inp-panel">',
       '      <h4>交班内容(SBAR 结构化)</h4>',
@@ -1737,13 +1958,26 @@
     ].join('\n')
   };
 
-  /* ================= 5.5 出入量登记(T45): 逐笔录入 + 当日列表 + 日汇总三卡 =================
-   * io_type 1进量 2出量(volume 单位 ml), 类别随类型联动(进量: 饮水/静脉输液/口服药/肠内营养/其他;
-   * 出量: 尿量/引流/呕吐/咯血/其他); 日汇总 balance = 进量合计 - 出量合计, 负值红色提示。
-   * 接口: /api/his/inp/io-record (POST 登记 / GET 当日列表 / GET daily-summary / DELETE 逻辑删)。
+  /* ================= 5.5 出入量登记(P4b-4 结构化升级): 逐笔录入 + 当日列表 + 24h汇总三卡 + 分类小剔 =================
+   * 接口切至 P4b 结构化护理出入量服务 /api/his/inp/nursing/io(list 按日闭区间 / summary 24h汇总含分类明细 /
+   * POST 单条 / DELETE 逻辑删); 口径: ioType 1入量 2出量; itemName 必填; itemCategory 命中固定集
+   * infusion/oral/urine/drain/gastric/vomit/stool/blood/other(空值后端归 other 桶); volumeMl 0~99999;
+   * balance = 总入量 - 总出量, 负值红色提示。
    */
-  var IO_INTAKE_CATEGORIES = ['饮水', '静脉输液', '口服药', '肠内营养', '其他'];
-  var IO_OUTPUT_CATEGORIES = ['尿量', '引流', '呕吐', '咯血', '其他'];
+  /* 分类中文名(列表/汇总展示口径) */
+  var IO_CATEGORY_LABEL = { infusion: '输液', oral: '口服', urine: '尿量', drain: '引流', gastric: '胃肠', vomit: '呕吐', stool: '大便', blood: '失血', other: '其他' };
+  /* 录入分类选项(按类型): 入量=输液/口服/鼻饲/其他; 出量=尿量/引流/胃肠减压/呕吐/大便/失血/其他 */
+  var IO_INTAKE_CATS = [
+    { c: 'infusion', l: '输液' }, { c: 'oral', l: '口服' }, { c: 'gastric', l: '鼻饲' }, { c: 'other', l: '其他' }
+  ];
+  var IO_OUTPUT_CATS = [
+    { c: 'urine', l: '尿量' }, { c: 'drain', l: '引流' }, { c: 'gastric', l: '胃肠减压' },
+    { c: 'vomit', l: '呕吐' }, { c: 'stool', l: '大便' }, { c: 'blood', l: '失血' }, { c: 'other', l: '其他' }
+  ];
+  /* 24h 汇总空态(未选患者/接口异常时的兜底结构, 键名与后端 summary24h 一致) */
+  function EMPTY_IO_SUMMARY() {
+    return { totalIntake: 0, totalOutput: 0, balance: 0, intakeByCategory: {}, outputByCategory: {}, recordCount: 0 };
+  }
   var InpIoRecord = {
     name: 'InpIoRecord',
     props: {
@@ -1755,26 +1989,30 @@
       return {
         date: todayStr(),
         selVisitId: null,
-        form: { ioType: 1, category: '饮水', volume: null, route: '', note: '' },
+        form: { ioType: 1, itemName: '', itemCategory: 'infusion', volume: null, route: '', note: '' },
         saving: false, loading: false, list: [],
-        summary: { intakeTotal: 0, outputTotal: 0, balance: 0 }
+        summary: EMPTY_IO_SUMMARY()
       };
     },
     computed: {
-      /* 类别选项随进/出量联动 */
+      /* 分类选项随进/出量联动 */
       categoryOptions: function () {
-        return this.form.ioType === 2 ? IO_OUTPUT_CATEGORIES : IO_INTAKE_CATEGORIES;
-      }
+        return this.form.ioType === 2 ? IO_OUTPUT_CATS : IO_INTAKE_CATS;
+      },
+      /* 24h 汇总分类明细 → 小剔列表 */
+      intakeCatList: function () { return this.catList(this.summary && this.summary.intakeByCategory); },
+      outputCatList: function () { return this.catList(this.summary && this.summary.outputByCategory); }
     },
     watch: {
       /* 选患唯一入口 = 主组件左侧患者列表, 本面板仅跟随不自行切换 */
       visitId: function (v) { this.selVisitId = v; },
       selVisitId: function () { this.loadAll(); },
       date: function () { this.loadAll(); },
-      /* 切换进/出量时类别回退到该类型默认项 */
+      /* 切换进/出量时分类回退到该类型默认项 */
       'form.ioType': function (v) {
-        var opts = v === 2 ? IO_OUTPUT_CATEGORIES : IO_INTAKE_CATEGORIES;
-        if (opts.indexOf(this.form.category) < 0) { this.form.category = opts[0]; }
+        var opts = v === 2 ? IO_OUTPUT_CATS : IO_INTAKE_CATS, hit = false;
+        for (var i = 0; i < opts.length; i++) { if (opts[i].c === this.form.itemCategory) { hit = true; break; } }
+        if (!hit) { this.form.itemCategory = opts[0].c; }
       }
     },
     created: function () {
@@ -1782,39 +2020,53 @@
       this.loadAll();
     },
     methods: {
+      fmtTime: fmtTime,
+      /* 汇总分类 Map → [{code,label,v}](键为后端固定集英文码) */
+      catList: function (m) {
+        var out = [];
+        for (var k in (m || {})) { out.push({ code: k, label: IO_CATEGORY_LABEL[k] || k, v: m[k] }); }
+        return out;
+      },
       loadAll: function () {
         var vm = this;
-        if (vm.selVisitId == null) { vm.list = []; vm.summary = { intakeTotal: 0, outputTotal: 0, balance: 0 }; return; }
+        if (vm.selVisitId == null) { vm.list = []; vm.summary = EMPTY_IO_SUMMARY(); return; }
         vm.loading = true;
-        var q = 'visitId=' + HIS.idParam(vm.selVisitId) + '&date=' + vm.date;
+        var q = 'inpVisitId=' + HIS.idParam(vm.selVisitId);
         Promise.all([
-          HIS.get('/api/his/inp/io-record?' + q).catch(function () { return []; }),
-          HIS.get('/api/his/inp/io-record/daily-summary?' + q).catch(function () { return null; })
+          HIS.get('/api/his/inp/nursing/io/list?' + q + '&start=' + vm.date + '&end=' + vm.date).catch(function () { return []; }),
+          HIS.get('/api/his/inp/nursing/io/summary?' + q + '&date=' + vm.date).catch(function () { return null; })
         ]).then(function (rs) {
           vm.list = rs[0] || [];
-          vm.summary = rs[1] || { intakeTotal: 0, outputTotal: 0, balance: 0 };
+          vm.summary = rs[1] || EMPTY_IO_SUMMARY();
         }).finally(function () { vm.loading = false; });
       },
       onDateChange: function () { /* watch.date 已触发 loadAll */ },
-      ioTypeLabel: function (v) { return Number(v) === 2 ? '出量' : '进量'; },
+      ioTypeLabel: function (v) { return Number(v) === 2 ? '出量' : '入量'; },
       ioTypeTag: function (v) { return Number(v) === 2 ? 'warning' : 'primary'; },
-      /* ---- 逐笔登记 ---- */
+      catLabel: function (c) { return c == null || c === '' ? '其他' : (IO_CATEGORY_LABEL[c] || c); },
+      /* ---- 逐笔登记(结构化: 项目名称必填 + 分类固定集) ---- */
       doSave: function () {
         var vm = this;
         if (vm.selVisitId == null) { ElementPlus.ElMessage.warning('请先选择患者'); return; }
-        if (!vm.form.category) { ElementPlus.ElMessage.warning('请选择类别'); return; }
+        var name = (vm.form.itemName || '').trim();
+        if (!name) { ElementPlus.ElMessage.warning('请填写项目名称(如 生理盐水/稀饭/尿液)'); return; }
+        if (name.length > 100) { ElementPlus.ElMessage.warning('项目名称不能超过100字'); return; }
+        if (!vm.form.itemCategory) { ElementPlus.ElMessage.warning('请选择项目分类'); return; }
         var vol = vm.form.volume == null ? null : Number(vm.form.volume);
         if (vol == null || isNaN(vol) || vol <= 0) { ElementPlus.ElMessage.warning('量(ml)必须为大于 0 的数值'); return; }
+        if (vol > 99999) { ElementPlus.ElMessage.warning('量(ml)不能超过 99999'); return; }
         vm.saving = true;
-        HIS.post('/api/his/inp/io-record', {
-          visitId: HIS.id(vm.selVisitId),
+        HIS.post('/api/his/inp/nursing/io', {
+          inpVisitId: HIS.id(vm.selVisitId),
           ioType: vm.form.ioType,
-          category: vm.form.category,
-          volume: vol,
+          itemName: name,
+          itemCategory: vm.form.itemCategory,
+          volumeMl: Math.round(vol),
           route: (vm.form.route || '').trim() || null,
           note: (vm.form.note || '').trim() || null
         }).then(function () {
           HIS.notifySuccess('出入量记录已登记');
+          vm.form.itemName = '';
           vm.form.volume = null;
           vm.form.route = '';
           vm.form.note = '';
@@ -1823,10 +2075,10 @@
       },
       doRemove: function (row) {
         var vm = this;
-        ElementPlus.ElMessageBox.confirm('确认删除该条出入量记录？(' + vm.ioTypeLabel(row.ioType) + ' · ' + row.category + ' · ' + row.volume + 'ml)', '删除确认', {
+        ElementPlus.ElMessageBox.confirm('确认删除该条出入量记录？(' + vm.ioTypeLabel(row.ioType) + ' · ' + vm.catLabel(row.itemCategory) + ' · ' + (row.volumeMl != null ? row.volumeMl : '-') + 'ml)', '删除确认', {
           type: 'warning', confirmButtonText: '删除', cancelButtonText: '取消'
         }).then(function () {
-          return HIS.del('/api/his/inp/io-record/' + HIS.idParam(row.id));
+          return HIS.del('/api/his/inp/nursing/io/' + HIS.idParam(row.id));
         }).then(function () {
           HIS.notifySuccess('已删除');
           vm.loadAll();
@@ -1846,27 +2098,35 @@
       '    <span v-else style="color:var(--yb-ink-3);font-size:12px;">请在左侧选择患者</span>',
       '    <el-button size="small" @click="loadAll">刷新</el-button>',
       '  </div>',
-      /* 日汇总三卡: 进量合计 / 出量合计 / 平衡值(负值红色) */
-      '  <el-row :gutter="12" style="margin-bottom:12px;">',
-      '    <el-col :span="8"><div class="inp-stat"><div class="v">{{ summary.intakeTotal || 0 }}</div><div class="k">进量合计(ml)</div></div></el-col>',
-      '    <el-col :span="8"><div class="inp-stat"><div class="v">{{ summary.outputTotal || 0 }}</div><div class="k">出量合计(ml)</div></div></el-col>',
-      '    <el-col :span="8"><div class="inp-stat" :class="{ \'is-danger\': Number(summary.balance) < 0 }"><div class="v">{{ summary.balance != null ? summary.balance : \'-\' }}</div><div class="k">平衡值(ml, 进-出)</div></div></el-col>',
+      /* 24h 汇总三卡: 总入量 / 总出量 / 平衡值(负值红色) + 分类构成小剔(仅窗口内有记录时展示) */
+      '  <el-row :gutter="12" style="margin-bottom:10px;">',
+      '    <el-col :span="8"><div class="inp-stat"><div class="v">{{ summary.totalIntake || 0 }}</div><div class="k">24h 总入量(ml) · {{ summary.recordCount || 0 }} 笔</div></div></el-col>',
+      '    <el-col :span="8"><div class="inp-stat"><div class="v">{{ summary.totalOutput || 0 }}</div><div class="k">24h 总出量(ml)</div></div></el-col>',
+      '    <el-col :span="8"><div class="inp-stat" :class="{ \'is-danger\': Number(summary.balance) < 0 }"><div class="v">{{ summary.balance != null ? summary.balance : \'-\' }}</div><div class="k">24h 平衡(ml, 入-出)</div></div></el-col>',
       '  </el-row>',
-      /* 录入表单 */
+      '  <div v-if="intakeCatList.length || outputCatList.length" class="io-cat-wrap">',
+      '    <template v-if="intakeCatList.length"><span style="font-size:12px;color:var(--yb-ink-3);">入量构成</span><span v-for="c in intakeCatList" :key="\'i\' + c.code" class="io-cat">{{ c.label }}<b>{{ c.v }}</b></span></template>',
+      '    <template v-if="outputCatList.length"><span style="font-size:12px;color:var(--yb-ink-3);margin-left:6px;">出量构成</span><span v-for="c in outputCatList" :key="\'o\' + c.code" class="io-cat">{{ c.label }}<b>{{ c.v }}</b></span></template>',
+      '  </div>',
+      /* 录入表单(结构化: 项目名称必填 + 分类固定集) */
       '  <div class="inp-panel">',
       '    <h4>登记出入量</h4>',
       '    <div class="inp-io-form">',
       '      <div class="fld">',
       '        <span class="cap">类型</span>',
       '        <el-radio-group v-model="form.ioType">',
-      '          <el-radio-button :label="1">进量</el-radio-button>',
+      '          <el-radio-button :label="1">入量</el-radio-button>',
       '          <el-radio-button :label="2">出量</el-radio-button>',
       '        </el-radio-group>',
       '      </div>',
       '      <div class="fld">',
-      '        <span class="cap">类别</span>',
-      '        <el-select v-model="form.category" style="width:130px;">',
-      '          <el-option v-for="c in categoryOptions" :key="c" :label="c" :value="c"></el-option>',
+      '        <span class="cap">项目名称</span>',
+      '        <el-input v-model="form.itemName" placeholder="如 生理盐水/稀饭/尿液" style="width:170px;" maxlength="100" clearable></el-input>',
+      '      </div>',
+      '      <div class="fld">',
+      '        <span class="cap">分类</span>',
+      '        <el-select v-model="form.itemCategory" style="width:140px;">',
+      '          <el-option v-for="c in categoryOptions" :key="c.c" :label="c.l" :value="c.c"></el-option>',
       '        </el-select>',
       '      </div>',
       '      <div class="fld">',
@@ -1887,17 +2147,20 @@
       /* 当日记录 */
       '  <el-table :data="list" v-loading="loading" border stripe size="small">',
       '    <el-table-column type="index" label="#" width="50" align="center"></el-table-column>',
-      '    <el-table-column label="记录时间" width="110" align="center">',
-      '      <template #default="s">{{ s.row.recordTime || \'-\' }}</template>',
+      '    <el-table-column label="记录时间" width="150" align="center">',
+      '      <template #default="s">{{ fmtTime(s.row.recordTime) }}</template>',
       '    </el-table-column>',
       '    <el-table-column label="类型" width="70" align="center">',
       '      <template #default="s"><el-tag size="small" :type="ioTypeTag(s.row.ioType)">{{ ioTypeLabel(s.row.ioType) }}</el-tag></template>',
       '    </el-table-column>',
-      '    <el-table-column label="类别" width="90" align="center">',
-      '      <template #default="s">{{ s.row.category || \'-\' }}</template>',
+      '    <el-table-column label="项目名称" min-width="160" show-overflow-tooltip>',
+      '      <template #default="s">{{ s.row.itemName || \'-\' }}</template>',
+      '    </el-table-column>',
+      '    <el-table-column label="分类" width="90" align="center">',
+      '      <template #default="s">{{ catLabel(s.row.itemCategory) }}</template>',
       '    </el-table-column>',
       '    <el-table-column label="量(ml)" width="90" align="center">',
-      '      <template #default="s"><span style="font-weight:700;font-variant-numeric:tabular-nums;">{{ s.row.volume != null ? s.row.volume : \'-\' }}</span></template>',
+      '      <template #default="s"><span style="font-weight:700;font-variant-numeric:tabular-nums;">{{ s.row.volumeMl != null ? s.row.volumeMl : \'-\' }}</span></template>',
       '    </el-table-column>',
       '    <el-table-column label="途径" width="110">',
       '      <template #default="s">{{ s.row.route || \'-\' }}</template>',
@@ -2777,7 +3040,34 @@
           if (rec && rec.planTemplateId) { ElementPlus.ElMessage.success(msg + ', 已按风险区间自动创建护理计划'); }
           else { HIS.notifySuccess(msg); }
           vm.loadHistory();
+          vm.offerPlanConfirm(rec);
         }).catch(HIS.notifyError).finally(function () { vm.submitting = false; });
+      },
+      /* P4b-4: 评估提交后若触发了"推荐待确认"(status=0)计划, 弹采纳确认框。
+       * 触发口径: rec.planTemplateId 非空(后端 autoGeneratePlan 命中模板推荐) 且 status=0 列表存在同模板实例;
+       * 采纳 → PUT /{id}/confirm(0→1 执行中); 稍后处理 → 静默关闭(推荐保留, 可在"护理计划"页签再处理)。 */
+      offerPlanConfirm: function (rec) {
+        var vm = this;
+        if (!rec || rec.planTemplateId == null || !vm.visitId) { return; }
+        HIS.get('/api/his/inp/nursing-plan/list?visitId=' + HIS.idParam(vm.visitId) + '&status=0').then(function (rows) {
+          var list = rows || [], hit = null;
+          for (var i = 0; i < list.length; i++) {
+            if (HIS.sameId(list[i].templateId, rec.planTemplateId)) { hit = list[i]; break; }
+          }
+          if (!hit) { return; }
+          ElementPlus.ElMessageBox.confirm(
+            '根据评估结果，系统推荐生成护理计划「' + (hit.nursingDiagnosis || '护理计划') + '」，是否采纳？',
+            '护理计划推荐',
+            { type: 'success', confirmButtonText: '采纳', cancelButtonText: '稍后处理' }
+          ).then(function () {
+            return HIS.put('/api/his/inp/nursing-plan/' + HIS.idParam(hit.id) + '/confirm');
+          }).then(function () {
+            HIS.notifySuccess('护理计划已采纳，进入执行中');
+          }).catch(function (e) {
+            if (e === 'cancel' || e === 'close') { return; }
+            HIS.notifyError(e);
+          });
+        }).catch(function () { /* 推荐检查失败静默, 不影响评估成功主路径 */ });
       }
     },
     template: [
@@ -2868,9 +3158,9 @@
     ].join('\n')
   };
 
-  /* 护理计划状态(与后端 HisNursingPlanInstance.status 一致): 1执行中 2已评价 3已关闭 */
-  var PLAN_STATUS = { 1: '执行中', 2: '已评价', 3: '已关闭' };
-  var PLAN_STATUS_TAG = { 1: 'primary', 2: 'success', 3: 'info' };
+  /* 护理计划状态(与后端 HisNursingPlanInstance.status 一致): 0推荐待确认 1执行中 2已评价 3已关闭 */
+  var PLAN_STATUS = { 0: '推荐待确认', 1: '执行中', 2: '已评价', 3: '已关闭' };
+  var PLAN_STATUS_TAG = { 0: 'warning', 1: 'primary', 2: 'success', 3: 'info' };
 
   /* ================= 8. 护理计划管理(执行中计划卡片 + 历史表格 + 新建计划对话框; 护士站页签局部注册, 不挂 HIS.views) ================= */
   var InpNursingPlan = {
@@ -2891,12 +3181,16 @@
       };
     },
     computed: {
+      /* 推荐待确认计划(status=0, 评估自动生成, 需人工采纳或婉拒) */
+      recommendedPlans: function () {
+        return (this.plans || []).filter(function (p) { return p.status === 0; });
+      },
       activePlans: function () {
         return (this.plans || []).filter(function (p) { return p.status === 1; });
       },
       /* 历史计划 = 已评价(status=2) + 已关闭(status=3) */
       donePlans: function () {
-        return (this.plans || []).filter(function (p) { return p.status !== 1; });
+        return (this.plans || []).filter(function (p) { return p.status === 2 || p.status === 3; });
       }
     },
     watch: {
@@ -3004,6 +3298,29 @@
           HIS.notifyError(e);
         });
       },
+      /* P4b-4: 采纳推荐计划(status 0→1 执行中) */
+      confirmPlan: function (p) {
+        var vm = this;
+        HIS.put('/api/his/inp/nursing-plan/' + HIS.idParam(p.id) + '/confirm').then(function () {
+          HIS.notifySuccess('护理计划已采纳，进入执行中');
+          vm.load();
+        }).catch(HIS.notifyError);
+      },
+      /* P4b-4: 婉拒推荐计划(status 0→3 已关闭) */
+      rejectPlan: function (p) {
+        var vm = this;
+        ElementPlus.ElMessageBox.confirm('确认婉拒该推荐计划？婉拒后推荐将关闭。', '婉拒确认', {
+          type: 'warning', confirmButtonText: '婉拒', cancelButtonText: '取消'
+        }).then(function () {
+          return HIS.put('/api/his/inp/nursing-plan/' + HIS.idParam(p.id) + '/close');
+        }).then(function () {
+          HIS.notifySuccess('已婉拒该推荐计划');
+          vm.load();
+        }).catch(function (e) {
+          if (e === 'cancel' || e === 'close') { return; }
+          HIS.notifyError(e);
+        });
+      },
       /* ---- 新建计划(从模板 / 手动) ---- */
       resetCreate: function () {
         this.createTab = 'tpl';
@@ -3084,6 +3401,7 @@
       '<div v-loading="loading">',
       '  <div class="toolbar" style="margin-bottom:10px;">',
       '    <span style="font-weight:600;color:var(--yb-ink-1);">{{ patient && patient.patientName ? patient.patientName : \'\' }} · 护理计划</span>',
+      '    <el-tag v-if="recommendedPlans.length" size="small" type="warning" style="margin-left:8px;">推荐待确认 {{ recommendedPlans.length }}</el-tag>',
       '    <el-tag v-if="activePlans.length" size="small" type="primary" style="margin-left:8px;">执行中 {{ activePlans.length }}</el-tag>',
       '    <span style="flex:1;"></span>',
       '    <el-button type="primary" size="small" :disabled="!visitId" @click="openCreate">新建计划</el-button>',
@@ -3091,6 +3409,29 @@
       '  </div>',
       '  <el-empty v-if="!visitId" description="请先在左侧患者列表中选择患者" :image-size="70"></el-empty>',
       '  <template v-else>',
+      '    <div v-if="recommendedPlans.length" class="inp-panel">',
+      '      <h4>推荐待确认({{ recommendedPlans.length }})<span style="font-weight:400;font-size:12px;color:var(--yb-ink-3);margin-left:8px;">评估自动生成，采纳后进入执行</span></h4>',
+      '      <div v-for="p in recommendedPlans" :key="p.id" class="inp-panel np-card is-reco">',
+      '        <div class="np-head">',
+      '          <span class="diag">{{ p.nursingDiagnosis || \'护理计划\' }}</span>',
+      '          <el-tag size="small" :type="statusTag(p.status)">{{ statusLabel(p.status) }}</el-tag>',
+      '          <span style="color:var(--yb-ink-3);font-size:12px;">生成 {{ fmtTime(p.createTime) }}</span>',
+      '          <span style="flex:1;"></span>',
+      '          <el-button type="success" size="small" @click="confirmPlan(p)">采纳</el-button>',
+      '          <el-button size="small" @click="rejectPlan(p)">婉拒</el-button>',
+      '        </div>',
+      '        <div v-if="p.nursingGoal" class="np-goal">目标: {{ p.nursingGoal }}</div>',
+      '        <div class="np-sec">',
+      '          <div class="cap">建议措施</div>',
+      '          <div class="np-ivs">',
+      '            <div v-for="(t, i) in plannedOf(p)" :key="i" class="np-iv">',
+      '              <span style="padding-top:2px;">· {{ t }}</span>',
+      '            </div>',
+      '            <span v-if="!plannedOf(p).length" style="color:var(--yb-ink-4);font-size:12px;">暂无建议措施</span>',
+      '          </div>',
+      '        </div>',
+      '      </div>',
+      '    </div>',
       '    <div class="inp-panel">',
       '      <h4>执行中计划({{ activePlans.length }})</h4>',
       '      <div v-for="p in activePlans" :key="p.id" class="inp-panel np-card">',
@@ -3980,6 +4321,8 @@
         /* 13.15.1 一体化主页: 默认落在「入出转」工作台; homeOrder 为用户自定义页签顺序(localStorage yb_nurse_home) */
         activeTab: 'flow',
         homeOrder: null,
+        /* P4a-5 护理记录页签: false=列表模式(经典记录) true=富文本模式(Tiptap 护理文书书写器) */
+        nursingTiptapMode: false,
         flowSeg: 'preadmit',
         preAdmitTotal: 0, pendingTransferTotal: 0,
         todo: { pendingAudit: 0, pendingExec: 0, pendingAssess: 0, pendingShift: 0, pendingVitals: 0 },
@@ -4068,7 +4411,17 @@
       /* 13.15 一体化升级页签(局部注册, 不挂 HIS.views): 入出转 / 费用 / 病人360 */
       'inp-flow': InpFlowPanel,
       'inp-fee': InpFeePanel,
-      'inp-patient360': InpPatient360
+      'inp-patient360': InpPatient360,
+      /* P4a-5 护理 EMR(局部注册): 富文本护理文书书写器 + 标准体温单(脚本须先于本文件加载) */
+      'inp-nursing-writer': HIS.components.InpNursingWriter,
+      'inp-vital-sign-chart': HIS.components.InpVitalSignChart,
+      /* P4b-4 批量生命体征录入(局部注册): nursing-batch-input.js 须先于本文件加载 */
+      'inp-nursing-batch-input': HIS.components.InpNursingBatchInput,
+      /* P4c-4 护理专项四页签(局部注册): 管道/交接单/告知书/宣教(脚本须先于本文件加载) */
+      'inp-pipe-manager': HIS.components.InpPipeManager,
+      'inp-nursing-transfer': HIS.components.InpNursingTransfer,
+      'inp-nursing-consent': HIS.components.InpNursingConsent,
+      'inp-nursing-education': HIS.components.InpNursingEducation
     },
     created: function () {
       var vm = this;
@@ -4220,6 +4573,26 @@
       },
       /* 入出转面板数据变更(入区/审批/执行/出院): 刷新患者列表与待办聚合 */
       onFlowChanged: function () { this.loadPatients(); this.loadTodo(); },
+      /* P4b-4 批量体征录入保存回执(count=保存条数): 提示并刷新待办(体温未测统计) */
+      onBatchSaved: function (count) {
+        HIS.notifySuccess('批量录入完成，共保存 ' + count + ' 条');
+        this.loadTodo();
+      },
+      /* P4a-5 富文本护理文书保存: writer emit('save-record') → POST 护理记录端点(服务端加密双轨+要素同步) */
+      onNursingWriterSave: function (data) {
+        var vm = this;
+        if (!data || !data.content) { return; }
+        var legacyType = NURSING_TIPTAP_TYPES[String(data.recordType || 'nursing_record')] || 4;
+        HIS.post('/api/his/inp/nursing/', {
+          inpVisitId: HIS.id(data.inpVisitId || vm.currentVisitId),
+          recordType: legacyType,
+          templateId: data.templateId == null ? null : HIS.id(data.templateId),
+          content: data.content,
+          structure: data.structure || null
+        }).then(function () {
+          HIS.notifySuccess('护理文书已保存');
+        }).catch(HIS.notifyError);
+      },
       /* 页签分组色点(同组归一色) */
       grpColor: function (g) {
         return { '流转': 'var(--yb-brand)', '医嘱': '#E6A23C', '费用': 'var(--yb-success)', '总览': 'var(--yb-link)', '护理': '#7C3AED', '病区': 'var(--yb-ink-3)' }[g] || 'var(--yb-border)';
@@ -4400,7 +4773,13 @@
       '      </el-tab-pane>',
       '      <el-tab-pane name="nursing" lazy>',
       '        <template #label><span><i class="inp-grp-dot" :style="{ background: grpColor(\'护理\') }"></i>护理记录</span></template>',
-      '        <inp-nursing-record :visit-id="currentVisitId" :patient="currentPatient" @go-assess="activeTab = \'assess\'"></inp-nursing-record>',
+      '        <div style="display:flex;align-items:center;gap:10px;padding:0 2px 10px;">',
+      '          <el-switch v-model="nursingTiptapMode" size="small" active-text="富文本模式" inactive-text="列表模式"></el-switch>',
+      '          <span style="font-size:12px;color:var(--yb-ink-4);">富文本=护理文书书写器(Tiptap); 列表=经典记录(体温单/评估/措施等)</span>',
+      '        </div>',
+      '        <inp-nursing-record v-if="!nursingTiptapMode" :visit-id="currentVisitId" :patient="currentPatient" @go-assess="activeTab = \'assess\'"></inp-nursing-record>',
+      '        <inp-nursing-writer v-else-if="currentVisitId" :inp-visit-id="currentVisitId" :patient-id="currentPatient && currentPatient.patientId" :patient="currentPatient" @save-record="onNursingWriterSave"></inp-nursing-writer>',
+      '        <el-empty v-else description="请先选择患者" :image-size="56"></el-empty>',
       '      </el-tab-pane>',
       /* 出入量/给药记录(T45): v-if + :key 携带就诊ID, 切患者重挂载不串台 */
       '      <el-tab-pane name="io">',
@@ -4419,6 +4798,39 @@
       '      <el-tab-pane name="plan">',
       '        <template #label><span><i class="inp-grp-dot" :style="{ background: grpColor(\'护理\') }"></i>护理计划</span></template>',
       '        <inp-nursing-plan v-if="activeTab === \'plan\'" :key="\'nsp-\' + (currentVisitId || 0)" :visit-id="currentVisitId" :patient="currentPatient"></inp-nursing-plan>',
+      '      </el-tab-pane>',
+      /* P4a-5 标准体温单: v-if + :key 模式(仅激活时挂载, 避免隐藏态 Canvas 零尺寸) */
+      '      <el-tab-pane name="vital-chart">',
+      '        <template #label><span><i class="inp-grp-dot" :style="{ background: grpColor(\'护理\') }"></i>体温单</span></template>',
+      '        <inp-vital-sign-chart v-if="activeTab === \'vital-chart\' && currentVisitId" :key="\'vsc-\' + (currentVisitId || 0)" :inp-visit-id="currentVisitId" :patient-id="currentPatient && currentPatient.patientId"></inp-vital-sign-chart>',
+      '        <el-empty v-else-if="activeTab === \'vital-chart\'" description="请先选择患者" :image-size="56"></el-empty>',
+      '      </el-tab-pane>',
+      /* P4b-4 批量体征录入: 病区级(不依赖选中患者), lazy 首次激活挂载; 组件自监听 wardId/patients 变更重载 */
+      '      <el-tab-pane name="batch" lazy>',
+      '        <template #label><span><i class="inp-grp-dot" :style="{ background: grpColor(\'护理\') }"></i>批量录入</span></template>',
+      '        <inp-nursing-batch-input v-if="wardId" :ward-id="wardId" :patients="patients" @saved="onBatchSaved"></inp-nursing-batch-input>',
+      '        <el-empty v-else description="请先选择病区" :image-size="56"></el-empty>',
+      '      </el-tab-pane>',
+      /* P4c-4 护理专项四页签: 管道/交接单/告知书/宣教(患者级, v-if + :key 携带就诊ID防串台) */
+      '      <el-tab-pane name="pipe">',
+      '        <template #label><span><i class="inp-grp-dot" :style="{ background: grpColor(\'护理\') }"></i>管道管理</span></template>',
+      '        <inp-pipe-manager v-if="activeTab === \'pipe\' && currentVisitId" :key="\'pipe-\' + (currentVisitId || 0)" :inp-visit-id="currentVisitId" :patient-id="currentPatient && currentPatient.patientId"></inp-pipe-manager>',
+      '        <el-empty v-else-if="activeTab === \'pipe\'" description="请先选择患者" :image-size="56"></el-empty>',
+      '      </el-tab-pane>',
+      '      <el-tab-pane name="transfer">',
+      '        <template #label><span><i class="inp-grp-dot" :style="{ background: grpColor(\'护理\') }"></i>交接单</span></template>',
+      '        <inp-nursing-transfer v-if="activeTab === \'transfer\' && currentVisitId" :key="\'ntr-\' + (currentVisitId || 0)" :inp-visit-id="currentVisitId" :patient-id="currentPatient && currentPatient.patientId"></inp-nursing-transfer>',
+      '        <el-empty v-else-if="activeTab === \'transfer\'" description="请先选择患者" :image-size="56"></el-empty>',
+      '      </el-tab-pane>',
+      '      <el-tab-pane name="consent">',
+      '        <template #label><span><i class="inp-grp-dot" :style="{ background: grpColor(\'护理\') }"></i>告知书</span></template>',
+      '        <inp-nursing-consent v-if="activeTab === \'consent\' && currentVisitId" :key="\'nco-\' + (currentVisitId || 0)" :inp-visit-id="currentVisitId" :patient-id="currentPatient && currentPatient.patientId"></inp-nursing-consent>',
+      '        <el-empty v-else-if="activeTab === \'consent\'" description="请先选择患者" :image-size="56"></el-empty>',
+      '      </el-tab-pane>',
+      '      <el-tab-pane name="education">',
+      '        <template #label><span><i class="inp-grp-dot" :style="{ background: grpColor(\'护理\') }"></i>宣教记录</span></template>',
+      '        <inp-nursing-education v-if="activeTab === \'education\' && currentVisitId" :key="\'ned-\' + (currentVisitId || 0)" :inp-visit-id="currentVisitId" :patient-id="currentPatient && currentPatient.patientId"></inp-nursing-education>',
+      '        <el-empty v-else-if="activeTab === \'education\'" description="请先选择患者" :image-size="56"></el-empty>',
       '      </el-tab-pane>',
       '      <el-tab-pane name="shift" lazy>',
       '        <template #label><span><i class="inp-grp-dot" :style="{ background: grpColor(\'病区\') }"></i>交接班<span v-if="todo.pendingShift" class="inp-tab-num">{{ todo.pendingShift }}</span></span></template>',

@@ -147,19 +147,105 @@
   }
   HIS.printOrder = function (data) { data = data || {}; return openPrintWindow(data.order && data.order.orderType === '检验' ? '检验申请单' : '检查申请单', orderHtml(data)); };
 
+  /* ===== P3-4 Tiptap 病历打印 ===== */
+  /* 正文样式: 与 emr-editor 打印预览(PP_CSS)同语义, 限定 .emr-print-body 作用域避免污染打印窗口全局样式 */
+  var TIPTAP_PRINT_CSS =
+    '.emr-print-body p{margin:.5em 0;line-height:1.9}' +
+    '.emr-print-body h1,.emr-print-body h2,.emr-print-body h3,.emr-print-body h4{margin:.8em 0 .4em}' +
+    '.emr-print-body table{border-collapse:collapse;width:100%;margin:8px 0}' +
+    '.emr-print-body td,.emr-print-body th{border:1px solid #000;padding:4px 8px}' +
+    '.emr-print-body th{background:#f2f2f2}' +
+    '.emr-print-body .emr-pp-sec-title{font-weight:bold;margin:12px 0 4px;font-size:15px}' +
+    '.emr-print-body .emr-pp-field{border-bottom:1px solid #000;padding:0 6px}' +
+    '.emr-print-body .emr-pp-macro{font-weight:600}' +
+    '.emr-print-body .emr-pp-fragment{border:1px dashed #999;padding:6px 10px;margin:6px 0;color:#555}' +
+    '.emr-print-body .emr-pp-drawing{text-align:center;margin:8px 0}.emr-print-body .emr-pp-drawing svg{max-width:100%;height:auto}' +
+    '.emr-print-body .emr-pp-pagebreak{page-break-after:always;border-top:1px dashed #999;margin:24px 0 8px}' +
+    '.emr-print-body ul,.emr-print-body ol{padding-left:1.6em}';
+
+  /* Tiptap JSON → 打印 HTML: 优先编辑器引擎渲染(renderToHtml 前向兼容; 当前为 EmrPrintPreview.generateHTML),
+   * 引擎缺失时纯文本兜底; 引擎抛错/解析失败返回空串, 由调用方回退 SOAP 行渲染 */
+  function renderTiptapRecordHtml(content) {
+    var json = content;
+    if (typeof json === 'string') {
+      try { json = JSON.parse(json); } catch (e) { return '<div class="record-row">' + nl2br(json) + '</div>'; }
+    }
+    if (!json || typeof json !== 'object') { return ''; }
+    var editor = window.HIS && HIS.EmrEditor;
+    try {
+      if (editor && typeof editor.renderToHtml === 'function') {
+        return editor.renderToHtml(json) || '';
+      }
+      if (editor && editor.EmrPrintPreview && typeof editor.EmrPrintPreview.generateHTML === 'function') {
+        return editor.EmrPrintPreview.generateHTML(json, {}) || '';
+      }
+    } catch (e) {
+      console.warn('Tiptap print render failed, falling back to SOAP', e);
+      return '';
+    }
+    return plainTiptapHtml(json);
+  }
+
+  /* 引擎渲染器缺失时的极简兜底: 提取章节标题/段落/字段纯文本, 保证打印不空白 */
+  function plainTiptapHtml(json) {
+    function inlineText(nodes) {
+      var s = '';
+      (nodes || []).forEach(function (n) {
+        if (!n) { return; }
+        var a = n.attrs || {};
+        if (n.type === 'text') { s += n.text || ''; return; }
+        if (n.type === 'emrField') { s += (a.fieldName ? a.fieldName + '：' : '') + (a.value == null ? '' : a.value); return; }
+        if (n.type === 'emrMacro') { s += a.resolvedValue || ('【' + (a.macroCode || '宏变量') + '】'); return; }
+        if (n.type === 'hardBreak') { s += ' '; return; }
+        s += inlineText(n.content);
+      });
+      return s;
+    }
+    var html = '';
+    (function walk(nodes) {
+      (nodes || []).forEach(function (n) {
+        if (!n) { return; }
+        var a = n.attrs || {};
+        if (n.type === 'emrSection') {
+          if (a.title || a.sectionKey) { html += '<div class="record-row"><span class="record-label">' + esc(a.title || a.sectionKey) + '</span></div>'; }
+          walk(n.content);
+          return;
+        }
+        if (n.type === 'paragraph' || n.type === 'heading') {
+          var text = inlineText(n.content).trim();
+          if (text) { html += '<div class="record-row">' + nl2br(text) + '</div>'; }
+          return;
+        }
+        if (n.content) { walk(n.content); }
+      });
+    })(json.content || []);
+    return html;
+  }
+
   /* 门诊病历：仅打印当前有效病历内容，不展示任何修改痕迹。 */
   function recordHtml(data) {
     data = data || {};
     var visit = data.visit || {};
     var soap = data.soap || data.soapContent || visit;
     var patient = data.patient || {};
-    var rows = [
-      ['主诉', value(soap, ['chiefComplaint'], '')], ['现病史', value(soap, ['presentIllness'], '')],
-      ['既往史', value(soap, ['pastHistory'], '')], ['体格检查', value(soap, ['physicalExam'], '')],
-      ['辅助检查', value(soap, ['auxiliaryExam', 'auxExam'], '')], ['诊断', diagText(data.diagnoses || [])],
-      ['治疗意见', value(soap, ['treatment', 'treatmentOpinion'], '')]
-    ].map(function (row) { return '<div class="record-row"><span class="record-label">' + esc(row[0]) + '：</span>' + nl2br(row[1]) + '</div>'; }).join('');
-    var html = '<div class="print-sheet"><div class="print-header">' + esc(data.hospitalName || getHospitalName()) + '</div><div class="print-subheader">门 诊 病 历</div>' +
+    /* P3-4 Tiptap 病历(emrFormat=1): 正文用 Tiptap JSON 渲染(打印页头/页脚版式复用); 失败回退既有 SOAP 行渲染 */
+    var emrFormat = data.emrFormat != null ? data.emrFormat : visit.emrFormat;
+    var tiptapContent = data.content != null ? data.content : visit.content;
+    var tiptapHtml = '';
+    if (Number(emrFormat) === 1 && tiptapContent) { tiptapHtml = renderTiptapRecordHtml(tiptapContent); }
+    var rows;
+    if (tiptapHtml) {
+      rows = '<div class="emr-print-body">' + tiptapHtml + '</div>';
+    } else {
+      rows = [
+        ['主诉', value(soap, ['chiefComplaint'], '')], ['现病史', value(soap, ['presentIllness'], '')],
+        ['既往史', value(soap, ['pastHistory'], '')], ['体格检查', value(soap, ['physicalExam'], '')],
+        ['辅助检查', value(soap, ['auxiliaryExam', 'auxExam'], '')], ['诊断', diagText(data.diagnoses || [])],
+        ['治疗意见', value(soap, ['treatment', 'treatmentOpinion'], '')]
+      ].map(function (row) { return '<div class="record-row"><span class="record-label">' + esc(row[0]) + '：</span>' + nl2br(row[1]) + '</div>'; }).join('');
+    }
+    var html = (tiptapHtml ? '<style>' + TIPTAP_PRINT_CSS + '</style>' : '') +
+      '<div class="print-sheet"><div class="print-header">' + esc(data.hospitalName || getHospitalName()) + '</div><div class="print-subheader">门 诊 病 历</div>' +
       '<table class="print-meta"><tr><td>姓名：' + esc(value(patient, ['name', 'patientName'], visit.patientName || '')) + '</td><td>性别：' + esc(gender(value(patient, ['gender'], visit.gender))) + '</td><td>年龄：' + esc(value(patient, ['age'], visit.age || '')) + '</td></tr>' +
       '<tr><td>门诊号：' + esc(value(patient, ['outpatientNo', 'iptOtpNo', 'regNo'], visit.iptOtpNo || visit.regNo || '')) + '</td><td>科别：' + esc(value(patient, ['deptName'], visit.deptName || '')) + '</td><td>就诊时间：' + esc(dateText(value(visit, ['visitTime', 'startTime', 'createTime'], ''))) + '</td></tr>' +
       '<tr><td colspan="3">过敏史：' + esc(value(patient, ['allergyHistory'], soap.allergyHistory || '无')) + '</td></tr></table><div class="print-section">' + rows + '</div>' +

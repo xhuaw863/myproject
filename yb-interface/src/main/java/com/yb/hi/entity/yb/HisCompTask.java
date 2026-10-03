@@ -21,6 +21,10 @@ public class HisCompTask extends BaseEntity {
     public static final String BIZ_CHARGE = "CHARGE";
     public static final String BIZ_REFUND = "REFUND";
     public static final String BIZ_PARTIAL_REFUND = "PARTIAL_REFUND";
+    /** 住院结算 UNKNOWN(2304 超时/异常): ref_id=his_inp_settle.id, 2301->2304 链结果未知收敛 */
+    public static final String BIZ_INP_SETTLE = "INP_SETTLE";
+    /** 住院结算撤销 UNKNOWN(2305 超时/异常): ref_id=his_inp_settle.id */
+    public static final String BIZ_INP_RTN = "INP_RTN";
 
     public static final String ACT_RESOLVE_UNKNOWN = "RESOLVE_UNKNOWN";
 
@@ -32,7 +36,7 @@ public class HisCompTask extends BaseEntity {
     @TableId(type = IdType.AUTO)
     private Long id;
 
-    /** 业务类型: CHARGE/REFUND/PARTIAL_REFUND */
+    /** 业务类型: CHARGE/REFUND/PARTIAL_REFUND/INP_SETTLE/INP_RTN */
     private String bizType;
     /** 关联业务主键(收费单ID等) */
     private Long refId;

@@ -593,6 +593,10 @@
         medType: '11', feeType: 'self', regCaty: 'normal',
         discountType: 'none', discountReason: '', payMethod: 'cash', remark: '',
         submitting: false,
+        /* 费别/支付方式字典(机构级自定义, created 拉取; 空则回落内置硬编码) */
+        feeTypeOpts: [], payMethodDictOpts: [],
+        /* 医疗类别字典(医共体级, created 按 OTP 场景拉取; 空则回落内置 11/12/92) */
+        medTypeOpts: [],
         /* 号源筛选: 科室/医师(联动)/日期(今明后快捷)/时段勾选 */
         depts: [], staffs: [], filterDept: null, filterStaff: null, filterDate: today(),
         timeChecked: ['am', 'pm', 'night'], timeTypes: TIME_TYPES,
@@ -638,12 +642,26 @@
         var base = (Number(s.registered) || 0) + (Number(s.cancelled) || 0);
         return base > 0 ? ((Number(s.cancelled) || 0) * 100 / base).toFixed(1) + '%' : '0.0%';
       },
-      /* 支付方式选项随费别动态切换 */
+      /* 支付方式选项: 字典(启用+OTP场景)按所选费别门诊白名单过滤; 字典未就绪回落内置硬编码 */
       payMethodOptions: function () {
-        if (this.feeType === 'insurance') {
-          return [{ v: 'insurance', l: '医保结算' }, { v: 'self_pay', l: '自费结算' }];
+        var dict = this.payMethodDictOpts || [];
+        if (!dict.length) {
+          if (this.feeType === 'insurance') { return [{ v: 'insurance', l: '医保结算' }, { v: 'self_pay', l: '自费结算' }]; }
+          return [{ v: 'cash', l: '现金' }, { v: 'card', l: '银行卡' }, { v: 'wechat', l: '微信' }, { v: 'alipay', l: '支付宝' }, { v: 'free', l: '免收' }];
         }
-        return [{ v: 'cash', l: '现金' }, { v: 'card', l: '银行卡' }, { v: 'wechat', l: '微信' }, { v: 'alipay', l: '支付宝' }, { v: 'free', l: '免收' }];
+        var pool = dict.map(function (p) { return { v: p.code, l: p.name }; });
+        var list = this.feeTypeOpts || [], ft = null;
+        for (var i = 0; i < list.length; i++) { if (list[i].code === this.feeType) { ft = list[i]; break; } }
+        if (ft && ft.payLimitJson) {
+          var wl = null;
+          try { var pj = JSON.parse(ft.payLimitJson); wl = pj && pj.otp; } catch (e) { wl = null; }
+          if (wl && wl.length) {
+            var set = {}; wl.forEach(function (c) { set[String(c).toUpperCase()] = 1; });
+            var filtered = pool.filter(function (o) { return set[String(o.v).toUpperCase()]; });
+            if (filtered.length) { return filtered; }
+          }
+        }
+        return pool;
       },
       patientAge: function () {
         var p = this.selectedPatient || {};
@@ -685,13 +703,20 @@
       }
     },
     watch: {
-      /* 费别切换: 支付方式选项联动重置 */
+      /* 费别切换: 支付方式联动到该费别可用项(医保默认医保结算, 减免默认免费, 其余现金) */
       feeType: function (v) {
-        this.payMethod = v === 'insurance' ? 'insurance' : (this.discountType !== 'none' ? 'free' : 'cash');
+        var opts = this.payMethodOptions || [];
+        var want = v === 'insurance' ? 'INSURANCE' : (this.discountType !== 'none' ? 'FREE' : 'CASH');
+        var hit = opts.filter(function (o) { return String(o.v).toUpperCase() === want; })[0];
+        this.payMethod = hit ? hit.v : (opts.length ? opts[0].v : (v === 'insurance' ? 'insurance' : 'cash'));
       },
       /* 减免切换: 全额减免时自费场景自动免收 */
       discountType: function (v) {
-        if (v !== 'none' && this.feeType === 'self') { this.payMethod = 'free'; }
+        if (v !== 'none') {
+          var opts = this.payMethodOptions || [];
+          var free = opts.filter(function (o) { return String(o.v).toUpperCase() === 'FREE'; })[0];
+          if (free) { this.payMethod = free.v; } else if (this.feeType === 'self') { this.payMethod = 'free'; }
+        }
       },
       /* 医师/时段过滤使选中号源行消失时清空选择 */
       filteredSchedules: function (arr) {
@@ -703,11 +728,32 @@
       }
     },
     created: function () {
-      this.loadRefs();
-      this.loadDicts();
-      this.loadSchedules();
-      this.loadSummary();
-      this.loadRegs();
+      var vm = this;
+      vm.loadRefs();
+      vm.loadDicts();
+      vm.loadSchedules();
+      vm.loadSummary();
+      vm.loadRegs();
+      /* 拉费别/支付字典并归一当前选中值到字典可用码(字典空则保持内置值) */
+      HIS.loadFeePayDict('OTP').then(function () {
+        vm.feeTypeOpts = HIS.feeTypeOpts('OTP');
+        vm.payMethodDictOpts = HIS.payMethodOpts('OTP');
+        if (vm.feeTypeOpts.length && !vm.feeTypeOpts.some(function (f) { return f.code === vm.feeType; })) {
+          vm.feeType = vm.feeTypeOpts[0].code;
+        }
+        var opts = vm.payMethodOptions || [];
+        if (opts.length && !opts.some(function (o) { return o.v === vm.payMethod; })) {
+          var cash = opts.filter(function (o) { return String(o.v).toUpperCase() === 'CASH'; })[0];
+          vm.payMethod = (cash || opts[0]).v;
+        }
+      });
+      /* 拉医疗类别字典(门诊场景, 按登录机构级别开放)并归一当前选中码到可用集(字典空则保持内置 11) */
+      HIS.loadMedTypeDict('OTP').then(function (list) {
+        vm.medTypeOpts = list || [];
+        if (vm.medTypeOpts.length && !vm.medTypeOpts.some(function (m) { return String(m.code) === String(vm.medType); })) {
+          vm.medType = vm.medTypeOpts[0].code;
+        }
+      });
     },
     mounted: function () {
       var vm = this;
@@ -1150,10 +1196,13 @@
       fmtTime: function (v) { return v ? String(v).replace('T', ' ').substring(11, 16) : '-'; },
       medTypeLabel: function (v) {
         var m = { '11': '普通门诊', '12': '门诊挂号', '92': '门诊慢特病' };
-        return m[v] || v || '-';
+        if (v === null || v === undefined || v === '') { return '-'; }
+        return HIS.medTypeLabel(v, m) || v || '-';
       },
-      feeTypeLabel: function (v) { return v === 'insurance' ? '医保' : (v === 'self' ? '自费' : (v || '-')); },
+      feeTypeLabel: function (v) { return HIS.feeTypeLabel(v); },
       payMethodLabel: function (v) {
+        var d = HIS.payMethodLabel(v);
+        if (d && d !== String(v)) { return d; }
         var m = { insurance: '医保结算', self_pay: '自费结算', cash: '现金', card: '银行卡', wechat: '微信', alipay: '支付宝', free: '免收' };
         return m[v] || v || '-';
       },
@@ -1254,8 +1303,8 @@
       '      <div class="reg-section-title">挂号信息</div>',
       '      <el-form class="reg-form" label-position="top" size="small">',
       '        <el-row :gutter="10">',
-      '          <el-col :span="12"><el-form-item label="医疗类别"><el-select v-model="medType" style="width:100%"><el-option label="11-普通门诊" value="11"></el-option><el-option label="12-门诊挂号" value="12"></el-option><el-option label="92-门诊慢特病" value="92"></el-option></el-select></el-form-item></el-col>',
-      '          <el-col :span="12"><el-form-item label="费别"><el-select v-model="feeType" style="width:100%"><el-option label="医保" value="insurance"></el-option><el-option label="自费" value="self"></el-option></el-select></el-form-item></el-col>',
+      '          <el-col :span="12"><el-form-item label="医疗类别"><el-select v-model="medType" style="width:100%"><el-option v-for="m in medTypeOpts" :key="m.code" :label="m.code + \'-\' + m.name" :value="m.code"></el-option><template v-if="!medTypeOpts.length"><el-option label="11-普通门诊" value="11"></el-option><el-option label="12-门诊挂号" value="12"></el-option><el-option label="92-门诊慢特病" value="92"></el-option></template></el-select></el-form-item></el-col>',
+      '          <el-col :span="12"><el-form-item label="费别"><el-select v-model="feeType" style="width:100%"><el-option v-if="!feeTypeOpts.length" label="医保" value="insurance"></el-option><el-option v-if="!feeTypeOpts.length" label="自费" value="self"></el-option><el-option v-for="f in feeTypeOpts" :key="f.code" :label="f.name" :value="f.code"></el-option></el-select></el-form-item></el-col>',
       '          <el-col :span="12"><el-form-item label="挂号类别"><el-select v-model="regCaty" style="width:100%"><el-option label="普通" value="normal"></el-option><el-option label="急诊" value="emergency"></el-option></el-select></el-form-item></el-col>',
       '          <el-col :span="12"><el-form-item label="挂号减免"><el-select v-model="discountType" style="width:100%"><el-option label="无减免" value="none"></el-option><el-option label="70岁以上免挂号费" value="age70free"></el-option><el-option label="军人减免" value="military"></el-option><el-option label="残疾人减免" value="disabled"></el-option><el-option label="低保减免" value="dibao"></el-option><el-option label="其他减免" value="other"></el-option></el-select></el-form-item></el-col>',
       '          <el-col v-if="discountType===\'other\'" :span="24"><el-form-item label="减免原因(其他减免必填)"><el-input v-model="discountReason" placeholder="请输入其他减免的原因"></el-input></el-form-item></el-col>',
@@ -1357,7 +1406,7 @@
       '        <el-col :span="12"><el-form-item label="联系电话"><el-input v-model="buildForm.phone"></el-input></el-form-item></el-col>',
       '        <el-col :span="12"><el-form-item label="医保人员编号"><el-input v-model="buildForm.psnNo" :disabled="buildLocked.psnNo"></el-input></el-form-item></el-col>',
       '        <el-col :span="12"><el-form-item label="险种"><el-select v-model="buildForm.insutype" :disabled="buildLocked.insutype" style="width:100%"><el-option v-for="o in insutypeOpts" :key="o.code" :label="o.name" :value="o.code"></el-option></el-select></el-form-item></el-col>',
-      '        <el-col :span="12"><el-form-item label="费别"><el-select v-model="buildForm.feeType" style="width:100%"><el-option label="医保" value="insurance"></el-option><el-option label="自费" value="self"></el-option></el-select></el-form-item></el-col>',
+      '        <el-col :span="12"><el-form-item label="费别"><el-select v-model="buildForm.feeType" style="width:100%"><el-option v-if="!feeTypeOpts.length" label="医保" value="insurance"></el-option><el-option v-if="!feeTypeOpts.length" label="自费" value="self"></el-option><el-option v-for="f in feeTypeOpts" :key="f.code" :label="f.name" :value="f.code"></el-option></el-select></el-form-item></el-col>',
       '        <el-col :span="24"><el-form-item label="现住址"><el-cascader v-model="buildAreaPath" :props="buildCascaderProps" @change="onBuildAreaChange" clearable style="width:100%" placeholder="省/市/区县/乡镇(逐级选择)"></el-cascader></el-form-item></el-col>',
       '        <el-col :span="24"><el-form-item label="详细地址"><el-input v-model="buildForm.presentDetail" placeholder="村/街/路/门牌号"></el-input></el-form-item></el-col>',
       '        <el-col :span="12"><el-form-item label="联系人姓名"><el-input v-model="buildForm.contactName"></el-input></el-form-item></el-col>',
@@ -1474,8 +1523,8 @@
     { l: '挂号费', w: 48, val: function (r) { return (Number(r.regFee) || 0).toFixed(2); } },
     { l: '减免金额', w: 52, val: function (r) { return (Number(r.discountAmount) || 0).toFixed(2); } },
     { l: '实收金额', w: 52, val: function (r) { return (Number(r.actualFee) || 0).toFixed(2); } },
-    { l: '费别', w: 40, val: function (r) { return printVal(r.feeType === 'insurance' ? '医保' : (r.feeType === 'self' ? '自费' : r.feeType)); } },
-    { l: '支付方式', w: 56, val: function (r) { var m = { insurance: '医保结算', self_pay: '自费结算', cash: '现金', card: '银行卡', wechat: '微信', alipay: '支付宝', free: '免收' }; return printVal(m[r.payMethod] || r.payMethod); } },
+    { l: '费别', w: 40, val: function (r) { return printVal(HIS.feeTypeLabel(r.feeType)); } },
+    { l: '支付方式', w: 56, val: function (r) { var d = HIS.payMethodLabel(r.payMethod); if (d && d !== String(r.payMethod)) { return printVal(d); } var m = { insurance: '医保结算', self_pay: '自费结算', cash: '现金', card: '银行卡', wechat: '微信', alipay: '支付宝', free: '免收' }; return printVal(m[r.payMethod] || r.payMethod); } },
     { l: '候诊序号', w: 52, val: function (r) { return printVal(r.queueNo); } },
     { l: '医保就诊ID', w: 110, val: function (r) { return printVal(r.mdtrtId); } },
     { l: '状态', w: 48, val: function (r) { return printVal(statusLabel(r.status)); } },
@@ -1734,8 +1783,10 @@
       fmtMoney: function (v) { return (Number(v) || 0).toFixed(2); },
       fmtDateTime: function (v) { return v ? String(v).replace('T', ' ').substring(0, 16) : '-'; },
       timeTagType: function (v) { return v === 'am' ? 'primary' : (v === 'pm' ? 'warning' : 'info'); },
-      feeTypeLabel: function (v) { return v === 'insurance' ? '医保' : (v === 'self' ? '自费' : (v || '-')); },
+      feeTypeLabel: function (v) { return HIS.feeTypeLabel(v); },
       payMethodLabel: function (v) {
+        var d = HIS.payMethodLabel(v);
+        if (d && d !== String(v)) { return d; }
         var m = { insurance: '医保结算', self_pay: '自费结算', cash: '现金', card: '银行卡', wechat: '微信', alipay: '支付宝', free: '免收' };
         return m[v] || v || '-';
       },
@@ -2605,7 +2656,7 @@
               r.gender || '-', r.dept_name, r.dr_name, r.work_date, timeLabel(r.time_type),
               r.reg_level_name, money(r.reg_fee), discountLabel(r.discount_type), money(r.discount_amount),
               money(r.actual_fee), feeTypeLabel(r.fee_type), payLabel(r.pay_method),
-              r.mdtrt_id || '-', medTypeLabel(r.med_type), statusLabel(r.status),
+              r.mdtrt_id || '-', HIS.medTypeLabel(r.med_type, { '11': '普通门诊', '12': '门诊挂号', '92': '门诊慢特病' }), statusLabel(r.status),
               fmtTime(r.cancel_time), r.cancel_reason || '-', r.operator || '-'
             ].map(vm.csvCell).join(','));
           });
@@ -2636,7 +2687,8 @@
       fmtTime: fmtTime,
       medTypeLabel: function (v) {
         var m = { '11': '普通门诊', '12': '门诊挂号', '92': '门诊慢特病' };
-        return m[v] || v || '-';
+        if (v === null || v === undefined || v === '') { return '-'; }
+        return HIS.medTypeLabel(v, m) || v || '-';
       }
     },
     template: [

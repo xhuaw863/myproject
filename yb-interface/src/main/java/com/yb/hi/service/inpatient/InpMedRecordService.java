@@ -7,6 +7,8 @@ import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
 import com.yb.hi.dto.inpatient.InpMedRecordDTO;
 import com.yb.hi.entity.basedata.HisStaff;
+import com.yb.hi.entity.emr.HisEmrQcDefect;
+import com.yb.hi.entity.emr.HisEmrQcNode;
 import com.yb.hi.entity.emr.HisEmrSignatureRule;
 import com.yb.hi.entity.inpatient.HisEmrTemplate;
 import com.yb.hi.entity.inpatient.HisInpMedicalRecord;
@@ -18,6 +20,7 @@ import com.yb.hi.framework.tenant.LoginUser;
 import com.yb.hi.framework.tenant.UserContext;
 import com.yb.hi.framework.util.SafeJsonTool;
 import com.yb.hi.mapper.basedata.HisStaffMapper;
+import com.yb.hi.mapper.emr.HisEmrQcNodeMapper;
 import com.yb.hi.mapper.inpatient.HisInpMedicalRecordMapper;
 import com.yb.hi.mapper.inpatient.HisInpVisitMapper;
 import com.yb.hi.mapper.outpatient.HisPatientMapper;
@@ -28,12 +31,15 @@ import com.yb.hi.service.emr.EmrElementService;
 import com.yb.hi.service.emr.EmrEventPublisher;
 import com.yb.hi.service.emr.EmrEventType;
 import com.yb.hi.service.emr.EmrSignatureService;
+import com.yb.hi.service.emr.EmrTimelinessService;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.StringUtils;
 
 import java.io.Serializable;
+import java.lang.reflect.Method;
 import java.time.Duration;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
@@ -116,6 +122,11 @@ public class InpMedRecordService extends ServiceImpl<HisInpMedicalRecordMapper, 
     private final EmrSignatureService emrSignatureService;
     private final EmrEventPublisher emrEventPublisher;
     private final EmrDocumentService emrDocumentService;
+    private final HisEmrQcNodeMapper qcNodeMapper;
+
+    /** P5a-2 并行交付的时效质控服务(required=false: 未就绪时为 null, 质控降级跳过不阻断签名) */
+    @Autowired(required = false)
+    private EmrTimelinessService emrTimelinessService;
 
     public InpMedRecordService(HisInpVisitMapper visitMapper, OrgAccessGuard guard,
                                HisPatientMapper patientMapper, EmrTemplateService templateService,
@@ -124,7 +135,7 @@ public class InpMedRecordService extends ServiceImpl<HisInpMedicalRecordMapper, 
                                SignatureService signatureService, SafeJsonTool safeJsonTool,
                                EmrElementService emrElementService, EmrAuditService emrAuditService,
                                EmrSignatureService emrSignatureService, EmrEventPublisher emrEventPublisher,
-                               EmrDocumentService emrDocumentService) {
+                               EmrDocumentService emrDocumentService, HisEmrQcNodeMapper qcNodeMapper) {
         this.visitMapper = visitMapper;
         this.guard = guard;
         this.patientMapper = patientMapper;
@@ -140,6 +151,7 @@ public class InpMedRecordService extends ServiceImpl<HisInpMedicalRecordMapper, 
         this.emrSignatureService = emrSignatureService;
         this.emrEventPublisher = emrEventPublisher;
         this.emrDocumentService = emrDocumentService;
+        this.qcNodeMapper = qcNodeMapper;
     }
 
     /** 病历列表(recordType 可选筛选, 按记录时间倒序) */
@@ -479,6 +491,18 @@ public class InpMedRecordService extends ServiceImpl<HisInpMedicalRecordMapper, 
             }
         }
         requireRoundSignTrace(id);
+        /* --- P5a-4: 签名前质控检查(禁止→拒绝/拦截→阻断, 均结构化返回不抛异常; 提醒→放行) --- */
+        Map<String, Object> qcResult = runSignQualityCheck(id);
+        List<Map<String, Object>> qcForbidden = qcList(qcResult.get("forbidden"));
+        List<Map<String, Object>> qcBlocks = qcList(qcResult.get("blocks"));
+        if (!qcForbidden.isEmpty() || !qcBlocks.isEmpty()) {
+            log.info("签名被质控{}: id={}, visitId={}, forbidden={}, blocks={}, warnings={}",
+                    qcForbidden.isEmpty() ? "拦截" : "禁止", id, exist.getInpVisitId(),
+                    qcForbidden.size(), qcBlocks.size(), qcList(qcResult.get("warnings")).size());
+            HisInpMedicalRecord unsigned = getById(id);
+            unsigned.setQcResult(qcResult);
+            return unsigned;
+        }
         R<Map<String, Object>> result = emrSignatureService.signByRule(id, 1, level, null, null);
         if ("attending".equals(level)) {
             /* sign() 已回写主治签名列(reinforceChainColumns), 此处仅乐观推进状态 */
@@ -506,7 +530,201 @@ public class InpMedRecordService extends ServiceImpl<HisInpMedicalRecordMapper, 
         }
         auditQuietly(id, "SIGN", "stage=" + level);
         publishSignatureOutcome(exist, result);
-        return getById(id);
+        HisInpMedicalRecord signed = getById(id);
+        /* 提醒级缺陷随签名结果下发(签名已放行), 供前端提示整改; passed=true */
+        signed.setQcResult(qcResult);
+        return signed;
+    }
+
+    /* ================= 签名前质控拦截(P5a-4) ================= */
+
+    /**
+     * 签名前质控检查: 内涵质控走 EmrQualityService.evaluateContent(stage=1运行),
+     * 时效质控走 EmrTimelinessService.checkTimeliness(P5a-2 并行交付, 未就绪/异常一律降级跳过, 不阻断签名);
+     * severity 归级: 3禁止→拒绝签名 / 2拦截→阻断签名 / 其余提醒→放行; 结果落 his_emr_qc_node 签名节点留痕(静默)。
+     * 返回 {passed, warnings[], blocks[], forbidden[]}。
+     */
+    private Map<String, Object> runSignQualityCheck(Long recordId) {
+        Map<String, Object> result = new LinkedHashMap<>();
+        List<Map<String, Object>> warnings = new ArrayList<>();
+        List<Map<String, Object>> blocks = new ArrayList<>();
+        List<Map<String, Object>> forbidden = new ArrayList<>();
+        try {
+            /* 1. 内涵质控: 运行环节缺陷重评(完整/逻辑/规范/内涵等)。
+             * evaluateContent 由 P5a-3 并行交付, 经桥接调用, 未就绪/异常时降级为空(不阻断签名);
+             * 稳定交付后可还原为直接调用: qualityService.evaluateContent(recordId, 1) */
+            List<HisEmrQcDefect> defects = evaluateContentQuietly(recordId);
+            for (HisEmrQcDefect d : defects) {
+                classifyDefect(defectItem(d), d.getSeverity(), warnings, blocks, forbidden);
+            }
+            /* 2. 时效质控(缺失即跳过): 超时→拦截级, 临近超时→提醒级 */
+            if (emrTimelinessService != null) {
+                collectTimeliness(emrTimelinessService.checkTimeliness(recordId), warnings, blocks, forbidden);
+            }
+        } catch (Exception e) {
+            /* 质控失败降级: 与 evaluateQuietly 同姿势, 不阻断签名主流程 */
+            log.warn("签名前质控检查异常, 降级跳过: recordId={}, err={}", recordId, e.getMessage());
+        }
+        result.put("passed", forbidden.isEmpty() && blocks.isEmpty());
+        result.put("warnings", warnings);
+        result.put("blocks", blocks);
+        result.put("forbidden", forbidden);
+        logQcNodeQuietly(recordId, result);
+        return result;
+    }
+
+    /**
+     * 内涵质控桥接(P5a-3 并行交付 evaluateContent): 反射定位方法后调用, 兼容 (Long,Integer)/(long,int) 两种参数声明;
+     * 方法未交付/执行异常一律降级为空列表(质控跳过), 不阻断签名主流程。
+     * P5a-3 稳定交付后可还原为直接调用 qualityService.evaluateContent(recordId, 1)。
+     */
+    @SuppressWarnings("unchecked")
+    private List<HisEmrQcDefect> evaluateContentQuietly(Long recordId) {
+        Method m = findEvaluateContent();
+        if (m == null) {
+            log.info("内涵质控 evaluateContent 尚未就绪(P5a-3 并行交付中), 本次签名质控跳过内涵检查: recordId={}", recordId);
+            return Collections.emptyList();
+        }
+        try {
+            Object out = m.invoke(qualityService, recordId, 1);
+            return (out instanceof List) ? (List<HisEmrQcDefect>) out : Collections.<HisEmrQcDefect>emptyList();
+        } catch (Exception e) {
+            log.warn("内涵质控执行异常, 降级跳过: recordId={}, err={}", recordId, e.getMessage());
+            return Collections.emptyList();
+        }
+    }
+
+    /** 反射定位 evaluateContent(覆盖 Long/long × Integer/int 参数声明组合) */
+    private static Method findEvaluateContent() {
+        Class<?>[][] variants = {
+                {Long.class, Integer.class}, {Long.class, int.class},
+                {long.class, Integer.class}, {long.class, int.class}};
+        for (Class<?>[] ps : variants) {
+            try {
+                return EmrQualityService.class.getMethod("evaluateContent", ps);
+            } catch (NoSuchMethodException ignored) {
+                /* try next variant */
+            }
+        }
+        return null;
+    }
+
+    /** 缺陷实体 → 前端展示项(defectId/ruleName/defectDesc/deductScore) */
+    private static Map<String, Object> defectItem(HisEmrQcDefect d) {
+        Map<String, Object> item = new LinkedHashMap<>();
+        item.put("defectId", d.getId());
+        item.put("ruleName", d.getRuleName());
+        item.put("defectDesc", d.getDefectDesc());
+        item.put("deductScore", d.getDeductScore());
+        return item;
+    }
+
+    /** 按 severity 归级: 3禁止/2拦截/其余提醒 */
+    private static void classifyDefect(Map<String, Object> item, Integer severity,
+                                       List<Map<String, Object>> warnings, List<Map<String, Object>> blocks,
+                                       List<Map<String, Object>> forbidden) {
+        if (severity != null && severity == 3) {
+            forbidden.add(item);
+        } else if (severity != null && severity == 2) {
+            blocks.add(item);
+        } else {
+            warnings.add(item);
+        }
+    }
+
+    /** qcResult 列表字段安全取用(null/类型不符回退空列表) */
+    @SuppressWarnings("unchecked")
+    private static List<Map<String, Object>> qcList(Object raw) {
+        return (raw instanceof List) ? (List<Map<String, Object>>) raw : Collections.emptyList();
+    }
+
+    /** qcResult 计数(null 安全) */
+    private static int qcCount(Object list) {
+        return (list instanceof List) ? ((List<?>) list).size() : 0;
+    }
+
+    /**
+     * 时效质控结果归集(对齐 EmrTimelinessService.checkTimeliness 契约):
+     * {status: overdue/warning/normal/unknown, deadlineTime, remainingMinutes,
+     *  rules: [{ruleCode, ruleName, severity, deadlineTime, remainingMinutes, status}]}。
+     * 规则级归级: 显式 severity(3禁止/2拦截/其余提醒)优先, 缺省按 status(超时→拦截, 临近超时→提醒, 正常不计);
+     * rules 为空而整体已超时时兜底单条拦截项。
+     */
+    private static void collectTimeliness(Map<String, Object> tl, List<Map<String, Object>> warnings,
+                                          List<Map<String, Object>> blocks, List<Map<String, Object>> forbidden) {
+        if (tl == null) {
+            return;
+        }
+        boolean any = false;
+        Object rulesRaw = tl.get("rules");
+        if (rulesRaw instanceof List) {
+            for (Object o : (List<?>) rulesRaw) {
+                if (!(o instanceof Map)) {
+                    continue;
+                }
+                Map<?, ?> r = (Map<?, ?>) o;
+                String ruleStatus = String.valueOf(r.get("status"));
+                if ("normal".equals(ruleStatus)) {
+                    continue;                       /* 未临期规则不构成缺陷 */
+                }
+                Object name = r.get("ruleName");
+                if (name == null) {
+                    name = r.get("ruleCode");
+                }
+                Map<String, Object> item = new LinkedHashMap<>();
+                item.put("ruleName", "时效·" + name);
+                item.put("defectDesc", timelinessDesc(r.get("deadlineTime"), r.get("remainingMinutes"), ruleStatus));
+                item.put("deductScore", null);
+                Object sev = r.get("severity");
+                int severity = (sev instanceof Number) ? ((Number) sev).intValue()
+                        : ("overdue".equals(ruleStatus) ? 2 : 1);
+                classifyDefect(item, severity, warnings, blocks, forbidden);
+                any = true;
+            }
+        }
+        if (!any && "overdue".equals(String.valueOf(tl.get("status")))) {
+            /* 兜底: 无规则明细但整体已超时 */
+            Object label = tl.get("typeLabel");
+            Map<String, Object> item = new LinkedHashMap<>();
+            item.put("ruleName", "时效·" + (label != null ? label : "病历书写"));
+            item.put("defectDesc", timelinessDesc(tl.get("deadlineTime"), tl.get("remainingMinutes"), "overdue"));
+            item.put("deductScore", null);
+            classifyDefect(item, 2, warnings, blocks, forbidden);
+        }
+    }
+
+    /** 时效缺陷描述: 已超时/临近超时 + 截止时间(与 getDeadlineAlerts 同口径的展示格式) */
+    private static String timelinessDesc(Object deadline, Object remaining, String status) {
+        String dl = (deadline instanceof LocalDateTime) ? DEADLINE_FMT.format((LocalDateTime) deadline)
+                : (deadline != null ? String.valueOf(deadline) : "-");
+        if ("overdue".equals(status)) {
+            return "文书已超过书写时限(截止 " + dl + "), 须整改后方可签名";
+        }
+        long mins = (remaining instanceof Number) ? ((Number) remaining).longValue() : -1;
+        return "临近书写时限" + (mins >= 0 ? "(剩余 " + mins + " 分钟)" : "") + ", 截止 " + dl;
+    }
+
+    /** 质控节点留痕(静默): 签名节点记归级计数与放行/阻断结论, 评分前后均取当前质控分(签名检查不改分) */
+    private void logQcNodeQuietly(Long recordId, Map<String, Object> qcResult) {
+        try {
+            HisInpMedicalRecord rec = getById(recordId);
+            LoginUser u = UserContext.get();
+            HisEmrQcNode node = new HisEmrQcNode();
+            node.setRecordId(recordId);
+            node.setVisitId(rec != null ? rec.getInpVisitId() : null);
+            node.setNodeType("签名");
+            node.setNodeDesc("签名前质控: 禁止" + qcCount(qcResult.get("forbidden"))
+                    + "项/拦截" + qcCount(qcResult.get("blocks"))
+                    + "项/提醒" + qcCount(qcResult.get("warnings"))
+                    + "项, " + (Boolean.TRUE.equals(qcResult.get("passed")) ? "放行" : "阻断"));
+            node.setScoreBefore(rec != null ? rec.getQualityScore() : null);
+            node.setScoreAfter(rec != null ? rec.getQualityScore() : null);
+            node.setOperatorId(u != null ? u.getStaffId() : null);
+            node.setOperatorName(u != null ? u.getRealName() : null);
+            qcNodeMapper.insert(node);
+        } catch (Exception e) {
+            log.warn("签名质控节点日志写入失败(不影响签名): recordId={}, err={}", recordId, e.getMessage());
+        }
     }
 
     /* ================= 版本历史(T43) ================= */

@@ -10,6 +10,7 @@ import com.yb.hi.framework.tenant.TenantContext;
 import com.yb.hi.framework.tenant.UserContext;
 import com.yb.hi.mapper.inpatient.HisInpDepositMapper;
 import com.yb.hi.mapper.inpatient.HisInpVisitMapper;
+import com.yb.hi.service.basedata.PayMethodDictService;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
@@ -34,13 +35,16 @@ public class InpDepositService {
     private final HisInpVisitMapper visitMapper;
     private final InpFeeAlertService feeAlertService;
     private final JdbcTemplate jdbcTemplate;
+    private final PayMethodDictService payMethodDictService;
 
     public InpDepositService(HisInpDepositMapper depositMapper, HisInpVisitMapper visitMapper,
-                             InpFeeAlertService feeAlertService, JdbcTemplate jdbcTemplate) {
+                             InpFeeAlertService feeAlertService, JdbcTemplate jdbcTemplate,
+                             PayMethodDictService payMethodDictService) {
         this.depositMapper = depositMapper;
         this.visitMapper = visitMapper;
         this.feeAlertService = feeAlertService;
         this.jdbcTemplate = jdbcTemplate;
+        this.payMethodDictService = payMethodDictService;
     }
 
     /**
@@ -60,7 +64,7 @@ public class InpDepositService {
         if (dto.getDirection() == null || (dto.getDirection() != 1 && dto.getDirection() != 2)) {
             throw new BizException(400, "方向必须为: 1缴纳 2退还");
         }
-        if (dto.getPayType() == null) {
+        if (!StringUtils.hasText(dto.getPayType())) {
             throw new BizException(400, "支付方式不能为空");
         }
         HisInpVisit visit = visitMapper.selectById(dto.getInpVisitId());
@@ -101,7 +105,8 @@ public class InpDepositService {
         flow.setOrgId(orgId);
         flow.setInpVisitId(dto.getInpVisitId());
         flow.setAmount(dto.getAmount());
-        flow.setPayType(dto.getPayType());
+        // 支付方式归一: 历史数字码(1/2/3/4)与小写旧值经字典 legacy_codes 转规范码, 查不到保留原值
+        flow.setPayType(payMethodDictService.normalize(dto.getPayType().trim()));
         flow.setDirection(dto.getDirection());
         flow.setBalanceAfter(balanceAfter);
         flow.setOperatorId(currentStaffId());

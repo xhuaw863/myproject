@@ -44,6 +44,10 @@ public class VisitFinishReq {
     /** 结构化病历模板ID(scope=2) */
     private Long emrTemplateId;
 
+    /* ===== P3 Tiptap 双轨: 前端提交 Tiptap JSON(明文, 服务端加密落 his_visit.content), structure 仍由服务端派生维护 ===== */
+    /** Tiptap JSON 文档(明文); 非空且为 doc 文档时密文落 content + emrFormat=1, 扁平 structure 同步派生 */
+    private String content;
+
     /* ===== OP-A 诊后去向 ===== */
     /** 诊后去向: 1-离院 2-转科 3-转留观 4-转院 */
     private Integer disposition;

@@ -21,6 +21,7 @@
 
   HIS.views.MrCatalog = {
     mixins: [HIS.kwSelectMixin],
+    components: { 'dept-tree-picker': HIS.components.DeptTreePicker, 'tcm-diag-selector': HIS.components.TcmDiagSelector },
     data: function () {
       return {
         /* 列表态 */
@@ -28,7 +29,7 @@
         loading: false,
         rows: [], page: 1, size: 20, total: 0,
         keyword: '', catalogStatus: null, deptId: null, myTodo: false,
-        depts: [], deptsLoading: false,
+        depts: [], deptRaw: [], deptsLoading: false,
         /* 详情态 */
         detailLoading: false, saving: false, activeTab: 'header',
         visitId: null,
@@ -40,6 +41,8 @@
         errors: [], logs: [],
         /* P3-D 临床首页调阅 */
         clinicalPage: null, clinicalLoading: false,
+        /* P8a-3 中医诊断-证候组合(存临床首页 tcm_diag; 暂无可读取端点, 每次进入重新录入) */
+        tcmCombos: [],
         /* 定位高亮 */
         flashField: '',
         diagTypes: DIAG_TYPES,
@@ -68,16 +71,17 @@
       loadDepts: function () {
         var vm = this; vm.deptsLoading = true;
         HIS.get('/api/his/dept/tree').then(function (d) {
-          var out = [];
+          var out = []; var raw = [];
           (function walk(list, depth) {
             (list || []).forEach(function (n) {
               var pad = ''; for (var i = 0; i < depth; i++) { pad += '　'; }
               out.push({ id: n.id, label: pad + (n.deptName || ('科室' + n.id)), deptName: n.deptName, deptCode: n.deptCode });
+              raw.push({ id: n.id, parentId: n.parentId, orgId: n.orgId, deptLevel: n.deptLevel, deptName: n.deptName, deptCode: n.deptCode, pyCode: n.pyCode, abbrCode: n.abbrCode });
               if (n.children && n.children.length) { walk(n.children, depth + 1); }
             });
           })(d || [], 0);
-          vm.depts = out;
-        }).catch(function () { vm.depts = []; }).finally(function () { vm.deptsLoading = false; });
+          vm.depts = out; vm.deptRaw = raw;
+        }).catch(function () { vm.depts = []; vm.deptRaw = []; }).finally(function () { vm.deptsLoading = false; });
       },
       loadList: function () {
         var vm = this; vm.loading = true;
@@ -104,7 +108,7 @@
       },
       backList: function () { vm_resetDetail(this); this.view = 'list'; this.loadList(); },
       loadDetail: function () {
-        var vm = this; vm.detailLoading = true; vm.activeTab = 'header'; vm.clinicalPage = null;
+        var vm = this; vm.detailLoading = true; vm.activeTab = 'header'; vm.clinicalPage = null; vm.tcmCombos = [];
         HIS.get('/api/his/mr/catalog/' + HIS.idParam(vm.visitId)).then(function (d) {
           var c = d.catalog || {};
           vm.catalog = c;
@@ -164,6 +168,42 @@
         var vm = this;
         var body = Object.assign({}, vm.header);
         vm.withSave(HIS.put('/api/his/mr/catalog/' + HIS.idParam(vm.visitId) + '/header', body), '首页头信息已保存');
+      },
+
+      /* ================= P8a-3 中医诊断证候落库 ================= */
+      /* 临床首页 id 解析: 编目快照回链(sourceCasePageId)优先, 缺失经 clinical-page 实时取 */
+      resolveCasePageId: function () {
+        var vm = this;
+        var id = vm.catalog && vm.catalog.sourceCasePageId;
+        if (id != null && id !== '') { return Promise.resolve(id); }
+        return HIS.get('/api/his/mr/catalog/' + HIS.idParam(vm.visitId) + '/clinical-page').then(function (d) {
+          return d && d.id != null ? d.id : null;
+        });
+      },
+      /* 保存中医诊断组合: POST /api/emr/tcm/assemble 整体替换临床首页 tcm_diag(后端先按首条单验, 故必须传首条单数字段) */
+      saveTcm: function () {
+        var vm = this;
+        var items = (vm.tcmCombos || []).map(function (c) {
+          return {
+            diagCode: c.diagCode,
+            diagName: c.diagName,
+            syndromeCode: c.syndromeCode || null,
+            syndromeName: c.syndromeName,
+            assembledText: c.assembledText
+          };
+        });
+        if (!items.length) { ElementPlus.ElMessage.warning('请先添加至少一个中医诊断-证候组合'); return; }
+        var first = items[0];
+        vm.withSave(vm.resolveCasePageId().then(function (casePageId) {
+          if (casePageId == null || casePageId === '') { throw new Error('未找到临床病案首页(his_case_front_page), 请先在临床侧生成'); }
+          return HIS.post('/api/emr/tcm/assemble', {
+            tcmDiagCode: first.diagCode,
+            syndromeCode: first.syndromeCode,
+            tcmDiags: items,
+            targetType: 'casePage',
+            targetId: casePageId
+          });
+        }), '中医诊断证候已保存');
       },
 
       /* ================= 校验 / 定稿 ================= */
@@ -288,6 +328,13 @@
       '                <el-col :span="10"><el-form-item label="主诊名称"><el-input v-model="header.mainDiagName"></el-input></el-form-item></el-col>',
       '                <el-col :span="6"><el-form-item label="中医病案"><el-switch v-model="header.isTcm" :active-value="1" :inactive-value="0"></el-switch></el-form-item></el-col>',
       '              </el-row>',
+      '              <div v-if="Number(header.isTcm) === 1">',
+      '                <el-divider content-position="left">中医诊断-证候组合(P8a-3)</el-divider>',
+      '                <tcm-diag-selector v-if="editable" v-model="tcmCombos" visit-type="admission"></tcm-diag-selector>',
+      '                <div v-if="editable" style="margin-top:8px;"><el-button type="primary" size="small" :loading="saving" @click="saveTcm">保存中医诊断</el-button>',
+      '                  <span style="font-size:12px;color:var(--yb-ink-4);margin-left:8px;">保存为整体替换临床首页 tcm_diag; 组合暂无可读取端点, 每次进入需重新录入</span></div>',
+      '                <div v-else style="font-size:12px;color:var(--yb-ink-4);">只读态: 中医诊断-证候组合不可编辑</div>',
+      '              </div>',
       '              <el-divider content-position="left">住院信息</el-divider>',
       '              <el-row :gutter="12">',
       '                <el-col :span="8"><el-form-item label="入院日期"><el-date-picker v-model="header.admissionDate" type="date" value-format="YYYY-MM-DD" style="width:100%;"></el-date-picker></el-form-item></el-col>',
@@ -295,8 +342,8 @@
       '                <el-col :span="8"><el-form-item label="住院天数"><el-input :model-value="catalog ? catalog.losDays : \'\'" disabled></el-input></el-form-item></el-col>',
       '              </el-row>',
       '              <el-row :gutter="12">',
-      '                <el-col :span="12"><el-form-item label="入院科室"><el-select v-model="header.admissionDeptId" filterable clearable style="width:100%;" :filter-method="kwFilter(\'ad\')"><el-option v-for="d in kwOptions(\'ad\', depts, [\'label\',\'deptName\'])" :key="idKey(d.id)" :label="d.label" :value="d.id"></el-option></el-select></el-form-item></el-col>',
-      '                <el-col :span="12"><el-form-item label="出院科室" :class="flashField===\'catalog.dischargeDeptId\'?\'mr-flash\':\'\'"><el-select v-model="header.dischargeDeptId" filterable clearable style="width:100%;" :filter-method="kwFilter(\'dd\')"><el-option v-for="d in kwOptions(\'dd\', depts, [\'label\',\'deptName\'])" :key="idKey(d.id)" :label="d.label" :value="d.id"></el-option></el-select></el-form-item></el-col>',
+      '                <el-col :span="12"><el-form-item label="入院科室"><dept-tree-picker v-model="header.admissionDeptId" :options="deptRaw" placeholder="选择入院科室" /></el-form-item></el-col>',
+      '                <el-col :span="12"><el-form-item label="出院科室" :class="flashField===\'catalog.dischargeDeptId\'?\'mr-flash\':\'\'"><dept-tree-picker v-model="header.dischargeDeptId" :options="deptRaw" placeholder="选择出院科室" /></el-form-item></el-col>',
       '              </el-row>',
       '              <el-divider content-position="left">费用概览(临床首页快照 · 只读)</el-divider>',
       '              <el-descriptions :column="4" border size="small">',
@@ -445,5 +492,5 @@
   function stripDiag(d) { return { diagType: d.diagType, clinicalCode: d.clinicalCode, clinicalName: d.clinicalName, ybCode: d.ybCode, ybName: d.ybName, ybSortNo: d.ybSortNo, reportFlag: d.reportFlag, grayFlag: d.grayFlag, mainFlag: d.mainFlag, doctorDesc: d.doctorDesc }; }
   function stripOper(o) { return { clinicalCode: o.clinicalCode, clinicalName: o.clinicalName, ybCode: o.ybCode, ybName: o.ybName, ybSortNo: o.ybSortNo, reportFlag: o.reportFlag, mainFlag: o.mainFlag, grayFlag: o.grayFlag, operDate: o.operDate, surgeonName: o.surgeonName, anesthesia: o.anesthesia, incisionType: o.incisionType, healLevel: o.healLevel }; }
   function stripOther(o) { return { code: o.code, name: o.name, detail: o.detail, beginTime: o.beginTime, endTime: o.endTime }; }
-  function vm_resetDetail(vm) { vm.catalog = null; vm.diags = []; vm.opers = []; vm.others = { transfer: [], allergy: [], icu: [] }; vm.errors = []; vm.logs = []; }
+  function vm_resetDetail(vm) { vm.catalog = null; vm.diags = []; vm.opers = []; vm.others = { transfer: [], allergy: [], icu: [] }; vm.errors = []; vm.logs = []; vm.tcmCombos = []; }
 })();

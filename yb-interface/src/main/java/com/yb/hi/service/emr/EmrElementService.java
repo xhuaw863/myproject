@@ -8,11 +8,13 @@ import com.yb.hi.entity.doctor.HisVisit;
 import com.yb.hi.entity.inpatient.HisEmrElement;
 import com.yb.hi.entity.inpatient.HisEmrTemplate;
 import com.yb.hi.entity.inpatient.HisInpMedicalRecord;
+import com.yb.hi.entity.inpatient.HisInpNursingRecord;
 import com.yb.hi.entity.inpatient.HisInpVisit;
 import com.yb.hi.mapper.doctor.HisVisitMapper;
 import com.yb.hi.mapper.inpatient.HisEmrElementMapper;
 import com.yb.hi.mapper.inpatient.HisEmrTemplateMapper;
 import com.yb.hi.mapper.inpatient.HisInpMedicalRecordMapper;
+import com.yb.hi.mapper.inpatient.HisInpNursingRecordMapper;
 import com.yb.hi.mapper.inpatient.HisInpVisitMapper;
 import com.yb.hi.platform.service.OrgAccessGuard;
 import com.yb.hi.service.emr.EmrDocumentService.EmrFieldValue;
@@ -34,7 +36,8 @@ import java.util.List;
  *
  * 幂等: 同步以 (scope, recordId/visitId) 为粒度先删后插; 同字段多值(multiselect/checkbox/table)以 sort_no 保序。
  * 挂钩: 门诊 saveDraft/doFinishTx 调 {@link #syncOutpVisit}; 住院 createFromTemplate/create/update/submit 调 {@link #syncInpRecord}。
- * 双轨: Tiptap 结构化编辑器(EmrDocumentService 抽取 emrField)经 {@link #syncFromTiptap} 按文档全量替换同步。
+ * 双轨: Tiptap 结构化编辑器(EmrDocumentService 抽取 emrField)经 {@link #syncFromTiptap} 按文档全量替换同步
+ * (scope: 1住院病历 2门诊就诊 3护理文书[P4a-5, refId=his_inp_nursing_record.id])。
  * 尽力而为: 单份同步异常不影响病历主流程(调用方 try/catch 或直接吞掉, 本服务内部也不抛业务异常)。
  */
 @Slf4j
@@ -47,6 +50,7 @@ public class EmrElementService {
     private final HisEmrElementMapper elementMapper;
     private final HisEmrTemplateMapper templateMapper;
     private final HisInpMedicalRecordMapper inpRecordMapper;
+    private final HisInpNursingRecordMapper nursingRecordMapper;
     private final HisInpVisitMapper inpVisitMapper;
     private final HisVisitMapper visitMapper;
     private final OrgAccessGuard guard;
@@ -54,12 +58,14 @@ public class EmrElementService {
     public EmrElementService(HisEmrElementMapper elementMapper,
                              HisEmrTemplateMapper templateMapper,
                              HisInpMedicalRecordMapper inpRecordMapper,
+                             HisInpNursingRecordMapper nursingRecordMapper,
                              HisInpVisitMapper inpVisitMapper,
                              HisVisitMapper visitMapper,
                              OrgAccessGuard guard) {
         this.elementMapper = elementMapper;
         this.templateMapper = templateMapper;
         this.inpRecordMapper = inpRecordMapper;
+        this.nursingRecordMapper = nursingRecordMapper;
         this.inpVisitMapper = inpVisitMapper;
         this.visitMapper = visitMapper;
         this.guard = guard;
@@ -111,16 +117,16 @@ public class EmrElementService {
 
     /**
      * Tiptap 抽取要素全量替换同步(先删后插, 幂等):
-     *  删除 scope=1 按 record_id / scope=2 按 visit_id 的旧行, 再插入本次全部要素行(sort_no 按文档序递增)。
+     *  删除 scope=1 按 record_id / scope=2 按 visit_id / scope=3 按 record_id 的旧行, 再插入本次全部要素行(sort_no 按文档序递增)。
      * 上下文(机构/患者/科室/医生/recordType/templateId)自病历/就诊实体解析, org_id 缺失时跳过。
      * 尽力而为: 参数非法/要素为 null 仅告警跳过; 异常不影响病历主流程。
      *
-     * @param scope  1住院(refId=his_inp_medical_record.id) 2门诊(refId=his_visit.id)
-     * @param refId  住院病历ID / 门诊就诊ID
+     * @param scope  1住院(refId=his_inp_medical_record.id) 2门诊(refId=his_visit.id) 3护理文书(refId=his_inp_nursing_record.id)
+     * @param refId  住院病历ID / 门诊就诊ID / 护理记录ID
      * @param fields 抽取要素(null=数据缺失不删旧; 空列表=清空该文档要素)
      */
     public void syncFromTiptap(int scope, Long refId, List<EmrFieldValue> fields) {
-        if (refId == null || (scope != 1 && scope != 2)) {
+        if (refId == null || (scope != 1 && scope != 2 && scope != 3)) {
             log.warn("病历数据元(Tiptap)同步跳过(参数非法): scope={}, refId={}", scope, refId);
             return;
         }
@@ -129,10 +135,10 @@ public class EmrElementService {
             return;
         }
         try {
-            // 先删: 按 (scope, record_id)=住院 / (scope, visit_id)=门诊 幂等清旧
+            // 先删: 按 (scope, record_id)=住院/护理文书 / (scope, visit_id)=门诊 幂等清旧
             elementMapper.delete(Wrappers.<HisEmrElement>lambdaQuery()
                     .eq(HisEmrElement::getScope, scope)
-                    .eq(scope == 1, HisEmrElement::getRecordId, refId)
+                    .eq(scope != 2, HisEmrElement::getRecordId, refId)
                     .eq(scope == 2, HisEmrElement::getVisitId, refId));
             if (fields.isEmpty()) {
                 return;
@@ -150,7 +156,7 @@ public class EmrElementService {
                 HisEmrElement e = new HisEmrElement();
                 e.setScope(scope);
                 e.setOrgId(ctx.orgId);
-                e.setRecordId(scope == 1 ? refId : null);
+                e.setRecordId(scope == 2 ? null : refId);
                 e.setVisitId(ctx.visitId);
                 e.setPatientId(ctx.patientId);
                 e.setDeptId(ctx.deptId);
@@ -417,7 +423,7 @@ public class EmrElementService {
         return o == null ? null : String.valueOf(o).trim();
     }
 
-    /** Tiptap 同步上下文: 自病历/就诊实体解析机构与归属信息, org 回退当前登录机构 */
+    /** Tiptap 同步上下文: 自病历/就诊/护理记录实体解析机构与归属信息, org 回退当前登录机构 */
     private SyncContext resolveSyncContext(int scope, Long refId) {
         SyncContext c = new SyncContext();
         c.visitId = scope == 2 ? refId : null;
@@ -430,6 +436,28 @@ public class EmrElementService {
                     c.recordType = rec.getRecordType();
                     c.templateId = rec.getTemplateId();
                     c.doctorId = rec.getDoctorId();
+                    if (rec.getInpVisitId() != null) {
+                        HisInpVisit v = inpVisitMapper.selectById(rec.getInpVisitId());
+                        if (v != null) {
+                            if (c.orgId == null) {
+                                c.orgId = v.getOrgId();
+                            }
+                            c.patientId = v.getPatientId();
+                            c.deptId = v.getDeptId();
+                            if (c.doctorId == null) {
+                                c.doctorId = v.getDoctorId();
+                            }
+                        }
+                    }
+                }
+            } else if (scope == 3) {
+                HisInpNursingRecord rec = nursingRecordMapper.selectById(refId);
+                if (rec != null) {
+                    c.orgId = rec.getOrgId();
+                    c.visitId = rec.getInpVisitId();
+                    c.recordType = rec.getRecordType();
+                    c.templateId = rec.getTemplateId();
+                    c.doctorId = rec.getNurseId();
                     if (rec.getInpVisitId() != null) {
                         HisInpVisit v = inpVisitMapper.selectById(rec.getInpVisitId());
                         if (v != null) {

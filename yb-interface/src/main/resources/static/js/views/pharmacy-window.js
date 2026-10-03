@@ -232,6 +232,7 @@
 
   /* ================= 科室→窗口规则 ================= */
   HIS.views.WindowDeptRule = {
+    components: { 'dept-tree-picker': HIS.components.DeptTreePicker },
     data: function () {
       return {
         lead: HIS.isLead(), loading: false, list: [], windows: [], depts: [],
@@ -284,7 +285,7 @@
       '  </el-table>',
       '  <el-dialog v-model="dlgVisible" title="新增定向规则" width="480px">',
       '    <el-form :model="form" label-width="90px">',
-      '      <el-form-item label="开单科室" required><el-select v-model="form.deptId" filterable style="width:100%"><el-option v-for="d in depts" :key="d.id" :label="d.deptName" :value="d.id"></el-option></el-select></el-form-item>',
+      '      <el-form-item label="开单科室" required><dept-tree-picker v-model="form.deptId" :options="depts" placeholder="选择开单科室" /></el-form-item>',
       '      <el-form-item label="定向窗口" required><el-select v-model="form.windowId" filterable style="width:100%"><el-option v-for="w in windows" :key="w.id" :label="w.name+\' (\'+w.code+\')\'" :value="w.id"></el-option></el-select></el-form-item>',
       '      <el-form-item label="备注"><el-input v-model="form.remark" maxlength="120"></el-input></el-form-item>',
       '    </el-form>',

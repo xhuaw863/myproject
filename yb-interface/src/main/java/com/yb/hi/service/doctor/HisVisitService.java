@@ -1,5 +1,7 @@
 package com.yb.hi.service.doctor;
 
+import com.alibaba.fastjson2.JSON;
+import com.alibaba.fastjson2.JSONObject;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
 import com.baomidou.mybatisplus.core.metadata.IPage;
@@ -33,6 +35,8 @@ import com.yb.hi.mapper.outpatient.HisPatientInsuMapper;
 import com.yb.hi.mapper.outpatient.HisRegistrationMapper;
 import com.yb.hi.platform.service.DeptScopeResolver;
 import com.yb.hi.service.OutpatientService;
+import com.yb.hi.service.emr.EmrAuditService;
+import com.yb.hi.service.emr.EmrDocumentService;
 import com.yb.hi.service.inpatient.EmrVersionService;
 import com.yb.hi.service.emr.EmrElementService;
 import com.yb.hi.service.yb.UploadStatusService;
@@ -81,6 +85,10 @@ public class HisVisitService extends ServiceImpl<HisVisitMapper, HisVisit> {
     private final EmrVersionService emrVersionService;
     // Phase C 门诊结构化病历数据元抽取(仅依赖 Mapper/Guard, 与本服务无环)
     private final EmrElementService emrElementService;
+    // P3 Tiptap 双轨(密文轨): AES-GCM 加密落 his_visit.content + emrField 抽取, 与本服务无环
+    private final EmrDocumentService emrDocumentService;
+    // P3 Tiptap 双轨(留痕): 门诊病历(scope=2)保存/完成审计, 仅依赖 Mapper
+    private final EmrAuditService emrAuditService;
     // 完成接诊 T1 事务(与 CashierService 同风格; 诊断"先删后插"并发死锁整体重试用)
     private final TransactionTemplate txTemplate;
 
@@ -89,7 +97,8 @@ public class HisVisitService extends ServiceImpl<HisVisitMapper, HisVisit> {
                            HisOrderMapper orderMapper, HisPatientInsuMapper patientInsuMapper,
                            HisRegistrationMapper registrationMapper, DeptScopeResolver deptScopeResolver,
                            UploadStatusService uploadStatusService, EmrVersionService emrVersionService,
-                           EmrElementService emrElementService,
+                           EmrElementService emrElementService, EmrDocumentService emrDocumentService,
+                           EmrAuditService emrAuditService,
                            PlatformTransactionManager transactionManager) {
         this.outpatientService = outpatientService;
         this.diagnosisService = diagnosisService;
@@ -102,6 +111,8 @@ public class HisVisitService extends ServiceImpl<HisVisitMapper, HisVisit> {
         this.uploadStatusService = uploadStatusService;
         this.emrVersionService = emrVersionService;
         this.emrElementService = emrElementService;
+        this.emrDocumentService = emrDocumentService;
+        this.emrAuditService = emrAuditService;
         this.txTemplate = new TransactionTemplate(transactionManager);
         // T1 事务改读已提交: 诊断"先删后插"在默认 RR 下并发完成接诊互相抢 idx_visit 间隙锁,
         // RC 不取间隙锁, 从根上消除该死锁类别(死锁整体重试仍保留作兜底)
@@ -286,6 +297,16 @@ public class HisVisitService extends ServiceImpl<HisVisitMapper, HisVisit> {
         if (req.getDisposition() != null) v.setDisposition(req.getDisposition());
         if (req.getDispositionDeptId() != null) v.setDispositionDeptId(req.getDispositionDeptId());
         if (req.getDispositionNote() != null) v.setDispositionNote(req.getDispositionNote());
+        // P3 Tiptap 双轨: 前端提交 Tiptap JSON → 密文落 content + emrFormat=1, 同步维护扁平 structure;
+        // 下方 EmrStructureReader.read(v) 派生 S/O/A/P 及 2203 主诉因 structure 扁平口径不变而继续工作
+        if (req.getContent() != null && isTiptapDocument(req.getContent())) {
+            v.setContent(emrDocumentService.encrypt(req.getContent()));
+            v.setEmrFormat(1);
+            Map<String, String> fieldMap = emrDocumentService.extractFieldMap(req.getContent());
+            v.setStructure(JSON.toJSONString(fieldMap));
+            emrAuditService.log(2, v.getId(), "SUBMIT", null);
+            emrElementService.syncFromTiptap(2, v.getId(), req.getContent());
+        }
         v.setVisitStatus(3);
         v.setFinishTime(LocalDateTime.now());
         updateById(v);
@@ -494,36 +515,75 @@ public class HisVisitService extends ServiceImpl<HisVisitMapper, HisVisit> {
         if (req.getBirctrlMatnDate() != null) v.setBirctrlMatnDate(parseDate(req.getBirctrlMatnDate()));
         if (req.getFollowupDate() != null) v.setFollowupDate(parseDate(req.getFollowupDate()));
         if (req.getFollowupNote() != null) v.setFollowupNote(req.getFollowupNote());
-        // 结构化病历: 落库前对旧 structure 做版本快照(scope=2), 再回写新结构
+        // 结构化病历: 落库前对旧 structure 做版本快照(scope=2), 再回写新结构;
+        // P3 Tiptap 双轨: 本次提交 Tiptap 文档同样先对旧版本快照(含旧 Tiptap 密文轨)再覆写
+        boolean tiptapChanged = req.getContent() != null && isTiptapDocument(req.getContent());
         boolean structureChanged = req.getStructure() != null && !req.getStructure().equals(v.getStructure());
-        if (structureChanged) {
+        if (structureChanged || tiptapChanged) {
             snapshotOutpVersion(v);
+        }
+        if (structureChanged) {
             v.setStructure(req.getStructure());
         }
         if (req.getEmrTemplateId() != null) v.setEmrTemplateId(req.getEmrTemplateId());
+        // P3 Tiptap 双轨: 前端提交 Tiptap JSON → 密文落 content + emrFormat=1,
+        // 同时维护扁平 structure(fieldKey→值)供 EmrStructureReader 下游(SOAP派生/2203主诉/历史列表)不变
+        if (tiptapChanged) {
+            v.setContent(emrDocumentService.encrypt(req.getContent()));
+            v.setEmrFormat(1);
+            Map<String, String> fieldMap = emrDocumentService.extractFieldMap(req.getContent());
+            v.setStructure(JSON.toJSONString(fieldMap));
+            emrAuditService.log(2, v.getId(), "UPDATE", null);
+            emrElementService.syncFromTiptap(2, v.getId(), req.getContent());
+        }
         updateById(v);
         // Phase C: 结构化病历落库后同步数据元(先删后插幂等; 失败不影响草稿保存)
         emrElementService.syncOutpVisit(v.getId());
-        log.info("保存病历草稿: visitId={}, structured={}", v.getId(), v.getStructure() != null);
+        log.info("保存病历草稿: visitId={}, structured={}, tiptap={}", v.getId(), v.getStructure() != null, tiptapChanged);
     }
 
-    /** 门诊结构化病历版本快照(静默): 覆盖旧 structure 前落 his_emr_version(scope=2, refId=visitId) 一行; 失败仅告警 */
+    /** 门诊结构化病历版本快照(静默): 覆盖旧 structure/content 前落 his_emr_version(scope=2, refId=visitId) 一行; 失败仅告警 */
     private void snapshotOutpVersion(HisVisit v) {
         LoginUser user = UserContext.get();
         if (user == null || user.getUserId() == null) {
             return;
         }
         try {
-            Map<String, String> soapView = EmrStructureReader.read(v);
-            String content = joinNonEmpty("S:", EmrStructureReader.subjectiveText(soapView),
-                    "O:", EmrStructureReader.objectiveText(soapView),
-                    "P:", EmrStructureReader.planText(soapView));
-            emrVersionService.saveVersionByScope(2, v.getId(), content, v.getStructure(),
+            String contentSnapshot;
+            String structureSnapshot = v.getStructure();
+            if (v.getEmrFormat() != null && v.getEmrFormat() == 1 && StringUtils.hasText(v.getContent())) {
+                // P3 Tiptap 双轨: 明文 Tiptap 文档落 content 快照(回溯/回滚用), 扁平 structure 原样落 structure 快照
+                contentSnapshot = emrDocumentService.loadDocument(2, v.getId(), v.getContent());
+            } else {
+                // 旧格式: SOAP 汇总文本落 content 快照(与既有口径一致)
+                Map<String, String> soapView = EmrStructureReader.read(v);
+                contentSnapshot = joinNonEmpty("S:", EmrStructureReader.subjectiveText(soapView),
+                        "O:", EmrStructureReader.objectiveText(soapView),
+                        "P:", EmrStructureReader.planText(soapView));
+            }
+            emrVersionService.saveVersionByScope(2, v.getId(), contentSnapshot, structureSnapshot,
                     user.getUserId(),
                     StringUtils.hasText(user.getRealName()) ? user.getRealName() : user.getUsername(),
                     "save");
         } catch (Exception e) {
             log.warn("门诊病历版本快照失败(不影响主流程): visitId={}, err={}", v.getId(), e.getMessage());
+        }
+    }
+
+    /** Tiptap 文档判定(与住院 InpMedRecordService 同口径): 解析 JSON 且顶层 type=doc */
+    private boolean isTiptapDocument(String content) {
+        if (!StringUtils.hasText(content)) {
+            return false;
+        }
+        String s = content.trim();
+        if (s.isEmpty() || s.charAt(0) != '{') {
+            return false;
+        }
+        try {
+            JSONObject obj = JSON.parseObject(s);
+            return obj != null && "doc".equals(String.valueOf(obj.get("type")));
+        } catch (Exception e) {
+            return false;
         }
     }
 

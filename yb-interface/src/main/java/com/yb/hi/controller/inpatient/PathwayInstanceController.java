@@ -74,11 +74,12 @@ public class PathwayInstanceController {
         return R.ok(instanceService.resume(id));
     }
 
-    /** 退出路径(status→3, 记录 exit_reason) */
+    /** 退出路径(status→3, 记录 exit_reason; type 为退出原因分类码 cv_code:pathway_exit_reason, 名称字典回填) */
     @PutMapping("/{id}/exit")
     public R<HisPathwayInstance> exit(@PathVariable Long id,
-                                      @RequestParam(required = false) String reason) {
-        return R.ok(instanceService.exit(id, reason));
+                                      @RequestParam(required = false) String reason,
+                                      @RequestParam(required = false) String type) {
+        return R.ok(instanceService.exit(id, reason, type));
     }
 
     /** 完成路径(status→2, 记录 end_date) */
@@ -99,11 +100,12 @@ public class PathwayInstanceController {
         return R.ok(instanceService.skipExec(execId));
     }
 
-    /** 标记变异(exec_status→4, 记录 variance_reason) */
+    /** 标记变异(exec_status→4, 记录 variance_reason; type 为变异原因分类码 cv_code:pathway_var_reason, 名称字典回填) */
     @PutMapping("/exec/{execId}/variance")
     public R<HisPathwayExec> variance(@PathVariable Long execId,
-                                      @RequestParam(required = false) String reason) {
-        return R.ok(instanceService.markVariance(execId, reason));
+                                      @RequestParam(required = false) String reason,
+                                      @RequestParam(required = false) String type) {
+        return R.ok(instanceService.markVariance(execId, reason, type));
     }
 
     /** 路径统计(orgId 可选, 机构隔离) */

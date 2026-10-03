@@ -45,8 +45,13 @@
     SIGNATURE_REQUIRED:  { label: '病历待签名提醒', kind: 'info' },
     RECORD_LOCKED:       { label: '病历锁定通知',   kind: 'warning' },
     RECORD_UNLOCKED:     { label: '病历解锁通知',   kind: 'info' },
-    CONSULTATION_UPDATE: { label: '会诊状态更新',   kind: 'info' },
-    TEMPLATE_UPDATED:    { label: '病历模板更新',   kind: 'info' }
+    CONSULTATION_UPDATE: { label: '会诊状态更新', kind: 'info' },
+    TEMPLATE_UPDATED:    { label: '病历模板更新', kind: 'info' },
+    /* P5b-4 质控时效/整改闭环四事件(与 EmrEventType 同名对齐): 预警提醒、超时/整改必达, 申诉结果普通知会 */
+    EMR_QC_DEADLINE_WARN: { label: '病历时效临近超时预警', kind: 'warning' },
+    EMR_QC_OVERDUE:       { label: '病历时效超时通知',     kind: 'error' },
+    EMR_QC_NOTICE:        { label: '病历质控整改通知',     kind: 'warning' },
+    EMR_QC_APPEAL_RESULT: { label: '病历缺陷申诉结果通知', kind: 'info' }
   };
 
   /* 连接状态元数据: dot=状态点色档 ok绿(在线)/mid黄(过渡)/off红(断开)/dis灰(停用) */

@@ -1023,6 +1023,7 @@
    * 写(新增/编辑/启停)仅牵头管理员(后端 requireLeadWrite 403 兜底); 列表含停用(?includeDisabled=true)。
    * 停用后该库不再出现在出入库/盘点下拉; 库内存在有量库存时后端拒绝停用。 */
   HIS.views.WarehouseDef = {
+    components: { 'dept-tree-picker': HIS.components.DeptTreePicker },
     data: function () {
       return {
         lead: HIS.isLead(),
@@ -1114,7 +1115,7 @@
       '      <el-form-item label="编码" required><el-input v-model="form.code" placeholder="如 WH-WEST-01(机构内唯一)"></el-input></el-form-item>',
       '      <el-form-item label="名称" required><el-input v-model="form.name" placeholder="如 西药库"></el-input></el-form-item>',
       '      <el-form-item label="类型"><el-select v-model="form.warehouseType" style="width:100%"><el-option v-for="t in whTypes" :key="t.v" :label="t.l" :value="t.v"></el-option></el-select></el-form-item>',
-      '      <el-form-item label="归属科室"><el-select v-model="form.deptId" clearable placeholder="选择归属科室(与科室一一对应)" style="width:100%"><el-option v-for="d in deptDefs" :key="d.id" :label="d.deptName" :value="d.id"></el-option></el-select></el-form-item>',
+      '      <el-form-item label="归属科室"><dept-tree-picker v-model="form.deptId" :options="deptDefs" placeholder="选择归属科室(与科室一一对应)" /></el-form-item>',
       '      <el-form-item label="位置"><el-input v-model="form.location" placeholder="如 1号楼1层"></el-input></el-form-item>',
       '      <el-form-item label="负责人"><el-input v-model="form.manager" placeholder="药库负责人"></el-input></el-form-item>',
       '      <el-form-item label="排序号"><el-input-number v-model="form.sortNo" :min="0" controls-position="right" style="width:140px"></el-input-number></el-form-item>',

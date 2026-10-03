@@ -17,7 +17,7 @@ import java.time.LocalDateTime;
 import java.util.List;
 
 /**
- * 病历操作审计日志服务(病历P2): 病历级动作留痕(CREATE/UPDATE/VIEW/PRINT/SIGN/DELETE/SUBMIT/AUDIT),
+ * 病历操作审计日志服务(病历P2; P4a-5 护理文书经 scope=3 复用): 病历级动作留痕(CREATE/UPDATE/VIEW/PRINT/SIGN/DELETE/SUBMIT/AUDIT),
  * 按病历维(scope+record_id)与操作人维(operator_id+create_time)双维追溯。
  * 来源IP取当前请求(RequestContextHolder), 无请求上下文的内部调用/定时任务留空;
  * orgId 取登录机构快照(未登录留空)。tenant_id 由租户插件自动注入, 实体不显式映射。
@@ -27,9 +27,10 @@ import java.util.List;
 @Service
 public class EmrAuditService {
 
-    /** 适用范围: 1住院 2门诊(与 his_emr_audit_log.scope 口径一致) */
+    /** 适用范围: 1住院 2门诊 3护理文书(P4a-5 复用, 与 his_emr_audit_log.scope 口径一致) */
     public static final int SCOPE_INP = 1;
     public static final int SCOPE_OUTP = 2;
+    public static final int SCOPE_NURSING = 3;
 
     private final EmrAuditLogMapper auditLogMapper;
 
@@ -40,8 +41,8 @@ public class EmrAuditService {
     /**
      * 记录审计事件(完整参数版)。
      *
-     * @param scope        1住院 2门诊
-     * @param recordId     病历ID(住院 his_inp_medical_record.id / 门诊病历ID), 列表级动作可空
+     * @param scope        1住院 2门诊 3护理文书(recordId=his_inp_nursing_record.id)
+     * @param recordId     病历ID(住院 his_inp_medical_record.id / 门诊病历ID / 护理记录ID), 列表级动作可空
      * @param action       动作: CREATE/UPDATE/VIEW/PRINT/SIGN/DELETE/SUBMIT/AUDIT
      * @param operatorId   操作人ID(his_staff.id)
      * @param operatorName 操作人姓名(冗余留痕, 超50字符截断)

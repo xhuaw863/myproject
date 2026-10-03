@@ -23,7 +23,7 @@
   <script src="/vendor/echarts.min.js"></script>
 
   <!-- 应用脚本 -->
-  <script src="/js/api.js?v=20261101a"></script>
+  <script src="/js/api.js?v=20261101b"></script>
   <!-- 图表色源(canvas 不识别 CSS 变量, 图表必须从字面量主题取色) -->
   <script src="/js/theme.js?v=20260928b"></script>
   <!-- 全局交互层: 右键上下文菜单 + 快捷键注册表(纯DOM/原生事件, 须在 app.js 之前加载) -->
@@ -36,23 +36,33 @@
   <script src="/js/lib/wangeditor/index.js?v=20260929b"></script>
   <!-- 结构化病历字段动态渲染器(全局组件 HIS.components.EmrField, 须在各病历/设计器 views 之前加载) -->
   <script src="/js/views/emr/emr-field.js?v=20261001a"></script>
+  <!-- 科室树形选择器(全局组件 HIS.components.DeptTreePicker, 下拉+按钮+弹窗树, 须在各接入 views 之前加载) -->
+  <script src="/js/lib/dept-tree-picker.js?v=20261003c"></script>
+  <!-- P8a-3 中医诊断-证候组合选择器(全局组件 HIS.components.TcmDiagSelector; 局部注册在文件加载时求值,
+       须在 doctor/diagnosis-panel.js 与 mr/mr-catalog.js 等接入 views 之前加载) -->
+  <script src="/js/components/tcm-diag-selector.js?v=20261103a"></script>
   <script src="/js/views/platform.js?v=20260930v"></script>
   <script src="/js/views/dashboard.js?v=20260928b"></script>
-  <script src="/js/views/basedata.js?v=20260930v"></script>
+  <script src="/js/views/basedata.js?v=20261003a"></script>
   <script src="/js/views/dict.js?v=20260930v"></script>
   <script src="/js/views/catalog-map.js?v=20260930a"></script>
   <script src="/js/views/diag-map.js?v=20260930b"></script>
   <script src="/js/views/std-dict.js?v=20261001a"></script>
   <script src="/js/views/supplier-dict.js?v=20261001f"></script>
+  <script src="/js/views/fee-pay-dict.js?v=20261003a"></script>
+  <script src="/js/views/med-type-dict.js?v=20261004a"></script>
   <script src="/js/views/area.js?v=20260930v"></script>
-  <script src="/js/views/outpatient.js?v=20260930v"></script>
+  <script src="/js/views/outpatient.js?v=20261004a"></script>
   <!-- 医生站子组件（必须在 doctor.js 之前加载） -->
-  <script src="/js/views/doctor/print-helper.js?v=20261002b"></script>
+  <script src="/js/views/doctor/print-helper.js?v=20261003a"></script>
   <script src="/js/views/doctor/queue-panel.js?v=20260928b"></script>
   <script src="/js/views/doctor/patient-banner.js?v=20261001a"></script>
-  <script src="/js/views/doctor/emr-panel.js?v=20261001a"></script>
+  <!-- 门诊病历书写器(P3 Tiptap 三栏工作台; 须在 emr-panel.js 之前加载: 其局部注册直接消费 HIS.components.OutpEmrWriter;
+       引擎/离线草稿/SSE 依赖均运行时按需访问, 另有 DOMContentLoaded 全局标签注册双保险) -->
+  <script src="/js/views/doctor/outp-emr-writer.js?v=20261003a"></script>
+  <script src="/js/views/doctor/emr-panel.js?v=20261003a"></script>
   <script src="/js/views/doctor/tooth-chart.js?v=20261002a"></script>
-  <script src="/js/views/doctor/diagnosis-panel.js?v=20261002a"></script>
+  <script src="/js/views/doctor/diagnosis-panel.js?v=20261103d"></script>
   <script src="/js/views/doctor/prescription-panel.js?v=20261002a"></script>
   <script src="/js/views/doctor/order-panel.js?v=20261002a"></script>
   <script src="/js/views/doctor/documents-panel.js?v=20261002b"></script>
@@ -60,7 +70,7 @@
   <script src="/js/views/doctor/vital-panel.js?v=20261001b"></script>
   <script src="/js/views/doctor/pre-consult-dialog.js?v=20261001a"></script>
   <script src="/js/views/doctor/report-panel.js?v=20261002b"></script>
-  <script src="/js/views/doctor.js?v=20261002b"></script>
+  <script src="/js/views/doctor.js?v=20261003a"></script>
   <script src="/js/views/doctor-worklog.js?v=20260930v"></script>
   <script src="/js/views/medical-template.js?v=20261002b"></script>
   <!-- 病历模板可视化设计器(结构化引擎自建模板, 须在 app.js 之前加载) -->
@@ -69,6 +79,12 @@
   <script src="/js/views/emr/emr-quality-rule.js?v=20261001e"></script>
   <script src="/js/views/emr/emr-element-search.js?v=20261001e"></script>
   <script src="/js/views/emr/emr-quality-board.js?v=20261001e"></script>
+  <!-- P5b-3 病历质控工作台: 六模块一体(标准/时效/内涵/查询/人工质控/统计), 须在 app.js 之前加载 -->
+  <script src="/js/views/emr/emr-quality-console.js?v=20261003a"></script>
+  <!-- P7a-4 病历归档工作台: 顶部KPI(72h提交率/返修率/本月归档数/逾期未归档) + 待归档/归档管理/封存管理/统计四页签(须在 app.js 之前加载) -->
+  <script src="/js/views/emr/emr-archive.js?v=20261003c"></script>
+  <!-- P7b-3 病历等级自评: 等级徽章+八维度SVG雷达+维度明细卡(comp=EmrLevelAssess, 须在 app.js 之前加载) -->
+  <script src="/js/views/emr/emr-level-assess.js?v=20261003a"></script>
   <!-- 病历数据集管理: 章节→小节→数据元三级结构维护(须在 app.js 之前加载) -->
   <script src="/js/views/emr-dataset.js?v=20261002a"></script>
   <!-- 结构化病历 Tiptap 编辑器引擎 + 模板设计器(数据集驱动三栏式, 须在 app.js 之前加载) -->
@@ -85,7 +101,7 @@
   <script src="/js/views/emr-patient-timeline.js?v=20261003a"></script>
   <!-- 病案统计科(P0): 病案分配/首页编目/质量审核(须在 app.js 之前加载) -->
   <script src="/js/views/mr/mr-assign.js?v=20261101a"></script>
-  <script src="/js/views/mr/mr-catalog.js?v=20261101d"></script>
+  <script src="/js/views/mr/mr-catalog.js?v=20261103d"></script>
   <script src="/js/views/mr/mr-review.js?v=20261101a"></script>
   <script src="/js/views/mr/mr-recall.js?v=20261101a"></script>
   <script src="/js/views/mr/mr-borrow.js?v=20261101a"></script>
@@ -126,17 +142,17 @@
   <!-- 药房统计查询增强(药品消耗/医保合规/处方与退药质量, 须在 app.js 之前加载) -->
   <script src="/js/views/pharmacy-stat.js?v=20261101ph1"></script>
   <!-- 医保上报中心(M5 上传管线状态监控台, 须在 app.js 之前加载) -->
-  <script src="/js/views/upload-center.js?v=20260930v"></script>
+  <script src="/js/views/upload-center.js?v=20261005inp"></script>
   <!-- 住院模块(登记结算/医生站/护士站, 须在 app.js 之前加载; 医生站子组件须在 inp-doctor.js 之前) -->
-  <script src="/js/views/inpatient.js?v=20261002charge2"></script>
+  <script src="/js/views/inpatient.js?v=20261004a"></script>
   <script src="/js/views/inp-doctor/inp-patient-overview.js?v=20260928b"></script>
   <script src="/js/views/inp-doctor/inp-order-panel.js?v=20261002"></script>
   <script src="/js/views/inp-doctor/inp-diag-panel.js?v=20260928b"></script>
   <script src="/js/views/inp-doctor/inp-record-panel.js?v=20261001a"></script>
   <!-- 住院病历书写器(P2-4 Tiptap 三栏工作台, 须在 emr-editor/emr-offline-draft/emr-sse-client/signature-pad/inp-record-panel 之后、inp-doctor.js 之前加载) -->
-  <script src="/js/views/inp-doctor/inp-emr-writer.js?v=20261003a"></script>
+  <script src="/js/views/inp-doctor/inp-emr-writer.js?v=20261103d"></script>
   <!-- 临床路径面板(住院医生站子组件, 须在 inp-doctor.js 之前加载) -->
-  <script src="/js/views/inp-doctor/inp-pathway-panel.js?v=20260928"></script>
+  <script src="/js/views/inp-doctor/inp-pathway-panel.js?v=20261002d"></script>
   <!-- 会诊/知情同意面板(住院医生站子组件, 须在 inp-doctor.js 之前加载) -->
   <script src="/js/views/inp-doctor/inp-consult-panel.js?v=20260928b"></script>
   <script src="/js/views/inp-doctor/inp-consent-panel.js?v=20260928b"></script>
@@ -148,13 +164,29 @@
     <!-- 处方点评面板(住院医生站 T2 阶段3 子组件, 须在 inp-doctor.js 之前加载) -->
     <script src="/js/views/inp-doctor/inp-rxreview-panel.js?v=20261002"></script>
     <script src="/js/views/inp-doctor/inp-doctor.js?v=20261002"></script>
-  <script src="/js/views/inp-nurse.js?v=20261002nurse1"></script>
+  <!-- 住院护士站标准体温单(InpVitalSignChart: 卫生部格式 Canvas 组件, 须在 inp-nurse.js 之前加载) -->
+  <script src="/js/views/inp-nurse/vital-sign-chart.js?v=20261003a"></script>
+  <!-- 护理文书 Tiptap 书写器(P4a-3, HIS.components.InpNursingWriter; P4a-5 由 inp-nurse.js 集成, 故须先于其加载;
+       引擎/离线草稿依赖运行时按需访问, 另有 DOMContentLoaded 全局标签注册双保险) -->
+  <script src="/js/views/inp-nurse/nursing-writer.js?v=20261003b"></script>
+  <!-- 批量体征录入组件(P4b-3, HIS.components.InpNursingBatchInput; P4b-5 由 inp-nurse.js 集成, 故须先于其加载;
+       另有 DOMContentLoaded 全局标签注册双保险) -->
+  <script src="/js/views/inp-nurse/nursing-batch-input.js?v=20261003a"></script>
+  <!-- 辅助护理组件集(P4c-3: 管道管理/转运交接/告知书签署/健康宣教, 由 inp-nurse.js 集成, 故须先于其加载;
+       各有 DOMContentLoaded 全局标签注册双保险) -->
+  <script src="/js/views/inp-nurse/pipe-manager.js?v=20261003a"></script>
+  <script src="/js/views/inp-nurse/nursing-transfer.js?v=20261003a"></script>
+  <script src="/js/views/inp-nurse/nursing-consent.js?v=20261003a"></script>
+  <script src="/js/views/inp-nurse/nursing-education.js?v=20261003a"></script>
+  <script src="/js/views/inp-nurse.js?v=20261003nurse2"></script>
   <!-- 住院医嘱模板/套餐维护页(独立顶层视图 InpOrderTemplateManage, 须在 app.js 之前加载) -->
   <script src="/js/views/inp-doctor/order-template-manage.js?v=20260930"></script>
   <!-- 住院药师审核工作站(T35: 药品医嘱审方/电子签名通过/驳回留原因, 须在 app.js 之前加载) -->
   <script src="/js/views/pharm-station.js?v=20260929"></script>
   <!-- 临床路径管理 + 手术麻醉(手术管理/麻醉记录/手麻记费), 须在 app.js 之前加载 -->
   <script src="/js/views/clinical-pathway.js?v=20261001b"></script>
+    <!-- 临床路径统计质控(clinical-pathway-stats.js, 六页签多维报表, 须在 app.js 之前加载) -->
+    <script src="/js/views/clinical-pathway-stats.js?v=20261002e"></script>
   <script src="/js/views/surgery-manage.js?v=20261002u1"></script>
   <!-- 手麻P0: 手术申请管理+通知管理(surgery-apply.js) -->
   <script src="/js/views/surgery-apply.js?v=20261002u1"></script>
@@ -165,6 +197,8 @@
   <script src="/js/views/inp-print.js?v=20260928"></script>
   <!-- 住院危急值管理(T37: 处理闭环/规则管理/模拟上报, 须在 app.js 之前加载) -->
   <script src="/js/views/critical-value.js?v=20260930v"></script>
+  <!-- P6 会诊管理(全院会诊流转驾驶舱: 多维查询/统计分析/超时预警, 统一接口 /api/his/consultation, 须在 app.js 之前加载) -->
+  <script src="/js/views/consultation-manage.js?v=20261103a"></script>
   <!-- 全局通知中心(顶栏铃铛 NotificationBell, 须在 app.js 之前加载) -->
   <script src="/js/views/notification-bell.js?v=20260929b"></script>
   <!-- PDA扫码工作台(T48 P3: 扫腕带识别患者/Code128条码预览/待执行医嘱床旁执行, 须在 app.js 之前加载) -->

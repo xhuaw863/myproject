@@ -76,4 +76,11 @@ public class OutpEmrController {
         }
         return outpEmrService.resolveMacros(visitId, codes);
     }
+
+    /** P3 Tiptap 双轨: 门诊宏解析 Tiptap 文档(body 为明文 Tiptap JSON), emrMacro 节点回写 resolvedValue / {macroCode} 占位符原位替换 */
+    @PostMapping("/resolve-tiptap-macros")
+    public R<String> resolveTiptapMacros(@RequestParam Long visitId, @RequestBody String tiptapJson) {
+        visitService.requireVisitScope(visitId);
+        return R.ok(outpEmrService.resolveMacrosInTiptap(tiptapJson, visitId));
+    }
 }

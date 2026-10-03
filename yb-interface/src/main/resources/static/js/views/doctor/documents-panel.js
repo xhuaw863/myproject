@@ -6,6 +6,12 @@
   var CERT_TYPES = [{ v: 1, l: '诊断证明' }, { v: 2, l: '病假条' }, { v: 3, l: '转诊证明' }];
   /* OP-D 14.11 门诊知情同意书五类 */
   var CONSENT_TYPES = [{ v: 1, l: '特殊检查' }, { v: 2, l: '特殊治疗' }, { v: 3, l: '输血' }, { v: 4, l: '自费' }, { v: 5, l: '病危' }];
+  /* P6-4 统一会诊流接口(P6-2 ConsultationFlowController): 新功能调用, 未就绪回退旧门诊接口 /api/his/consult(向后兼容) */
+  var CONSULT_API = '/api/his/consultation';
+  /* P6-4 会诊范围(consult_category): 与住院会诊面板同值域, 默认科间;
+   * 展示层兼容数字码 1/2/3/4(P6-3 管理页预估口径), 提交恒为字符串码(实体 String 型) */
+  var CONSULT_CATEGORIES = [{ v: 'within_dept', l: '科内' }, { v: 'cross_dept', l: '科间' }, { v: 'external', l: '院外' }, { v: 'mdt', l: 'MDT' }];
+  var CONSULT_CATEGORY_TEXT = { within_dept: '科内', cross_dept: '科间', external: '院外', mdt: 'MDT', '1': '科内', '2': '科间', '3': '院外', '4': 'MDT' };
   var DOC_CARDS = [
     { key: 'admit', label: '住院证', mark: '住', tone: 'blue' },
     { key: 'consult', label: '会诊申请', mark: '会', tone: 'orange' },
@@ -21,6 +27,7 @@
 
   var DwDocumentsPanel = {
     name: 'DwDocumentsPanel',
+    components: { 'dept-tree-picker': HIS.components.DeptTreePicker },
     inject: ['currentVisit', 'currentPatient', 'diagnoses'],
     emits: ['print', 'fee-updated'],
     data: function () {
@@ -32,7 +39,8 @@
         admitVisible: false, consultVisible: false, certVisible: false, followupVisible: false, printVisible: false,
         admitSaving: false, consultSaving: false, certSaving: false, followupSaving: false,
         admitForm: { admitDeptId: null, admitDeptName: '', admitDiagnosis: '', conditionSummary: '', admitPurpose: '', urgency: 1, preFlag: 0 },
-        consultForm: { consultDeptId: null, consultDeptName: '', consultPurpose: '', conditionSummary: '', urgency: 1, expectedTime: '' },
+        consultForm: { consultDeptId: null, consultDeptName: '', consultPurpose: '', conditionSummary: '', urgency: 1, expectedTime: '', consultCategory: 'cross_dept' },
+        consultCategories: CONSULT_CATEGORIES,
         certForm: { certType: 1, diagnosis: '', certContent: '', sickLeaveDays: null, remark: '' },
         followupForm: { followupDate: '', followupNote: '' },
         certTypes: CERT_TYPES,
@@ -149,12 +157,28 @@
         if (!vm.visitId) { return Promise.resolve(); }
         return Promise.all([
           HIS.get('/api/his/admission-cert/list?visitId=' + encodeURIComponent(vm.visitId)),
-          HIS.get('/api/his/consult/list?visitId=' + encodeURIComponent(vm.visitId)),
+          vm.loadConsultList(),
           HIS.get('/api/his/medical-cert/list?visitId=' + encodeURIComponent(vm.visitId)),
           HIS.get('/api/his/outp-biz/consent/list?visitId=' + encodeURIComponent(vm.visitId))
         ]).then(function (values) {
           vm.admitList = asList(values[0]); vm.consultList = asList(values[1]); vm.certList = asList(values[2]); vm.consentList = asList(values[3]);
         }).catch(function (e) { if (HIS.notifyError) { HIS.notifyError(e); } });
+      },
+      /* P6-4 会诊列表: 优先统一会诊流接口(门诊 visitType=2), 接口未就绪或无本就诊数据时回退旧门诊会诊接口(存量兼容) */
+      loadConsultList: function () {
+        var vm = this;
+        if (!vm.visitId) { vm.consultList = []; return Promise.resolve([]); }
+        var fallback = function () {
+          return HIS.get('/api/his/consult/list?visitId=' + encodeURIComponent(vm.visitId)).then(function (d) {
+            vm.consultList = asList(d);
+            return vm.consultList;
+          }).catch(function () { vm.consultList = []; return vm.consultList; });
+        };
+        return HIS.get(CONSULT_API + '/by-visit?visitType=2&visitId=' + encodeURIComponent(vm.visitId)).then(function (d) {
+          var rows = asList(d);
+          if (rows.length) { vm.consultList = rows; return rows; }
+          return fallback();
+        }).catch(fallback);
       },
       loadPrintables: function () {
         var vm = this;
@@ -185,7 +209,7 @@
         this.admitVisible = true;
       },
       openConsult: function () {
-        this.consultForm = { consultDeptId: null, consultDeptName: '', consultPurpose: '', conditionSummary: this.visit.presentIllness || this.visit.chiefComplaint || '', urgency: 1, expectedTime: '' };
+        this.consultForm = { consultDeptId: null, consultDeptName: '', consultPurpose: '', conditionSummary: this.visit.presentIllness || this.visit.chiefComplaint || '', urgency: 1, expectedTime: '', consultCategory: 'cross_dept' };
         this.consultVisible = true;
       },
       openCert: function () {
@@ -240,10 +264,24 @@
       submitConsult: function () {
         var vm = this; var f = vm.consultForm;
         if (!f.consultDeptId || !f.consultPurpose) { ElementPlus.ElMessage.warning('会诊科室和会诊目的必填'); return; }
+        var onOk = function () {
+          ElementPlus.ElMessage.success('会诊申请已发起'); vm.consultVisible = false; return vm.loadConsultList();
+        };
         vm.consultSaving = true;
-        HIS.post('/api/his/consult/create', Object.assign({ visitId: vm.visitId }, f)).then(function () {
-          ElementPlus.ElMessage.success('会诊申请已发起'); vm.consultVisible = false; return vm.loadDocuments();
+        /* P6-4: 走统一会诊流接口(visitType=2 门诊 + consultCategory), 未就绪时回退旧门诊接口(扩展字段被忽略) */
+        HIS.post(CONSULT_API + '/apply', {
+          visitType: 2, visitId: vm.visitId, patientId: vm.patientId,
+          consultCategory: f.consultCategory,
+          targetDeptId: f.consultDeptId, targetDeptName: f.consultDeptName,
+          applyReason: f.consultPurpose, applySummary: f.conditionSummary,
+          urgencyLevel: Number(f.urgency) || 1
+        }).then(onOk).catch(function () {
+          return HIS.post('/api/his/consult/create', Object.assign({ visitId: vm.visitId }, f)).then(onOk);
         }).catch(HIS.notifyError).finally(function () { vm.consultSaving = false; });
+      },
+      /* P6-4 会诊范围翻译(统一接口数据才有值, 旧数据回退 '-', 双编码兼容) */
+      consultCategoryText: function (v) {
+        return v == null || v === '' ? '-' : (CONSULT_CATEGORY_TEXT[String(v)] || '-');
       },
       submitCert: function () {
         var vm = this; var f = vm.certForm;
@@ -299,9 +337,9 @@
       barWidth: function (amount) { return this.fee.total > 0 ? Math.max(0, Number(amount) * 100 / this.fee.total).toFixed(2) + '%' : '0%'; },
       emitPrint: function (type, id) { this.$emit('print', { type: type, id: id }); },
       openPrintCenter: function () { if (!this.visitId) { ElementPlus.ElMessage.warning('请先选择患者'); return; } this.loadPrintables(); this.printVisible = true; },
-      /* ===== OP-D 14.9 会诊状态翻译 ===== */
-      consultStatusText: function (s) { return ({ 1: '已申请', 2: '已接受', 3: '已完成', 4: '已拒绝' })[Number(s)] || '待处理'; },
-      consultStatusTone: function (s) { return ({ 1: 'warning', 2: 'primary', 3: 'success', 4: 'danger' })[Number(s)] || 'info'; },
+      /* ===== OP-D 14.9 会诊状态翻译(P6-4 兼容统一流接口 5已取消) ===== */
+      consultStatusText: function (s) { return ({ 1: '已申请', 2: '已接受', 3: '已完成', 4: '已拒绝', 5: '已取消' })[Number(s)] || '待处理'; },
+      consultStatusTone: function (s) { return ({ 1: 'warning', 2: 'primary', 3: 'success', 4: 'danger', 5: 'info' })[Number(s)] || 'info'; },
       /* ===== OP-D 14.11 知情同意书 ===== */
       consentTypeLabel: function (v) { var c = CONSENT_TYPES.find(function (x) { return x.v === Number(v); }); return c ? c.l : '知情同意'; },
       consentStatusText: function (s) { return ({ 1: '待签', 2: '已签', 3: '已撤销' })[Number(s)] || '待签'; },
@@ -453,7 +491,7 @@
         <el-dialog v-model="admitVisible" title="开具住院证" width="660px">
           <div class="dw-cert-patient"><b>{{ (visit&&visit.patientName) || patient.name || '-' }}</b><span>{{ genderText(visit&&visit.gender) }} · {{ (visit&&visit.age) != null ? visit.age + '岁' : '年龄-' }}</span><span>门诊: {{ (visit&&visit.deptName) || '-' }} · {{ (visit&&visit.drName) || '-' }}</span><span class="no">门诊号 {{ (visit&&visit.iptOtpNo) || '-' }}</span></div>
           <el-form :model="admitForm" label-width="92px">
-            <el-form-item label="拟收科室" required><el-select v-model="admitForm.admitDeptId" filterable placeholder="仅可选住院科室(与入院登记页同口径)" style="width:100%" @change="onAdmitDeptChange"><el-option v-for="d in inpDeptOpts" :key="d.id" :label="d.deptName + (d.deptCategory ? ' · ' + d.deptCategory : '')" :value="d.id"></el-option></el-select></el-form-item>
+            <el-form-item label="拟收科室" required><dept-tree-picker v-model="admitForm.admitDeptId" :options="inpDeptOpts" placeholder="仅可选住院科室(与入院登记页同口径)" @change="onAdmitDeptChange" /></el-form-item>
             <el-form-item label="入院诊断" required><el-select v-model="admitForm.admitDiagnosis" filterable allow-create default-first-option placeholder="下拉选本次就诊诊断, 也可直接输入后回车" style="width:100%"><el-option v-for="(n, i) in diagOpts" :key="i" :label="n" :value="n"></el-option></el-select><div v-if="!diagOpts.length" class="dim" style="font-size:11px;line-height:16px">本次就诊尚未录入诊断, 建议先在诊断页签开诊断后再开证(此处也可直接输入)</div></el-form-item>
             <el-form-item label="病情摘要"><el-input v-model="admitForm.conditionSummary" type="textarea" :rows="3" maxlength="500" show-word-limit placeholder="已自动带入现病史/主诉, 可补充查体与辅检结论"></el-input></el-form-item>
             <el-form-item label="入院目的"><el-input v-model="admitForm.admitPurpose" maxlength="100" placeholder="如: 进一步检查治疗 / 手术治疗"></el-input></el-form-item>
@@ -465,8 +503,8 @@
         </el-dialog>
 
         <el-dialog v-model="consultVisible" title="会诊申请" width="620px">
-          <el-form :model="consultForm" label-width="92px"><el-form-item label="会诊科室" required><el-select v-model="consultForm.consultDeptId" filterable style="width:100%" @change="onConsultDeptChange"><el-option v-for="d in deptOpts" :key="d.id" :label="d.deptName" :value="d.id"></el-option></el-select></el-form-item><el-form-item label="会诊目的" required><el-input v-model="consultForm.consultPurpose" maxlength="200"></el-input></el-form-item><el-form-item label="病情摘要"><el-input v-model="consultForm.conditionSummary" type="textarea" :rows="3" maxlength="500"></el-input></el-form-item><el-form-item label="紧急程度"><el-radio-group v-model="consultForm.urgency"><el-radio-button :label="1">普通</el-radio-button><el-radio-button :label="2">急</el-radio-button><el-radio-button :label="3">紧急</el-radio-button></el-radio-group></el-form-item><el-form-item label="期望时间"><el-date-picker v-model="consultForm.expectedTime" type="datetime" value-format="YYYY-MM-DD HH:mm:ss" style="width:100%"></el-date-picker></el-form-item></el-form>
-          <el-table v-if="consultList.length" :data="consultList" border size="small" max-height="160"><el-table-column type="index" label="序号" width="50"></el-table-column><el-table-column prop="consultDeptName" label="会诊科室" width="120"></el-table-column><el-table-column prop="consultPurpose" label="会诊目的" show-overflow-tooltip></el-table-column><el-table-column label="状态" width="80" align="center"><template #default="s"><el-tag :type="consultStatusTone(s.row.status)" size="small">{{ consultStatusText(s.row.status) }}</el-tag></template></el-table-column></el-table>
+          <el-form :model="consultForm" label-width="92px"><el-form-item label="会诊范围"><el-radio-group v-model="consultForm.consultCategory"><el-radio-button v-for="c in consultCategories" :key="c.v" :label="c.v">{{ c.l }}</el-radio-button></el-radio-group></el-form-item><el-form-item label="会诊科室" required><dept-tree-picker v-model="consultForm.consultDeptId" :options="deptOpts" placeholder="选择会诊科室" @change="onConsultDeptChange" /></el-form-item><el-form-item label="会诊目的" required><el-input v-model="consultForm.consultPurpose" maxlength="200"></el-input></el-form-item><el-form-item label="病情摘要"><el-input v-model="consultForm.conditionSummary" type="textarea" :rows="3" maxlength="500"></el-input></el-form-item><el-form-item label="紧急程度"><el-radio-group v-model="consultForm.urgency"><el-radio-button :label="1">普通</el-radio-button><el-radio-button :label="2">急</el-radio-button><el-radio-button :label="3">紧急</el-radio-button></el-radio-group></el-form-item><el-form-item label="期望时间"><el-date-picker v-model="consultForm.expectedTime" type="datetime" value-format="YYYY-MM-DD HH:mm:ss" style="width:100%"></el-date-picker></el-form-item></el-form>
+          <el-table v-if="consultList.length" :data="consultList" border size="small" max-height="200"><el-table-column type="index" label="序号" width="46"></el-table-column><el-table-column label="会诊科室" width="110" show-overflow-tooltip><template #default="s">{{ s.row.consultDeptName || s.row.targetDeptName || '-' }}</template></el-table-column><el-table-column label="范围" width="64" align="center"><template #default="s">{{ consultCategoryText(s.row.consultCategory) }}</template></el-table-column><el-table-column label="会诊目的" show-overflow-tooltip><template #default="s">{{ s.row.consultPurpose || s.row.applyReason || '-' }}</template></el-table-column><el-table-column label="会诊意见" show-overflow-tooltip><template #default="s">{{ s.row.consultOpinion || '-' }}</template></el-table-column><el-table-column label="状态" width="80" align="center"><template #default="s"><el-tag :type="consultStatusTone(s.row.status)" size="small">{{ consultStatusText(s.row.status) }}</el-tag></template></el-table-column></el-table>
           <template #footer><el-button @click="consultVisible=false">关闭</el-button><el-button type="primary" :loading="consultSaving" @click="submitConsult">发起</el-button></template>
         </el-dialog>
 

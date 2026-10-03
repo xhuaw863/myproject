@@ -1,18 +1,32 @@
-/* 门诊医生站病历面板 —— 方案 B 收敛: 结构化引擎为唯一编辑面
- * - 新病历一律结构化(选模板→渲染 EmrField→写 structure); SOAP 文本编辑面已下线。
+/* 门诊医生站病历面板 —— 方案 B 收敛 + P3-4 Tiptap 适配层
+ * - 当前模板带 Tiptap 文档(document)时, 整面板交由门诊病历书写器(dw-outp-emr-writer), 下述接口方法全部代理转发;
+ *   对外接口(emitSave/validateForFinish/buildFinishPayload/appendXxx/quoteXxx/resetFromVisit)保持不变, doctor.js 无感切换。
+ * - 无 document 的旧模板回退既有结构化表单(选模板→渲染 EmrField→写 structure); SOAP 文本编辑面保持下线。
  * - 历史「纯文本病历」(无 structure 但有 SOAP 列)以只读文本回显, 不可在此编辑。
- * - 引用报告/轨迹等辅助动作改写入 structForm(按对齐 fieldKey)。
- * - 完成接诊经 validateForFinish()/buildFinishPayload() 交付 structure+emrTemplateId。 */
+ * - 完成接诊经 validateForFinish()/buildFinishPayload() 交付; Tiptap 模式为 content+structure 双轨。 */
 ;(function () {
   const HIS = (window.HIS = window.HIS || {});
   const EmrPanel = {
     name: 'DwEmrPanel',
     inject: ['currentVisit', 'currentPatient', 'visitHistory', 'diagnoses'],
-    emits: ['save-draft'],
-    /* 结构化模式渲染字段控件; HIS.components 非全局注册, 须局部声明(emr-field.js 先于本文件加载) */
-    components: { 'emr-field': (window.HIS.components || {}).EmrField },
+    emits: ['save-draft', 'submit'],
+    /* 结构化模式渲染字段控件; Tiptap 模式渲染书写器(两者均先于本文件加载, 须局部声明) */
+    components: {
+      'emr-field': (window.HIS.components || {}).EmrField,
+      'dw-outp-emr-writer': (window.HIS.components || {}).OutpEmrWriter
+    },
     template: `
       <section class="dw-panel dw-emr-panel">
+        <!-- P3-4: 当前模板带 Tiptap 文档时整面板切换为书写器; 事件经本组件中继, 对外接口不变 -->
+        <dw-outp-emr-writer
+          v-if="useTiptap"
+          ref="tiptapWriter"
+          @save-draft="$emit('save-draft', $event)"
+          @submit="$emit('submit', $event)"
+        ></dw-outp-emr-writer>
+
+        <!-- 旧表单模式: 无 Tiptap 文档的模板走原有结构化编辑面 -->
+        <template v-else>
         <header class="dw-panel-header">
           <span>{{ isLegacySoap ? '门诊病历' : '结构化 门诊病历' }} <span class="dim" v-if="isLegacySoap">历史文本(只读)</span></span>
           <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;justify-content:flex-end">
@@ -83,6 +97,7 @@
             <el-button size="small" type="primary" :disabled="readOnly" @click="emitSave(true)">提交病历</el-button>
           </div>
         </div>
+        </template>
       </section>
     `,
     data: function () {
@@ -134,6 +149,22 @@
           { label: '随访', value: v.followupNote }
         ];
         return rows.filter(function (r) { return r.value != null && String(r.value).trim() !== ''; });
+      },
+      /* P3-4: 当前生效模板(面板选择优先, 否则取就诊记录模板); 用于判定是否走 Tiptap 书写器 */
+      currentTemplate: function () {
+        var id = this.selectedEmrTemplateId;
+        if (!id) {
+          var v = this.currentVisit || {};
+          id = v.emrTemplateId != null ? String(v.emrTemplateId) : null;
+        }
+        if (!id) { return null; }
+        var hit = null;
+        (this.emrTemplates || []).forEach(function (t) { if (String(t.id) === String(id)) { hit = t; } });
+        return hit;
+      },
+      useTiptap: function () {
+        var tpl = this.currentTemplate;
+        return !!(tpl && tpl.document);
       }
     },
     watch: {
@@ -145,19 +176,48 @@
     },
     created: function () { this.loadEmrTemplates(); },
     methods: {
+      /* ===== P3-4 Tiptap 适配: 书写器句柄与模板同步 ===== */
+      tiptapWriter: function () {
+        return this.$refs.tiptapWriter || null;
+      },
+      /* 将模板选择同步给书写器: 书写器模板列表可能尚未加载, 经其 pendingRestore + autoSelectTemplate
+       * 既有消费链等待列表就绪后自动应用(其 loadTemplates().then 内会再消费一次) */
+      syncTemplateToWriter: function (templateId, structure) {
+        var writer = this.tiptapWriter();
+        var tplId = templateId != null ? String(templateId) : null;
+        if (!writer || !tplId) { return; }
+        var visible = (writer.templates || []).some(function (t) { return String(t.id) === String(tplId); });
+        if (visible) {
+          if (String(writer.selectedTemplateId || '') !== tplId) {
+            writer.pendingRestore = { templateId: tplId, structure: structure || '' };
+            writer.autoSelectTemplate();
+          }
+        } else if (!writer.templatesLoading) {
+          writer.pendingRestore = { templateId: tplId, structure: structure || '' };
+          writer.loadTemplates();
+        } else {
+          writer.pendingRestore = { templateId: tplId, structure: structure || '' };
+        }
+      },
       resetFromVisit: function (visit) {
         this.emrFields = []; this.structForm = {};
         this.selectedEmrTemplateId = null; this.quality = null;
         this.examReports = []; this.reportsLoaded = false;
         if (!visit) { return; }
         this.loadStructFromVisit(visit);
+        /* Tiptap 模式: 已挂载书写器同步复位(书写器自身 watch 亦会复位, 经其 _loadedVisitKey 幂等收敛) */
+        var writer = this.tiptapWriter();
+        if (this.useTiptap && writer) { writer.resetFromVisit(visit); }
       },
-      /* 就诊已存结构化病历: 回显模板字段与取值 */
+      /* 就诊已存结构化病历: 回显模板字段与取值(Tiptap 病历 emrFormat=1 亦须选中模板以驱动书写器) */
       loadStructFromVisit: function (visit) {
         var vm = this;
-        if (!visit || !visit.structure) { return; }
+        var tiptapDoc = !!visit && visit.emrFormat != null && Number(visit.emrFormat) === 1;
+        if (!visit || (!visit.structure && !tiptapDoc)) { return; }
         vm.selectedEmrTemplateId = visit.emrTemplateId != null ? String(visit.emrTemplateId) : null;
-        try { vm.structForm = JSON.parse(visit.structure) || {}; } catch (e) { vm.structForm = {}; }
+        if (visit.structure) {
+          try { vm.structForm = JSON.parse(visit.structure) || {}; } catch (e) { vm.structForm = {}; }
+        }
         if (!vm.emrTemplates.length) { vm.loadEmrTemplates(); }
         if (vm.selectedEmrTemplateId) { vm.loadEmrDefs(vm.selectedEmrTemplateId); }
       },
@@ -165,7 +225,10 @@
       loadEmrTemplates: function () {
         var vm = this;
         HIS.get('/api/his/emr/template/list?scope=2&mine=true').then(function (data) {
-          vm.emrTemplates = (data || []).map(function (t) { return { id: String(t.id), name: t.templateName || t.name }; });
+          /* document(Tiptap JSON) 决定该模板走书写器还是旧表单, 须保留 */
+          vm.emrTemplates = (data || []).map(function (t) {
+            return { id: String(t.id), name: t.templateName || t.name, document: t.document || null };
+          });
         }).catch(function () { vm.emrTemplates = []; });
       },
       onEmrTemplateChange: function (id) {
@@ -173,6 +236,11 @@
         if (!id) { this.emrFields = []; this.structForm = {}; return; }
         this.structForm = {};
         this.loadEmrDefs(id);
+        /* 若新模板带 Tiptap 文档: 本次更新后即切换为书写器, 待其挂载后同步模板选择 */
+        var vm = this;
+        this.$nextTick(function () {
+          if (vm.useTiptap) { vm.syncTemplateToWriter(id, ''); }
+        });
       },
       loadEmrDefs: function (id) {
         var vm = this;
@@ -199,6 +267,13 @@
       },
       /* ===== 保存/完成交付 ===== */
       emitSave: function (submit) {
+        /* Tiptap 模式: 委托书写器(其自带只读/必填守卫与提示), 不回退表单逻辑 */
+        if (this.useTiptap) {
+          var writer = this.tiptapWriter();
+          if (writer) { writer.emitSave(submit); }
+          else { ElementPlus.ElMessage.warning('病历书写器加载中, 请稍后重试'); }
+          return;
+        }
         if (this.isLegacySoap) { ElementPlus.ElMessage.warning('历史文本病历为只读, 无法在此编辑保存'); return; }
         if (!this.selectedEmrTemplateId) { ElementPlus.ElMessage.warning('请先选择结构化病历模板'); return; }
         if (!this.validateStructRequired()) { return; }
@@ -213,11 +288,23 @@
       },
       /* 供主编排(完成接诊 F4)调用: 历史文本病历返回 true(后端沿用既有列), 结构化须选模板且必填齐备 */
       validateForFinish: function () {
+        /* Tiptap 模式: 委托书写器(未就绪时保守拦截, 不回退表单数据) */
+        if (this.useTiptap) {
+          var writer = this.tiptapWriter();
+          if (writer) { return writer.validateForFinish(); }
+          ElementPlus.ElMessage.warning('病历书写器加载中, 请稍后重试');
+          return false;
+        }
         if (this.isLegacySoap) { return true; }
         if (!this.selectedEmrTemplateId) { ElementPlus.ElMessage.warning('请先选择结构化病历模板并完成书写'); return false; }
         return this.validateStructRequired();
       },
       buildFinishPayload: function () {
+        /* Tiptap 模式: 委托书写器(返回 content+structure 双轨; 未就绪返回 {} 由 validateForFinish 先行拦截) */
+        if (this.useTiptap) {
+          var writer = this.tiptapWriter();
+          return writer ? writer.buildFinishPayload() : {};
+        }
         if (this.isLegacySoap) { return {}; }
         return { emrTemplateId: this.selectedEmrTemplateId, structure: JSON.stringify(this.structForm || {}) };
       },
@@ -249,6 +336,12 @@
       },
       /* ===== 摘要引用(处方/医嘱【插入病历】及报告引用经主编排中继至此, 写入 structForm) ===== */
       appendTreatment: function (text) {
+        /* Tiptap 模式: 委托书写器(自带可插入性校验与提示) */
+        if (this.useTiptap) {
+          var writer = this.tiptapWriter();
+          if (writer) { writer.appendTreatment(text); }
+          return;
+        }
         var t = String(text || '').trim();
         if (!t) { return; }
         if (this.isLegacySoap || this.readOnly) { ElementPlus.ElMessage.warning('病历只读, 无法插入摘要'); return; }
@@ -258,6 +351,12 @@
         ElementPlus.ElMessage.success('已插入治疗意见, 请核对后随病历保存(F3)');
       },
       appendAuxExam: function (text) {
+        /* Tiptap 模式: 委托书写器 */
+        if (this.useTiptap) {
+          var writer = this.tiptapWriter();
+          if (writer) { writer.appendAuxExam(text); }
+          return;
+        }
         var t = String(text || '').trim();
         if (!t) { return; }
         if (this.isLegacySoap || this.readOnly) { ElementPlus.ElMessage.warning('病历只读, 无法插入摘要'); return; }
@@ -268,6 +367,12 @@
       },
       /* OP-A 引用体征摘要到「体格检查」 */
       appendVital: function (text) {
+        /* Tiptap 模式: 委托书写器 */
+        if (this.useTiptap) {
+          var writer = this.tiptapWriter();
+          if (writer) { writer.appendVital(text); }
+          return;
+        }
         var t = String(text || '').trim();
         if (!t) { return; }
         if (this.isLegacySoap || this.readOnly) { ElementPlus.ElMessage.warning('病历只读, 无法引用体征'); return; }
@@ -280,6 +385,12 @@
       },
       /* OP-A 引用预问诊到「主诉/现病史」 */
       applyPreConsult: function (payload) {
+        /* Tiptap 模式: 委托书写器 */
+        if (this.useTiptap) {
+          var writer = this.tiptapWriter();
+          if (writer) { writer.applyPreConsult(payload); }
+          return;
+        }
         payload = payload || {};
         if (this.isLegacySoap || this.readOnly) { ElementPlus.ElMessage.warning('病历只读, 无法引用预问诊'); return; }
         var vm = this, applied = 0;
@@ -291,6 +402,12 @@
       /* 引用历史就诊: 按对齐 fieldKey 尽力回填 structForm(仅当前模板存在的字段) */
       quoteHistory: function (history) {
         if (!history) { return; }
+        /* Tiptap 模式: 委托书写器 */
+        if (this.useTiptap) {
+          var writer = this.tiptapWriter();
+          if (writer) { writer.quoteHistory(history); }
+          return;
+        }
         if (this.isLegacySoap || this.readOnly) { ElementPlus.ElMessage.warning('病历只读, 无法引用'); return; }
         var vm = this;
         var map = {
@@ -332,6 +449,12 @@
       },
       quoteExamReport: function (rep) {
         if (!rep) { return; }
+        /* Tiptap 模式: 委托书写器 */
+        if (this.useTiptap) {
+          var writer = this.tiptapWriter();
+          if (writer) { writer.quoteExamReport(rep); }
+          return;
+        }
         var type = rep.reportType === 'lab' ? '检验' : '检查';
         var name = rep.itemNames || rep.orderName || rep.reportNo || '未命名项目';
         var date = String(rep.reportTime || rep.auditTime || rep.createTime || '').slice(0, 10);

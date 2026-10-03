@@ -42,7 +42,7 @@ public class HisNursingPlanInstance extends BaseEntity {
     private LocalDateTime evaluationTime;
     /** 评价结果 */
     private String evaluationResult;
-    /** 状态: 1执行中 2已评价 3已关闭 */
+    /** 状态: 0推荐待确认(评估智能推荐, 护士确认后转执行中) 1执行中 2已评价 3已关闭 */
     private Integer status;
     /** 责任护士ID(his_staff.id) */
     private Long nurseId;

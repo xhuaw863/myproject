@@ -290,6 +290,87 @@
     if (window.ElementPlus && ElementPlus.ElMessage) { ElementPlus.ElMessage.success(msg || '操作成功'); }
   };
 
+  /* ===== 费别/支付方式字典轻量缓存(消费端共享: 挂号/收费/住院) =====
+   * loadFeePayDict(scene): 拉 /api/his/fee-pay-dict/reg-options?scene= 缓存该场景的 feeTypes/payMethods;
+   *   重复调用命中缓存复用同一 Promise; 失败回落空数组(消费端保留原硬编码兜底, 不阻断页面)。
+   * feeTypeLabel/payMethodLabel: 字典优先(费别按 code, 支付按 code 或 legacy_codes 命中历史旧值),
+   *   未命中回落传入原值(未知历史值原样展示)。 */
+  HIS._fpCache = HIS._fpCache || {};
+  HIS.loadFeePayDict = function (scene) {
+    scene = String(scene || 'OTP').toUpperCase();
+    var slot = HIS._fpCache[scene];
+    if (slot && slot.promise) { return slot.promise; }
+    slot = HIS._fpCache[scene] = { feeTypes: [], payMethods: [] };
+    slot.promise = HIS.get('/api/his/fee-pay-dict/reg-options?scene=' + scene).then(function (d) {
+      slot.feeTypes = (d && d.feeTypes) || [];
+      slot.payMethods = (d && d.payMethods) || [];
+      return slot;
+    }).catch(function () { slot.promise = null; return slot; });
+    return slot.promise;
+  };
+  HIS.feeTypeOpts = function (scene) { var s = HIS._fpCache[String(scene || 'OTP').toUpperCase()]; return s ? (s.feeTypes || []) : []; };
+  HIS.payMethodOpts = function (scene) { var s = HIS._fpCache[String(scene || 'OTP').toUpperCase()]; return s ? (s.payMethods || []) : []; };
+  HIS.feeTypeLabel = function (code) {
+    if (code === null || code === undefined || code === '') { return '-'; }
+    var target = String(code).toUpperCase();
+    var scenes = Object.keys(HIS._fpCache);
+    for (var i = 0; i < scenes.length; i++) {
+      var ft = HIS._fpCache[scenes[i]].feeTypes || [];
+      for (var j = 0; j < ft.length; j++) { if (String(ft[j].code).toUpperCase() === target) { return ft[j].name; } }
+    }
+    /* 内置历史码中文兜底(字典未加载时) */
+    if (target === 'SELF') { return '自费'; }
+    if (target === 'INSURANCE') { return '医保'; }
+    return String(code);
+  };
+  HIS.payMethodLabel = function (code) {
+    if (code === null || code === undefined || code === '') { return '-'; }
+    var raw = String(code);
+    var target = raw.toUpperCase();
+    var scenes = Object.keys(HIS._fpCache);
+    for (var i = 0; i < scenes.length; i++) {
+      var pm = HIS._fpCache[scenes[i]].payMethods || [];
+      for (var j = 0; j < pm.length; j++) {
+        var p = pm[j];
+        if (String(p.code).toUpperCase() === target) { return p.name; }
+        if (p.legacyCodes && String(p.legacyCodes).split(',').some(function (lc) { return lc.trim().toUpperCase() === target; })) { return p.name; }
+      }
+    }
+    return raw;
+  };
+
+  /* ===== 医疗类别字典轻量缓存(消费端共享: 挂号/入院) =====
+   * loadMedTypeDict(scene): 拉 /api/his/med-type/options?scene=OTP|IPT 缓存该场景启用且按登录机构级别开放的条目;
+   *   重复调用命中缓存复用同一 Promise; 失败回落空数组(消费端保留原硬编码兜底, 不阻断页面)。
+   * medTypeOpts(scene): 取已缓存列表; medTypeLabel(code, fallbackMap): 字典优先, 未命中回落传入 map 或原值。 */
+  HIS._medTypeCache = HIS._medTypeCache || {};
+  HIS.loadMedTypeDict = function (scene) {
+    scene = String(scene || 'OTP').toUpperCase() === 'IPT' ? 'IPT' : 'OTP';
+    var slot = HIS._medTypeCache[scene];
+    if (slot && slot.promise) { return slot.promise; }
+    slot = HIS._medTypeCache[scene] = { list: [] };
+    slot.promise = HIS.get('/api/his/med-type/options?scene=' + scene).then(function (d) {
+      slot.list = d || [];
+      return slot.list;
+    }).catch(function () { slot.promise = null; return slot.list || []; });
+    return slot.promise;
+  };
+  HIS.medTypeOpts = function (scene) {
+    var s = HIS._medTypeCache[String(scene || 'OTP').toUpperCase() === 'IPT' ? 'IPT' : 'OTP'];
+    return s ? (s.list || []) : [];
+  };
+  HIS.medTypeLabel = function (code, fallbackMap) {
+    if (code === null || code === undefined || code === '') { return code; }
+    var target = String(code);
+    var scenes = Object.keys(HIS._medTypeCache);
+    for (var i = 0; i < scenes.length; i++) {
+      var l = (HIS._medTypeCache[scenes[i]] && HIS._medTypeCache[scenes[i]].list) || [];
+      for (var j = 0; j < l.length; j++) { if (String(l[j].code) === target) { return l[j].name; } }
+    }
+    if (fallbackMap && fallbackMap[target] != null) { return fallbackMap[target]; }
+    return target;
+  };
+
   /* 列表显示模式默认值(全局共享): 优先本地偏好 his.<key>('0'=全量,其余=分页),
    * 无本地偏好时回落租户参数 system.list_default_paged(默认分页)。各视图 data() 内调用。 */
   HIS.pagedDefault = function (key) {

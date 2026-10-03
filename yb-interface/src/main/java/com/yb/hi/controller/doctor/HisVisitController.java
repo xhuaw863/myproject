@@ -11,6 +11,7 @@ import com.yb.hi.service.doctor.HisOrderService;
 import com.yb.hi.service.doctor.HisPrescriptionService;
 import com.yb.hi.service.doctor.HisVisitService;
 import com.yb.hi.service.doctor.EmrStructureReader;
+import com.yb.hi.service.emr.EmrDocumentService;
 import org.springframework.format.annotation.DateTimeFormat;
 import org.springframework.web.bind.annotation.*;
 
@@ -31,15 +32,18 @@ public class HisVisitController {
     private final HisMedicalRecordService medicalRecordService;
     private final HisPrescriptionService prescriptionService;
     private final HisOrderService orderService;
+    // P3 Tiptap 双轨: detail 回显前解密 his_visit.content(emrFormat=1)
+    private final EmrDocumentService emrDocumentService;
 
     public HisVisitController(HisVisitService visitService, HisDiagnosisService diagnosisService,
                               HisMedicalRecordService medicalRecordService, HisPrescriptionService prescriptionService,
-                              HisOrderService orderService) {
+                              HisOrderService orderService, EmrDocumentService emrDocumentService) {
         this.visitService = visitService;
         this.diagnosisService = diagnosisService;
         this.medicalRecordService = medicalRecordService;
         this.prescriptionService = prescriptionService;
         this.orderService = orderService;
+        this.emrDocumentService = emrDocumentService;
     }
 
     /** 候诊/就诊队列 */
@@ -59,6 +63,11 @@ public class HisVisitController {
     public R<Map<String, Object>> detail(@RequestParam Long id) {
         Map<String, Object> data = new LinkedHashMap<>();
         HisVisit visit = visitService.getById(id);
+        // P3 Tiptap 双轨: emrFormat=1 时回显前解密 content(历史明文/解密失败原样透传, 不阻断详情)
+        if (visit != null && visit.getEmrFormat() != null && visit.getEmrFormat() == 1
+                && visit.getContent() != null) {
+            visit.setContent(emrDocumentService.loadDocument(2, visit.getId(), visit.getContent()));
+        }
         data.put("visit", visit);
         data.put("record", medicalRecordService.getByVisit(id));
         // 方案 B 收敛(B2): 供打印/回显消费的 SOAP 视图, 有 structure 则派生, 否则回退旧 SOAP 列

@@ -287,7 +287,7 @@ public class ScheduleTemplateService {
         if (d.getOrgId() == null || !d.getOrgId().equals(orgId)) {
             throw new BizException("排班模板科室必须属于本机构, 不可跨机构");
         }
-        if (!"门诊科室".equals(d.getDeptCategory())) {
+        if (!HisDeptService.hasCategory(d.getDeptCategory(), "门诊科室")) {
             throw new BizException("仅「门诊科室」可建排班模板: " + d.getDeptName());
         }
         Integer lv = d.getDeptLevel();

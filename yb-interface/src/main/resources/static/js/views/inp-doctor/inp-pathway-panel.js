@@ -115,13 +115,17 @@
         pickLoading: false,
         pickTemplates: [],
         starting: false,
-        /* 退出对话框 */
+        /* 退出对话框(原因分类字典 pathway_exit_reason + 自由文本备注) */
         exitDialog: false,
         exitReason: '',
+        exitType: '',
+        exitTypeOptions: [],
         exitLoading: false,
-        /* 变异对话框 */
+        /* 变异对话框(原因分类字典 pathway_var_reason + 自由文本备注) */
         varianceDialog: false,
         varianceReason: '',
+        varianceType: '',
+        varianceTypeOptions: [],
         varianceLoading: false,
         varianceTarget: null
       };
@@ -150,6 +154,7 @@
                 rows.push({
                   dayNo: d.dayNo,
                   orderContent: t.orderContent || '(任务已删除)',
+                  varianceTypeName: t.varianceTypeName || '',
                   varianceReason: t.varianceReason || '-',
                   execDate: t.execDate || ''
                 });
@@ -330,18 +335,39 @@
           if (e !== 'cancel' && e !== 'close') { HIS.notifyError(e); }
         });
       },
-      /* ===== 退出路径(填写退出原因) ===== */
+      /* ===== 退出路径(原因分类必选口径, 自由文本降为备注) ===== */
       openExit() {
         this.exitReason = '';
+        this.exitType = '';
         this.exitDialog = true;
+        this.loadTypeOptions('exit');
+      },
+      /* 原因分类字典懒加载(路径统计质控口径, HIS.stdValues 自带缓存) */
+      loadTypeOptions(which) {
+        const vm = this;
+        if (which === 'exit') {
+          if (vm.exitTypeOptions.length) { return; }
+          HIS.stdValues('cv_code', 'pathway_exit_reason')
+            .then(function (l) { vm.exitTypeOptions = l || []; })
+            .catch(function () { /* 字典失败不阻塞登记 */ });
+        } else {
+          if (vm.varianceTypeOptions.length) { return; }
+          HIS.stdValues('cv_code', 'pathway_var_reason')
+            .then(function (l) { vm.varianceTypeOptions = l || []; })
+            .catch(function () { /* 同上 */ });
+        }
       },
       doExit() {
         const vm = this;
         if (vm.exitLoading) { return; }
         vm.exitLoading = true;
         const reason = String(vm.exitReason || '').trim();
+        const type = String(vm.exitType || '').trim();
+        const qs = [];
+        if (reason) { qs.push('reason=' + encodeURIComponent(reason)); }
+        if (type) { qs.push('type=' + encodeURIComponent(type)); }
         HIS.put('/api/his/pathway/instance/' + encodeURIComponent(vm.instance.id) + '/exit'
-          + (reason ? '?reason=' + encodeURIComponent(reason) : ''))
+          + (qs.length ? '?' + qs.join('&') : ''))
           .then(function () {
             HIS.notifySuccess('已退出临床路径');
             vm.exitDialog = false;
@@ -371,16 +397,22 @@
       openVariance(t) {
         this.varianceTarget = t;
         this.varianceReason = '';
+        this.varianceType = '';
         this.varianceDialog = true;
+        this.loadTypeOptions('variance');
       },
       doVariance() {
         const vm = this;
         if (vm.varianceLoading) { return; }
         const reason = String(vm.varianceReason || '').trim();
-        if (!reason) { ElementPlus.ElMessage.warning('请填写变异原因(变异记录将纳入路径质量分析)'); return; }
+        const type = String(vm.varianceType || '').trim();
+        if (!type && !reason) { ElementPlus.ElMessage.warning('请选择变异原因分类或填写原因(变异记录将纳入路径质量分析)'); return; }
         vm.varianceLoading = true;
+        const qs = [];
+        if (reason) { qs.push('reason=' + encodeURIComponent(reason)); }
+        if (type) { qs.push('type=' + encodeURIComponent(type)); }
         HIS.put('/api/his/pathway/instance/exec/' + encodeURIComponent(vm.varianceTarget.execId)
-          + '/variance?reason=' + encodeURIComponent(reason))
+          + '/variance?' + qs.join('&'))
           .then(function () {
             HIS.notifySuccess('已登记变异');
             vm.varianceDialog = false;
@@ -474,7 +506,10 @@
                 <template #default="s">第{{ s.row.dayNo }}天</template>
               </el-table-column>
               <el-table-column prop="orderContent" label="任务内容" min-width="220" show-overflow-tooltip></el-table-column>
-              <el-table-column prop="varianceReason" label="变异原因" min-width="200" show-overflow-tooltip></el-table-column>
+              <el-table-column label="原因分类" width="130" show-overflow-tooltip>
+                <template #default="s">{{ s.row.varianceTypeName || '未分类' }}</template>
+              </el-table-column>
+              <el-table-column prop="varianceReason" label="备注" min-width="160" show-overflow-tooltip></el-table-column>
               <el-table-column label="操作时间" width="110" align="center">
                 <template #default="s">{{ s.row.execDate || '-' }}</template>
               </el-table-column>
@@ -510,20 +545,26 @@
           </template>
         </el-dialog>
 
-        <!-- 退出路径对话框 -->
+        <!-- 退出路径对话框(原因分类走 pathway_exit_reason 字典, 供质控柏拉图; 自由文本为备注) -->
         <el-dialog v-model="exitDialog" title="退出临床路径" width="480px" :close-on-click-modal="false">
-          <div class="iw-hint" style="margin:0 0 10px">退出将终止本患者的路径流程, 请填写退出原因(如: 转入其他治疗 / 病情变化 / 患者要求)。</div>
-          <el-input v-model="exitReason" type="textarea" :rows="3" placeholder="退出原因(选填)"></el-input>
+          <div class="iw-hint" style="margin:0 0 10px">退出将终止本患者的路径流程, 请选择退出原因分类(纳入路径质控分析)。</div>
+          <el-select v-model="exitType" clearable filterable placeholder="退出原因分类(建议必选)" style="width:100%;margin-bottom:10px">
+            <el-option v-for="o in exitTypeOptions" :key="o.code" :label="o.name" :value="o.code"></el-option>
+          </el-select>
+          <el-input v-model="exitReason" type="textarea" :rows="3" placeholder="补充说明/备注(选填)"></el-input>
           <template #footer>
             <el-button @click="exitDialog = false">取消</el-button>
             <el-button type="danger" :loading="exitLoading" @click="doExit">确认退出</el-button>
           </template>
         </el-dialog>
 
-        <!-- 变异登记对话框 -->
+        <!-- 变异登记对话框(原因分类走 pathway_var_reason 字典, 供质控柏拉图; 自由文本为备注) -->
         <el-dialog v-model="varianceDialog" title="登记变异" width="480px" :close-on-click-modal="false">
           <div class="iw-hint" style="margin:0 0 10px">任务: {{ varianceTarget && varianceTarget.orderContent || '-' }}</div>
-          <el-input v-model="varianceReason" type="textarea" :rows="3" placeholder="变异原因(必填, 如: 患者拒绝 / 病情变化调整方案 / 检查条件不具备)"></el-input>
+          <el-select v-model="varianceType" clearable filterable placeholder="变异原因分类(建议必选)" style="width:100%;margin-bottom:10px">
+            <el-option v-for="o in varianceTypeOptions" :key="o.code" :label="o.name" :value="o.code"></el-option>
+          </el-select>
+          <el-input v-model="varianceReason" type="textarea" :rows="3" placeholder="补充说明/备注(如: 患者拒绝 / 病情变化调整方案)"></el-input>
           <template #footer>
             <el-button @click="varianceDialog = false">取消</el-button>
             <el-button type="danger" :loading="varianceLoading" @click="doVariance">确认登记</el-button>

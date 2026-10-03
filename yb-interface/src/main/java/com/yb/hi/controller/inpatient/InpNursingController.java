@@ -20,6 +20,7 @@ import java.util.Map;
  * 住院护理记录接口(护士站): 五类记录(体温单/评估/计划/措施/总结)增删改查 + 体温单图表数据。
  * content 为 JSON 文本; 体温单(recordType=1)结构
  * {time, temperature, pulse, respiration, systolicBp, diastolicBp}(兼容 blood_pressure "120/80")。
+ * P4a-5 富文本轨: content 为 Tiptap 文档(type=doc)时服务端 AES-GCM 加密落库, 列表返回前解密。
  */
 @RestController
 @RequestMapping("/api/his/inp/nursing")
@@ -36,6 +37,13 @@ public class InpNursingController {
     public R<List<Map<String, Object>>> list(@PathVariable Long visitId,
                                              @RequestParam(required = false) Integer recordType) {
         return R.ok(nursingService.listByVisit(visitId, recordType));
+    }
+
+    /** 护理记录列表(query 形态, P4a-5 书写器历史面板): 与 /list/{visitId} 同口径。 */
+    @GetMapping("/list")
+    public R<List<Map<String, Object>>> listByQuery(@RequestParam Long inpVisitId,
+                                                    @RequestParam(required = false) Integer recordType) {
+        return R.ok(nursingService.listByVisit(inpVisitId, recordType));
     }
 
     /** 新建护理记录: recordTime 取当前, 护士取当前登录职工。 */

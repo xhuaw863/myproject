@@ -5,6 +5,7 @@ import com.yb.hi.common.MockYbServer;
 import com.yb.hi.config.TenantYbConfigResolver;
 import com.yb.hi.entity.yb.HisCompTask;
 import com.yb.hi.service.cashier.CashierService;
+import com.yb.hi.service.inpatient.InpSettleService;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.scheduling.annotation.Scheduled;
@@ -28,13 +29,16 @@ public class CompTaskSweeper {
     private final MockYbServer mockYbServer;
     private final TenantYbConfigResolver ybConfigResolver;
     private final CashierService cashierService;
+    private final InpSettleService inpSettleService;
 
     public CompTaskSweeper(JdbcTemplate jdbcTemplate, MockYbServer mockYbServer,
-                           TenantYbConfigResolver ybConfigResolver, CashierService cashierService) {
+                           TenantYbConfigResolver ybConfigResolver, CashierService cashierService,
+                           InpSettleService inpSettleService) {
         this.jdbcTemplate = jdbcTemplate;
         this.mockYbServer = mockYbServer;
         this.ybConfigResolver = ybConfigResolver;
         this.cashierService = cashierService;
+        this.inpSettleService = inpSettleService;
     }
 
     @Scheduled(fixedDelay = 30000)
@@ -79,9 +83,55 @@ public class CompTaskSweeper {
             resolveRefund(taskId, tenantId, t);
         } else if (HisCompTask.BIZ_PARTIAL_REFUND.equals(bizType)) {
             resolvePartial(taskId, tenantId, t);
+        } else if (HisCompTask.BIZ_INP_SETTLE.equals(bizType)) {
+            resolveInpSettle(taskId, tenantId, t);
+        } else if (HisCompTask.BIZ_INP_RTN.equals(bizType)) {
+            resolveInpRtn(taskId, tenantId, t);
         } else {
             resolveUnknown(taskId, tenantId, t);
         }
+    }
+
+    /** INP_SETTLE: 住院 2304 UNKNOWN —— 按平台侧结算受理状态回填终态或复位中间态(ref_id=his_inp_settle.id) */
+    private void resolveInpSettle(Long taskId, Long tenantId, Map<String, Object> t) {
+        Long settleId = toLong(t.get("ref_id"));
+        Long txnLogId = toLong(t.get("txn_log_id"));
+        boolean mock = ybConfigResolver.resolve().isMockEnabled();
+        if (!mock) {
+            dead(taskId, tenantId, "真实模式 2304 UNKNOWN 需人工核对平台结算状态后处理");
+            log.error("【医保补偿告警】真实模式住院结算结果未知, 需人工核对: taskId={}, settleId={}", taskId, settleId);
+            return;
+        }
+        // 由触发任务的 UNKNOWN 交易 msgid 定位平台侧结算流水(2304 落结算; 若 UNKNOWN 卡在 2301 则无结算流水=未受理)
+        String msgid = null;
+        if (txnLogId != null) {
+            List<String> msgs = jdbcTemplate.queryForList(
+                    "SELECT msgid FROM his_yb_txn_log WHERE id=? AND tenant_id=? AND deleted=0",
+                    String.class, txnLogId, tenantId);
+            if (!msgs.isEmpty()) {
+                msgid = msgs.get(0);
+            }
+        }
+        JSONObject setlinfo = msgid == null ? null : mockYbServer.findSetlByMsgid(msgid);
+        boolean accepted = setlinfo != null;
+        String setlId = accepted ? setlinfo.getString("setl_id") : null;
+        String memo = inpSettleService.resolveUnknownSettle(tenantId, settleId, accepted, setlId);
+        done(taskId, tenantId, memo);
+    }
+
+    /** INP_RTN: 住院 2305 UNKNOWN —— 按 mock 平台侧原结算是否已撤销回填已撤销终态或复位已结算 */
+    private void resolveInpRtn(Long taskId, Long tenantId, Map<String, Object> t) {
+        Long settleId = toLong(t.get("ref_id"));
+        boolean mock = ybConfigResolver.resolve().isMockEnabled();
+        if (!mock) {
+            dead(taskId, tenantId, "真实模式 2305 UNKNOWN 需人工核对平台撤销状态后处理");
+            log.error("【医保补偿告警】真实模式住院结算撤销结果未知, 需人工核对: taskId={}, settleId={}", taskId, settleId);
+            return;
+        }
+        String setlId = inpSettleService.findSetlIdForCancel(tenantId, settleId);
+        boolean cancelled = mockYbServer.isSetlCancelled(setlId);
+        String memo = inpSettleService.resolveUnknownCancel(tenantId, settleId, cancelled);
+        done(taskId, tenantId, memo);
     }
 
     /** REFUND: 2208 UNKNOWN 退费 —— 按平台侧撤销受理状态回填终态或复位中间态 */

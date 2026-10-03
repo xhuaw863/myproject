@@ -26,7 +26,7 @@ public class HisDept extends BaseEntity {
 
     /** 上级科室ID(科室层级树); 0/null=顶级大类节点(门诊/住院/病区护理/医技/行政后勤) */
     private Long parentId;
-    /** 科室大类(本地受控枚举: 门诊科室/住院科室/病区护理/医技科室/行政后勤); 子节点冗余继承便于筛选 */
+    /** 科室大类(本地受控枚举, 支持多选): 逗号分隔集合, 候选门诊科室/住院科室/病区护理/医技科室/行政后勤; 一个科室可同时挂多个标签 */
     private String deptCategory;
     /** 层级: 1-大类 2-科室 3-窗口/诊室(药房窗口、门诊诊室) */
     private Integer deptLevel;
@@ -37,13 +37,13 @@ public class HisDept extends BaseEntity {
     private String deptName;
     /** 科室类型: 临床/医技/行政 */
     private String deptType;
-    /** 医保科别编码(医保字典 cv_code:caty; 2201/2203必填, 亦作标准诊疗科目分类) */
+    /** 医保科别编码(医保字典 cv_code:caty; 2201/2203必填): 科室管理唯一维护的"院内科室->医保科室"映射字段, 同时驱动 2201 的 caty 与 dept_code 两个槽位 */
     private String deptCaty;
     /** 医保科别名称(服务端按 deptCaty 回填) */
     private String deptCatyName;
     /** 医保科别字典来源标识(cv_code:caty) */
     private String deptCatySrc;
-    /** 医保科室编码 */
+    /** 医保科室编码(已退役, 不再单独维护): 保存时由 deptCaty 镜像同步, 仅为兼容既有读取方(排班查询)而保留 */
     private String ybDeptCode;
     /** 联系电话 */
     private String phone;
@@ -53,7 +53,7 @@ public class HisDept extends BaseEntity {
     private Integer sortNo;
     /** 状态: 1-启用 0-停用 */
     private Integer status;
-    /** 门诊开诊: 1-开诊 0-未开诊(仅对 dept_category=门诊科室 有意义; 排班/挂号科室下拉只列开诊科室) */
+    /** 门诊开诊: 1-开诊 0-未开诊(仅对科室大类含门诊科室 有意义; 排班/挂号科室下拉只列开诊科室) */
     private Integer openClinic;
     /** 默认发药药房-西药渠道(his_pharmacy_def.id; 开方未手选时按 rxType 回落, 空=不预绑) */
     private Long defPharmacyWest;

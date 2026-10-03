@@ -23,6 +23,7 @@ import org.springframework.util.StringUtils;
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.regex.Pattern;
 
@@ -36,13 +37,18 @@ import java.util.regex.Pattern;
  *    (trigger_scale_code 相等 + 评分命中区间), 复制模板的诊断/目标/措施;
  *    同一模板对同一患者仅保留一个执行中实例, 重复评估不重复建计划;
  * 4) 实例是模板的快照(创建时复制诊断/目标/措施), 模板后续修改/删除不影响已生成实例;
- * 5) actual_interventions 为 JSON 数组, recordIntervention 追加措施记录(缺 time 字段自动补记录时间)。
+ * 5) actual_interventions 为 JSON 数组, recordIntervention 追加措施记录(缺 time 字段自动补记录时间);
+ * 6) 智能推荐(P4b-2): autoGeneratePlan 在评估风险档位达阈值时(由 NursingScaleService 判定后调用)
+ *    从该量表的启用模板取创建最早者生成"推荐待确认"计划(status=0, 护士 confirmPlan 确认后转执行中),
+ *    与评分区间精确命中路径互补, 覆盖高风险但评分未命中任何模板区间的场景;
+ *    generatePlanSummaryText 将计划(诊断→目标→措施)拼为可插入护理记录单的摘要文本。
  */
 @Slf4j
 @Service
 public class NursingPlanService {
 
-    /** 计划实例状态: 1执行中 2已评价 3已关闭 */
+    /** 计划实例状态: 0推荐待确认 1执行中 2已评价 3已关闭 */
+    public static final int STATUS_RECOMMENDED = 0;
     public static final int STATUS_ACTIVE = 1;
     public static final int STATUS_EVALUATED = 2;
     public static final int STATUS_CLOSED = 3;
@@ -229,6 +235,84 @@ public class NursingPlanService {
         return inst;
     }
 
+    /**
+     * 根据评估结果自动生成护理计划(智能推荐, P4b-2):
+     * 风险档位 riskLevel 为量表分级颜色归一化的 0-3(0蓝绿无险 1橙中险 2红高危 3深红极高危),
+     * 由 NursingScaleService 判定达阈值后调用; 从该量表的启用模板中取创建最早者,
+     * 复制诊断/目标/措施生成"推荐待确认"计划(status=0, 护士确认采纳后转执行中):
+     * - 与 autoCreateFromAssessment(评分区间精确命中→直接建执行中计划)互补, 覆盖高风险
+     *   但评分未命中任何模板区间的场景(模板区间配置不全时的智能兜底);
+     * - 同一模板对同一患者已有未关闭实例(推荐/执行中/已评价)时不重复推荐, 返回 null;
+     * - 无可用模板返回 null(由护士手工创建计划)。
+     */
+    public HisNursingPlanInstance autoGeneratePlan(Long inpVisitId, String scaleCode, int riskLevel, String assessResult) {
+        if (inpVisitId == null || !StringUtils.hasText(scaleCode)) {
+            return null;
+        }
+        HisInpVisit visit = requireVisit(inpVisitId);
+        List<HisNursingPlanTemplate> candidates = templateMapper.selectList(
+                Wrappers.<HisNursingPlanTemplate>lambdaQuery()
+                        .eq(HisNursingPlanTemplate::getTriggerScaleCode, scaleCode.trim())
+                        .eq(HisNursingPlanTemplate::getStatus, TEMPLATE_ENABLED)
+                        .orderByAsc(HisNursingPlanTemplate::getId));
+        if (candidates.isEmpty()) {
+            return null;
+        }
+        HisNursingPlanTemplate matched = candidates.get(0);
+        // 同一模板+患者已有未关闭实例(0推荐/1执行中/2已评价) → 不重复推荐
+        List<HisNursingPlanInstance> open = instanceMapper.selectList(
+                Wrappers.<HisNursingPlanInstance>lambdaQuery()
+                        .eq(HisNursingPlanInstance::getInpVisitId, visit.getId())
+                        .eq(HisNursingPlanInstance::getTemplateId, matched.getId())
+                        .in(HisNursingPlanInstance::getStatus, STATUS_RECOMMENDED, STATUS_ACTIVE, STATUS_EVALUATED)
+                        .orderByDesc(HisNursingPlanInstance::getId));
+        if (!open.isEmpty()) {
+            log.info("患者[visitId={}] 模板[{}] 已有未关闭护理计划, 本次高风险评估不重复推荐",
+                    visit.getId(), matched.getId());
+            return null;
+        }
+        HisNursingPlanInstance inst = new HisNursingPlanInstance();
+        inst.setOrgId(visit.getOrgId());
+        inst.setInpVisitId(visit.getId());
+        inst.setTemplateId(matched.getId());
+        inst.setNursingDiagnosis(matched.getNursingDiagnosis());
+        inst.setNursingGoal(matched.getNursingGoal());
+        inst.setPlannedInterventions(matched.getInterventions());
+        inst.setStartTime(LocalDateTime.now());
+        inst.setStatus(STATUS_RECOMMENDED);
+        inst.setNurseId(currentNurseId());
+        instanceMapper.insert(inst);
+        log.info("评估智能推荐护理计划: visitId={}, scale={}, riskLevel={}, templateId={}, instanceId={}, 评估={}",
+                visit.getId(), scaleCode, riskLevel, matched.getId(), inst.getId(), assessResult);
+        return inst;
+    }
+
+    /**
+     * 计划内容同步至护理记录单文本(P4b-2):
+     * 按 诊断→目标→计划措施→已执行措施→评价结果 拼接可整段插入护理记录的摘要文本;
+     * 措施 JSON 元素兼容字符串与 {content|text|name} 对象(取不到可读字段时降级为原文)。
+     */
+    public String generatePlanSummaryText(Long planInstanceId) {
+        HisNursingPlanInstance inst = requireInstance(planInstanceId);
+        StringBuilder sb = new StringBuilder("【护理计划摘要】");
+        sb.append("护理诊断:").append(StringUtils.hasText(inst.getNursingDiagnosis())
+                ? inst.getNursingDiagnosis() : "无").append("；");
+        sb.append("护理目标:").append(StringUtils.hasText(inst.getNursingGoal())
+                ? inst.getNursingGoal() : "无").append("；");
+        List<String> planned = interventionTexts(inst.getPlannedInterventions());
+        if (!planned.isEmpty()) {
+            sb.append("计划措施:").append(joinNumbered(planned)).append("；");
+        }
+        List<String> actual = interventionTexts(inst.getActualInterventions());
+        if (!actual.isEmpty()) {
+            sb.append("已执行措施:").append(joinNumbered(actual)).append("；");
+        }
+        if (StringUtils.hasText(inst.getEvaluationResult())) {
+            sb.append("评价结果:").append(inst.getEvaluationResult()).append("；");
+        }
+        return sb.toString();
+    }
+
     /** 患者计划列表(按就诊): 可选状态筛选, 开始时间倒序(最新在前)。 */
     public List<HisNursingPlanInstance> listByVisit(Long visitId, Integer status) {
         requireVisit(visitId);
@@ -307,7 +391,22 @@ public class NursingPlanService {
         }
     }
 
-    /** 关闭计划(status→3): 执行中/已评价均可关闭; 已关闭的重复操作报错。 */
+    /** 确认采纳推荐计划(status 0→1, P4b-2): 仅推荐待确认状态可确认, 确认后进入执行中。 */
+    public void confirmPlan(Long instanceId) {
+        HisNursingPlanInstance inst = requireInstance(instanceId);
+        if (inst.getStatus() == null || inst.getStatus() != STATUS_RECOMMENDED) {
+            throw new BizException(400, "仅推荐待确认的计划可确认采纳(当前状态: " + statusName(inst.getStatus()) + ")");
+        }
+        int n = instanceMapper.update(null, Wrappers.<HisNursingPlanInstance>lambdaUpdate()
+                .eq(HisNursingPlanInstance::getId, inst.getId())
+                .set(HisNursingPlanInstance::getStatus, STATUS_ACTIVE)
+                .set(HisNursingPlanInstance::getUpdateBy, currentUserName()));
+        if (n == 0) {
+            throw new BizException(409, "计划已变更或不存在, 请刷新后重试");
+        }
+    }
+
+    /** 关闭计划(status→3): 执行中/已评价均可关闭; 已关闭的重复操作报错。推荐计划可直接关闭(婉拒推荐)。 */
     public void closePlan(Long instanceId) {
         HisNursingPlanInstance inst = requireInstance(instanceId);
         if (inst.getStatus() != null && inst.getStatus() == STATUS_CLOSED) {
@@ -465,6 +564,51 @@ public class NursingPlanService {
         return StringUtils.hasText(preferred) ? preferred : fallback;
     }
 
+    /** 措施 JSON 数组 → 可读文本列表: 字符串元素原样, 对象元素优先取 content/text/name 字段; 解析失败返回空列表 */
+    private static List<String> interventionTexts(String interventionsJson) {
+        List<String> out = new ArrayList<>();
+        if (!StringUtils.hasText(interventionsJson)) {
+            return out;
+        }
+        try {
+            JSONArray arr = JSON.parseArray(interventionsJson);
+            if (arr == null) {
+                return out;
+            }
+            for (int i = 0; i < arr.size(); i++) {
+                Object el = arr.get(i);
+                if (el instanceof JSONObject) {
+                    JSONObject o = (JSONObject) el;
+                    String text = o.getString("content");
+                    if (!StringUtils.hasText(text)) {
+                        text = o.getString("text");
+                    }
+                    if (!StringUtils.hasText(text)) {
+                        text = o.getString("name");
+                    }
+                    out.add(StringUtils.hasText(text) ? text : o.toJSONString());
+                } else if (el != null) {
+                    out.add(String.valueOf(el));
+                }
+            }
+        } catch (Exception e) {
+            log.warn("计划措施 JSON 解析失败(摘要降级为不含措施): {}", e.getMessage());
+        }
+        return out;
+    }
+
+    /** 措施列表 → (1)xxx (2)xxx 编号拼接 */
+    private static String joinNumbered(List<String> items) {
+        StringBuilder sb = new StringBuilder();
+        for (int i = 0; i < items.size(); i++) {
+            if (i > 0) {
+                sb.append(" ");
+            }
+            sb.append("(").append(i + 1).append(")").append(items.get(i));
+        }
+        return sb.toString();
+    }
+
     private static String trimToNull(String s) {
         return StringUtils.hasText(s) ? s.trim() : null;
     }
@@ -474,6 +618,8 @@ public class NursingPlanService {
             return "未知";
         }
         switch (status) {
+            case STATUS_RECOMMENDED:
+                return "推荐待确认";
             case STATUS_ACTIVE:
                 return "执行中";
             case STATUS_EVALUATED:

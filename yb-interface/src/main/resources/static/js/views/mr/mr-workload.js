@@ -8,6 +8,7 @@
 
   HIS.views.MrWorkload = {
     mixins: [HIS.kwSelectMixin],
+    components: { 'dept-tree-picker': HIS.components.DeptTreePicker },
     data: function () {
       return {
         loading: false,
@@ -21,6 +22,7 @@
         auditStatus: null,
         keyword: '',
         depts: [],
+        deptRaw: [],
         deptsLoading: false,
         picked: [],
         catOpts: [
@@ -62,17 +64,18 @@
         var vm = this;
         vm.deptsLoading = true;
         HIS.get('/api/his/dept/tree').then(function (d) {
-          var out = [];
+          var out = []; var raw = [];
           (function walk(list, depth) {
             (list || []).forEach(function (n) {
               var pad = '';
               for (var i = 0; i < depth; i++) { pad += '　'; }
               out.push({ id: n.id, label: pad + (n.deptName || ('科室' + n.id)), deptName: n.deptName, deptCode: n.deptCode });
+              raw.push({ id: n.id, parentId: n.parentId, orgId: n.orgId, deptLevel: n.deptLevel, deptName: n.deptName, deptCode: n.deptCode, pyCode: n.pyCode, abbrCode: n.abbrCode });
               if (n.children && n.children.length) { walk(n.children, depth + 1); }
             });
           })(d || [], 0);
-          vm.depts = out;
-        }).catch(function () { vm.depts = []; }).finally(function () { vm.deptsLoading = false; });
+          vm.depts = out; vm.deptRaw = raw;
+        }).catch(function () { vm.depts = []; vm.deptRaw = []; }).finally(function () { vm.deptsLoading = false; });
       },
       loadList: function () {
         var vm = this;
@@ -220,7 +223,7 @@
       '<el-dialog v-model="form.visible" :title="form.id ? \'编辑工作量\' : \'新增工作量登记\'" width="520px" destroy-on-close>',
       '  <el-form label-width="90px" size="default">',
       '    <el-form-item label="统计期" required><el-date-picker v-model="form.period" type="month" placeholder="yyyy-MM" value-format="YYYY-MM" style="width:100%;"></el-date-picker></el-form-item>',
-      '    <el-form-item label="科室"><el-select v-model="form.deptId" filterable clearable placeholder="选择科室" style="width:100%" :loading="deptsLoading" :filter-method="kwFilter(\'fdept\')"><el-option v-for="d in kwOptions(\'fdept\', depts, [\'label\',\'deptName\',\'deptCode\'])" :key="idKey(d.id)" :label="d.label" :value="d.id"></el-option></el-select></el-form-item>',
+      '    <el-form-item label="科室"><dept-tree-picker v-model="form.deptId" :options="deptRaw" placeholder="选择科室" /></el-form-item>',
       '    <el-form-item label="责任人"><el-input v-model="form.staffName" placeholder="责任编码员姓名"></el-input></el-form-item>',
       '    <el-form-item label="类别" required><el-select v-model="form.category" style="width:100%"><el-option v-for="c in catOpts" :key="c.value" :label="c.label" :value="c.value"></el-option></el-select></el-form-item>',
       '    <el-form-item label="项目编码"><el-input v-model="form.itemCode" placeholder="选填"></el-input></el-form-item>',

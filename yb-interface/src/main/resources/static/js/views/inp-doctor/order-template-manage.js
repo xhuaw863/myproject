@@ -69,6 +69,7 @@
 
   HIS.views.InpOrderTemplateManage = {
     name: 'InpOrderTemplateManage',
+    components: { 'dept-tree-picker': HIS.components.DeptTreePicker },
     data: function () {
       return {
         loading: false, rows: [], total: 0, page: 1, size: 20,
@@ -355,7 +356,7 @@
           <el-radio-group v-model="dlg.model.templateType"><el-radio-button :label="1">个人</el-radio-button><el-radio-button :label="2">科室</el-radio-button><el-radio-button :label="3">全院</el-radio-button></el-radio-group>
         </el-form-item>
         <el-form-item label="适用科室" v-if="Number(dlg.model.templateType)===2">
-          <el-select v-model="dlg.model.deptId" filterable placeholder="选择科室" style="width:100%"><el-option v-for="d in depts" :key="d.id" :label="d.deptName" :value="d.id"></el-option></el-select>
+          <dept-tree-picker v-model="dlg.model.deptId" :options="depts" placeholder="选择科室" />
         </el-form-item>
         <el-form-item label="适用病种">
           <el-select v-model="dlg.model.diseaseCode" filterable remote reserve-keyword clearable :remote-method="remoteDiagSearch" :loading="diagSearching" placeholder="ICD-10 诊断检索(可空)" style="width:100%">

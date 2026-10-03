@@ -48,4 +48,38 @@ public class HisInpConsultation extends BaseEntity {
     private Integer status;
     /** 紧急程度: 1普通 2急 3特急 */
     private Integer urgencyLevel;
+    /** 就诊类型: 1住院 2门诊 */
+    private Integer visitType;
+    /** 通用就诊ID(住院his_inp_visit.id/门诊his_visit.id, 存量由inp_visit_id回填) */
+    private Long visitId;
+    /** 会诊分类: 科内/科间/院外/MDT */
+    private String consultCategory;
+    /** 响应截止时间 */
+    private LocalDateTime responseDeadline;
+    /** 超时已通知标记: 1已通知 */
+    private Integer timeoutNotified;
+    /** 关联病历记录ID(his_inp_medical_record.id) */
+    private Long consultRecordId;
+    /** 关联医嘱ID(his_inp_order.id) */
+    private Long orderId;
+    /** 申请医师姓名(冗余) */
+    private String applyDoctorName;
+    /** 受邀医师姓名(冗余) */
+    private String targetDoctorName;
+    /** 申请科室名称(冗余) */
+    private String applyDeptName;
+    /** 受邀科室名称(冗余) */
+    private String targetDeptName;
+    /** 病情摘要 */
+    private String applySummary;
+    /** 发起方评分1-5 */
+    private Integer evalByApplicant;
+    /** 发起方评价说明 */
+    private String evalByApplicantNote;
+    /** 受邀方评分1-5 */
+    private Integer evalByInvitee;
+    /** 受邀方评价说明 */
+    private String evalByInviteeNote;
+    /** 评价时间 */
+    private LocalDateTime evalTime;
 }

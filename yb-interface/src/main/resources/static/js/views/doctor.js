@@ -29,7 +29,8 @@
       'dw-orders-overview': HIS.components.DwOrdersOverview,
       'dw-vital-panel': HIS.components.DwVitalPanel,
       'dw-pre-consult-dialog': HIS.components.DwPreConsultDialog,
-      'dw-report-panel': HIS.components.DwReportPanel
+      'dw-report-panel': HIS.components.DwReportPanel,
+      'dept-tree-picker': HIS.components.DeptTreePicker
     },
     data: function () {
       return {
@@ -247,10 +248,13 @@
       },
       onSaveDraft: function (soapData) {
         var vm = this;
+        soapData = soapData || {};
         if (!vm.canEdit || vm.submitting) { return; }
         vm.submitting = true;
         HIS.post('/api/his/visit/save-draft', Object.assign({}, soapData, {
-          visitId: visitIdOf(vm.currentVisit)
+          visitId: visitIdOf(vm.currentVisit),
+          /* P3-4: Tiptap 模式随草稿保存 content(Tiptap JSON 串, 服务端加密落库); 旧模式为 undefined 将被序列化忽略 */
+          content: soapData.content
         })).then(function () {
           HIS.notifySuccess('病历草稿已暂存(F3)');
         }).catch(HIS.notifyError).finally(function () { vm.submitting = false; });
@@ -270,7 +274,7 @@
       loadDispositionDepts: function () {
         var vm = this;
         HIS.get('/api/his/dept/enabled').then(function (list) {
-          vm.dispositionDepts = (list || []).map(function (d) { return { id: d.id, name: d.deptName || d.name }; });
+          vm.dispositionDepts = list || [];
         }).catch(function () { vm.dispositionDepts = []; });
       },
       doSubmitFinish: function () {
@@ -282,6 +286,8 @@
           visitId: visitIdOf(vm.currentVisit),
           diagnoses: vm.diagnoses,
           uploadYb: true,
+          /* P3-4: Tiptap 模式随完成接诊提交 content(Tiptap JSON 串); 旧模式为 undefined 将被序列化忽略 */
+          content: emrPayload ? emrPayload.content : undefined,
           disposition: vm.dispositionForm.disposition,
           dispositionDeptId: vm.dispositionForm.dispositionDeptId,
           dispositionNote: vm.dispositionForm.dispositionNote
@@ -385,7 +391,17 @@
         var id = visitId || visitIdOf(vm.currentVisit);
         if (!id) { return; }
         HIS.get('/api/his/visit/detail?id=' + encodeURIComponent(id)).then(function (data) {
-          HIS.printRecord({ visit: data.visit, soap: data.soap || data.record || data.visit, diagnoses: data.diagnoses || vm.diagnoses, patient: vm.currentPatient });
+          data = data || {};
+          var visit = data.visit || {};
+          /* P3-4: Tiptap 病历打印须透传 emrFormat/content(detail 接口已解密, 挂在 visit 上) */
+          HIS.printRecord({
+            visit: visit,
+            soap: data.soap || data.record || visit,
+            diagnoses: data.diagnoses || vm.diagnoses,
+            patient: vm.currentPatient,
+            emrFormat: visit.emrFormat,
+            content: visit.content
+          });
         }).catch(HIS.notifyError);
       },
       printCertificate: function (type, id) {
@@ -581,9 +597,7 @@
               </el-radio-group>
             </el-form-item>
             <el-form-item label="转科科室" v-if="dispositionForm.disposition===2">
-              <el-select v-model="dispositionForm.dispositionDeptId" filterable placeholder="选择目标科室" style="width:100%">
-                <el-option v-for="d in dispositionDepts" :key="d.id" :label="d.name" :value="d.id"></el-option>
-              </el-select>
+              <dept-tree-picker v-model="dispositionForm.dispositionDeptId" :options="dispositionDepts" size="small" placeholder="选择目标科室" />
             </el-form-item>
             <el-form-item label="备注"><el-input v-model="dispositionForm.dispositionNote" type="textarea" :autosize="{minRows:2,maxRows:3}"/></el-form-item>
             <div class="dim">确认后将保存病历与诊断、上传医保2203就诊信息，并转入待收费。</div>

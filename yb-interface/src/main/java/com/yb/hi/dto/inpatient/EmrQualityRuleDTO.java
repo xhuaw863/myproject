@@ -28,4 +28,10 @@ public class EmrQualityRuleDTO {
     private String description;
     /** 状态: 1启用 0停用 */
     private Integer status;
+    /** 控制级别(P5a): 1建议 2强制 */
+    private Integer controlLevel;
+    /** 质控环节(P5a): 0通用 1运行(签名前) 2归档 */
+    private Integer qcStage;
+    /** 内涵子类(P5a): value/compare/disease/calc/event */
+    private String ruleCategory;
 }
