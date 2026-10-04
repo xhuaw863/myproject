@@ -53,6 +53,12 @@
       '.inp-tabs { flex:1; min-height:0; display:flex; flex-direction:column; padding:10px 14px 14px; }',
       '.inp-tabs > .el-tabs__header { margin:0 0 10px; }',
       '.inp-tabs > .el-tabs__content { flex:1; min-height:0; overflow:auto; }',
+      /* ---- A档移植(与住院医生站同口径): 表格去竖线/悬停中性化 + 页签降噪 ---- */
+      '.inp-tabs .el-table { --el-table-header-bg-color: var(--yb-surface-2); --el-table-row-hover-bg-color: var(--yb-surface-3); }',
+      '.inp-tabs .el-table--border .el-table__cell { border-right: none; }',
+      '.inp-tabs .el-table--border .el-table__body-wrapper { border-right: none; }',
+      '.inp-tabs > .el-tabs__header .el-tabs__item { font-size:13px; padding:0 12px; color:var(--yb-ink-2); }',
+      '.inp-tabs > .el-tabs__header .el-tabs__item.is-active { font-weight:600; color:var(--yb-brand); }',
       /* 执行计划按 plan_time 分组的时间段标题 */
       '.inp-grp { display:flex; align-items:center; gap:8px; margin:12px 0 6px; color:var(--yb-ink-2); font-weight:600; }',
       '.inp-grp:first-child { margin-top:0; }',
@@ -200,7 +206,8 @@
       /* ---- 患者信息固定横幅(护士站独立实现, 与医生站同款设计语言) ---- */
       '.inp-banner { display:flex; align-items:center; gap:10px; height:48px; padding:0 14px; background:var(--yb-surface); border-bottom:1px solid var(--yb-border); flex:none; overflow:hidden; }',
       '.inp-banner .bedblk { width:36px; height:36px; flex:none; display:flex; align-items:center; justify-content:center; border-radius:6px; background:var(--yb-brand); color:#fff; font-weight:700; font-size:13px; font-variant-numeric:tabular-nums; }',
-      '.inp-banner .nm { font-weight:700; color:var(--yb-ink-1); font-size:var(--yb-fs-md); }',
+      '.inp-banner .nm { font-weight:700; color:var(--yb-ink-1); font-size:var(--yb-fs-md); cursor:pointer; }',
+      '.inp-banner .nm:hover { color:var(--yb-brand); text-decoration:underline; text-underline-offset:3px; }',
       '.inp-banner .meta { color:var(--yb-ink-3); font-size:12px; }',
       '.inp-banner .sep { color:var(--yb-border); }',
       '.inp-banner .diag { max-width:280px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:var(--yb-ink-2); font-size:12px; }',
@@ -293,10 +300,9 @@
       '.nfee-money.is-neg { color:var(--yb-danger); }',
       /* ---- 病人信息360(.np360-) ---- */
       '.np360 { display:flex; flex-direction:column; gap:10px; }',
-      '.np360-hd { display:flex; align-items:center; gap:12px; padding:10px 14px; border:1px solid var(--yb-border-light); border-radius:var(--yb-r-md); background:var(--yb-brand-subtle); }',
-      '.np360-hd .bed { width:40px; height:40px; flex:none; display:flex; align-items:center; justify-content:center; border-radius:8px; background:var(--yb-brand); color:#fff; font-weight:700; }',
-      '.np360-hd .nm { font-weight:700; color:var(--yb-ink-1); font-size:18px; }',
-      '.np360-hd .meta { color:var(--yb-ink-3); font-size:12px; }',
+      /* A3去重复: 床号块/住院号/性别年龄/过敏均在上方固定横幅展示, 此处只留姓名定位+费用入口, 大卡压成细条 */
+      '.np360-hd { display:flex; align-items:center; gap:10px; padding:6px 12px; border:1px solid var(--yb-border-light); border-radius:var(--yb-r-md); background:var(--yb-surface-2); }',
+      '.np360-hd .nm { font-weight:700; color:var(--yb-ink-1); font-size:var(--yb-fs-base); }',
       '.np360-cards { display:grid; grid-template-columns:repeat(auto-fill,minmax(360px,1fr)); gap:10px; }',
       '.np360-card { border:1px solid var(--yb-border-light); border-radius:var(--yb-r-md); background:var(--yb-surface); overflow:hidden; }',
       '.np360-card.is-danger { border-left:4px solid var(--yb-danger); }',
@@ -4229,11 +4235,8 @@
       '  <el-empty v-if="!visitId" description="请先在左侧选择一位患者" :image-size="60"></el-empty>',
       '  <template v-else>',
       '    <div class="np360-hd">',
-      '      <div class="bed">{{ patient ? (patient.bedNo || "—") : "—" }}</div>',
-      '      <div><div class="nm">{{ patient ? patient.patientName : "" }}</div>',
-      '        <div class="meta">住院号 {{ patient ? (patient.inpNo||"-") : "-" }} · {{ patient ? (patient.gender||"") : "" }}{{ patient && patient.age!=null ? patient.age+"岁" : "" }}</div></div>',
+      '      <div class="nm">{{ patient ? patient.patientName : "" }}</div>',
       '      <span style="flex:1;"></span>',
-      '      <el-tag v-if="patient && patient.allergyFlag" type="danger" effect="dark">过敏史</el-tag>',
       '      <el-button size="small" @click="$emit(\'goto-fee\')">前往费用管理</el-button>',
       '    </div>',
       '    <div class="np360-cards">',
@@ -4321,6 +4324,8 @@
         /* 13.15.1 一体化主页: 默认落在「入出转」工作台; homeOrder 为用户自定义页签顺序(localStorage yb_nurse_home) */
         activeTab: 'flow',
         homeOrder: null,
+        /* 三站共用患者360速览抽屉(点横幅姓名唤起) */
+        p360Visible: false,
         /* P4a-5 护理记录页签: false=列表模式(经典记录) true=富文本模式(Tiptap 护理文书书写器) */
         nursingTiptapMode: false,
         flowSeg: 'preadmit',
@@ -4379,6 +4384,11 @@
           return (ALLERGY_TYPE[a.allergyType] || '其他') + '·' + (a.allergenName || '');
         }).join('，');
       },
+      /* 360抽屉头部展示信息(与门诊/住院医生站同口径, 过敏用已加载摘要文本) */
+      p360NursePatient: function () {
+        var p = this.currentPatient || {};
+        return { name: p.patientName, gender: p.gender, age: p.age, patientNo: p.inpNo || p.patientNo || '', allergyHistory: this.allergyText || '' };
+      },
       /* 可见页签: HOME_TABS 基准, 按 homeOrder(localStorage) 重排(未知 key 追加在后) */
       visibleTabs: function () {
         var base = HOME_TABS.slice();
@@ -4421,7 +4431,9 @@
       'inp-pipe-manager': HIS.components.InpPipeManager,
       'inp-nursing-transfer': HIS.components.InpNursingTransfer,
       'inp-nursing-consent': HIS.components.InpNursingConsent,
-      'inp-nursing-education': HIS.components.InpNursingEducation
+      'inp-nursing-education': HIS.components.InpNursingEducation,
+      /* 三站共用患者360°速览抽屉(patient-360.js 须先于本文件加载) */
+      'patient-360-drawer': (HIS.components || {}).Patient360Drawer
     },
     created: function () {
       var vm = this;
@@ -4736,7 +4748,7 @@
       /* 患者信息固定横幅(Tab 页签上方, 切换页签不消失) */
       '    <div v-if="currentVisitId" class="inp-banner">',
       '      <div class="bedblk">{{ currentPatient ? (currentPatient.bedNo || \'—\') : \'—\' }}</div>',
-      '      <span class="nm">{{ currentPatient ? currentPatient.patientName : \'\' }}</span>',
+      '      <span class="nm" title="点击查看患者360°速览" @click="p360Visible = true">{{ currentPatient ? currentPatient.patientName : \'\' }}</span>',
       '      <span class="meta">{{ currentPatient ? patientInfo(currentPatient) : \'\' }}</span>',
       '      <span class="sep">|</span>',
       '      <span class="meta">住院号 {{ currentPatient ? (currentPatient.inpNo || \'-\') : \'-\' }}</span>',
@@ -4748,6 +4760,7 @@
       '      <span class="grow"></span>',
       '      <span v-if="patExtra.nursingLevel" class="inp-nurse-lv" :style="nurseLvStyle(patExtra.nursingLevel)">{{ nurseLvLabel(patExtra.nursingLevel) }}</span>',
       '      <span class="meta">入院 {{ admitDaysText(currentPatient && currentPatient.admitDate) }}</span>',
+      '      <patient-360-drawer v-model="p360Visible" :patient-id="currentPatient ? (currentPatient.patientId || null) : null" :patient="p360NursePatient"></patient-360-drawer>',
       '    </div>',
       '    <el-tabs v-model="activeTab" class="inp-tabs">',
       /* 页签顺序与 HOME_TABS 一致(流转→医嘱→费用→总览→护理→病区); 分组色点经 grpColor 统一起义 */
