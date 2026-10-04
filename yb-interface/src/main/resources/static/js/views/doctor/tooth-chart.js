@@ -3,6 +3,25 @@
   var HIS = (window.HIS = window.HIS || {});
   HIS.components = HIS.components || {};
 
+  /* 样式须 createElement 注入: 模板字符串里的 <style> 经 innerHTML 插入不会应用(与报告面板同根因) */
+  (function ensureStyles() {
+    if (document.getElementById('dw-tooth-chart-css')) { return; }
+    var st = document.createElement('style');
+    st.id = 'dw-tooth-chart-css';
+    st.textContent = [
+      '.dw-tooth-chart { --tc-cell:34px; }',
+      '.dw-tooth-chart .tc-row { display:flex; align-items:center; justify-content:center; gap:3px; margin-bottom:4px; }',
+      '.dw-tooth-chart .tc-quad { display:flex; gap:3px; padding:0 8px; border-right:2px solid var(--dw-border); }',
+      '.dw-tooth-chart .tc-quad:last-child { border-right:none; }',
+      '.dw-tooth-chart .tc-line { font-size:11px; color:var(--dw-text-hint); text-align:center; margin:2px 0 6px; }',
+      '.dw-tooth-chart .tc-cell { width:var(--tc-cell); height:var(--tc-cell); border:1px solid var(--dw-border); border-radius:4px; background:var(--dw-card); color:var(--dw-text-secondary); font-size:12px; cursor:pointer; display:flex; align-items:center; justify-content:center; padding:0; }',
+      '.dw-tooth-chart .tc-cell:hover { border-color:var(--dw-primary); }',
+      '.dw-tooth-chart .tc-cell.is-on { background:var(--dw-primary); border-color:var(--dw-primary); color:#fff; font-weight:700; }',
+      '.dw-tooth-chart .tc-foot { display:flex; align-items:center; justify-content:space-between; margin-top:8px; font-size:12px; color:var(--dw-text-secondary); }'
+    ].join('\n');
+    document.head.appendChild(st);
+  })();
+
   /* FDI 象限: 右上1区(11-18) 左上2区(21-28) 左下3区(31-38) 右下4区(41-48); 上排18..11|21..28, 下排48..41|31..38 */
   var UPPER_LEFT = [18, 17, 16, 15, 14, 13, 12, 11];
   var UPPER_RIGHT = [21, 22, 23, 24, 25, 26, 27, 28];
@@ -18,17 +37,6 @@
     emits: ['update:modelValue'],
     template: `
       <div class="dw-tooth-chart">
-        <style>
-          .dw-tooth-chart{--tc-cell:34px}
-          .dw-tooth-chart .tc-row{display:flex;align-items:center;justify-content:center;gap:3px;margin-bottom:4px}
-          .dw-tooth-chart .tc-quad{display:flex;gap:3px;padding:0 8px;border-right:2px solid var(--dw-border)}
-          .dw-tooth-chart .tc-quad:last-child{border-right:none}
-          .dw-tooth-chart .tc-line{font-size:11px;color:var(--dw-text-hint);text-align:center;margin:2px 0 6px}
-          .dw-tooth-chart .tc-cell{width:var(--tc-cell);height:var(--tc-cell);border:1px solid var(--dw-border);border-radius:4px;background:var(--dw-card);color:var(--dw-text-secondary);font-size:12px;cursor:pointer;display:flex;align-items:center;justify-content:center;padding:0}
-          .dw-tooth-chart .tc-cell:hover{border-color:var(--dw-primary)}
-          .dw-tooth-chart .tc-cell.is-on{background:var(--dw-primary);border-color:var(--dw-primary);color:#fff;font-weight:700}
-          .dw-tooth-chart .tc-foot{display:flex;align-items:center;justify-content:space-between;margin-top:8px;font-size:12px;color:var(--dw-text-secondary)}
-        </style>
         <div class="tc-line">上颌 · 面对患者(左=患者右)</div>
         <div class="tc-row">
           <div class="tc-quad"><button type="button" v-for="t in upperLeft" :key="'u'+t" class="tc-cell" :class="{'is-on': isOn(t)}" @click="toggle(t)">{{ t }}</button></div>

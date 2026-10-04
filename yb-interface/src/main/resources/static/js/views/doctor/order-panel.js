@@ -3,6 +3,47 @@
   var HIS = (window.HIS = window.HIS || {});
   HIS.components = HIS.components || {};
 
+  /* 样式须 createElement 注入: 模板字符串里的 <style> 经 innerHTML 插入不会应用(与报告面板同根因)。
+   * 其中 dw-critical-value-dialog 全屏危急值警报与过敏拦截样式此前实际从未生效, 本次一并修复。 */
+  (function ensureStyles() {
+    if (document.getElementById('dw-order-panel-css')) { return; }
+    var st = document.createElement('style');
+    st.id = 'dw-order-panel-css';
+    st.textContent = [
+      '.dw-order-panel .dw-order-toolbar { display:flex; align-items:center; gap:8px; padding:8px 10px; flex-wrap:wrap; }',
+      '.dw-order-panel .dw-order-pick { flex:1 1 200px; min-width:190px; }',
+      '.dw-order-panel .dw-order-empty { padding:18px; text-align:center; color:var(--dw-text-hint); font-size:12px; }',
+      '.dw-order-panel .dw-order-split { display:grid; grid-template-columns:35% 65%; min-height:440px; }',
+      '.dw-order-panel .dw-order-catalog { padding:10px; border-right:1px solid var(--dw-border); }',
+      '.dw-order-panel .dw-order-form { padding:10px 14px; }',
+      '.dw-order-panel .dw-package-row { display:flex; gap:5px; flex-wrap:wrap; margin:8px 0; }',
+      '.dw-order-panel .dw-form-readonly { padding:6px 9px; background:var(--dw-card-muted); border:1px solid var(--dw-border); border-radius:4px; color:var(--dw-text-secondary); min-height:30px; }',
+      '.dw-order-panel .dw-order-cards { padding:0 10px 8px; }',
+      '.dw-order-panel .dw-order-history { padding:10px 14px; border-top:1px solid var(--dw-border); }',
+      '.dw-order-panel .dw-progress { color:var(--dw-primary); font-size:11px; white-space:nowrap; }',
+      '.dw-order-panel .dw-mutual-alert { padding:12px; border-left:4px solid var(--dw-warning); background:var(--dw-warning-light); line-height:1.8; }',
+      '.dw-order-panel .dw-report-result { font-weight:700; }',
+      /* MessageBox 挂 body 下读不到 .dw-wrap 的 --dw-* 变量, 须 --yb-* 兜底 */
+      '.dw-critical-value-dialog { width:100vw !important; max-width:none !important; height:100vh; margin:0 !important; border:8px solid var(--dw-danger,var(--yb-danger-strong)) !important; border-radius:0 !important; background:var(--dw-danger-light,var(--yb-danger-bg)) !important; display:flex; flex-direction:column; justify-content:center; }',
+      '.dw-critical-value-dialog .el-message-box__title, .dw-critical-value-dialog .el-message-box__message { color:var(--dw-danger,var(--yb-danger-strong)) !important; font-size:22px; font-weight:700; }',
+      '.dw-critical-value-dialog .el-message-box__content { max-width:760px; margin:0 auto; white-space:pre-line; }',
+      '.dw-critical-value-dialog .el-message-box__btns { justify-content:center; }',
+      '.dw-critical-value-dialog .el-button { font-size:18px; padding:18px 42px; }',
+      '.dw-allergy-block-dialog .el-dialog__title { color:var(--dw-danger,var(--yb-danger)); font-weight:700; }',
+      '.dw-order-panel .dw-allergy-alert { border:2px solid var(--dw-danger,var(--yb-danger)); border-radius:6px; padding:14px 16px; background:rgba(245,108,108,.07); }',
+      '.dw-order-panel .dw-allergy-alert .hd { color:var(--dw-danger,var(--yb-danger)); font-weight:700; font-size:15px; margin-bottom:10px; }',
+      '.dw-order-panel .dw-allergy-alert .row { line-height:2; color:var(--yb-ink-1); }',
+      '.dw-order-panel .dw-allergy-alert .row b { color:var(--dw-danger,var(--yb-danger)); }',
+      '.dw-order-panel .dw-allergy-alert .tip { margin-top:10px; color:var(--yb-ink-2); font-size:12px; }',
+      '.dw-order-panel .dw-order-assistant { display:flex; align-items:center; flex-wrap:wrap; gap:6px; padding:2px 12px 8px; }',
+      '.dw-order-panel .dw-order-assistant-lbl { font-size:12px; color:var(--dw-text-hint); }',
+      '.dw-order-panel .dw-order-chip { border:1px solid var(--dw-border); background:var(--dw-card,#fff); border-radius:12px; padding:2px 10px; font-size:12px; cursor:pointer; color:var(--dw-text-secondary,#666); }',
+      '.dw-order-panel .dw-order-chip:hover:not(:disabled) { border-color:var(--dw-primary); color:var(--dw-primary); }',
+      '.dw-order-panel .dw-order-chip:disabled { opacity:.5; cursor:not-allowed; }'
+    ].join('\n');
+    document.head.appendChild(st);
+  })();
+
   var SPECIMEN_TYPES = ['全血', '血清', '血浆', '尿液', '粪便', '分泌物', '痰液', '体液', '骨髓', '其他'];
   var SPECIMEN_CONDITIONS = ['空腹', '随机', '餐后2小时', '晨尿', '24小时尿', '中段尿', '清晨', '定时', '其他'];
   var URGENCY_LAB = ['常规', '急诊', '危急'];
@@ -560,9 +601,6 @@
     },
     template: `
       <div class="dw-panel dw-order-panel" :class="{ 'is-folded': folded }">
-        <style>
-          .dw-order-panel .dw-order-toolbar{display:flex;align-items:center;gap:8px;padding:8px 10px;flex-wrap:wrap}.dw-order-panel .dw-order-pick{flex:1 1 200px;min-width:190px}.dw-order-panel .dw-order-empty{padding:18px;text-align:center;color:var(--dw-text-hint);font-size:12px}.dw-order-panel .dw-order-split{display:grid;grid-template-columns:35% 65%;min-height:440px}.dw-order-panel .dw-order-catalog{padding:10px;border-right:1px solid var(--dw-border)}.dw-order-panel .dw-order-form{padding:10px 14px}.dw-order-panel .dw-package-row{display:flex;gap:5px;flex-wrap:wrap;margin:8px 0}.dw-order-panel .dw-form-readonly{padding:6px 9px;background:var(--dw-card-muted);border:1px solid var(--dw-border);border-radius:4px;color:var(--dw-text-secondary);min-height:30px}.dw-order-panel .dw-order-cards{padding:0 10px 8px}.dw-order-panel .dw-order-history{padding:10px 14px;border-top:1px solid var(--dw-border)}.dw-order-panel .dw-progress{color:var(--dw-primary);font-size:11px;white-space:nowrap}.dw-order-panel .dw-mutual-alert{padding:12px;border-left:4px solid var(--dw-warning);background:var(--dw-warning-light);line-height:1.8}.dw-order-panel .dw-report-result{font-weight:700}.dw-critical-value-dialog{width:100vw!important;max-width:none!important;height:100vh;margin:0!important;border:8px solid var(--dw-danger)!important;border-radius:0!important;background:var(--dw-danger-light)!important;display:flex;flex-direction:column;justify-content:center}.dw-critical-value-dialog .el-message-box__title,.dw-critical-value-dialog .el-message-box__message{color:var(--dw-danger)!important;font-size:22px;font-weight:700}.dw-critical-value-dialog .el-message-box__content{max-width:760px;margin:0 auto;white-space:pre-line}.dw-critical-value-dialog .el-message-box__btns{justify-content:center}.dw-critical-value-dialog .el-button{font-size:18px;padding:18px 42px}.dw-allergy-block-dialog .el-dialog__title{color:var(--dw-danger,var(--yb-danger));font-weight:700}.dw-order-panel .dw-allergy-alert{border:2px solid var(--dw-danger,var(--yb-danger));border-radius:6px;padding:14px 16px;background:rgba(245,108,108,.07)}.dw-order-panel .dw-allergy-alert .hd{color:var(--dw-danger,var(--yb-danger));font-weight:700;font-size:15px;margin-bottom:10px}.dw-order-panel .dw-allergy-alert .row{line-height:2;color:var(--yb-ink-1)}.dw-order-panel .dw-allergy-alert .row b{color:var(--dw-danger,var(--yb-danger))}.dw-order-panel .dw-allergy-alert .tip{margin-top:10px;color:var(--yb-ink-2);font-size:12px}.dw-order-panel .dw-order-assistant{display:flex;align-items:center;flex-wrap:wrap;gap:6px;padding:2px 12px 8px}.dw-order-panel .dw-order-assistant-lbl{font-size:12px;color:var(--dw-text-hint)}.dw-order-panel .dw-order-chip{border:1px solid var(--dw-border);background:var(--dw-card,#fff);border-radius:12px;padding:2px 10px;font-size:12px;cursor:pointer;color:var(--dw-text-secondary,#666)}.dw-order-panel .dw-order-chip:hover:not(:disabled){border-color:var(--dw-primary);color:var(--dw-primary)}.dw-order-panel .dw-order-chip:disabled{opacity:.5;cursor:not-allowed}
-        </style>
         <div class="dw-panel-header">
           <span>检查 · 检验 · 治疗申请 <span class="dim" v-if="orders.length">已开 {{ orders.length }} 单</span></span>
           <button class="dw-collapse-btn" :title="folded ? '展开医嘱面板' : '折叠医嘱面板'" @click="toggleFold">{{ folded ? '▸' : '▾' }}</button>

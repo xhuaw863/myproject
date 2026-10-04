@@ -3,6 +3,39 @@
   var HIS = (window.HIS = window.HIS || {});
   HIS.components = HIS.components || {};
 
+  /* 样式须 createElement 注入: 模板字符串里的 <style> 经 innerHTML 插入不会应用(与报告面板同根因) */
+  (function ensureStyles() {
+    if (document.getElementById('dw-documents-panel-css')) { return; }
+    var st = document.createElement('style');
+    st.id = 'dw-documents-panel-css';
+    st.textContent = [
+      '.dw-documents-panel { margin-top:12px; }',
+      '.dw-documents-panel .dw-doc-grid { display:grid; grid-template-columns:1fr 1fr; gap:8px; }',
+      '.dw-documents-panel .dw-doc-grid .el-badge { width:100%; }',
+      '.dw-documents-panel .dw-doc-card { position:relative; display:flex; align-items:center; gap:10px; width:100%; padding:10px; border:1px solid var(--dw-border); border-radius:4px; background:var(--dw-card); cursor:pointer; text-align:left; }',
+      '.dw-documents-panel .dw-doc-card:hover { border-color:var(--dw-primary); background:var(--dw-primary-light); }',
+      '.dw-documents-panel .dw-doc-mark { display:flex; align-items:center; justify-content:center; width:34px; height:34px; border-radius:3px; background:var(--dw-primary); color:#fff; font-size:16px; font-weight:700; }',
+      '.dw-documents-panel .tone-orange .dw-doc-mark { background:var(--dw-warning); }',
+      '.dw-documents-panel .tone-green .dw-doc-mark { background:var(--dw-success); }',
+      '.dw-documents-panel .tone-gray .dw-doc-mark { background:var(--dw-text-secondary); }',
+      '.dw-documents-panel .tone-red .dw-doc-mark { background:var(--el-color-danger,#f56c6c); }',
+      '.dw-documents-panel .dw-doc-name { font-weight:600; color:var(--dw-text); }',
+      '.dw-documents-panel .dw-doc-hint { font-size:11px; color:var(--dw-text-hint); }',
+      '.dw-documents-panel .dw-fee-legend { display:grid; grid-template-columns:1fr 1fr; gap:3px 16px; margin-top:6px; }',
+      '.dw-documents-panel .dw-fee-legend span { display:flex; justify-content:space-between; color:var(--dw-text-secondary); font-size:12px; }',
+      '.dw-documents-panel .dw-insu-estimate { display:flex; justify-content:space-between; margin-top:7px; padding-top:7px; border-top:1px dashed var(--dw-border); color:var(--dw-text-hint); font-size:11px; }',
+      '.dw-documents-panel .dw-print-row { display:flex; align-items:center; gap:8px; padding:8px 4px; border-bottom:1px solid var(--dw-border); }',
+      '.dw-documents-panel .dw-print-row .name { flex:1; }',
+      '.dw-documents-panel .dw-print-group { margin:10px 0; color:var(--dw-primary-dark); font-weight:700; }',
+      '.dw-documents-panel .dw-cert-patient { display:flex; align-items:center; gap:14px; margin:-6px 0 12px; padding:8px 12px; border:1px solid var(--dw-border); border-left:3px solid var(--dw-primary); border-radius:4px; background:var(--dw-card); font-size:12px; color:var(--dw-text-secondary); }',
+      '.dw-documents-panel .dw-cert-patient b { font-size:14px; color:var(--dw-text); }',
+      '.dw-documents-panel .dw-cert-patient .no { margin-left:auto; font-family:monospace; }',
+      '.dw-documents-panel .dw-cert-sign { font-size:13px; color:var(--dw-text); }',
+      '.dw-documents-panel .dw-biz-form { display:grid; grid-template-columns:1fr 1fr; gap:0 12px; }'
+    ].join('\n');
+    document.head.appendChild(st);
+  })();
+
   var CERT_TYPES = [{ v: 1, l: '诊断证明' }, { v: 2, l: '病假条' }, { v: 3, l: '转诊证明' }];
   /* OP-D 14.11 门诊知情同意书五类 */
   var CONSENT_TYPES = [{ v: 1, l: '特殊检查' }, { v: 2, l: '特殊治疗' }, { v: 3, l: '输血' }, { v: 4, l: '自费' }, { v: 5, l: '病危' }];
@@ -473,9 +506,6 @@
     },
     template: `
       <div class="dw-documents-panel">
-        <style>
-          .dw-documents-panel{margin-top:12px}.dw-documents-panel .dw-doc-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px}.dw-documents-panel .dw-doc-grid .el-badge{width:100%}.dw-documents-panel .dw-doc-card{position:relative;display:flex;align-items:center;gap:10px;width:100%;padding:10px;border:1px solid var(--dw-border);border-radius:4px;background:var(--dw-card);cursor:pointer;text-align:left}.dw-documents-panel .dw-doc-card:hover{border-color:var(--dw-primary);background:var(--dw-primary-light)}.dw-documents-panel .dw-doc-mark{display:flex;align-items:center;justify-content:center;width:34px;height:34px;border-radius:3px;background:var(--dw-primary);color:#fff;font-size:16px;font-weight:700}.dw-documents-panel .tone-orange .dw-doc-mark{background:var(--dw-warning)}.dw-documents-panel .tone-green .dw-doc-mark{background:var(--dw-success)}.dw-documents-panel .tone-gray .dw-doc-mark{background:var(--dw-text-secondary)}.dw-documents-panel .dw-doc-name{font-weight:600;color:var(--dw-text)}.dw-documents-panel .dw-doc-hint{font-size:11px;color:var(--dw-text-hint)}.dw-documents-panel .dw-fee-legend{display:grid;grid-template-columns:1fr 1fr;gap:3px 16px;margin-top:6px}.dw-documents-panel .dw-fee-legend span{display:flex;justify-content:space-between;color:var(--dw-text-secondary);font-size:12px}.dw-documents-panel .dw-insu-estimate{display:flex;justify-content:space-between;margin-top:7px;padding-top:7px;border-top:1px dashed var(--dw-border);color:var(--dw-text-hint);font-size:11px}.dw-documents-panel .dw-print-row{display:flex;align-items:center;gap:8px;padding:8px 4px;border-bottom:1px solid var(--dw-border)}.dw-documents-panel .dw-print-row .name{flex:1}.dw-documents-panel .dw-print-group{margin:10px 0;color:var(--dw-primary-dark);font-weight:700}.dw-documents-panel .dw-cert-patient{display:flex;align-items:center;gap:14px;margin:-6px 0 12px;padding:8px 12px;border:1px solid var(--dw-border);border-left:3px solid var(--dw-primary);border-radius:4px;background:var(--dw-card);font-size:12px;color:var(--dw-text-secondary)}.dw-documents-panel .dw-cert-patient b{font-size:14px;color:var(--dw-text)}.dw-documents-panel .dw-cert-patient .no{margin-left:auto;font-family:monospace}.dw-documents-panel .dw-cert-sign{font-size:13px;color:var(--dw-text)}.dw-documents-panel .tone-red .dw-doc-mark{background:var(--el-color-danger,#f56c6c)}.dw-documents-panel .dw-biz-form{display:grid;grid-template-columns:1fr 1fr;gap:0 12px}
-        </style>
         <div class="dw-fee-summary" v-loading="feeLoading">
           <div class="fs-row total"><span>本次费用合计</span><b>￥{{ money(fee.total) }}</b></div>
           <div class="dw-fee-chart" aria-label="费用构成"><span v-for="x in feeItems" :key="x.key" class="fs-bar" :style="{width:barWidth(x.amount),background:x.color}" :title="x.label+' ￥'+money(x.amount)"></span></div>
