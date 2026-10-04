@@ -1379,7 +1379,10 @@
     st.id = 'emr-editor-css';
     st.textContent = [
       /* ---- 工具栏 ---- */
-      '.emr-toolbar { display:flex; flex-wrap:wrap; align-items:center; gap:8px; padding:6px 10px; background:var(--yb-surface,#fff); border:1px solid var(--yb-border,#dfe4eb); border-radius:6px 6px 0 0; }',
+      '.emr-toolbar { display:flex; flex-wrap:nowrap; align-items:center; gap:8px; padding:6px 10px; background:var(--yb-surface,#fff); border:1px solid var(--yb-border,#dfe4eb); border-radius:6px 6px 0 0; overflow-x:auto; overflow-y:hidden; }',
+      /* 嵌窄栏(医生站左列)时工具栏单行横向滚动, 不再折行堆叠挤占书写区 */
+      '.emr-toolbar > * { flex:none; }',
+      '.emr-toolbar::-webkit-scrollbar { height:5px; } .emr-toolbar::-webkit-scrollbar-thumb { background:#c6ccd6; border-radius:3px; }',
       '.emr-toolbar .el-button + .el-button { margin-left:0; } .emr-toolbar .el-button-group + .el-button-group { margin-left:0; }',
       '.emr-toolbar .el-color-picker, .emr-toolbar .el-dropdown { margin:0 2px; }',
       '.emr-toolbar-insert { margin-left:2px !important; } .emr-toolbar-gap { flex:1; }',

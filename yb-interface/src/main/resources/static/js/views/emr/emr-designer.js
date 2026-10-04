@@ -138,6 +138,7 @@
       scopeText: function (v) { return Number(v) === 2 ? '门诊' : '住院'; },
 
       /* ===== 新建/编辑: 装载设计器 ===== */
+      goTiptapDesigner: function () { HIS.go('emr-template-designer'); },
       openCreate: function () {
         this.editId = null;
         this.meta = this.emptyMeta();
@@ -149,6 +150,18 @@
       },
       openEdit: function (row) {
         if (!this.canEditRow(row)) { ElementPlus.ElMessage.warning('无权限维护该范围模板'); return; }
+        /* 带 Tiptap 文档的模板字段画布改不了版式: 先引导去结构化设计器, 可选继续只编辑字段(2026-10 入口收敛) */
+        if (row.document) {
+          var vm2 = this;
+          ElementPlus.ElMessageBox.confirm(
+            '模板「' + (row.templateName || '') + '」带 Tiptap 文档版式, 字段画布无法编辑文档结构, 建议在「模板设计器(结构化)」中修改。',
+            'Tiptap 文档模板', { confirmButtonText: '去结构化设计器', cancelButtonText: '继续编辑字段', type: 'warning' }
+          ).then(function () { HIS.go('emr-template-designer'); }).catch(function () { vm2.doOpenEdit(row); });
+          return;
+        }
+        this.doOpenEdit(row);
+      },
+      doOpenEdit: function (row) {
         var vm = this;
         vm.editId = row.id;
         vm.meta = {
@@ -295,7 +308,8 @@
     },
     template: [
       '<div class="page-card emr-dsn">',
-      '  <div class="page-title">病历模板设计器 <span style="font-size:12px;color:var(--yb-ink-2);font-weight:normal">(结构化病历模板可视化自建, 全院统一引擎)</span></div>',
+      '  <div class="page-title">病历模板设计器(字段画布) <span style="font-size:12px;color:var(--yb-ink-2);font-weight:normal">(结构化字段模板可视化自建, 全院统一引擎; Tiptap 文档模板请去「模板设计器(结构化)」)</span></div>',
+      '  <el-alert type="info" :closable="false" show-icon style="margin:0 0 8px;">门诊病历书写器使用的 Tiptap 文档模板(如门诊病历通用版式)在菜单「模板设计器(结构化)」中设计; 本页维护旧字段画布模板及全部模板的元信息(新建/启停/删除)。<el-button link type="primary" size="small" @click="goTiptapDesigner">前往 Tiptap 设计器</el-button></el-alert>',
       '  <div class="toolbar">',
       '    <el-radio-group v-model="filters.scope" size="small" @change="onScopeChange">',
       '      <el-radio-button :label="1">住院</el-radio-button><el-radio-button :label="2">门诊</el-radio-button>',

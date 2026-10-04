@@ -162,6 +162,7 @@
         var vm = this;
         if (!vm.revenueChart) { return; }
         HIS.get('/api/his/report/revenue?granularity=' + vm.revenueGranularity).then(function (data) {
+          if (!vm.revenueChart || vm.revenueChart.isDisposed()) { return; } /* 视图已卸载(切菜单)时图表实例置 null, 异步回调节流防护 */
           var rows = data || [];
           vm.revenueChart.hideLoading();
           vm.revenueChart.setOption({
@@ -198,6 +199,7 @@
         var vm = this;
         if (!vm.deptChart) { return; }
         HIS.get('/api/his/report/dept-revenue').then(function (data) {
+          if (!vm.deptChart || vm.deptChart.isDisposed()) { return; }
           var rows = data || [];
           vm.deptChart.hideLoading();
           /* 科室过多时仅展示前8, 其余并入"其他" */
@@ -234,6 +236,7 @@
         if (!vm.visitChart) { return; }
         var start = daysAgo(6), end = today();
         HIS.get('/api/his/report/visits?granularity=day&startDate=' + start + '&endDate=' + end).then(function (data) {
+          if (!vm.visitChart || vm.visitChart.isDisposed()) { return; }
           var byDate = {};
           (data || []).forEach(function (d) { byDate[d.date] = d.count; });
           var days = [], counts = [];
@@ -263,6 +266,7 @@
         var vm = this;
         if (!vm.drugChart) { return; }
         HIS.get('/api/his/report/drug-usage?topN=10').then(function (data) {
+          if (!vm.drugChart || vm.drugChart.isDisposed()) { return; }
           var rows = (data || []).slice().reverse();   /* yAxis自下而上, 反转后最大在顶部 */
           vm.drugChart.hideLoading();
           vm.drugChart.setOption({

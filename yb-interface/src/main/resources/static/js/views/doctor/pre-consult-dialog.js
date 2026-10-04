@@ -18,7 +18,10 @@
             <el-form-item label="患者自述"><el-input v-model="form.selfStatement" type="textarea" :autosize="{minRows:2,maxRows:5}"/></el-form-item>
           </el-form>
           <div class="dim" style="margin-top:6px">录入人: {{ recorder || '-' }}</div>
-          <template #footer>
+        </template>
+        <!-- 命名插槽 #footer 必须是 el-dialog 的直接子节点; 之前误写在 <template v-else> 内, 运行时模板编译器为片段生成 undefined 子 vnode, patch 时读 child.type 抛错并中断整个医生工作站挂载 -->
+        <template #footer>
+          <template v-if="visitId">
             <el-button size="small" @click="quoteToRecord" :disabled="!loaded">引用到病历</el-button>
             <el-button size="small" type="primary" :loading="saving" @click="doSave">保存预问诊</el-button>
           </template>

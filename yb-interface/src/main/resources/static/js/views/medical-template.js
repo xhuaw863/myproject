@@ -288,7 +288,7 @@
             <span style="margin-left:auto;color:var(--yb-ink-2);font-size:13px;">共 {{ rows.length }} 条</span>
           </div>
           <el-alert v-if="activeTab === 'soap'" type="info" :closable="false" show-icon style="margin:6px 0;">
-            此处维护「自由文本 SOAP」病历模板；如需可自定义控件与值域绑定的结构化门诊病历模板(scope=2)，请前往菜单「病历模板设计器」。医生站病历面板可一键切换「SOAP文本 / 结构化病历」双模式。
+            此处维护「自由文本 SOAP」病历模板；如需可自定义控件与值域绑定的结构化门诊病历模板(scope=2)，请前往菜单「模板设计器(结构化)」(Tiptap 文档版式, 门诊推荐)或「病历模板设计器(字段画布)」(旧字段模板)。医生站病历面板可一键切换「SOAP文本 / 结构化病历」双模式。
           </el-alert>
           <el-table :data="rows" v-loading="loading" border stripe size="small" height="100%">
             <el-table-column type="index" label="序号" width="56"></el-table-column>

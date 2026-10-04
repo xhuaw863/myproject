@@ -137,6 +137,7 @@ public class RbacInitializer implements ApplicationRunner {
             ensureMedicalTemplateMenu(menuIds);
             ensureEmrDesignerMenu(menuIds);
             ensureEmrQualityMenus(menuIds);
+            moveEmrTemplateMenusToQuality();
             ensureNurseStationMenus(menuIds);
             ensureTreatmentMenus(menuIds);
             ensureMedtechMenus(menuIds);
@@ -145,6 +146,8 @@ public class RbacInitializer implements ApplicationRunner {
             ensureVerifyConsoleMenu(menuIds);
             ensureUploadCenterMenu(menuIds);
             ensureReconConsoleMenu(menuIds);
+            // 医保接口日志(出站交易日志回溯查询页, 仅机构管理员; 挂医保字典目录, 存量库幂等补种)
+            ensureChildMenu(menuIds, "yb-dict", "yb-txn-log", "医保接口日志", "YbTxnLog");
             mergeInpatientMenus(menuIds);
             ensureMedicalRecordMenus(menuIds);
             Map<String, Long> roleIds = seedGlobalRoles();
@@ -196,6 +199,8 @@ public class RbacInitializer implements ApplicationRunner {
         ids.put("catalog-map", menuK("catalog-map", "医保目录对照", "CatalogMap", null, g3, ++sort[0]));
         // 医保验证台(独立静态调试页外链, 前端 app.js 按 key 拦截 window.open; 医保按机构对接, 收编进菜单随机构上下文生效)
         ids.put("verify-console", menuK("verify-console", "医保验证台", null, null, g3, ++sort[0]));
+        // 医保接口日志(出站交易日志 his_yb_txn_log 回溯查询页, 仅机构管理员)
+        ids.put("yb-txn-log", menuK("yb-txn-log", "医保接口日志", "YbTxnLog", null, g3, ++sort[0]));
         // 标准字典(2026-09 移入医共体管理目录; 超管视图由 SysMenuService.treeOnlyTopKeys 递归命中仍作顶级展示)
         long g4 = dir("std-dict", "标准字典", g1, 102);
         ids.put("std-dict-browse", menuK("std-dict-browse", "字典浏览", "StdDictBrowse", null, g4, ++sort[0]));
@@ -220,13 +225,14 @@ public class RbacInitializer implements ApplicationRunner {
         long g6 = dir("doctor", "门诊医生站", 0L, ++sort[0]);
         ids.put("doctor-ws", menuK("doctor-ws", "门诊医生工作站", "DoctorWorkstation", null, g6, ++sort[0]));
         ids.put("doctor-worklog", menuK("doctor-worklog", "医生工作日志", "DoctorWorklog", null, g6, ++sort[0]));
-        ids.put("medical-template", menuK("medical-template", "病历模板管理", "MedicalTemplateManage", null, g6, ++sort[0]));
-        ids.put("emr-designer", menuK("emr-designer", "病历模板设计器", "EmrTemplateDesigner", null, g6, ++sort[0]));
+        // 病历模板管理/字段画布设计器(2026-10 按业务域归组): 住院+门诊共用的模板维护职能, 挂病历质控目录而非门诊医生站
         // 病历质控与数据元(Phase C 2026-10: 质控规则维护/病历检索上报/质控评分看板, 跨scope结构化病历二次利用与质控闭环;
         // P1a 2026-10 病历管理前置两菜单: 数据集管理/结构化模板设计器, comp 与 HIS.views 注册键同值(小写短横线特例))
         long gEmrQ = dir("emr-quality", "病历质控与数据元", 0L, ++sort[0]);
         ids.put("emr-dataset", menuK("emr-dataset", "数据集管理", "emr-dataset", null, gEmrQ, ++sort[0]));
         ids.put("emr-template-designer", menuK("emr-template-designer", "模板设计器(结构化)", "emr-template-designer", null, gEmrQ, ++sort[0]));
+        ids.put("medical-template", menuK("medical-template", "病历模板管理", "MedicalTemplateManage", null, gEmrQ, ++sort[0]));
+        ids.put("emr-designer", menuK("emr-designer", "病历模板设计器(字段画布)", "EmrTemplateDesigner", null, gEmrQ, ++sort[0]));
         // P1c(2026-10) 患者全景时间线: 门诊+住院就诊事件统一时间轴, comp 与 HIS.views 注册键同值
         ids.put("emr-patient-timeline", menuK("emr-patient-timeline", "患者全景时间线", "emr-patient-timeline", null, gEmrQ, ++sort[0]));
         ids.put("emr-quality-rule", menuK("emr-quality-rule", "质控规则维护", "EmrQualityRuleManage", null, gEmrQ, ++sort[0]));
@@ -758,7 +764,7 @@ public class RbacInitializer implements ApplicationRunner {
      * 幂等补种"费别与支付"菜单(fee-pay-dict/FeePayDict, 2026-10 费别/支付方式自定义字典):
      * 挂"医共体管理 → 基础数据"目录下, 紧随企业字典(sort_no=4)之后(sort_no=5)。
      * ADMIN/ORG_ADMIN 走 all_menus 免配置自动可见(含祖先递归补全); 写守卫在 Service 层
-     * requireSelfOrgWrite(各机构自治维护本机构字典), 菜单可见性与接口守卫双重保障。
+     * requireLeadOrg(仅牵头机构 ADMIN 统一维护全医共体字典), 医疗机构管理员(ORG_ADMIN)与非牵头机构只读(前端隐藏写按钮+后端 403 双重保障)。
      * 须在 moveSupplierDictToBasedata 之后执行(basedata 目录已存在)。
      */
     private void ensureFeePayDictMenu() {
@@ -1008,7 +1014,6 @@ public class RbacInitializer implements ApplicationRunner {
         }
         menuIds.put("recon-console", m.getId());
     }
-
 
     /**
      * 幂等确保“挂号明细”菜单存在(挂号明细只读查询页, 排在挂号统计之后): 挂门诊挂号台目录,
@@ -1499,6 +1504,33 @@ public class RbacInitializer implements ApplicationRunner {
             log.info("病历模板设计器菜单已补充(emr-designer/EmrTemplateDesigner)");
         }
         menuIds.put("emr-designer", m.getId());
+    }
+
+    /**
+     * 幂等迁移(2026-10): "病历模板管理/病历模板设计器"由门诊医生站目录移至"病历质控与数据元"业务分组
+     * (两页维护住院+门诊共用模板, 属病历管理职能而非门诊医生站专属), 并把旧设计器更名
+     * "病历模板设计器(字段画布)"以区别于新一代 Tiptap "模板设计器(结构化)"。
+     * 菜单 key/id 不变, sys_role_menu 按 id 授权自动保持; 顶级目录免显式授权(treeByIds 自动补祖先)。
+     */
+    private void moveEmrTemplateMenusToQuality() {
+        renameMenuIfOldName("emr-designer", "病历模板设计器", "病历模板设计器(字段画布)");
+        SysMenu qDir = menuMapper.selectOne(new QueryWrapper<SysMenu>().eq("menu_key", "emr-quality").last("LIMIT 1"));
+        if (qDir == null) {
+            return;
+        }
+        int maxSort = 0;
+        for (SysMenu c : menuMapper.selectList(new QueryWrapper<SysMenu>().eq("parent_id", qDir.getId()))) {
+            maxSort = Math.max(maxSort, c.getSortNo() == null ? 0 : c.getSortNo());
+        }
+        for (String key : new String[]{"medical-template", "emr-designer"}) {
+            SysMenu m = menuMapper.selectOne(new QueryWrapper<SysMenu>().eq("menu_key", key).last("LIMIT 1"));
+            if (m != null && !qDir.getId().equals(m.getParentId())) {
+                m.setParentId(qDir.getId());
+                m.setSortNo(++maxSort);
+                menuMapper.updateById(m);
+                log.info("病历模板菜单已移入病历质控与数据元分组({})", key);
+            }
+        }
     }
 
     /**

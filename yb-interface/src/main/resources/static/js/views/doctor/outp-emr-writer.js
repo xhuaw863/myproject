@@ -43,7 +43,9 @@
     st.id = 'outp-emr-writer-style';
     st.textContent = [
       /* ---- 根与头栏 ---- */
-      '.oew-root { flex:1 1 auto; display:flex; flex-direction:column; min-height:480px; min-width:0; background:var(--yb-surface,#fff); border:1px solid var(--yb-border,#dfe4eb); border-radius:6px; overflow:hidden; }',
+      '.oew-root { flex:1 1 auto; display:flex; flex-direction:column; min-height:480px; max-height:calc(100vh - 220px); min-width:0; background:var(--yb-surface,#fff); border:1px solid var(--yb-border,#dfe4eb); border-radius:6px; overflow:hidden; }',
+      /* 全屏书写态: 脱离医生站窄列铺满视口, 内容仍由内部滚动栏承载(层级低于 el-dialog, 危急值弹窗盖在上方) */
+      '.oew-root.is-fs { position:fixed; inset:8px; z-index:1900; max-height:none; box-shadow:0 10px 34px rgba(0,0,0,.22); }',
       '.oew-header { flex:none; display:flex; align-items:center; gap:10px; padding:8px 12px; background:var(--yb-surface,#fff); border-bottom:1px solid var(--yb-border,#dfe4eb); flex-wrap:wrap; }',
       '.oew-title { display:flex; align-items:center; gap:6px; font-size:14px; font-weight:700; color:var(--yb-ink-1,#1c2430); white-space:nowrap; }',
       '.oew-icon { display:inline-flex; width:14px; height:14px; vertical-align:-2px; }',
@@ -209,9 +211,15 @@
     activity: svg('<polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/>'),
     user: svg('<path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/>'),
     panel: svg('<rect x="3" y="3" width="18" height="18" rx="2" ry="2"/><line x1="15" y1="3" x2="15" y2="21"/>'),
+    maximize: svg('<polyline points="15 3 21 3 21 9"/><polyline points="9 21 3 21 3 15"/><line x1="21" y1="3" x2="14" y2="10"/><line x1="3" y1="21" x2="10" y2="14"/>'),
     refresh: svg('<polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/>'),
     check: svg('<polyline points="20 6 9 17 4 12"/>')
   };
+
+  /* 助手面板展开偏好: 医生站窄列默认收起(用户手动展开后记忆; 非安全上下文 localStorage 不可用时静默降级) */
+  function readPanelPref() {
+    try { return global.localStorage.getItem('oew.panelVisible') === '1'; } catch (e) { return false; }
+  }
 
   /* ================= 纯工具函数 ================= */
   function fmtDT(v) {
@@ -346,8 +354,9 @@
         /* 离线草稿 */
         draftKey: '',
         draftSavedText: '',
-        /* 右侧助手面板 */
-        panelVisible: true,
+        /* 右侧助手面板(窄列下默认收起, 展开选择记入 localStorage) / 全屏书写态 */
+        panelVisible: readPanelPref(),
+        isFs: false,
         activeTab: 'phrase',
         /* Tab1 常用语 */
         phrases: [],
@@ -489,7 +498,9 @@
         if ((ev.ctrlKey || ev.metaKey) && String(ev.key || '').toLowerCase() === 's') {
           ev.preventDefault();
           if (vm.canEdit) { vm.emitSave(false); }
+          return;
         }
+        if (String(ev.key) === 'Escape' && vm.isFs) { vm.isFs = false; } /* 退出全屏书写(医生站全局快捷键对 Escape 直接放行, 不冲突) */
       };
     },
     mounted: function () {
@@ -1316,12 +1327,16 @@
       },
 
       /* ================= 头栏动作 ================= */
-      togglePanel: function () { this.panelVisible = !this.panelVisible; }
+      togglePanel: function () {
+        this.panelVisible = !this.panelVisible;
+        try { global.localStorage.setItem('oew.panelVisible', this.panelVisible ? '1' : '0'); } catch (e) { /* 忽略隐私模式存储异常 */ }
+      },
+      toggleFs: function () { this.isFs = !this.isFs; }
     },
 
     /* ================= 模板(字符串数组拼接, 无模板字符串) ================= */
     template: [
-      '<div class="oew-root">',
+      '<div class="oew-root" :class="{ \'is-fs\': isFs }">',
       /* ---- 头栏 ---- */
       '  <div class="oew-header">',
       '    <span class="oew-title"><span class="oew-icon" v-html="icons.file"></span> 门诊病历</span>',
@@ -1339,6 +1354,7 @@
       '      <el-button size="small" :disabled="!canEdit || saving" :loading="saving" @click="emitSave(false)"><span class="oew-icon" v-html="icons.save"></span> 暂存(F3)</el-button>',
       '      <el-button size="small" type="primary" :disabled="!canEdit || saving" @click="emitSave(true)"><span class="oew-icon" v-html="icons.send"></span> 提交病历</el-button>',
       '      <el-button size="small" @click="printRecord"><span class="oew-icon" v-html="icons.printer"></span> 打印</el-button>',
+      '      <el-button size="small" text @click="toggleFs" :title="isFs ? \'退出全屏(Esc)\' : \'全屏书写\'"><span class="oew-icon" v-html="icons.maximize"></span></el-button>',
       '      <el-button size="small" text @click="togglePanel" :title="panelVisible ? \'收起助手\' : \'展开助手\'"><span class="oew-icon" v-html="icons.panel"></span></el-button>',
       '    </div>',
       '  </div>',
