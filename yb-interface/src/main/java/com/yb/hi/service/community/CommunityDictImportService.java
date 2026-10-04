@@ -220,6 +220,47 @@ public class CommunityDictImportService {
         res.put("total", total);
         res.put("imported", batch.size());
         res.put("skipped", skipped);
+        // 导入后置: 依据财务归集口径规范版本对照链回填四分类(仅填空, 保留人工改选), 使 msi_hb/med_service 行不再空壳
+        Map<String, Object> bf = backfillChargeClass();
+        res.put("classBackfilled", bf.get("classFilled"));
+        res.put("catBackfilled", bf.get("catFilled"));
+        return res;
+    }
+
+    /**
+     * 收费项目四分类回填(导入后置/可独立调用): 按院内编码派生
+     * 票据分类/会计科目/病案首页归并(item_code 去湖北扩展尾部字母 -> std_msi_fin.code_2001)
+     * 与 物价分类(fin.code_2023 -> std_msi_nat.item_code -> cat_code)。
+     * 安全口径: 仅填充当前为空的行(不覆盖人工改选); 只写归并三元组/cat_code 唯一的标准码, 歧义码留空不猜。
+     * 返回 {classFilled, catFilled} 本次实际回填行数。
+     */
+    public Map<String, Object> backfillChargeClass() {
+        // item_code 尾部字母(如 110200001a / 480000007x 的 a/x)是湖北扩展位, 2001 版基码为纯数字, 去尾后关联 code_2001
+        String strip = "REGEXP_REPLACE(c.item_code,'[^0-9]+$','')";
+        Map<String, Object> res = new LinkedHashMap<>();
+        try (Connection conn = dataSource.getConnection(); Statement st = conn.createStatement()) {
+            int cls = st.executeUpdate(
+                "UPDATE his_charge_item c JOIN ("
+                + "  SELECT code_2001, MIN(invoice_class) inv, MIN(acct_class) acct, MIN(mr_cost_class) mr"
+                + "  FROM std_msi_fin WHERE code_2001 IS NOT NULL AND code_2001<>''"
+                + "  GROUP BY code_2001 HAVING COUNT(DISTINCT invoice_class,acct_class,mr_cost_class)=1) f"
+                + "  ON f.code_2001=" + strip
+                + " SET c.invoice_class=f.inv, c.acct_class=f.acct, c.mr_cost_class=f.mr"
+                + " WHERE c.deleted=0 AND (c.invoice_class IS NULL OR c.invoice_class='')");
+            int cat = st.executeUpdate(
+                "UPDATE his_charge_item c JOIN ("
+                + "  SELECT f.code_2001 code_2001, MIN(n.cat_code) cat"
+                + "  FROM std_msi_fin f JOIN std_msi_nat n ON n.item_code=f.code_2023"
+                + "  WHERE f.code_2001 IS NOT NULL AND f.code_2001<>'' AND n.cat_code IS NOT NULL AND n.cat_code<>''"
+                + "  GROUP BY f.code_2001 HAVING COUNT(DISTINCT n.cat_code)=1) g"
+                + "  ON g.code_2001=" + strip
+                + " SET c.cat_code=g.cat"
+                + " WHERE c.deleted=0 AND (c.cat_code IS NULL OR c.cat_code='')");
+            res.put("classFilled", cls);
+            res.put("catFilled", cat);
+        } catch (SQLException e) {
+            throw new BizException(500, "收费项目四分类回填失败: " + e.getMessage());
+        }
         return res;
     }
 
