@@ -8,13 +8,61 @@
   var HIS = (window.HIS = window.HIS || {});
   HIS.components = HIS.components || {};
 
+  /* 样式须 createElement 注入: 写在模板字符串里的 <style> 经 innerHTML 插入浏览器不会应用(本面板此前长期"裸奔"的根因) */
+  (function ensureStyles() {
+    if (document.getElementById('inp-report-css')) { return; }
+    var st = document.createElement('style');
+    st.id = 'inp-report-css';
+    st.textContent = [
+      '.irp-panel { padding:12px 14px; height:100%; box-sizing:border-box; overflow:auto; background:var(--yb-surface-2); }',
+      '.irp-panel .irp-bar { display:flex; align-items:center; gap:12px; flex-wrap:wrap; margin-bottom:12px; padding:9px 12px; background:var(--yb-surface); border:1px solid var(--yb-border-light); border-radius:var(--yb-r-md); }',
+      '.irp-panel .irp-bar .el-radio-button__inner { height:28px; line-height:28px; padding-top:0; padding-bottom:0; }',
+      '.irp-panel .irp-meta { color:var(--yb-ink-3); font-size:var(--yb-fs-sm); }',
+      '.irp-panel .irp-meta b { color:var(--yb-ink-1); font-variant-numeric:tabular-nums; }',
+      '.irp-panel .irp-crit { display:inline-flex; align-items:center; gap:6px; padding:3px 12px; border-radius:var(--yb-r-pill); background:var(--yb-danger-bg); border:1px solid var(--yb-danger-border); color:var(--yb-danger); font-size:var(--yb-fs-sm); font-weight:600; }',
+      '.irp-panel .irp-crit .n { font-size:16px; font-variant-numeric:tabular-nums; }',
+      '.irp-panel .irp-refresh { margin-left:auto; }',
+      '.irp-panel .irp-list { display:flex; flex-direction:column; gap:8px; min-height:200px; }',
+      '.irp-panel .irp-card { border:1px solid var(--yb-border); border-radius:var(--yb-r-md); background:var(--yb-surface); cursor:pointer; overflow:hidden; transition:border-color var(--yb-dur) var(--yb-ease); }',
+      '.irp-panel .irp-card.is-open { border-color:var(--yb-brand); }',
+      '.irp-panel .irp-card.is-revoked { opacity:.72; background:repeating-linear-gradient(45deg,var(--yb-surface),var(--yb-surface) 10px,var(--yb-surface-2) 10px,var(--yb-surface-2) 20px); }',
+      '.irp-panel .irp-card.is-revoked .irp-name, .irp-panel .irp-card.is-revoked .irp-concl { color:var(--yb-ink-4); }',
+      '.irp-panel .irp-head { display:flex; align-items:center; gap:10px; padding:10px 12px; }',
+      '.irp-panel .irp-head:hover { background:var(--yb-surface-3); }',
+      '.irp-panel .irp-type { display:inline-flex; align-items:center; justify-content:center; min-width:44px; height:24px; padding:0 8px; border-radius:var(--yb-r-sm); background:var(--yb-brand); color:#fff; font-size:var(--yb-fs-sm); flex:none; }',
+      '.irp-panel .irp-type.lab { background:var(--yb-success); }',
+      '.irp-panel .irp-type.pathology { background:var(--yb-info); }',
+      '.irp-panel .irp-name { font-weight:600; color:var(--yb-ink-1); font-variant-numeric:tabular-nums; }',
+      '.irp-panel .irp-concl { color:var(--yb-ink-3); font-size:var(--yb-fs-sm); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; max-width:52%; }',
+      '.irp-panel .irp-time { color:var(--yb-ink-4); font-size:var(--yb-fs-sm); margin-left:auto; white-space:nowrap; font-variant-numeric:tabular-nums; }',
+      '.irp-panel .irp-detail { padding:10px 12px 12px; border-top:1px dashed var(--yb-border); }',
+      '.irp-panel .irp-sec { margin:6px 0; font-size:var(--yb-fs-base); color:var(--yb-ink-2); white-space:pre-wrap; }',
+      '.irp-panel .irp-empty { padding:36px; text-align:center; color:var(--yb-ink-4); font-size:var(--yb-fs-base); }',
+      '.irp-panel .irp-crit-val { color:var(--yb-danger); font-weight:600; }',
+      '.irp-panel .irp-imgs { margin-top:10px; padding-top:10px; border-top:1px dashed var(--yb-border); }',
+      '.irp-panel .irp-imgs-title { font-size:var(--yb-fs-sm); color:var(--yb-ink-2); margin-bottom:8px; }',
+      '.irp-panel .irp-imgs-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(120px,1fr)); gap:10px; }',
+      '.irp-panel .irp-img-cell { border:1px solid var(--yb-border); border-radius:var(--yb-r-sm); overflow:hidden; background:var(--yb-surface-2); }',
+      '.irp-panel .irp-img-cell .el-image { width:100%; height:110px; display:block; cursor:zoom-in; }',
+      '.irp-panel .irp-img-desc { padding:4px 6px; font-size:12px; color:var(--yb-ink-3); line-height:1.3; white-space:normal; }',
+      '.irp-panel .irp-img-err { width:100%; height:110px; display:flex; align-items:center; justify-content:center; color:var(--yb-ink-4); font-size:12px; background:var(--yb-surface-3); }',
+      '.irp-panel .irp-imgs-none { padding:10px; color:var(--yb-ink-4); font-size:var(--yb-fs-sm); }',
+      '.irp-panel .irp-pacs { margin-top:10px; padding-top:10px; border-top:1px dashed var(--yb-border); }',
+      '.irp-panel .irp-pacs-title { display:flex; align-items:center; gap:8px; font-size:var(--yb-fs-sm); color:var(--yb-ink-2); margin-bottom:6px; }',
+      '.irp-panel .irp-pacs-body { display:flex; align-items:center; gap:12px; flex-wrap:wrap; }',
+      '.irp-panel .irp-pacs-meta { color:var(--yb-ink-3); font-size:var(--yb-fs-sm); }',
+      '.irp-panel .irp-pacs-note { font-size:var(--yb-fs-sm); color:var(--yb-warning); background:var(--yb-warning-bg); border:1px solid var(--yb-warning-border); border-radius:var(--yb-r-sm); padding:8px 10px; margin-bottom:10px; line-height:1.5; }'
+    ].join('\n');
+    document.head.appendChild(st);
+  })();
+
   function asList(v) { return Array.isArray(v) ? v : ((v && v.records) || []); }
 
   /* 异常标志(与 his_exam_result_item.abnormal_flag 对齐: 0正常 1偏高 2偏低 3危急高 4危急低) */
   var ABNORMAL_LABELS = { 0: '', 1: '↑偏高', 2: '↓偏低', 3: '↑危急', 4: '↓危急' };
-  /* 报告类型 Tab: 全部 / 检验(lab) / 检查(exam) / 病理(pathology) */
+  /* 报告类型 Tab: 全部(all, 前端过滤不过后端) / 检验(lab) / 检查(exam) / 病理(pathology) */
   var TYPE_TABS = [
-    { key: '', label: '全部' },
+    { key: 'all', label: '全部' },
     { key: 'lab', label: '检验' },
     { key: 'exam', label: '检查' },
     { key: 'pathology', label: '病理' }
@@ -29,7 +77,7 @@
     data: function () {
       return {
         tabs: TYPE_TABS,
-        typeFilter: '',
+        typeFilter: 'all',
         reports: [],
         loading: false,
         expandedId: null,
@@ -48,7 +96,7 @@
     computed: {
       filteredReports: function () {
         var list = this.reports || [];
-        if (!this.typeFilter) { return list; }
+        if (!this.typeFilter || this.typeFilter === 'all') { return list; }
         return list.filter(function (r) { return String(r.report_type || r.reportType || '') === this.typeFilter; }, this);
       }
     },
@@ -82,7 +130,7 @@
         if (!vm.pid()) { vm.reports = []; return Promise.resolve([]); }
         vm.loading = true;
         var url = '/api/medtech/reports/patient/' + encodeURIComponent(vm.pid())
-          + (vm.typeFilter ? '?reportType=' + encodeURIComponent(vm.typeFilter) : '');
+          + ((vm.typeFilter && vm.typeFilter !== 'all') ? '?reportType=' + encodeURIComponent(vm.typeFilter) : '');
         return HIS.get(url).then(function (rows) {
           vm.reports = asList(rows);
         }).catch(function () { vm.reports = []; }).finally(function () { vm.loading = false; });
@@ -209,57 +257,16 @@
     mounted: function () { this.loadReports(); this.loadCritical(); },
     template: `
       <div class="irp-panel">
-        <style>
-          .irp-panel{padding:14px 16px;height:100%;box-sizing:border-box;overflow:auto;background:var(--yb-surface-2)}
-          .irp-panel .irp-bar{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:12px}
-          .irp-panel .irp-seg{display:inline-flex;border:1px solid var(--yb-border);border-radius:var(--yb-r-sm);overflow:hidden}
-          .irp-panel .irp-seg button{padding:4px 14px;border:none;border-right:1px solid var(--yb-border);background:var(--yb-surface);color:var(--yb-ink-3);font-size:var(--yb-fs-sm);cursor:pointer}
-          .irp-panel .irp-seg button:last-child{border-right:none}
-          .irp-panel .irp-seg button.is-on{background:var(--yb-brand);color:#fff;font-weight:600}
-          .irp-panel .irp-crit{display:inline-flex;align-items:center;gap:6px;margin-left:auto;padding:3px 12px;border-radius:var(--yb-r-pill);background:var(--yb-danger-bg);border:1px solid var(--yb-danger-border);color:var(--yb-danger);font-size:var(--yb-fs-sm);font-weight:600}
-          .irp-panel .irp-crit .n{font-size:16px}
-          .irp-panel .irp-meta{color:var(--yb-ink-3);font-size:var(--yb-fs-sm)}
-          .irp-panel .irp-list{display:flex;flex-direction:column;gap:8px}
-          .irp-panel .irp-card{border:1px solid var(--yb-border);border-radius:var(--yb-r-md);background:var(--yb-surface);cursor:pointer;overflow:hidden}
-          .irp-panel .irp-card.is-open{border-color:var(--yb-brand)}
-          .irp-panel .irp-card.is-revoked{opacity:.72;background:repeating-linear-gradient(45deg,var(--yb-surface),var(--yb-surface) 10px,var(--yb-surface-2) 10px,var(--yb-surface-2) 20px)}
-          .irp-panel .irp-card.is-revoked .irp-name,.irp-panel .irp-card.is-revoked .irp-concl{color:var(--yb-ink-4)}
-          .irp-panel .irp-head{display:flex;align-items:center;gap:10px;padding:10px 12px}
-          .irp-panel .irp-head:hover{background:var(--yb-surface-3)}
-          .irp-panel .irp-type{display:inline-flex;align-items:center;justify-content:center;min-width:44px;height:24px;border-radius:var(--yb-r-sm);background:var(--yb-brand);color:#fff;font-size:var(--yb-fs-sm)}
-          .irp-panel .irp-type.lab{background:var(--yb-success)}
-          .irp-panel .irp-type.pathology{background:var(--yb-info)}
-          .irp-panel .irp-name{font-weight:600;color:var(--yb-ink-1)}
-          .irp-panel .irp-concl{color:var(--yb-ink-3);font-size:var(--yb-fs-sm);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:52%}
-          .irp-panel .irp-time{color:var(--yb-ink-4);font-size:var(--yb-fs-sm);margin-left:auto;white-space:nowrap}
-          .irp-panel .irp-detail{padding:10px 12px 12px;border-top:1px dashed var(--yb-border)}
-          .irp-panel .irp-sec{margin:6px 0;font-size:var(--yb-fs-base);color:var(--yb-ink-2);white-space:pre-wrap}
-          .irp-panel .irp-empty{padding:36px;text-align:center;color:var(--yb-ink-4);font-size:var(--yb-fs-base)}
-          .irp-panel .irp-crit-val{color:var(--yb-danger);font-weight:600}
-          .irp-panel .irp-imgs{margin-top:10px;padding-top:10px;border-top:1px dashed var(--yb-border)}
-          .irp-panel .irp-imgs-title{font-size:var(--yb-fs-sm);color:var(--yb-ink-2);margin-bottom:8px}
-          .irp-panel .irp-imgs-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(120px,1fr));gap:10px}
-          .irp-panel .irp-img-cell{border:1px solid var(--yb-border);border-radius:var(--yb-r-sm);overflow:hidden;background:var(--yb-surface-2)}
-          .irp-panel .irp-img-cell .el-image{width:100%;height:110px;display:block;cursor:zoom-in}
-          .irp-panel .irp-img-desc{padding:4px 6px;font-size:12px;color:var(--yb-ink-3);line-height:1.3;white-space:normal}
-          .irp-panel .irp-img-err{width:100%;height:110px;display:flex;align-items:center;justify-content:center;color:var(--yb-ink-4);font-size:12px;background:var(--yb-surface-3)}
-          .irp-panel .irp-imgs-none{padding:10px;color:var(--yb-ink-4);font-size:var(--yb-fs-sm)}
-          .irp-panel .irp-pacs{margin-top:10px;padding-top:10px;border-top:1px dashed var(--yb-border)}
-          .irp-panel .irp-pacs-title{display:flex;align-items:center;gap:8px;font-size:var(--yb-fs-sm);color:var(--yb-ink-2);margin-bottom:6px}
-          .irp-panel .irp-pacs-body{display:flex;align-items:center;gap:12px;flex-wrap:wrap}
-          .irp-panel .irp-pacs-meta{color:var(--yb-ink-3);font-size:var(--yb-fs-sm)}
-          .irp-panel .irp-pacs-note{font-size:var(--yb-fs-sm);color:var(--yb-warning);background:var(--yb-warning-bg);border:1px solid var(--yb-warning-border);border-radius:var(--yb-r-sm);padding:8px 10px;margin-bottom:10px;line-height:1.5}
-        </style>
         <div class="irp-bar">
-          <div class="irp-seg">
-            <button v-for="t in tabs" :key="t.key" :class="{'is-on': typeFilter===t.key}" @click="typeFilter=t.key; onTabChange()">{{ t.label }}</button>
-          </div>
-          <el-button size="small" :loading="loading" @click="refresh">刷新</el-button>
-          <span class="irp-meta">患者ID {{ pid() || '-' }} · 共 {{ filteredReports.length }} 份</span>
-          <span class="irp-crit" title="本人待处理危急值(my-pending)"><span class="n">{{ criticalCount }}</span> 危急值待办</span>
+          <el-radio-group v-model="typeFilter" size="small" @change="onTabChange">
+            <el-radio-button v-for="t in tabs" :key="t.key" :label="t.key">{{ t.label }}</el-radio-button>
+          </el-radio-group>
+          <span class="irp-meta">共 <b>{{ filteredReports.length }}</b> 份报告</span>
+          <span v-if="criticalCount > 0" class="irp-crit" title="本人待处理危急值(my-pending)"><span class="n">{{ criticalCount }}</span> 危急值待办</span>
+          <el-button class="irp-refresh" size="small" :loading="loading" @click="refresh">刷新</el-button>
         </div>
         <div v-loading="loading" class="irp-list">
-          <div v-if="!filteredReports.length && !loading" class="irp-empty">该患者暂无已报告/已审核的检查检验报告</div>
+          <el-empty v-if="!filteredReports.length && !loading" description="该患者暂无已报告/已审核的检查检验报告" :image-size="72"></el-empty>
           <div v-for="r in filteredReports" :key="rowId(r)" class="irp-card" :class="{'is-open': expandedId===rowId(r), 'is-revoked': isRevoked(r)}">
             <div class="irp-head" @click="toggleDetail(r)">
               <span class="irp-type" :class="((r.report_type||r.reportType)||'')">{{ typeText(r.report_type||r.reportType) }}</span>
@@ -280,7 +287,7 @@
                 <el-table-column label="操作" width="80" align="center"><template #default="s"><el-button link type="primary" size="small" @click.stop="openTrend(s.row)">趋势</el-button></template></el-table-column>
               </el-table>
               <div v-else-if="detail && !resultItems().length" class="irp-empty" style="padding:14px">无结果明细子项</div>
-              <div class="irp-imgs" v-if="detail">
+              <div class="irp-imgs" v-if="detail && keyImages().length">
                 <div class="irp-imgs-title"><b>影像资料</b></div>
                 <div v-if="keyImages().length" class="irp-imgs-grid">
                   <div v-for="(im, i) in keyImages()" :key="i" class="irp-img-cell">
@@ -290,7 +297,6 @@
                     <div v-if="im.desc" class="irp-img-desc">{{ im.desc }}</div>
                   </div>
                 </div>
-                <div v-else class="irp-imgs-none">该报告未挂影像资料</div>
               </div>
               <div class="irp-pacs" v-if="detail && ((r.report_type||r.reportType)==='exam')">
                 <div class="irp-pacs-title"><b>外部影像 (PACS)</b><el-tag size="mini" type="info" disable-transitions>接入骨架/Mock</el-tag></div>

@@ -3,6 +3,37 @@
   var HIS = (window.HIS = window.HIS || {});
   HIS.components = HIS.components || {};
 
+  /* 样式须 createElement 注入: 模板字符串里的 <style> 经 innerHTML 插入不会应用(与住院版同根因); 另统一分段/刷新按钮高度(theme.css 把 el-button--small 压到28px 而 EP radio 默认24px) */
+  (function ensureStyles() {
+    if (document.getElementById('dw-report-css')) { return; }
+    var st = document.createElement('style');
+    st.id = 'dw-report-css';
+    st.textContent = [
+      '.dw-report-panel { padding:4px 2px; }',
+      '.dw-report-panel .rp-toolbar { display:flex; align-items:center; gap:10px; margin-bottom:10px; padding:8px 12px; background:var(--dw-card,#fff); border:1px solid var(--dw-border,#dfe4eb); border-radius:6px; }',
+      '.dw-report-panel .rp-toolbar .el-radio-button__inner { height:28px; line-height:28px; padding-top:0; padding-bottom:0; }',
+      '.dw-report-panel .rp-meta { color:var(--dw-text-hint,#8a94a6); font-size:12px; }',
+      '.dw-report-panel .rp-meta b { color:var(--dw-text,#1c2430); font-variant-numeric:tabular-nums; }',
+      '.dw-report-panel .rp-refresh { margin-left:auto; }',
+      '.dw-report-panel .rp-list { display:flex; flex-direction:column; gap:8px; min-height:160px; }',
+      '.dw-report-panel .rp-card { border:1px solid var(--dw-border,#dfe4eb); border-radius:4px; background:var(--dw-card,#fff); cursor:pointer; overflow:hidden; transition:border-color .15s ease; }',
+      '.dw-report-panel .rp-card.is-open { border-color:var(--dw-primary,#2b6cb0); }',
+      '.dw-report-panel .rp-card-head { display:flex; align-items:center; gap:10px; padding:9px 12px; }',
+      '.dw-report-panel .rp-card-head:hover { background:var(--yb-surface-3,#f3f6fa); }',
+      '.dw-report-panel .rp-type { display:inline-flex; align-items:center; justify-content:center; min-width:44px; height:24px; padding:0 8px; border-radius:3px; background:var(--dw-primary,#2b6cb0); color:#fff; font-size:12px; flex:none; }',
+      '.dw-report-panel .rp-type.lab { background:var(--dw-success,#2f9e44); }',
+      '.dw-report-panel .rp-name { font-weight:600; color:var(--dw-text,#1c2430); font-variant-numeric:tabular-nums; }',
+      '.dw-report-panel .rp-meta-time { color:var(--dw-text-hint,#8a94a6); font-size:12px; margin-left:auto; white-space:nowrap; font-variant-numeric:tabular-nums; }',
+      '.dw-report-panel .rp-concl { color:var(--dw-text-secondary,#4a5568); font-size:12px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; max-width:60%; }',
+      '.dw-report-panel .rp-detail { padding:6px 12px 10px; border-top:1px dashed var(--dw-border,#dfe4eb); }',
+      '.dw-report-panel .rp-detail .sec { margin:6px 0; font-size:13px; color:var(--dw-text,#1c2430); white-space:pre-wrap; }',
+      '.dw-report-panel .rp-actions { display:flex; gap:8px; margin-top:8px; }',
+      '.dw-report-panel .rp-empty { padding:30px; text-align:center; color:var(--dw-text-hint,#8a94a6); }',
+      '.dw-report-panel .dw-critical-text { color:var(--dw-danger,#f56c6c); }'
+    ].join('\n');
+    document.head.appendChild(st);
+  })();
+
   function asList(v) { return Array.isArray(v) ? v : ((v && v.records) || []); }
   function raw(v) { return v && Object.prototype.hasOwnProperty.call(v, 'value') ? v.value : v; }
 
@@ -18,7 +49,7 @@
       return {
         reports: [],
         loading: false,
-        typeFilter: '',
+        typeFilter: 'all',
         expandedId: null,
         trendVisible: false,
         trendTitle: '',
@@ -34,7 +65,7 @@
       },
       filteredReports: function () {
         var list = this.reports || [];
-        if (!this.typeFilter) { return list; }
+        if (!this.typeFilter || this.typeFilter === 'all') { return list; }
         return list.filter(function (r) { return String(r.report_type || r.reportType || '') === this.typeFilter; }, this);
       }
     },
@@ -53,7 +84,7 @@
         if (!vm.patientId) { vm.reports = []; return Promise.resolve([]); }
         vm.loading = true;
         var url = '/api/medtech/reports/patient/' + encodeURIComponent(vm.patientId)
-          + (vm.typeFilter ? '?reportType=' + encodeURIComponent(vm.typeFilter) : '');
+          + ((vm.typeFilter && vm.typeFilter !== 'all') ? '?reportType=' + encodeURIComponent(vm.typeFilter) : '');
         return HIS.get(url).then(function (rows) {
           vm.reports = asList(rows);
           return vm.reports;
@@ -161,27 +192,24 @@
     },
     template: `
       <div class="dw-report-panel">
-        <style>
-          .dw-report-panel{padding:4px 2px}.dw-report-panel .rp-toolbar{display:flex;align-items:center;gap:8px;margin-bottom:10px}.dw-report-panel .rp-list{display:flex;flex-direction:column;gap:8px}.dw-report-panel .rp-card{border:1px solid var(--dw-border);border-radius:4px;background:var(--dw-card);cursor:pointer}.dw-report-panel .rp-card.is-open{border-color:var(--dw-primary)}.dw-report-panel .rp-card-head{display:flex;align-items:center;gap:10px;padding:9px 12px}.dw-report-panel .rp-type{display:inline-flex;align-items:center;justify-content:center;min-width:44px;height:24px;border-radius:3px;background:var(--dw-primary);color:#fff;font-size:12px}.dw-report-panel .rp-type.lab{background:var(--dw-success)}.dw-report-panel .rp-name{font-weight:600;color:var(--dw-text)}.dw-report-panel .rp-meta{color:var(--dw-text-hint);font-size:12px;margin-left:auto;white-space:nowrap}.dw-report-panel .rp-concl{color:var(--dw-text-secondary);font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:60%}.dw-report-panel .rp-detail{padding:6px 12px 10px;border-top:1px dashed var(--dw-border)}.dw-report-panel .rp-detail .sec{margin:6px 0;font-size:13px;color:var(--dw-text);white-space:pre-wrap}.dw-report-panel .rp-actions{display:flex;gap:8px;margin-top:8px}.dw-report-panel .rp-empty{padding:30px;text-align:center;color:var(--dw-text-hint)}.dw-report-panel .dw-critical-text{color:var(--dw-danger,#f56c6c)}
-        </style>
         <div class="rp-toolbar">
           <el-radio-group v-model="typeFilter" size="small" @change="onFilterChange">
-            <el-radio-button label="">全部</el-radio-button>
+            <el-radio-button label="all">全部</el-radio-button>
             <el-radio-button label="exam">检查</el-radio-button>
             <el-radio-button label="lab">检验</el-radio-button>
           </el-radio-group>
-          <el-button size="small" :loading="loading" @click="loadReports">刷新</el-button>
-          <span class="dim" style="margin-left:auto;font-size:12px">患者ID {{ patientId || '-' }} · 共 {{ filteredReports.length }} 份</span>
+          <span class="rp-meta">共 <b>{{ filteredReports.length }}</b> 份报告</span>
+          <el-button class="rp-refresh" size="small" :loading="loading" @click="loadReports">刷新</el-button>
         </div>
         <div v-loading="loading" class="rp-list">
-          <div v-if="!filteredReports.length && !loading" class="rp-empty">该患者暂无已报告/已审核的检查检验报告</div>
+          <el-empty v-if="!filteredReports.length && !loading" description="该患者暂无已报告/已审核的检查检验报告" :image-size="72"></el-empty>
           <div v-for="r in filteredReports" :key="r.id" class="rp-card" :class="{'is-open': expandedId===(r.id||r.reportId)}">
             <div class="rp-card-head" @click="toggleDetail(r)">
               <span class="rp-type" :class="{lab: (r.report_type||r.reportType)==='lab'}">{{ typeText(r.report_type||r.reportType) }}</span>
               <span class="rp-name">{{ r.report_no || r.reportNo }}</span>
               <el-tag v-if="Number(r.critical_flag||r.criticalFlag)===1" type="danger" size="small">危急值</el-tag>
               <span class="rp-concl">{{ conclusionOf(r) }}</span>
-              <span class="rp-meta">{{ r.report_time || r.reportTime || '' }}</span>
+              <span class="rp-meta-time">{{ r.report_time || r.reportTime || '' }}</span>
             </div>
             <div v-if="expandedId===(r.id||r.reportId)" class="rp-detail">
               <div class="sec" v-if="r.findings"><b>所见：</b>{{ r.findings }}</div>
