@@ -9,14 +9,19 @@
   const EmrPanel = {
     name: 'DwEmrPanel',
     inject: ['currentVisit', 'currentPatient', 'visitHistory', 'diagnoses'],
-    emits: ['save-draft', 'submit'],
+    emits: ['save-draft', 'submit', 'emr-dirty'],
     /* 结构化模式渲染字段控件; Tiptap 模式渲染书写器(两者均先于本文件加载, 须局部声明) */
     components: {
       'emr-field': (window.HIS.components || {}).EmrField,
       'dw-outp-emr-writer': (window.HIS.components || {}).OutpEmrWriter
     },
     template: `
-      <section class="dw-panel dw-emr-panel">
+      <section class="dw-panel dw-emr-panel" :class="{ 'is-folded': folded }">
+        <!-- U1 折叠态(两种模式统一): 单行细条; 父页进度 chips 定位时自动展开 -->
+        <div v-if="folded" class="dw-slim-empty">病历面板已折叠 <a href="javascript:void(0)" @click="toggleFold">展开</a></div>
+        <template v-else>
+        <!-- Tiptap 模式: 悬浮折叠把手(书写器自带 header, 不侵入其内部) -->
+        <button v-if="useTiptap" class="dw-collapse-btn dw-emr-fold-float" title="折叠病历面板" @click="toggleFold">▾</button>
         <!-- P3-4: 当前模板带 Tiptap 文档时整面板切换为书写器; 事件经本组件中继, 对外接口不变 -->
         <dw-outp-emr-writer
           v-if="useTiptap"
@@ -66,6 +71,7 @@
                 </div>
               </el-popover>
             </template>
+            <button class="dw-collapse-btn" style="margin-left:6px" title="折叠病历面板" @click="toggleFold">▾</button>
           </div>
         </header>
 
@@ -83,7 +89,7 @@
 
           <!-- 结构化引擎编辑面 -->
           <div v-else class="dw-emr-struct">
-            <div v-if="!selectedEmrTemplateId" class="dw-collapse-empty dim">请选择结构化病历模板；若无模板，请到「病历模板设计器」新建门诊(scope=2)模板</div>
+            <div v-if="!selectedEmrTemplateId" class="dw-collapse-empty dim">请选择结构化病历模板；若无模板，请到「模板设计器(结构化)」或「病历模板设计器(字段画布)」新建门诊(scope=2)模板</div>
             <div v-else-if="!emrFields.length" class="dw-collapse-empty dim">模板字段加载中…</div>
             <template v-else>
               <div v-for="(f, i) in emrFields" :key="i" class="dw-emr-struct-row">
@@ -98,6 +104,7 @@
           </div>
         </div>
         </template>
+        </template>
       </section>
     `,
     data: function () {
@@ -111,7 +118,9 @@
         qualityLoading: false,
         examReports: [],
         reportsLoading: false,
-        reportsLoaded: false
+        reportsLoaded: false,
+        /* U1: 折叠记忆(localStorage) */
+        folded: window.localStorage.getItem('dw.emr.folded') === '1'
       };
     },
     computed: {
@@ -171,11 +180,47 @@
       currentVisit: {
         immediate: true,
         deep: true,
-        handler: function (visit) { this.resetFromVisit(visit); }
+        handler: function (visit) {
+          var vm = this;
+          /* 装载期(含模板字段回填)不报脏 */
+          vm._emrHydrating = true;
+          vm.resetFromVisit(visit);
+          Vue.nextTick(function () { vm._emrHydrating = false; });
+        }
+      },
+      /* U2 脏标记: 结构化表单有改动即上报主编排(Tiptap 模式由书写器自行管理, 未覆盖); 误报代价仅为切换时多一次自动暂存提示 */
+      structForm: {
+        deep: true,
+        handler: function () {
+          if (!this._emrHydrating) { this.$emit('emr-dirty'); }
+        }
       }
     },
     created: function () { this.loadEmrTemplates(); },
     methods: {
+      /* ===== U1/U2: 折叠记忆与定位 / F4 预检缺项清单(无副作用, 供父页汇总) ===== */
+      toggleFold: function () {
+        this.folded = !this.folded;
+        try { window.localStorage.setItem('dw.emr.folded', this.folded ? '1' : '0'); } catch (e) { /* 隐私模式忽略 */ }
+      },
+      revealForLocate: function () { this.folded = false; },
+      collectFinishIssues: function () {
+        /* Tiptap 模式返回空清单: 必检链由书写器 validateForFinish 在 doctor.finishVisit 内兜底 */
+        if (this.useTiptap || this.isLegacySoap) { return []; }
+        var out = [];
+        if (!this.selectedEmrTemplateId) { return ['未选择结构化病历模板']; }
+        var form = this.structForm || {};
+        (this.emrFields || []).forEach(function (f) {
+          if (String(f.type) === 'section') { return; }
+          if (f.required === true || String(f.required) === 'true') {
+            var v = form[f.fieldKey];
+            var empty = v == null || v === '' || (Array.isArray(v) && !v.length);
+            if (empty) { out.push(f.label || f.fieldKey); }
+          }
+        });
+        if (out.length) { out = ['必填项未填写：' + out.join('、')]; }
+        return out;
+      },
       /* ===== P3-4 Tiptap 适配: 书写器句柄与模板同步 ===== */
       tiptapWriter: function () {
         return this.$refs.tiptapWriter || null;

@@ -68,7 +68,8 @@
         mutualItem: null,
         mutualReason: '',
         mutualResolver: null,
-        folded: false,
+        folded: window.localStorage.getItem('dw.order.folded') === '1',
+        doneExpanded: false,
         /* 过敏拦截(2026-09 集成: 开单前核对护士站过敏档案, 命中强制确认换药/脱敏) */
         allergyVisible: false,
         allergyHits: [],
@@ -90,6 +91,9 @@
       visitId: function () { return this.visit && (this.visit.id || this.visit.visitId); },
       patientId: function () { return (this.patient && this.patient.id) || (this.visit && this.visit.patientId); },
       isExpanded: function () { return true; },
+      ordersTotal: function () {
+        return money((this.orders || []).reduce(function (sum, o) { return sum + Number(o.totalAmount || 0); }, 0));
+      },
       canEdit: function () { return !!this.visit && Number(this.visit.visitStatus) === 2; },
       activeBucket: function () { return this.buckets[this.orderType]; },
       activeForm: function () { return this.forms[this.orderType]; },
@@ -148,6 +152,17 @@
     },
     methods: {
       money: money,
+      /* ===== U1/U2: 折叠记忆与定位 ===== */
+      toggleFold: function () {
+        this.folded = !this.folded;
+        try { window.localStorage.setItem('dw.order.folded', this.folded ? '1' : '0'); } catch (e) { /* 隐私模式忽略 */ }
+      },
+      revealForLocate: function () { this.folded = false; },
+      /* 暂存表数量框回车回到检索框(键盘流闭环) */
+      backToOdPick: function () {
+        var pick = this.$refs.odPick;
+        if (pick && typeof pick.focus === 'function') { pick.focus(); }
+      },
       resetDrafts: function () {
         this.buckets = { '检查': makeBucket(), '检验': makeBucket(), '治疗': makeBucket() };
         this.forms = { '检查': examForm(), '检验': labForm(), '治疗': treatmentForm() };
@@ -550,12 +565,12 @@
         </style>
         <div class="dw-panel-header">
           <span>检查 · 检验 · 治疗申请 <span class="dim" v-if="orders.length">已开 {{ orders.length }} 单</span></span>
-          <button class="dw-collapse-btn" :title="folded ? '展开医嘱面板' : '折叠医嘱面板'" @click="folded=!folded">{{ folded ? '▸' : '▾' }}</button>
+          <button class="dw-collapse-btn" :title="folded ? '展开医嘱面板' : '折叠医嘱面板'" @click="toggleFold">{{ folded ? '▸' : '▾' }}</button>
         </div>
         <template v-if="visit && !folded">
           <div class="dw-order-toolbar">
             <el-radio-group v-model="orderType" size="small" @change="switchType"><el-radio-button v-for="t in orderTypes" :key="t" :label="t">{{ t }}</el-radio-button></el-radio-group>
-            <el-select class="dw-order-pick" v-model="odPickId" size="small" filterable remote reserve-keyword clearable :remote-method="remoteSearchOd" :loading="activeBucket.loading" :disabled="!canEdit" placeholder="检索项目：名称 / 编码 / 拼音，选中即并入暂存" @change="onPickOd">
+            <el-select class="dw-order-pick" ref="odPick" v-model="odPickId" size="small" filterable remote reserve-keyword clearable :remote-method="remoteSearchOd" :loading="activeBucket.loading" :disabled="!canEdit" placeholder="检索项目：名称 / 编码 / 拼音，选中即并入暂存" @change="onPickOd">
               <el-option v-for="it in activeBucket.results" :key="it.id" :label="it.itemName" :value="it.id">
                 <div class="dw-rx-opt"><span class="nm">{{ it.itemName }}</span><span class="spec">{{ it.spec || '' }}</span><span class="price">￥{{ money(it.execPrice!=null?it.execPrice:it.price) }}</span></div>
               </el-option>
@@ -587,14 +602,21 @@
                 </template>
               </el-form>
             <div class="dw-section">暂存项目 <span class="dw-section-extra">共 {{ activeBucket.items.length }} 项</span></div>
-            <el-table v-if="activeBucket.items.length" class="dw-od-table" :data="activeBucket.items" border size="small" max-height="220"><el-table-column type="index" label="序号" width="48"></el-table-column><el-table-column prop="itemName" label="项目" show-overflow-tooltip></el-table-column><el-table-column label="数量" width="112"><template #default="s"><el-input-number v-model="s.row.quantity" :min="1" size="small" controls-position="right" style="width:96px"></el-input-number></template></el-table-column><el-table-column label="金额" width="82" align="right"><template #default="s">￥{{ lineAmount(s.row) }}</template></el-table-column><el-table-column label="" width="48"><template #default="s"><el-button link type="danger" @click="removeItem(s.$index)">删</el-button></template></el-table-column></el-table>
+            <el-table v-if="activeBucket.items.length" class="dw-od-table" :data="activeBucket.items" border size="small" max-height="220"><el-table-column type="index" label="序号" width="48"></el-table-column><el-table-column prop="itemName" label="项目" show-overflow-tooltip></el-table-column><el-table-column label="数量" width="112"><template #default="s"><el-input-number v-model="s.row.quantity" :min="1" size="small" controls-position="right" style="width:96px" @keyup.enter="backToOdPick"></el-input-number></template></el-table-column><el-table-column label="金额" width="82" align="right"><template #default="s">￥{{ lineAmount(s.row) }}</template></el-table-column><el-table-column label="" width="48"><template #default="s"><el-button link type="danger" @click="removeItem(s.$index)">删</el-button></template></el-table-column></el-table>
             <div v-else class="dw-collapse-empty">检索并选中项目即并入暂存, 暂无待开项目</div>
           </div>
           <div class="dw-foot-bar" v-if="activeBucket.items.length"><span>共 {{ activeBucket.items.length }} 项 · 合计 <b>￥{{ money(orderTotal) }}</b></span><div style="display:flex;gap:6px"><el-button size="small" :disabled="!canEdit" title="将暂存项目摘要追加到病历治疗意见" @click="insertToRecord">插入病历</el-button><el-button type="primary" size="small" :loading="saving" :disabled="!canEdit" @click="saveOd">开立{{ orderType }}单</el-button></div></div>
           <div class="dw-order-history" v-loading="loadingOrders">
-            <div class="dw-section" style="margin-top:0">已开立单据 <el-button link size="small" :disabled="!patientId" @click="openReports">查看报告</el-button></div>
-            <div v-if="!visibleOrders.length" class="dim">暂无{{ orderType }}单</div>
-            <div class="dw-done-list"><div class="dw-done-item" v-for="o in visibleOrders" :key="o.id"><span class="no">{{ o.orderNo }}</span><span class="amt">￥{{ money(o.totalAmount) }}</span><span class="dw-progress">{{ orderProgress(o) }}</span><el-button link type="primary" @click="printOrder(o)">打印</el-button><el-button v-if="Number(o.status)===1" link type="danger" @click="cancelOrder(o)">作废</el-button></div></div>
+            <div class="dw-done-summary" :title="doneExpanded ? '收起已开立单据' : '展开查看/打印/作废'" @click="doneExpanded=!doneExpanded">
+              <span>{{ doneExpanded ? '▾' : '▸' }}</span>
+              <span>已开立单据 <b>{{ orders.length }}</b> 单 · 合计 ¥{{ ordersTotal }}</span>
+              <el-button link size="small" :disabled="!patientId" @click.stop="openReports">查看报告</el-button>
+              <span class="dim" style="margin-left:auto">{{ doneExpanded ? '收起' : '展开查看 / 打印 / 作废' }}</span>
+            </div>
+            <div v-show="doneExpanded">
+              <div v-if="!visibleOrders.length" class="dim">暂无{{ orderType }}单</div>
+              <div class="dw-done-list"><div class="dw-done-item" v-for="o in visibleOrders" :key="o.id"><span class="no">{{ o.orderNo }}</span><span class="amt">￥{{ money(o.totalAmount) }}</span><span class="dw-progress">{{ orderProgress(o) }}</span><el-button link type="primary" @click="printOrder(o)">打印</el-button><el-button v-if="Number(o.status)===1" link type="danger" @click="cancelOrder(o)">作废</el-button></div></div>
+            </div>
           </div>
         </template>
         <div v-else-if="visit && folded" class="dw-slim-empty">医嘱面板已折叠</div>

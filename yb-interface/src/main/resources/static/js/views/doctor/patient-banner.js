@@ -2,23 +2,24 @@
 ;(function () {
   const PatientBanner = {
     name: 'DwPatientBanner',
+    components: { 'patient-360-drawer': (window.HIS.components || {}).Patient360Drawer },
     inject: ['currentVisit', 'currentPatient', 'feeSummary', 'visitDuration'],
     template: `
       <section v-if="currentVisit" class="dw-banner" :class="bannerClass" aria-label="当前患者信息">
-        <strong class="dw-banner-main">{{ patientName }}</strong>
+        <strong class="dw-banner-main dw-p360-trigger" title="点击查看患者360°速览" @click="p360Visible = true">{{ patientName }}</strong>
         <span class="dw-banner-meta">{{ genderLabel(patient.gender || currentVisit.gender) }} · <b :style="ageStyle">{{ ageLabel }}</b></span>
         <span class="dw-banner-meta" v-if="cfg.iptNo" :title="'门诊号 ' + (currentVisit.iptOtpNo || currentVisit.patientNo || '-') + ' · 挂号号 ' + (currentVisit.regNo || '-')">门诊号 {{ currentVisit.iptOtpNo || currentVisit.patientNo || '-' }}</span>
         <span v-if="cfg.insurance" class="dw-tag" :class="insured ? 'dw-tag--success' : ''">{{ insuranceLabel }}</span>
         <span v-if="emergency" class="dw-tag dw-tag--danger">急诊</span>
         <span class="dw-tag" :class="statusClass">{{ statusLabel }}</span>
-        <span class="dw-banner-meta" v-if="cfg.deptDoctor">{{ currentVisit.deptName || '-' }} · {{ currentVisit.drName || '-' }} · {{ medTypeLabel }}</span>
-        <span class="dw-banner-allergy" :class="{ 'dw-allergy-alert': hasAllergy }" :title="allergyText">
+        <span class="dw-banner-meta" v-if="cfg.deptDoctor" :title="(currentVisit.deptName || '-') + ' · ' + (currentVisit.drName || '-') + ' · ' + medTypeLabel">{{ currentVisit.deptName || '-' }} · {{ currentVisit.drName || '-' }} · {{ medTypeLabel }}</span>
+        <span class="dw-banner-allergy" :class="allergyClass" :title="allergyText">
           <span class="warning-icon" aria-hidden="true">⚠</span>
           <span>过敏：</span>
           <strong>{{ allergyText }}</strong>
           <span v-if="!allergyHistory" class="dw-tag dw-tag--danger">必填</span>
         </span>
-        <span v-if="lastVisit && cfg.lastVisit" class="dw-banner-meta" :title="lastVisit.mainDiagName || '未记录'" style="max-width:260px;overflow:hidden;text-overflow:ellipsis">上次: {{ lastVisit.workDate || '-' }} {{ lastVisit.deptName || '' }}</span>
+        <span v-if="lastVisit && cfg.lastVisit" class="dw-banner-meta dw-banner-last" :title="'上次: ' + (lastVisit.workDate || '-') + ' ' + (lastVisit.deptName || '') + ' · ' + (lastVisit.mainDiagName || '未记录')">上次: {{ lastVisit.workDate || '-' }} {{ lastVisit.deptName || '' }}</span>
         <span class="dw-banner-right">
           <span class="dim">接诊计时 {{ visitDuration }}</span>
           <span v-if="cfg.fee" class="dw-fee-badge">本次费用 ￥{{ feeTotal }}</span>
@@ -35,13 +36,14 @@
             </div>
           </el-popover>
         </span>
+        <patient-360-drawer v-model="p360Visible" :patient-id="patientId" :patient="p360Patient"></patient-360-drawer>
       </section>
       <section v-else class="dw-banner dw-banner--selfpay" aria-label="未选择患者">
-        <span style="padding:4px 0;color:var(--dw-text-hint)">请从左侧候诊队列选择患者</span>
+        <span class="dw-banner-empty">请从左侧候诊队列选择患者</span>
       </section>
     `,
     data: function () {
-      return { history: [], historyLoadingFor: null, cfg: { iptNo: true, insurance: true, deptDoctor: true, lastVisit: true, fee: true } };
+      return { history: [], historyLoadingFor: null, p360Visible: false, cfg: { iptNo: true, insurance: true, deptDoctor: true, lastVisit: true, fee: true } };
     },
     mounted: function () { this.loadPref(); },
     computed: {
@@ -116,6 +118,23 @@
         return !!value && !/^(无|否|未发现|无.*过敏)/.test(value);
       },
       allergyText: function () { return this.allergyHistory || '未填写过敏史'; },
+      /* U1 降噪: 未填写才闪烁提醒; 已知过敏静态红条; 登记"无"中性弱化展示 */
+      allergyClass: function () {
+        if (!this.allergyHistory) { return 'dw-allergy-alert'; }
+        if (this.hasAllergy) { return ''; }
+        return 'dw-allergy-none';
+      },
+      /* 360抽屉头部展示信息(以档案为源, 就诊行兜底) */
+      p360Patient: function () {
+        var p = this.patient || {};
+        return {
+          name: this.patientName,
+          gender: p.gender || (this.currentVisit && this.currentVisit.gender),
+          age: p.age != null ? p.age : (this.currentVisit && this.currentVisit.age),
+          patientNo: (this.currentVisit && (this.currentVisit.iptOtpNo || this.currentVisit.patientNo)) || p.patientNo || '',
+          allergyHistory: this.allergyHistory
+        };
+      },
       lastVisit: function () { return this.history.length ? this.history[0] : null; }
     },
     watch: {

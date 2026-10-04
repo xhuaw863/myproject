@@ -56,7 +56,10 @@
         dispositionForm: { disposition: 1, dispositionDeptId: null, dispositionNote: '' },
         /* OP-D 危急值轮询待办(14.6) */
         pendingCriticals: [],
-        critAlertedIds: []
+        critAlertedIds: [],
+        /* U2 诊疗进度与脏标记: emrSaved=病历已保存(完成/暂存成功), dirtyEmr=本次会话有未保存修改 */
+        emrSaved: false,
+        dirtyEmr: false
       };
     },
     provide: function () {
@@ -89,6 +92,26 @@
         return [hours, minutes, remain].map(function (value) {
           return ('0' + value).slice(-2);
         }).join(':');
+      },
+      /* U2 诊疗进度 chips: 病历/诊断/处方/医嘱 四环节状态一目了然, 点击定位 */
+      progChips: function () {
+        var vm = this;
+        if (!vm.currentVisit) { return []; }
+        var finished = Number(vm.currentVisit.visitStatus) === 3;
+        var items = [
+          { key: 'emr', label: '病历', ok: !!vm.emrSaved },
+          { key: 'diag', label: '诊断', ok: vm.diagnoses.length > 0, count: vm.diagnoses.length, hard: true },
+          { key: 'rx', label: '处方', ok: vm.rxCount > 0, count: vm.rxCount },
+          { key: 'order', label: '医嘱', ok: vm.orderCount > 0, count: vm.orderCount }
+        ];
+        return items.map(function (it) {
+          return {
+            key: it.key,
+            label: it.label + (it.count ? ' ' + it.count : ''),
+            cls: (it.ok || finished) ? 'is-done' : (it.hard ? 'is-danger' : 'is-miss'),
+            tip: ((it.ok || finished) ? '已完成: ' : '待处理: ') + it.label
+          };
+        });
       }
     },
     mounted: function () {
@@ -179,10 +202,14 @@
       switchActiveVisit: function (visit) {
         var vm = this;
         if (vm.isActiveVisit(visit)) { return; }
-        /* 切换前对当前接诊中病历尽力自动暂存, 避免丢失未保存书写 */
+        /* 切换前对当前接诊中病历尽力自动暂存, 避免丢失未保存书写; U2: 有脏标记时明确告知而非静默 */
         var emr = vm.$refs.emrPanel;
         if (vm.canEdit && emr && typeof emr.emitSave === 'function') {
-          try { emr.emitSave(false); } catch (e) { /* 静默: 未选模板等情况不阻断切换 */ }
+          var name = (vm.currentVisit && vm.currentVisit.patientName) || '当前患者';
+          if (vm.dirtyEmr) { ElementPlus.ElMessage.info('「' + name + '」病历有未保存修改, 切换前自动暂存…'); }
+          try { emr.emitSave(false); } catch (e) {
+            if (vm.dirtyEmr) { ElementPlus.ElMessage.warning('「' + name + '」病历自动暂存失败, 可切回该患者按 F3 手动暂存'); }
+          }
         }
         vm.onSelectVisit({ id: visit.id, patientName: visit.patientName, visitStatus: visit.visitStatus });
       },
@@ -204,6 +231,8 @@
         this.feeSummary = null;
         this.rxCount = 0;
         this.orderCount = 0;
+        this.emrSaved = false;
+        this.dirtyEmr = false;
       },
       /* ===== OP-A 体征/预问诊引用中继到病历面板 ===== */
       openVital: function () {
@@ -256,20 +285,78 @@
           /* P3-4: Tiptap 模式随草稿保存 content(Tiptap JSON 串, 服务端加密落库); 旧模式为 undefined 将被序列化忽略 */
           content: soapData.content
         })).then(function () {
+          vm.emrSaved = true;
+          vm.dirtyEmr = false;
           HIS.notifySuccess('病历草稿已暂存(F3)');
-        }).catch(HIS.notifyError).finally(function () { vm.submitting = false; });
+        }).catch(function (e) { vm.dirtyEmr = true; HIS.notifyError(e); }).finally(function () { vm.submitting = false; });
       },
       finishVisit: function () {
         var vm = this;
         if (!vm.currentVisit) { ElementPlus.ElMessage.warning('请先选择患者'); return; }
         if (!vm.canEdit || vm.submitting) { return; }
-        if (!vm.diagnoses.length) { ElementPlus.ElMessage.warning('请至少录入一条诊断'); return; }
+        /* U2 F4 预检: 汇总缺项清单; 硬缺项阻断+定位闪烁, 软缺项确认后仍可完成 */
+        var issues = vm.collectFinishIssues();
+        var hard = issues.filter(function (i) { return i.hard; });
+        if (hard.length) {
+          ElementPlus.ElMessageBox.alert(
+            hard.map(function (i) { return '· ' + i.label; }).join('\n'),
+            '完成接诊前存在必填缺项',
+            { type: 'warning', confirmButtonText: '定位处理' }
+          ).catch(function () { /* alert 无取消路径, 防未处理 rejection */ }).finally(function () { vm.locateIssue(hard[0].key); });
+          return;
+        }
+        var openDisposition = function () {
+          /* Tiptap 病历等模式的必检兜底: 书写器 validateForFinish 自带弹错与阻断 */
+          var emr = vm.$refs.emrPanel;
+          if (emr && typeof emr.validateForFinish === 'function' && !emr.validateForFinish()) { return; }
+          /* OP-A 诊后去向: 完成前弹出去向选择(离院/转科/转留观/转院) */
+          vm.dispositionForm = { disposition: 1, dispositionDeptId: null, dispositionNote: '' };
+          if (!vm.dispositionDepts.length) { vm.loadDispositionDepts(); }
+          vm.dispositionVisible = true;
+        };
+        var soft = issues.filter(function (i) { return !i.hard; });
+        if (soft.length) {
+          ElementPlus.ElMessageBox.confirm(
+            soft.map(function (i) { return '· ' + i.label; }).join('\n') + '\n\n确认仍要完成接诊？',
+            '存在非必填缺项',
+            { type: 'info', confirmButtonText: '忽略并完成', cancelButtonText: '返回补充' }
+          ).then(openDisposition).catch(function () { /* 返回补充: 停留当前 */ });
+          return;
+        }
+        openDisposition();
+      },
+      /* F4 预检缺项收集: 诊断必选(硬) + 病历结构必存项(硬, 由 emr-panel 提供) + 处方/医嘱全空(软) */
+      collectFinishIssues: function () {
+        var vm = this;
+        var issues = [];
+        if (!vm.diagnoses.length) { issues.push({ key: 'diag', label: '未录入诊断', hard: true }); }
         var emr = vm.$refs.emrPanel;
-        if (emr && typeof emr.validateForFinish === 'function' && !emr.validateForFinish()) { return; }
-        /* OP-A 诊后去向: 完成前弹出去向选择(离院/转科/转留观/转院) */
-        vm.dispositionForm = { disposition: 1, dispositionDeptId: null, dispositionNote: '' };
-        if (!vm.dispositionDepts.length) { vm.loadDispositionDepts(); }
-        vm.dispositionVisible = true;
+        if (emr && typeof emr.collectFinishIssues === 'function') {
+          (emr.collectFinishIssues() || []).forEach(function (miss) {
+            issues.push({ key: 'emr', label: '病历：' + miss, hard: true });
+          });
+        }
+        if (!vm.rxCount && !vm.orderCount) { issues.push({ key: 'rx', label: '未开立任何处方与医嘱（纯咨询可忽略）', hard: false }); }
+        return issues;
+      },
+      /* 缺项定位: 切回诊疗页签 → 展开目标面板 → 滚动 + 闪烁一次(.dw-flash) */
+      locateIssue: function (key) {
+        var vm = this;
+        var refMap = { diag: 'diagPanel', emr: 'emrPanel', rx: 'rxPanel', order: 'orderPanel' };
+        var selMap = { diag: '.dw-diagnosis-panel', emr: '.dw-emr-panel', rx: '.dw-prescription-panel', order: '.dw-order-panel' };
+        if (!selMap[key]) { return; }
+        vm.switchTab('clinic');
+        var panel = vm.$refs[refMap[key]];
+        if (panel && typeof panel.revealForLocate === 'function') { panel.revealForLocate(); }
+        vm.$nextTick(function () {
+          var el = vm.$el && vm.$el.querySelector(selMap[key]);
+          if (!el) { return; }
+          if (typeof el.scrollIntoView === 'function') { el.scrollIntoView({ block: 'nearest' }); }
+          el.classList.remove('dw-flash');
+          void el.offsetWidth;
+          el.classList.add('dw-flash');
+          window.setTimeout(function () { el.classList.remove('dw-flash'); }, 1800);
+        });
       },
       loadDispositionDepts: function () {
         var vm = this;
@@ -430,6 +517,11 @@
           vm.currentVisit = mergedVisit;
           vm.currentPatient = Object.assign({}, baseVisit, (data && data.patient) || {});
           vm.diagnoses = (data && data.diagnoses) || [];
+          /* U2 进度初始化: 详情已带回病历正文(含旧模式结构化字段)则视为已保存 */
+          var rec = (data && (data.soap || data.record)) || {};
+          vm.emrSaved = Number(mergedVisit.visitStatus) === 3 ||
+            !!(rec.chiefComplaint || rec.presentIllness || rec.physicalExam || rec.content || mergedVisit.content);
+          vm.dirtyEmr = false;
           vm.resetVisitTimer(mergedVisit);
           if (!vm.visitHistory.length) { vm.loadVisitHistory(mergedVisit); }
           return data;
@@ -523,9 +615,9 @@
     template: `
       <div class="dw-wrap">
         <div class="dw-header">
-          <div class="dw-header-left" style="display:flex;align-items:center;gap:10px;min-width:210px">
-            <button class="dw-btn-icon" style="color:var(--dw-header-text)" :title="leftCollapsed ? '展开候诊栏' : '折叠候诊栏'" @click="leftCollapsed=!leftCollapsed">{{ leftCollapsed ? '≫' : '≪' }}</button>
-            <span class="dw-header-title" style="font-size:16px;font-weight:700;letter-spacing:.08em">门诊医生工作站</span>
+          <div class="dw-header-left">
+            <button class="dw-btn-icon" :title="leftCollapsed ? '展开候诊栏' : '折叠候诊栏'" @click="leftCollapsed=!leftCollapsed">{{ leftCollapsed ? '≫' : '≪' }}</button>
+            <span class="dw-header-title">门诊医生工作站</span>
           </div>
           <div class="dw-header-right dw-actions">
             <el-button size="small" @click="openPreConsult" :disabled="!currentVisit">预问诊</el-button>
@@ -534,6 +626,16 @@
             <el-button size="small" @click="saveDraft" :loading="submitting" :disabled="!canEdit">F3 暂存</el-button>
             <el-button size="small" type="primary" @click="finishVisit" :loading="submitting" :disabled="!canEdit">F4 完成</el-button>
             <el-button size="small" @click="refreshQueue">F8 刷新</el-button>
+            <span class="dw-clock">{{ currentTime }}</span>
+            <el-popover placement="bottom-end" :width="320" trigger="click" popper-class="dw-help-pop">
+              <template #reference><button class="dw-help-btn" title="快捷键帮助">?</button></template>
+              <div class="dw-help-row"><kbd>F2 / F3 / F4</kbd><span>接诊 / 暂存病历 / 完成接诊(预检缺项)</span></div>
+              <div class="dw-help-row"><kbd>F5 / F6</kbd><span>焦点到药品检索 / 焦点到医嘱检索</span></div>
+              <div class="dw-help-row"><kbd>F8</kbd><span>刷新候诊队列</span></div>
+              <div class="dw-help-row"><kbd>Ctrl+1~4</kbd><span>切换 诊疗工作台 / 医嘱总览 / 处置与历史 / 报告</span></div>
+              <div class="dw-help-row"><kbd>Enter</kbd><span>检索选中即入行, 随后可连续录入剂量</span></div>
+              <div class="dw-help-row"><kbd>进度条</kbd><span>顶栏右侧 病历/诊断/处方/医嘱 chips, 点击自动定位缺项</span></div>
+            </el-popover>
           </div>
         </div>
 
@@ -550,17 +652,20 @@
                 </span>
               </div>
               <nav class="dw-tabnav" role="tablist">
-                <button class="dw-tabnav-item" :class="{'is-active': activeTab==='clinic'}" role="tab" :aria-selected="activeTab==='clinic'" @click="switchTab('clinic')">诊疗工作台<span class="dw-tab-count" v-if="diagnoses.length || rxCount || orderCount">诊{{ diagnoses.length }} 方{{ rxCount }} 嘱{{ orderCount }}</span></button>
+                <button class="dw-tabnav-item" :class="{'is-active': activeTab==='clinic'}" role="tab" :aria-selected="activeTab==='clinic'" @click="switchTab('clinic')">诊疗工作台</button>
                 <button class="dw-tabnav-item" :class="{'is-active': activeTab==='overview'}" role="tab" :aria-selected="activeTab==='overview'" @click="switchTab('overview')">医嘱总览<span class="dw-tab-count" v-if="rxCount || orderCount">{{ rxCount + orderCount }}</span></button>
                 <button class="dw-tabnav-item" :class="{'is-active': activeTab==='docs'}" role="tab" :aria-selected="activeTab==='docs'" @click="switchTab('docs')">处置与历史</button>
                 <button class="dw-tabnav-item" :class="{'is-active': activeTab==='report'}" role="tab" :aria-selected="activeTab==='report'" @click="switchTab('report')">报告<span class="dw-tab-count" v-if="pendingCriticals.length">⚠{{ pendingCriticals.length }}</span></button>
+                <div class="dw-prog-chips" v-if="progChips.length">
+                  <span v-for="c in progChips" :key="c.key" class="dw-prog-chip" :class="c.cls" :title="c.tip" @click="locateIssue(c.key)">{{ c.label }}</span>
+                </div>
               </nav>
             </div>
 
             <div class="dw-tab-body dw-clinic" v-show="activeTab==='clinic'">
               <div class="dw-col dw-col-left">
-                <dw-diagnosis-panel @update-diagnoses="onUpdateDiagnoses" @apply-template="onApplyDiagTemplate"></dw-diagnosis-panel>
-                <dw-emr-panel ref="emrPanel" @save-draft="onSaveDraft"></dw-emr-panel>
+                <dw-diagnosis-panel ref="diagPanel" @update-diagnoses="onUpdateDiagnoses" @apply-template="onApplyDiagTemplate"></dw-diagnosis-panel>
+                <dw-emr-panel ref="emrPanel" @save-draft="onSaveDraft" @emr-dirty="dirtyEmr = true"></dw-emr-panel>
               </div>
               <div class="dw-col dw-col-right">
                 <dw-prescription-panel ref="rxPanel" @rx-saved="onRxSaved" @count-update="onRxCount" @print-rx="onPrintRx" @insert-to-record="onInsertToRecord"></dw-prescription-panel>
@@ -580,11 +685,6 @@
               <dw-report-panel @insert-to-record="onInsertToRecord"></dw-report-panel>
             </div>
           </div>
-        </div>
-
-        <div class="dw-footer">
-          <span>F2接诊 F3暂存 F4完成 F5药品 F6医嘱 F8刷新 | Ctrl+1诊疗 Ctrl+2处置 Ctrl+3总览 Ctrl+4报告</span>
-          <span class="dw-footer-time" style="margin-left:auto;font-variant-numeric:tabular-nums">{{ currentTime }}</span>
         </div>
 
         <dw-vital-panel v-model="vitalVisible" @quote-to-record="onQuoteVital"></dw-vital-panel>

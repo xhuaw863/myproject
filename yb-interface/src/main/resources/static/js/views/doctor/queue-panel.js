@@ -22,6 +22,7 @@
               <span><i class="dw-status-dot" :class="group.dotClass"></i> {{ group.label }}</span>
               <span class="badge" :class="group.badgeClass">{{ group.items.length }}</span>
             </div>
+            <!-- U3 重排: 两行卡片, 行1姓名+候时, 行2序号·性别年龄+支付标签 -->
             <div
               v-for="visit in group.items"
               :key="visit.id"
@@ -33,15 +34,21 @@
               @dblclick="startVisit(visit)"
               @keyup.enter="selectVisit(visit)"
             >
-              <span class="dw-qi-meta" style="flex:none;width:34px">{{ visit.queueNo || visit.regNo || '-' }}</span>
-              <span class="dw-qi-name">
-                {{ visit.patientName || '-' }}
-                <span v-if="isPassed(visit)" class="dw-tag dw-tag--danger" style="padding:0 3px;min-height:16px">[过]</span>
-              </span>
-              <span class="dw-qi-meta">{{ genderLabel(visit.gender) }}/{{ ageLabel(visit) }}</span>
-              <span v-if="isEmergency(visit)" class="dw-tag dw-tag--danger">急</span>
-              <span class="dw-tag" :class="isInsured(visit) ? 'dw-tag--success' : ''" :style="isInsured(visit) ? null : { color: 'var(--dw-text-hint)', background: 'var(--dw-card-muted)' }">{{ isInsured(visit) ? '医保' : '自费' }}</span>
-              <span v-if="visit.visitStatus === 1" class="dw-wait-time">候 {{ waitMinutes(visit) }}分</span>
+              <div class="dw-qi-row1">
+                <span class="dw-qi-name">
+                  {{ visit.patientName || '-' }}
+                  <span v-if="isPassed(visit)" class="dw-tag dw-tag--danger dw-tag--mini">过</span>
+                  <span v-if="isEmergency(visit)" class="dw-tag dw-tag--danger dw-tag--mini">急</span>
+                </span>
+                <span v-if="visit.visitStatus === 1" class="dw-wait-time" :class="{ 'is-long': waitMinutes(visit) >= 30 }">候 {{ waitMinutes(visit) }}分</span>
+              </div>
+              <div class="dw-qi-row2">
+                <span class="dw-qi-no">{{ visit.queueNo || visit.regNo || '-' }}</span>
+                <span class="dw-qi-meta">{{ genderLabel(visit.gender) }}/{{ ageLabel(visit) }}</span>
+                <span class="dw-qi-flags">
+                  <span class="dw-tag dw-tag--mini" :class="isInsured(visit) ? 'dw-tag--success' : 'dw-tag--muted'">{{ isInsured(visit) ? '医保' : '自费' }}</span>
+                </span>
+              </div>
             </div>
           </section>
           <div v-if="!filteredQueue.length && !loading" class="dw-queue-empty">

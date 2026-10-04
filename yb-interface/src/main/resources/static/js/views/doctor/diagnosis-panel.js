@@ -57,14 +57,15 @@
       return { diagnoses: Vue.computed(function () { return vm.selectedDiagnoses; }) };
     },
     template: `
-      <section class="dw-panel">
+      <section class="dw-panel dw-diagnosis-panel" :class="{ 'is-folded': folded }">
         <header class="dw-panel-header">
           <span>诊断录入 <span class="dim">{{ selectedDiagnoses.length }} 条</span></span>
+          <button class="dw-collapse-btn" :title="folded ? '展开诊断面板' : '折叠诊断面板'" @click="toggleFold">{{ folded ? '▸' : '▾' }}</button>
         </header>
 
-        <div v-if="!currentVisit" class="dw-empty"><el-empty description="请选择患者后录入诊断"></el-empty></div>
-        <div v-else style="padding:10px 12px">
-          <div class="dw-diag-pick" style="display:flex;gap:8px;align-items:center">
+        <div v-if="!currentVisit" class="dw-slim-empty">未选择患者, 诊断录入暂不可用</div>
+        <div v-else-if="!folded" class="dw-diag-body">
+          <div class="dw-diag-pick">
             <el-select v-model="diagClass" size="small" style="width:104px;flex:none" :disabled="readOnly" @change="onDiagClassChange">
               <el-option v-for="c in diagClasses" :key="c.v" :label="c.l" :value="c.v"></el-option>
             </el-select>
@@ -92,19 +93,19 @@
                 <div class="dw-asst-group" v-if="assistant.history && assistant.history.length">
                   <div class="dw-asst-title">患者历史诊断</div>
                   <div class="dw-diag-common">
-                    <button v-for="a in assistant.history" :key="'h'+a.code" class="dw-tag" :class="isAdded(a) ? 'dw-tag--success' : 'dw-tag--info'" :disabled="readOnly || isAdded(a)" style="cursor:pointer" @click="addFromAssistant(a)">{{ a.name }}</button>
+                    <button v-for="a in assistant.history" :key="'h'+a.code" class="dw-tag" :class="isAdded(a) ? 'dw-tag--success' : 'dw-tag--info'" :disabled="readOnly || isAdded(a)" @click="addFromAssistant(a)">{{ a.name }}</button>
                   </div>
                 </div>
                 <div class="dw-asst-group" v-if="assistant.deptFrequent && assistant.deptFrequent.length">
                   <div class="dw-asst-title">本科室高频</div>
                   <div class="dw-diag-common">
-                    <button v-for="a in assistant.deptFrequent" :key="'d'+a.code" class="dw-tag" :class="isAdded(a) ? 'dw-tag--success' : 'dw-tag--warning'" :disabled="readOnly || isAdded(a)" style="cursor:pointer" @click="addFromAssistant(a)">{{ a.name }}<span class="dim" v-if="a.count">·{{ a.count }}</span></button>
+                    <button v-for="a in assistant.deptFrequent" :key="'d'+a.code" class="dw-tag" :class="isAdded(a) ? 'dw-tag--success' : 'dw-tag--warning'" :disabled="readOnly || isAdded(a)" @click="addFromAssistant(a)">{{ a.name }}<span class="dim" v-if="a.count">·{{ a.count }}</span></button>
                   </div>
                 </div>
                 <div class="dw-asst-group" v-if="assistant.personalFrequent && assistant.personalFrequent.length">
                   <div class="dw-asst-title">我的常用</div>
                   <div class="dw-diag-common">
-                    <button v-for="a in assistant.personalFrequent" :key="'p'+a.code" class="dw-tag" :class="isAdded(a) ? 'dw-tag--success' : 'dw-tag--info'" :disabled="readOnly || isAdded(a)" style="cursor:pointer" @click="addFromAssistant(a)">{{ a.name }}<span class="dim" v-if="a.count">·{{ a.count }}</span></button>
+                    <button v-for="a in assistant.personalFrequent" :key="'p'+a.code" class="dw-tag" :class="isAdded(a) ? 'dw-tag--success' : 'dw-tag--info'" :disabled="readOnly || isAdded(a)" @click="addFromAssistant(a)">{{ a.name }}<span class="dim" v-if="a.count">·{{ a.count }}</span></button>
                   </div>
                 </div>
                 <div v-if="!(assistant.history||[]).length && !(assistant.deptFrequent||[]).length && !(assistant.personalFrequent||[]).length" class="dw-slim-empty">暂无助手候选, 开具并保存诊断后自动沉淀高频项</div>
@@ -113,7 +114,7 @@
 
             <!-- 常用诊断(个人/科室模板) -->
             <div class="dw-diag-common" v-else-if="commonDiagnosisRows.length">
-              <button v-for="item in commonDiagnosisRows" :key="item.code" class="dw-tag" :class="isAdded(item) ? 'dw-tag--success' : 'dw-tag--info'" :disabled="readOnly || isAdded(item)" style="cursor:pointer" @click="addDiagnosis(item)">{{ item.name }}</button>
+              <button v-for="item in commonDiagnosisRows" :key="item.code" class="dw-tag" :class="isAdded(item) ? 'dw-tag--success' : 'dw-tag--info'" :disabled="readOnly || isAdded(item)" @click="addDiagnosis(item)">{{ item.name }}</button>
             </div>
             <div v-else class="dw-slim-empty">暂无{{ commonTab==='personal' ? '个人常用' : '科室' }}诊断, 可用已选行的「★常用」沉淀, 或 <a href="javascript:void(0)" @click="gotoTemplateManage">去维护</a></div>
           </div>
@@ -130,11 +131,18 @@
               <el-select v-model="diag.diagType" size="small" :disabled="readOnly" @change="notifyChange" style="width:96px"><el-option label="初诊" value="1"></el-option><el-option label="复诊" value="2"></el-option><el-option label="疑似" value="3"></el-option></el-select>
               <span class="dw-tag" :class="diag.mapped !== false ? 'dw-tag--success' : 'dw-tag--warning'">{{ diag.mapped !== false ? '✓对照' : '!未对照' }}</span>
               <el-button v-if="diag.maindiagFlag !== '1'" link type="primary" size="small" :disabled="readOnly" @click="setMain(idx)">设主</el-button>
-              <el-button v-if="diag.diagClass === 'tcm'" link type="success" size="small" :disabled="readOnly" title="为其中医病名配对证候" @click="pairSyndrome()">配证候</el-button>
-              <el-button v-if="isOral(diag)" link type="primary" size="small" :disabled="readOnly" title="口腔牙位图" @click="openTooth(idx)">牙位</el-button>
-              <el-button link type="warning" size="small" :disabled="readOnly" title="疾病报卡" @click="openReport(diag)">报卡</el-button>
-              <el-button link type="warning" size="small" :disabled="readOnly" title="加入我的常用诊断" @click="markCommon(diag)">★常用</el-button>
-              <el-button link type="danger" size="small" :disabled="readOnly" @click="removeDiagnosis(idx)">删</el-button>
+              <el-dropdown trigger="click" :disabled="readOnly" @command="onRowCmd(idx, $event)">
+                <el-button link size="small" title="更多行操作">⋯</el-button>
+                <template #dropdown>
+                  <el-dropdown-menu>
+                    <el-dropdown-item v-if="diag.diagClass === 'tcm'" command="symp">配证候</el-dropdown-item>
+                    <el-dropdown-item v-if="isOral(diag)" command="tooth">牙位</el-dropdown-item>
+                    <el-dropdown-item command="report">疾病报卡</el-dropdown-item>
+                    <el-dropdown-item command="common">★ 加入常用</el-dropdown-item>
+                    <el-dropdown-item command="remove" divided>删除</el-dropdown-item>
+                  </el-dropdown-menu>
+                </template>
+              </el-dropdown>
             </div>
           </div>
           <div v-else class="dw-collapse-empty">尚未添加诊断</div>
@@ -195,7 +203,9 @@
         /* OP-B 疾病报卡 */
         reportVisible: false,
         reportSaving: false,
-        reportForm: { diagCode: '', diagName: '', reportType: 1, reportContent: '' }
+        reportForm: { diagCode: '', diagName: '', reportType: 1, reportContent: '' },
+        /* U1: 折叠记忆(localStorage) */
+        folded: window.localStorage.getItem('dw.diag.folded') === '1'
       };
     },
     computed: {
@@ -217,15 +227,29 @@
       }
     },
     watch: {
-      visitId: {
-        immediate: true,
-        handler: function (id) { this.loadExisting(id); this.loadCommonDiags(); this.assistantLoaded = false; }
-      },
+      /* 冷启动(无就诊)刻意不加 immediate: immediate 期初始化会在子组件 setup 内同步 $emit('update-diagnoses') 改父 provide 的诊断状态,
+         叠加同挂的诊前预问诊对话框触发 Vue 渲染风暴(整个医生工作站卡死无响应)。data 默认值已是空态, 选中患者(visitId 变化)时再初始化即可。 */
+      visitId: function (id) { this.loadExisting(id); this.loadCommonDiags(); this.assistantLoaded = false; },
       /* P8a-3 组合列表变更 → 诊断行幂等收敛(选择器 v-model / 删行回筛均经此) */
       tcmCombos: function (nv) { this.syncTcmCombos(Array.isArray(nv) ? nv : []); }
     },
     methods: {
       isOral: isOralDiag,
+      /* ===== U1: 折叠记忆与定位 / 行操作下拉命令路由 ===== */
+      toggleFold: function () {
+        this.folded = !this.folded;
+        try { window.localStorage.setItem('dw.diag.folded', this.folded ? '1' : '0'); } catch (e) { /* 隐私模式忽略 */ }
+      },
+      revealForLocate: function () { this.folded = false; },
+      onRowCmd: function (idx, cmd) {
+        var diag = this.selectedDiagnoses[idx];
+        if (!diag) { return; }
+        if (cmd === 'symp') { this.pairSyndrome(); }
+        else if (cmd === 'tooth') { this.openTooth(idx); }
+        else if (cmd === 'report') { this.openReport(diag); }
+        else if (cmd === 'common') { this.markCommon(diag); }
+        else if (cmd === 'remove') { this.removeDiagnosis(idx); }
+      },
       switchCommonTab: function (tab) {
         this.commonTab = tab;
         if (tab === 'assistant' && !this.assistantLoaded) { this.loadAssistant(); }

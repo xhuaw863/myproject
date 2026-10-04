@@ -73,15 +73,16 @@
     emits: ['rx-saved', 'count-update', 'print-rx', 'insert-to-record'],
     template: `
       <section class="dw-panel dw-prescription-panel" :class="[rxTypeConfig.cssClass, { 'is-folded': folded }]">
-        <header class="dw-panel-header" style="gap:8px;flex-wrap:wrap">
-          <div style="display:flex;align-items:center;gap:7px">
+        <header class="dw-panel-header">
+          <div class="dw-rx-hd-left">
             <strong>处方</strong>
             <el-select v-model="rxType" size="small" style="width:132px" @change="onManualTypeChange">
               <el-option v-for="option in rxTypeOptions" :key="option.value" :label="option.label" :value="option.value"></el-option>
             </el-select>
+            <span v-if="rxTypeFlag" class="dw-rx-type-flag" :class="'dw-rx-type-flag--' + rxTypeFlag.key" :title="rxTypeConfig.label">{{ rxTypeFlag.label }}</span>
             <span v-if="rxItems.length" class="dim">{{ rxItems.length }}种 / {{ groupedItems.length }}组</span>
           </div>
-          <div style="display:flex;align-items:center;gap:6px;margin-left:auto">
+          <div class="dw-rx-hd-right">
             <el-select v-model="selectedPharmacyId" size="small" clearable filterable placeholder="发药药房" style="width:118px" @change="onPharmacyChange">
               <el-option v-for="ph in pharmacies" :key="ph.id" :label="ph.name" :value="ph.id"></el-option>
             </el-select>
@@ -89,7 +90,7 @@
               <el-option v-for="tpl in templates" :key="tpl.id" :label="tpl.name" :value="tpl.id"></el-option>
             </el-select>
             <el-button link size="small" :disabled="!rxItems.length" @click="saveAsTemplate">存为常用</el-button>
-            <button class="dw-collapse-btn" :title="folded ? '展开处方面板' : '折叠处方面板'" @click="folded=!folded">{{ folded ? '▸' : '▾' }}</button>
+            <button class="dw-collapse-btn" :title="folded ? '展开处方面板' : '折叠处方面板'" @click="toggleFold">{{ folded ? '▸' : '▾' }}</button>
           </div>
         </header>
 
@@ -116,17 +117,17 @@
             <button v-for="c in chronicList" :key="c.id" class="dw-rx-chip dw-rx-chip--chronic" @click="useChronic(c)">{{ c.diseName }}</button>
           </div>
 
-          <el-table v-if="rxItems.length" class="dw-rx-table" :data="rxItems" border size="small" row-key="_key" :max-height="340">
+          <el-table v-if="rxItems.length" class="dw-rx-table" :data="rxItems" border size="small" row-key="_key" :max-height="rxTableMaxHeight">
             <el-table-column label="组" width="40" align="center"><template #default="s"><span class="dw-rx-grp" :class="grpClassOf(s.row)">{{ s.row.groupNo }}</span></template></el-table-column>
             <el-table-column label="药品" min-width="140">
               <template #default="s"><div class="dw-rx-nm" :title="s.row.itemName + ' ' + s.row.spec">{{ s.row.itemName }}<span class="spec">{{ s.row.spec }}</span><span v-if="!s.row.medListCodg" class="dw-tag self">自费</span><span v-if="s.row._warningLevel" class="dw-tag dw-tag--warning" :title="warningTitle(s.row)">审查</span></div></template>
             </el-table-column>
-            <el-table-column label="剂量" width="88"><template #default="s"><el-input v-model="s.row.dosage" size="small" :disabled="!canEdit" @change="calcQty(s.row)"></el-input></template></el-table-column>
+            <el-table-column label="剂量" width="88"><template #default="s"><el-input v-model="s.row.dosage" size="small" :disabled="!canEdit" @change="calcQty(s.row)" @keyup.enter="backToPick" placeholder="剂量"></el-input></template></el-table-column>
             <el-table-column v-if="rxType==='TCM_HERB' || hasMixedHerb" label="中药专化" width="186"><template #default="s"><div v-if="isHerbItem(s.row)" class="dw-rx-herb"><el-select v-model="s.row.decoction" size="small" placeholder="煎法" :disabled="!canEdit" style="width:82px"><el-option v-for="o in decoctions" :key="o" :label="o" :value="o"></el-option></el-select><el-select v-model="s.row.processing" size="small" placeholder="炮制" :disabled="!canEdit" style="width:82px"><el-option v-for="o in processes" :key="o" :label="o" :value="o"></el-option></el-select><span v-if="Number(s.row.multipleBase)>0" class="dw-tag dw-tag--info" :title="'单味剂量须为 '+s.row.multipleBase+' 的整数倍'">×{{ s.row.multipleBase }}</span></div><span v-else class="dim">—</span></template></el-table-column>
             <el-table-column label="用法" width="104"><template #default="s"><el-select v-model="s.row.usageMethod" size="small" placeholder="用法" :disabled="!canEdit" @change="onGroupFieldChange(s.row,'usageMethod')"><el-option v-for="option in usageMethods" :key="option.value" :label="option.label" :value="option.value"></el-option></el-select></template></el-table-column>
             <el-table-column label="频次" width="104"><template #default="s"><el-select v-model="s.row.frequency" size="small" placeholder="频次" :disabled="!canEdit" @change="frequencyChanged(s.row)"><el-option v-for="option in frequencies" :key="option.value" :label="option.label" :value="option.value"></el-option></el-select></template></el-table-column>
             <el-table-column label="天数" width="70"><template #default="s"><el-input-number v-model="s.row.days" :min="1" :max="typeConfigForItem(s.row).maxDays" size="small" controls-position="right" :disabled="!canEdit" @change="calcQty(s.row)" style="width:62px"></el-input-number></template></el-table-column>
-            <el-table-column label="发药量" width="80"><template #default="s"><el-input-number v-model="s.row.quantity" :min="1" size="small" controls-position="right" :disabled="!canEdit" style="width:72px"></el-input-number></template></el-table-column>
+            <el-table-column label="发药量" width="80"><template #default="s"><el-input-number v-model="s.row.quantity" :min="1" size="small" controls-position="right" :disabled="!canEdit" style="width:72px" @keyup.enter="backToPick"></el-input-number></template></el-table-column>
             <el-table-column label="金额" width="66" align="right"><template #default="s"><span class="amt">¥{{ lineAmount(s.row) }}</span></template></el-table-column>
             <el-table-column label="" width="40" align="center"><template #default="s"><el-button link type="danger" size="small" :disabled="!canEdit" @click="removeItem(s.row)">删</el-button></template></el-table-column>
           </el-table>
@@ -141,8 +142,12 @@
           </div>
 
           <div class="dw-rx-done">
-            <div class="dw-section">已开立处方</div>
-            <prescription-list :rows="prescriptions" :expanded="true" @cancel="cancelPrescription" @print="printPrescription"></prescription-list>
+            <div class="dw-done-summary" :title="doneExpanded ? '收起已开立处方' : '展开查看/打印/作废'" @click="doneExpanded=!doneExpanded">
+              <span>{{ doneExpanded ? '▾' : '▸' }}</span>
+              <span>已开立处方 <b>{{ prescriptions.length }}</b> 张<span v-if="prescriptions.length"> · 合计 ¥{{ rxDoneTotal }}</span></span>
+              <span class="dim" style="margin-left:auto">{{ doneExpanded ? '收起' : '展开查看 / 打印 / 作废' }}</span>
+            </div>
+            <prescription-list v-show="doneExpanded" :rows="prescriptions" :expanded="true" @cancel="cancelPrescription" @print="printPrescription"></prescription-list>
             <div class="dw-rx-allergy" :class="allergyHistory ? 'has' : ''"><b>过敏史</b>　{{ allergyHistory || '未记录（开方前请主动核实）' }}</div>
           </div>
         </div>
@@ -166,7 +171,8 @@
         prescriptions: [],
         itemSequence: 0,
         loadedVisitId: null,
-        folded: false,
+        folded: window.localStorage.getItem('dw.rx.folded') === '1',
+        doneExpanded: false,
         assistant: { personalFrequent: [], deptFrequent: [] },
         chronicList: [],
         splitPlan: null,
@@ -184,6 +190,21 @@
       visitId: function () { return this.visit && (this.visit.id || this.visit.visitId); },
       canEdit: function () { return !!this.visitId && (!this.visit || Number(this.visit.visitStatus || 2) < 3); },
       isExpanded: function () { return true; },
+      /* U1: 处方表高度自适应视口(有界 max-height, 保留固定表头内滚口径) */
+      rxTableMaxHeight: function () { return 'calc(100vh - 430px)'; },
+      /* U1 降噪: 非普通处方在 header 出示短徽标(配合面板左侧色条) */
+      rxTypeFlag: function () {
+        var map = {
+          EMERGENCY: { key: 'emergency', label: '急' },
+          PEDIATRIC: { key: 'pediatric', label: '儿' },
+          NARCOTIC: { key: 'narcotic', label: '麻' },
+          PSYCHO1: { key: 'narcotic', label: '精一' }
+        };
+        return map[this.rxType] || null;
+      },
+      rxDoneTotal: function () {
+        return money((this.prescriptions || []).reduce(function (sum, rx) { return sum + Number(rx.totalAmount || 0); }, 0));
+      },
       rxTypeOptions: function () {
         return Object.keys(RX_TYPES).map(function (key) { return { value: key, label: RX_TYPES[key].label }; });
       },
@@ -495,12 +516,36 @@
             vm.rxItems.forEach(function (row) { if (row._detectedType === 'NORMAL') { row._rxType = vm.rxType; } });
           }
           vm.calcQty(item, true);
+          /* U2 键盘流: 入行后自动聚焦新行剂量框; 延时避开 el-select 选中后同步回焦检索框的抢焦点 */
+          vm.$nextTick(function () { window.setTimeout(vm.focusNewRowDosage, 220); });
           return true;
           });
         });
       },
       nextGroupNo: function () {
         return this.rxItems.reduce(function (max, item) { return Math.max(max, Number(item.groupNo) || 0); }, 0) + 1;
+      },
+      /* ===== U1/U2: 折叠记忆与定位 / 键盘流焦点 ===== */
+      toggleFold: function () {
+        this.folded = !this.folded;
+        try { window.localStorage.setItem('dw.rx.folded', this.folded ? '1' : '0'); } catch (e) { /* 隐私模式忽略 */ }
+      },
+      /* F4 预检定位时由父页调用: 确保面板展开 */
+      revealForLocate: function () { this.folded = false; },
+      /* 新行剂量框聚焦: 表格首行无输入列, 取末行首个可编辑 input */
+      focusNewRowDosage: function () {
+        var root = this.$el;
+        if (!root) { return; }
+        var rows = root.querySelectorAll('.dw-rx-table .el-table__body tr.el-table__row');
+        var row = rows[rows.length - 1];
+        if (!row) { return; }
+        var input = row.querySelector('td .el-input__inner');
+        if (input && !input.disabled) { input.focus(); if (input.select) { input.select(); } }
+      },
+      /* 剂量/发药量框回车: 回到顶部药品检索框, 形成 检索→剂量→回车检索 闭环 */
+      backToPick: function () {
+        var pick = this.$refs.rxPick;
+        if (pick && typeof pick.focus === 'function') { pick.focus(); }
       },
       newGroup: function () { this.currentGroupNo = this.nextGroupNo(); },
       removeItem: function (item) {
@@ -658,6 +703,36 @@
       },
       savePrescription: function () {
         if (!this.canEdit || !this.validateItems()) { return; }
+        var vm = this;
+        /* U2 开立前审查聚合: 行内残留告警一次性确认, 致命过敏直接阻断 */
+        vm.preSaveSafetyReview().then(function (allowed) {
+          if (allowed) { vm.doSavePrescription(); }
+        });
+      },
+      preSaveSafetyReview: function () {
+        var vm = this;
+        var allergies = vm.allergyHistory.toLowerCase();
+        var fatalNames = vm.rxItems.filter(function (item) {
+          var nm = text(item.itemName);
+          return allergies && nm && allergies.indexOf(nm.substring(0, 2).toLowerCase()) >= 0;
+        }).map(function (item) { return item.itemName; });
+        if (fatalNames.length) {
+          ElementPlus.ElMessage.error('与过敏史禁忌：' + fatalNames.join('、') + '，已阻止开立');
+          return Promise.resolve(false);
+        }
+        var flagged = vm.rxItems.filter(function (item) { return item._warningLevel === 'serious' || item._warningLevel === 'warning'; });
+        if (!flagged.length) { return Promise.resolve(true); }
+        var lines = flagged.map(function (item) {
+          var msgs = (item._warnings || []).filter(function (w) { return w.level === 'serious' || w.level === 'warning'; }).map(function (w) { return w.msg; });
+          return '· ' + item.itemName + '：' + (msgs.join('；') || '存在用药警告');
+        });
+        return ElementPlus.ElMessageBox.confirm(
+          lines.join('\n') + '\n\n处方已复核，确认开立？',
+          '开立前用药审查（' + flagged.length + ' 项提示）',
+          { type: 'warning', confirmButtonText: '已复核，继续开立', cancelButtonText: '返回调整' }
+        ).then(function () { return true; }).catch(function () { return false; });
+      },
+      doSavePrescription: function () {
         var vm = this;
         var batches = vm.prescriptionBatches();
         vm.saving = true;
