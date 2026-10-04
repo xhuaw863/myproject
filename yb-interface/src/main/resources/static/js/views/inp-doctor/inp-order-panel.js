@@ -539,6 +539,8 @@
         vm.checkResult = null;
         vm.overrideAccepted = false;
         vm.rationalCheck();
+        /* B3: 选药后自动聚焦剂量框(el-select 选后会回抢焦点, 须延时夺回, 同门诊经验) */
+        setTimeout(function () { if (vm.$refs.inpDosage && !vm.form.dosage) { vm.$refs.inpDosage.focus(); } }, 220);
       },
       /* 频次日需识别备用医嘱(PRN 长期备用 / SOS 临时备用) */
       detectStandby(freqCode) {
@@ -730,6 +732,22 @@
           return;
         }
         this.doAddToPending();
+      },
+      /* ===== B3 键盘流: Enter 逐框跳转, 数量 Enter 即加入清单并回检索连续录入(对齐门诊处方键盘闭环) ===== */
+      kbdFocus(refName) {
+        const c = this.$refs[refName];
+        if (c && c.focus) { c.focus(); }
+      },
+      kbdAddPending() {
+        const vm = this;
+        const before = this.pendingItems.length;
+        this.addToPending();
+        /* 仅当清单确实新增(未撞校验/重复确认)才回焦检索框; el-select 选后回焦需延时抢回焦点 */
+        setTimeout(function () {
+          if (!vm.dialogVisible || vm.pendingItems.length <= before) { return; }
+          const target = vm.isDrug ? vm.$refs.selDrugSearch : vm.$refs.selChargeSearch;
+          if (target && target.focus) { target.focus(); }
+        }, 260);
       },
       /* 批次D: 处方权限只读校验(镜像门诊 prescription-panel.checkPrescribeAuth); staffId 省略→后端取登录医生 */
       checkPrescribeAuth(drug) {
@@ -1260,8 +1278,8 @@
               <template v-if="isDrug">
                 <div class="iw-form-row">
                   <span class="lb">药品检索</span>
-                  <el-select class="iw-grow" v-model="pickDrugId" size="small" filterable remote reserve-keyword clearable
-                             :remote-method="remoteDrugSearch" :loading="drugSearching" placeholder="通用名 / 编码 / 拼音简码; 首字 y药 c检 l验 z治 h护 s术 w字 可快速切类" @change="onPickDrug">
+                  <el-select class="iw-grow" ref="selDrugSearch" v-model="pickDrugId" size="small" filterable remote reserve-keyword clearable
+                             :remote-method="remoteDrugSearch" :loading="drugSearching" placeholder="通用名 / 编码 / 拼音简码; 首字 y药 c检 l验 z治 h护 s术 w字 可快速切类; 选药后自动跳剂量" @change="onPickDrug">
                     <el-option v-for="d in drugOptions" :key="d.id" :label="(d.genericName || '') + ' ' + (d.spec || '')" :value="d.id">
                       <div class="iw-opt">
                         <span class="nm">{{ d.genericName }}</span>
@@ -1295,14 +1313,14 @@
                 </div>
                 <div class="iw-form-row">
                   <span class="lb">剂量</span>
-                  <el-input v-model="form.dosage" size="small" style="width:96px" placeholder="如 0.5"></el-input>
-                  <el-input v-model="form.dosageUnit" size="small" style="width:80px" placeholder="单位"></el-input>
+                  <el-input ref="inpDosage" v-model="form.dosage" size="small" style="width:96px" placeholder="如 0.5" @keyup.enter="form.dosageUnit ? kbdFocus('selUsage') : kbdFocus('inpDosageUnit')"></el-input>
+                  <el-input ref="inpDosageUnit" v-model="form.dosageUnit" size="small" style="width:80px" placeholder="单位" @keyup.enter="kbdFocus('selUsage')"></el-input>
                   <span class="lb">用法</span>
-                  <el-select v-model="form.usageCode" size="small" clearable filterable style="width:120px" placeholder="用法">
+                  <el-select ref="selUsage" v-model="form.usageCode" size="small" clearable filterable style="width:120px" placeholder="用法" @keyup.enter="kbdFocus('selFreq')">
                     <el-option v-for="u in usageOptions" :key="u.code" :label="u.name" :value="u.code"></el-option>
                   </el-select>
                   <span class="lb">频次</span>
-                  <el-select v-model="form.freqCode" size="small" clearable filterable style="width:120px" placeholder="频次" @change="onFreqChange">
+                  <el-select ref="selFreq" v-model="form.freqCode" size="small" clearable filterable style="width:120px" placeholder="频次" @change="onFreqChange" @keyup.enter="kbdFocus('inpQty')">
                     <el-option v-for="f in freqOptions" :key="f.code" :label="f.name" :value="f.code"></el-option>
                   </el-select>
                 </div>
@@ -1317,7 +1335,7 @@
               <template v-else-if="mfKind === 'exam'">
                 <div class="iw-form-row">
                   <span class="lb">检查项目</span>
-                  <el-select class="iw-grow" v-model="pickChargeId" size="small" filterable remote reserve-keyword clearable
+                  <el-select class="iw-grow" ref="selChargeSearch" v-model="pickChargeId" size="small" filterable remote reserve-keyword clearable
                              :remote-method="remoteChargeSearch" :loading="chargeSearching" placeholder="检查项目名称 / 编码, 选中带出执行价" @change="onPickCharge">
                     <el-option v-for="c in chargeOptions" :key="c.id" :label="(c.itemName || '') + ' ' + (c.spec || '')" :value="c.id">
                       <div class="iw-opt"><span class="nm">{{ c.itemName }}</span><span class="sub">{{ c.itemCode }}</span><span class="price">¥{{ money(c.execPrice != null ? c.execPrice : c.price) }}</span></div>
@@ -1348,7 +1366,7 @@
               <template v-else-if="mfKind === 'lab'">
                 <div class="iw-form-row">
                   <span class="lb">检验项目</span>
-                  <el-select class="iw-grow" v-model="pickChargeId" size="small" filterable remote reserve-keyword clearable
+                  <el-select class="iw-grow" ref="selChargeSearch" v-model="pickChargeId" size="small" filterable remote reserve-keyword clearable
                              :remote-method="remoteChargeSearch" :loading="chargeSearching" placeholder="检验项目名称 / 编码" @change="onPickCharge">
                     <el-option v-for="c in chargeOptions" :key="c.id" :label="(c.itemName || '') + ' ' + (c.spec || '')" :value="c.id">
                       <div class="iw-opt"><span class="nm">{{ c.itemName }}</span><span class="sub">{{ c.itemCode }}</span><span class="price">¥{{ money(c.execPrice != null ? c.execPrice : c.price) }}</span></div>
@@ -1382,7 +1400,7 @@
               <template v-else>
                 <div class="iw-form-row">
                   <span class="lb">{{ mfInfo.name }}项目</span>
-                  <el-select class="iw-grow" v-model="pickChargeId" size="small" filterable remote reserve-keyword clearable
+                  <el-select class="iw-grow" ref="selChargeSearch" v-model="pickChargeId" size="small" filterable remote reserve-keyword clearable
                              :remote-method="remoteChargeSearch" :loading="chargeSearching" placeholder="项目名称 / 编码, 也可留空开纯文字医嘱" @change="onPickCharge">
                     <el-option v-for="c in chargeOptions" :key="c.id" :label="(c.itemName || '') + ' ' + (c.spec || '')" :value="c.id">
                       <div class="iw-opt"><span class="nm">{{ c.itemName }}</span><span class="sub">{{ c.itemCode }}</span><span class="sub">{{ c.spec }}</span><span class="price">¥{{ money(c.execPrice != null ? c.execPrice : c.price) }}</span></div>
@@ -1405,8 +1423,8 @@
               </div>
               <div class="iw-form-row">
                 <span class="lb">数量</span>
-                <el-input-number v-model="form.quantity" size="small" :min="0.01" :step="1" :precision="4" style="width:130px"></el-input-number>
-                <span class="iw-dim">药品类数量按最小发药单位计; 单价由服务端按本机构目录定价</span>
+                <el-input-number ref="inpQty" v-model="form.quantity" size="small" :min="0.01" :step="1" :precision="4" style="width:130px" @keyup.enter="kbdAddPending"></el-input-number>
+                <span class="iw-dim">Enter 即加入清单并回到检索继续录; 药品类数量按最小发药单位计</span>
               </div>
             </div>
           </div>

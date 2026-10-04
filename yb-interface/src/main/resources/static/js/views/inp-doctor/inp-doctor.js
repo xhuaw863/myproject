@@ -83,6 +83,10 @@
 .iw-tabs .el-tabs__nav-wrap::after { display:none; }
 .iw-tabs .el-tabs__content { flex:1; min-height:0; overflow:hidden; }
 .iw-tabs .el-tab-pane { height:100%; }
+/* A2 页签降噪: 13 个页签同字号平铺显拥挤 → 降一级+收紧内距, 仅激活项加粗染色 */
+.iw-tabs .el-tabs__item { font-size:13px; padding:0 12px; color:var(--yb-ink-2); }
+.iw-tabs .el-tabs__item:hover { color:var(--yb-brand); }
+.iw-tabs .el-tabs__item.is-active { font-weight:600; color:var(--yb-brand); }
 .iw-placeholder { flex:1; display:flex; flex-direction:column; gap:8px; align-items:center; justify-content:center; color:var(--yb-ink-4); font-size:var(--yb-fs-lg); }
 
 /* ===== 面板通用 ===== */
@@ -93,7 +97,7 @@
 .iw-count { display:inline-flex; min-width:18px; height:18px; padding:0 5px; align-items:center; justify-content:center; border-radius:var(--yb-r-pill); background:var(--yb-brand-subtle); color:var(--yb-brand); font-size:var(--yb-fs-cap); font-weight:600; }
 .iw-dim { color:var(--yb-ink-3); font-size:var(--yb-fs-sm); }
 .iw-em { color:var(--yb-brand); }
-.iw-empty-line { padding:14px 0; text-align:center; color:var(--yb-ink-4); font-size:var(--yb-fs-sm); }
+.iw-empty-line { padding:8px 0; text-align:center; color:var(--yb-ink-4); font-size:var(--yb-fs-sm); }
 .iw-hint { margin-top:10px; padding:8px 10px; border-radius:var(--yb-r-sm); background:var(--yb-surface-2); border:1px dashed var(--yb-border-strong); color:var(--yb-ink-3); font-size:var(--yb-fs-sm); }
 .iw-grow { flex:1; min-width:0; }
 
@@ -132,6 +136,10 @@
 .el-table tr.iw-order--temp td:first-child { box-shadow:inset 3px 0 0 var(--yb-fill-info); }
 .el-table tr.iw-order--grp-first td, .el-table tr.iw-order--grp-child td { background:var(--yb-surface-2); }
 .el-table tr.iw-order--grp-child td:first-child { padding-left:22px; }
+/* A1 表格去色(对齐门诊 U3 口径): 表头中性浅灰、去 border 竖分隔线只留行横线、hover 去蓝味 */
+.iw-workbench .el-table { --el-table-header-bg-color: var(--yb-surface-2); --el-table-row-hover-bg-color: var(--yb-surface-3); }
+.iw-workbench .el-table--border .el-table__cell { border-right: none; }
+.iw-workbench .el-table--border .el-table__body-wrapper { border-right: none; }
 .iw-grp { display:inline-block; padding:0 6px; border-radius:var(--yb-r-sm); background:var(--yb-brand-subtle); color:var(--yb-brand); font-size:var(--yb-fs-cap); font-weight:600; }
 .iw-grp-child { color:var(--yb-ink-4); }
 
@@ -174,12 +182,12 @@
 
 .iw-stat-grid { display:grid; grid-template-columns:repeat(4, 1fr); gap:10px; }
 .iw-stat { display:flex; flex-direction:column; align-items:center; gap:2px; padding:10px 6px; border-radius:var(--yb-r-sm); background:var(--yb-surface-2); border:1px solid var(--yb-border-light); }
-.iw-stat .v { font-size:var(--yb-fs-2xl); font-weight:700; color:var(--yb-ink-1); font-variant-numeric:tabular-nums; }
+.iw-stat .v { font-size:var(--yb-fs-xl); font-weight:700; color:var(--yb-ink-1); font-variant-numeric:tabular-nums; }
 .iw-stat .l { font-size:var(--yb-fs-sm); color:var(--yb-ink-3); }
 .iw-stat--hl { background:var(--yb-brand-subtle); border-color:var(--yb-brand-border); }
 .iw-stat--hl .v { color:var(--yb-brand); }
 .iw-stat--danger .v { color:var(--yb-danger); }
-.iw-stat--big .v { font-size:var(--yb-fs-xl); }
+.iw-stat--big .v { font-size:var(--yb-fs-lg); }
 
 .iw-chiprow { margin-top:10px; display:flex; flex-wrap:wrap; gap:6px; }
 .iw-chip { padding:2px 9px; border-radius:var(--yb-r-pill); background:var(--yb-surface-2); border:1px solid var(--yb-border); color:var(--yb-ink-2); font-size:var(--yb-fs-sm); }
@@ -254,9 +262,26 @@
 .iw-pb-bed { width:36px; height:36px; flex:none; display:flex; flex-direction:column; align-items:center; justify-content:center; border-radius:6px; background:var(--yb-brand); color:#fff; line-height:1.05; }
 .iw-pb-bed b { font-size:var(--yb-fs-base); font-weight:700; }
 .iw-pb-bed span { font-size:10px; opacity:.8; }
-.iw-pb-name { font-size:16px; font-weight:700; color:var(--yb-ink-1); white-space:nowrap; }
+.iw-pb-name { font-size:16px; font-weight:700; color:var(--yb-ink-1); white-space:nowrap; cursor:pointer; }
+.iw-pb-name:hover { color:var(--yb-brand); text-decoration:underline; text-underline-offset:3px; }
 .iw-pb-meta { font-size:14px; color:var(--yb-ink-3); white-space:nowrap; }
 .iw-pb-sep { width:1px; height:18px; flex:none; background:var(--yb-border-strong); }
+
+/* ===== B1 入院四件套进度 chips + 出院预检(挂横幅右侧槽位, 对齐门诊 dw-prog-chips 口径) ===== */
+.iw-prog-chip { display:inline-flex; align-items:center; gap:4px; height:22px; padding:0 9px; border-radius:11px; border:1px solid var(--yb-border); background:var(--yb-surface-2); color:var(--yb-ink-3); font-size:12px; cursor:pointer; white-space:nowrap; transition:color var(--yb-dur) var(--yb-ease),border-color var(--yb-dur) var(--yb-ease); }
+.iw-prog-chip:hover { border-color:var(--yb-brand-border); color:var(--yb-brand); }
+.iw-prog-chip.is-done { background:var(--yb-success-bg); border-color:var(--yb-success-border); color:var(--yb-success-strong); }
+.iw-prog-chip.is-done:hover { border-color:var(--yb-success); color:var(--yb-success-strong); }
+.iw-prog-chip--go { border-style:dashed; color:var(--yb-ink-2); font-weight:600; }
+/* B2 出院预检清单行 */
+.iw-pc-row { display:flex; align-items:center; gap:10px; padding:9px 4px; border-bottom:1px dashed var(--yb-divider); font-size:13px; }
+.iw-pc-row:last-child { border-bottom:none; }
+.iw-pc-row .st { width:20px; height:20px; flex:none; display:inline-flex; align-items:center; justify-content:center; border-radius:50%; font-size:12px; font-weight:700; }
+.iw-pc-row .st.ok { background:var(--yb-success-bg); color:var(--yb-success-strong); }
+.iw-pc-row .st.bad { background:var(--yb-danger-bg); color:var(--yb-danger); }
+.iw-pc-row .lb { flex:none; width:88px; font-weight:600; color:var(--yb-ink-1); }
+.iw-pc-row .hint { flex:1; min-width:0; color:var(--yb-ink-3); }
+.iw-pc-banner { padding:10px 12px; border-radius:var(--yb-r-sm); background:var(--yb-success-bg); border:1px solid var(--yb-success-border); color:var(--yb-success-strong); font-weight:600; font-size:13px; margin-bottom:6px; }
 .iw-pb-kv { font-size:var(--yb-fs-base); color:var(--yb-ink-3); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
 .iw-pb-kv b { color:var(--yb-ink-1); font-weight:600; }
 .iw-pb-diag { max-width:300px; }
@@ -364,9 +389,18 @@
    * ============================================================ */
   const PatientBanner = {
     name: 'PatientBanner',
+    components: { 'patient-360-drawer': (HIS.components || {}).Patient360Drawer },
     props: { patient: { type: Object, default: null } },
+    data() { return { p360Visible: false }; },
     computed: {
       p() { return this.patient || {}; },
+      /* 360抽屉头部展示信息(与门诊 patient-banner 同口径, 过敏数组拼为文本) */
+      p360Patient() {
+        const p = this.p;
+        let allergy = p.allergyInfo;
+        if (Array.isArray(allergy)) { allergy = allergy.join('、'); }
+        return { name: p.patientName, gender: p.gender, age: p.age, patientNo: p.inpNo || p.patientNo || '', allergyHistory: allergy || '' };
+      },
       genderAge() {
         const g = genderText(this.p.gender);
         const age = this.p.age != null && this.p.age !== '' ? this.p.age + '岁' : '';
@@ -412,7 +446,7 @@
     template: `
       <div class="iw-pb">
         <div class="iw-pb-bed"><b>{{ p.bedNo || '—' }}</b><span>床</span></div>
-        <span class="iw-pb-name">{{ p.patientName || '-' }}</span>
+        <span class="iw-pb-name" title="点击查看患者360°速览" @click="p360Visible = true">{{ p.patientName || '-' }}</span>
         <span class="iw-pb-meta" v-if="genderAge">{{ genderAge }}</span>
         <span class="iw-pb-sep"></span>
         <span class="iw-pb-kv">住院号 <b>{{ p.inpNo || '-' }}</b></span>
@@ -425,6 +459,7 @@
         <span class="iw-pb-nurse" :class="nursingCls" v-if="nursingText">{{ nursingText }}</span>
         <span class="iw-pb-bal">余额 ¥{{ balanceText }}</span>
         <span class="iw-pb-right"><slot></slot></span>
+        <patient-360-drawer v-model="p360Visible" :patient-id="p.patientId || null" :patient="p360Patient"></patient-360-drawer>
       </div>
     `
   };
@@ -739,13 +774,56 @@
         bannerPatient: null,
         bannerSeq: 0,
         ctx: { visible: false, x: 0, y: 0, patient: null },
-        transfer: { visible: false, patient: null, targetWardId: null, targetBedId: null, reason: '', beds: [], submitting: false }
+        transfer: { visible: false, patient: null, targetWardId: null, targetBedId: null, reason: '', beds: [], submitting: false },
+        /* B1/B2 进度四件套取数缓存(随选患者刷新) + 出院预检弹窗 */
+        prog: { summary: null, records: [], consentTotal: 0 },
+        precheck: { visible: false }
       };
     },
     computed: {
       /* 管理员角色可在医生站切换查看本科室/全部管床患者(普通医生恒为本人管床) */
       canBroadenView() {
         return !!(HIS.hasRole && (HIS.hasRole('ADMIN') || HIS.hasRole('ORG_ADMIN') || HIS.hasRole('SUPER_ADMIN')));
+      },
+      /* ===== B1 入院四件套进度 chips ===== */
+      diagTotal() {
+        const d = (this.prog.summary && this.prog.summary.diagnoses) || {};
+        let n = 0;
+        Object.keys(d).forEach(k => { n += (d[k] || []).length; });
+        return n;
+      },
+      progChips() {
+        const s = this.prog.summary;
+        if (!s) { return []; }
+        const stats = s.orderStats || {};
+        const recN = (this.prog.records || []).length;
+        const ordN = Number(stats.total) || 0;
+        const diagN = this.diagTotal;
+        const mk = (key, label, done, tab, title) => ({ key, label, done, tab, title });
+        return [
+          mk('record', '病历', recN > 0, 'record', recN > 0 ? ('病历 ' + recN + ' 份, 点击书写') : '尚未书写病历, 点击去写'),
+          mk('diag', '诊断', diagN > 0, 'diag', diagN > 0 ? (diagN + ' 条诊断, 点击维护') : '尚未录入诊断, 点击去录'),
+          mk('order', '医嘱', ordN > 0, 'order', ordN > 0 ? (ordN + ' 条医嘱, 点击开立') : '尚未开立医嘱, 点击去开'),
+          mk('consent', '知情', this.prog.consentTotal > 0, 'consent', this.prog.consentTotal > 0 ? (this.prog.consentTotal + ' 份知情同意书') : '尚无知情同意书')
+        ];
+      },
+      /* ===== B2 出院预检清单(只读取数, 不阻断) ===== */
+      precheckRows() {
+        const s = this.prog.summary || {};
+        const stats = s.orderStats || {};
+        const dischargeDiags = ((s.diagnoses || {})['4'] || []);
+        const hasDischargeDiag = dischargeDiags.length > 0;
+        const hasDischargeRecord = (this.prog.records || []).some(r => String(r.recordName || r.title || r.name || '').indexOf('出院') >= 0);
+        const active = Number(stats.active) || 0;
+        return [
+          { label: '出院诊断', ok: hasDischargeDiag, hint: hasDischargeDiag ? ('已录 ' + dischargeDiags.length + ' 条') : '未录入出院诊断(在诊断页签补录)', tab: 'diag' },
+          { label: '出院记录', ok: hasDischargeRecord, hint: hasDischargeRecord ? '已有出院相关病历' : '未建写出院记录(病历页签书写)', tab: 'record' },
+          { label: '医嘱停止', ok: active === 0, hint: active === 0 ? '无在执行医嘱' : ('仍有 ' + active + ' 条医嘱在执行, 出院前需停止'), tab: 'order' },
+          { label: '知情同意', ok: this.prog.consentTotal > 0, hint: this.prog.consentTotal > 0 ? ('已签 ' + this.prog.consentTotal + ' 份') : '无知情同意书(手术/麻醉/有创操作前应完备)', tab: 'consent' }
+        ];
+      },
+      precheckAllOk() {
+        return this.precheckRows.every(r => r.ok);
       },
       doctorName() {
         const u = HIS.getUser();
@@ -893,14 +971,17 @@
         this.activeTab = target;
         this.loadBannerExtras(p);
       },
-      /* 横幅数据补挂: 基线=患者列表行; summary 补护理等级/险种/诊断名, 过敏档案补 allergyInfo(空串=无过敏, 未加载=undefined) */
+      /* 横幅数据补挂: 基线=患者列表行; summary 补护理等级/险种/诊断名, 过敏档补 allergyInfo(空串=无过敏, 未加载=undefined);
+       * B1/B2: 同步缓存 summary/病历列表/知情同意总数供进度 chips 与出院预检使用 */
       loadBannerExtras(p) {
         const vm = this;
         const seq = ++this.bannerSeq;
+        this.prog = { summary: null, records: [], consentTotal: 0 };
         this.bannerPatient = Object.assign({}, p, { diagnosisName: p.diagnosisName || p.admitDiag || '' });
         HIS.get('/api/his/inp/doctor/patient/' + p.id + '/summary')
           .then(function (data) {
             if (seq !== vm.bannerSeq) { return; }
+            vm.prog = Object.assign({}, vm.prog, { summary: data || null });
             const v = (data && data.visit) || {};
             const patch = {};
             if (v.nursingLevel != null) { patch.nursingLevel = v.nursingLevel; }
@@ -919,6 +1000,24 @@
             vm.bannerPatient = Object.assign({}, vm.bannerPatient, { allergyInfo: names.join('、') });
           })
           .catch(function () { /* 过敏档取数失败保持未知态, 不误报无过敏 */ });
+        /* B1/B2 进度取数: 病历列表(计数+出院记录判断) 与 知情同意总数(只取 total) */
+        HIS.get('/api/his/inp/record/list/' + HIS.idParam(p.id))
+          .then(function (list) {
+            if (seq !== vm.bannerSeq) { return; }
+            vm.prog = Object.assign({}, vm.prog, { records: list || [] });
+          })
+          .catch(function () { /* 静默: chips 保持未完成态不阻断主流程 */ });
+        HIS.get('/api/his/inp/consent/list?visitId=' + encodeURIComponent(p.id) + '&page=1&size=1')
+          .then(function (data) {
+            if (seq !== vm.bannerSeq) { return; }
+            vm.prog = Object.assign({}, vm.prog, { consentTotal: Number(data && data.total) || 0 });
+          })
+          .catch(function () { /* 同上 */ });
+      },
+      /* B2 预检弹窗内跳转处理页签 */
+      gotoTab(tab) {
+        this.precheck.visible = false;
+        if (tab) { this.activeTab = tab; }
       },
       /* ---- 右键上下文菜单(患者卡片) ---- */
       openPatientCtx(e, p) {
@@ -1123,6 +1222,8 @@
 
         <section class="iw-main">
           <patient-banner v-if="bannerPatient" :patient="bannerPatient">
+            <span class="iw-prog-chip" v-for="c in progChips" :key="c.key" :class="{'is-done': c.done}" :title="c.title" @click="activeTab = c.tab">{{ c.label }}</span>
+            <button class="iw-prog-chip iw-prog-chip--go" title="逐项核对出院条件(只读检查, 不阻断)" @click="precheck.visible = true">出院预检</button>
             <el-tag size="small" :type="visitStatusTag(bannerPatient.visitStatus)" disable-transitions>{{ visitStatusText(bannerPatient.visitStatus) }}</el-tag>
             <el-button size="small" :loading="loadingPatients" @click="refresh">刷新</el-button>
           </patient-banner>
@@ -1195,6 +1296,22 @@
           <div class="iw-ctx-item" @click="ctxAction('wristband')">打印腕带</div>
           <div class="iw-ctx-item" @click="ctxAction('transfer')">转科</div>
         </div>
+
+        <!-- B2 出院预检弹窗(只读清单 + 缺项定位跳转) -->
+        <el-dialog v-model="precheck.visible" title="出院预检" width="560px" append-to-body>
+          <div class="iw-pc-banner" v-if="precheckAllOk">预检全部齐备, 可发起出院办理(结算/出院登记在住院登记结算页完成)</div>
+          <div class="iw-pc-row" v-for="r in precheckRows" :key="r.label">
+            <span class="st" :class="r.ok ? 'ok' : 'bad'">{{ r.ok ? '✓' : '✗' }}</span>
+            <span class="lb">{{ r.label }}</span>
+            <span class="hint">{{ r.hint }}</span>
+            <el-button link type="primary" size="small" v-if="!r.ok" @click="gotoTab(r.tab)">去处理</el-button>
+          </div>
+          <div class="iw-dim" style="margin-top:8px">预检为只读提示, 不阻断出院流程; 数据随选患者自动刷新。</div>
+          <template #footer>
+            <el-button @click="precheck.visible = false">关闭</el-button>
+            <el-button type="primary" @click="gotoTab('diag')">逐项处理(先诊断)</el-button>
+          </template>
+        </el-dialog>
 
         <!-- 转科对话框 -->
         <el-dialog v-model="transfer.visible" title="转科" width="460px" append-to-body>

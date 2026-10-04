@@ -19,7 +19,11 @@
       '.iw-allergy-item { background:rgba(255,255,255,.18); border-radius:var(--yb-r-pill); padding:2px 10px; }',
       '.iw-allergy-none { margin-top:12px; background:var(--yb-success-bg); color:var(--yb-success-strong); border:1px solid var(--yb-success-border); border-radius:var(--yb-r-md); padding:10px 16px; font-weight:600; font-size:var(--yb-fs-base); }',
       '.iw-info-grid { display:grid; grid-template-columns:repeat(auto-fill, minmax(150px, 1fr)); gap:8px 18px; font-size:var(--yb-fs-base); color:var(--yb-ink-2); }',
-      '.iw-info-grid b { color:var(--yb-ink-1); }'
+      '.iw-info-grid b { color:var(--yb-ink-1); }',
+      /* A3 去重复: 床头大卡改单行紧凑信息条(只留横幅没有的独有信息) */
+      '.iw-ov-bar { display:flex; align-items:center; flex-wrap:wrap; gap:6px 16px; padding:9px 14px; border:1px solid var(--yb-border); border-radius:var(--yb-r-md); background:var(--yb-surface-2); font-size:var(--yb-fs-sm); color:var(--yb-ink-2); }',
+      '.iw-ov-bar b { color:var(--yb-ink-1); }',
+      '.iw-ov-bar .rt { margin-left:auto; color:var(--yb-ink-3); white-space:nowrap; }'
     ].join('\n');
     document.head.appendChild(st);
   })();
@@ -108,6 +112,10 @@
       diagCount() {
         return this.diagGroups.reduce((sum, g) => sum + g.items.length, 0);
       },
+      /* A3: 空诊断组收进一行提示, 不再各占一块空白 */
+      emptyDiagLabels() {
+        return this.diagGroups.filter(g => !g.items.length).map(g => g.label);
+      },
       stats() { return (this.summary && this.summary.orderStats) || {}; },
       statusChips() {
         const by = this.stats.byStatus || {};
@@ -157,34 +165,16 @@
     },
     template: `
       <div class="iw-panel-body" v-loading="loading">
-        <!-- 床头卡: 床位块 + 关键身份信息 -->
-        <section class="iw-headcard">
-          <div class="iw-headcard-bed">
-            <span class="no">{{ bedLabel }}</span>
-            <span class="lb">床位</span>
-          </div>
-          <div class="iw-headcard-main">
-            <div class="iw-headcard-line1">
-              <strong class="nm">{{ patientName }}</strong>
-              <span class="meta">{{ gender }} · {{ age }}</span>
-              <span class="iw-tag" :class="insured ? 'iw-tag--success' : 'iw-tag--plain'">{{ insured ? '医保' : '自费' }}</span>
-              <span class="iw-tag" :class="Number(visit.visitStatus) === 2 ? 'iw-tag--success' : 'iw-tag--plain'">{{ statusText }}</span>
-              <el-tag v-if="visit.nursingLevel != null" size="small" :type="nursingLevelTag(visit.nursingLevel)" disable-transitions>{{ nursingLevelLabel(visit.nursingLevel) }}</el-tag>
-              <el-tag v-if="visit.conditionLevel != null" size="small" :type="conditionLevelTag(visit.conditionLevel)" disable-transitions>病情:{{ conditionLevelLabel(visit.conditionLevel) }}</el-tag>
-              <el-tag v-if="Number(visit.isQuarantine) === 1" size="small" type="danger" effect="plain" disable-transitions>隔离</el-tag>
-            </div>
-            <div class="iw-headcard-line2">
-              <span>住院号 <b>{{ visit.inpNo || '-' }}</b></span>
-              <span>病区 {{ wardName }}</span>
-              <span>入院 {{ dateText(visit.admitDate) }}</span>
-              <span>在院 <b class="iw-em">{{ admittedDays }}</b> 天</span>
-              <span v-if="visit.admitDiag">入院诊断 {{ visit.admitDiag }}</span>
-            </div>
-          </div>
-          <div class="iw-headcard-right">
-            <span class="lb">累计费用</span>
-            <span class="iw-money">{{ money(feeTotal) }}</span>
-          </div>
+        <!-- A3 去重复: 床号/姓名/住院号/护理等级等已在顶部固定横幅, 此处只保留横幅没有的独有信息 -->
+        <section class="iw-ov-bar">
+          <span>入院 <b>{{ dateText(visit.admitDate) }}</b></span>
+          <span>在院 <b class="iw-em">{{ admittedDays }}</b> 天</span>
+          <span>病区 {{ wardName }}</span>
+          <span v-if="visit.admitDiag">入院诊断 {{ visit.admitDiag }}</span>
+          <span class="iw-tag" :class="insured ? 'iw-tag--success' : 'iw-tag--plain'">{{ insured ? '医保' : '自费' }}</span>
+          <el-tag v-if="visit.conditionLevel != null" size="small" :type="conditionLevelTag(visit.conditionLevel)" disable-transitions>病情:{{ conditionLevelLabel(visit.conditionLevel) }}</el-tag>
+          <el-tag v-if="Number(visit.isQuarantine) === 1" size="small" type="danger" effect="plain" disable-transitions>隔离</el-tag>
+          <span class="rt">累计费用 <span class="iw-money">{{ money(feeTotal) }}</span></span>
         </section>
 
         <!-- 过敏史醒目警示: 红色=有过敏记录 / 绿色=无已知过敏 -->
@@ -229,17 +219,19 @@
           <section class="iw-card">
             <div class="iw-sect-title">诊断信息 <span class="iw-count">{{ diagCount }}</span></div>
             <div class="iw-diaggroups">
-              <div class="iw-dg" v-for="g in diagGroups" :key="g.type">
-                <div class="iw-dg-head">{{ g.label }}<span class="iw-count" v-if="g.items.length">{{ g.items.length }}</span></div>
-                <div class="iw-dg-list" v-if="g.items.length">
-                  <div class="iw-dg-item" v-for="d in g.items" :key="d.id">
-                    <span class="code">{{ d.diagCode || '-' }}</span>
-                    <span class="name">{{ d.diagName }}</span>
-                    <span class="iw-tag iw-tag--danger" v-if="Number(d.isMain) === 1">主</span>
+              <template v-for="g in diagGroups" :key="g.type">
+                <div class="iw-dg" v-if="g.items.length">
+                  <div class="iw-dg-head">{{ g.label }}<span class="iw-count" v-if="g.items.length">{{ g.items.length }}</span></div>
+                  <div class="iw-dg-list">
+                    <div class="iw-dg-item" v-for="d in g.items" :key="d.id">
+                      <span class="code">{{ d.diagCode || '-' }}</span>
+                      <span class="name">{{ d.diagName }}</span>
+                      <span class="iw-tag iw-tag--danger" v-if="Number(d.isMain) === 1">主</span>
+                    </div>
                   </div>
                 </div>
-                <div class="iw-empty-line" v-else>暂无{{ g.label }}</div>
-              </div>
+              </template>
+              <div class="iw-empty-line" v-if="emptyDiagLabels.length">{{ emptyDiagLabels.join('、') }}未录入</div>
             </div>
           </section>
 
