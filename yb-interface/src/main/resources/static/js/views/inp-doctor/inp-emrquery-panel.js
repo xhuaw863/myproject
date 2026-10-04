@@ -7,6 +7,25 @@
   var HIS = (window.HIS = window.HIS || {});
   HIS.components = HIS.components || {};
 
+  /* 样式须 createElement 注入: 模板字符串里的 <style> 经 innerHTML 插入不会应用(与报告面板同根因) */
+  (function ensureStyles() {
+    if (document.getElementById('inp-emrquery-css')) { return; }
+    var st = document.createElement('style');
+    st.id = 'inp-emrquery-css';
+    st.textContent = [
+      '.ieq-panel { padding:12px 14px; height:100%; box-sizing:border-box; overflow:auto; background:var(--yb-surface-2); }',
+      '.ieq-panel .ieq-sec { background:var(--yb-surface); border:1px solid var(--yb-border-light); border-radius:var(--yb-r-md); padding:12px 14px; margin-bottom:14px; }',
+      '.ieq-panel .ieq-hd { display:flex; align-items:center; gap:8px; font-size:var(--yb-fs-md); font-weight:600; color:var(--yb-ink-1); margin-bottom:10px; }',
+      '.ieq-panel .ieq-stats { margin-bottom:8px; color:var(--yb-ink-3); font-size:var(--yb-fs-sm); }',
+      '.ieq-panel .ieq-stats b { color:var(--yb-ink-1); font-variant-numeric:tabular-nums; }',
+      '.ieq-panel .ieq-key { color:var(--yb-ink-4); font-family:Consolas,Menlo,monospace; font-size:12px; }',
+      '.ieq-panel .ieq-form { display:flex; flex-wrap:wrap; gap:8px; align-items:center; }',
+      '.ieq-panel .ieq-empty { padding:20px; text-align:center; color:var(--yb-ink-4); font-size:var(--yb-fs-sm); }',
+      '.ieq-panel .ieq-toggle { color:var(--yb-brand); cursor:pointer; font-size:var(--yb-fs-sm); font-weight:400; user-select:none; }'
+    ].join('\n');
+    document.head.appendChild(st);
+  })();
+
   function pad2(n) { return ('0' + n).slice(-2); }
   function fmtDateTime(d) {
     if (!d) { return ''; }
@@ -96,40 +115,28 @@
     mounted: function () { this.pivotCurrent(); },
     template: `
       <div class="ieq-panel">
-        <style>
-          .ieq-panel{padding:14px 16px;height:100%;box-sizing:border-box;overflow:auto;background:var(--yb-surface-2)}
-          .ieq-panel .ieq-sec{background:var(--yb-surface);border:1px solid var(--yb-border);border-radius:var(--yb-r-md);padding:12px 14px;margin-bottom:14px}
-          .ieq-panel .ieq-hd{display:flex;align-items:center;gap:8px;font-size:var(--yb-fs-md);font-weight:600;color:var(--yb-ink-1);margin-bottom:10px}
-          .ieq-panel .ieq-form{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
-          .ieq-panel .ieq-empty{padding:20px;text-align:center;color:var(--yb-ink-4);font-size:var(--yb-fs-sm)}
-          .ieq-panel .ieq-toggle{color:var(--yb-brand);cursor:pointer;font-size:var(--yb-fs-sm);user-select:none}
-        </style>
-
         <div class="ieq-sec">
           <div class="ieq-hd">
             当前就诊 · 病案首页要素透视
-            <span class="ieq-dim" style="margin-left:auto;color:var(--yb-ink-3);font-size:var(--yb-fs-sm)">visitId {{ visitId || '-' }}</span>
-            <el-button link type="primary" size="small" @click="pivotCurrent">重新透视</el-button>
+            <el-button link type="primary" size="small" style="margin-left:auto" @click="pivotCurrent">重新透视</el-button>
           </div>
           <div v-loading="pvLoading">
-            <div v-if="pv && pivotEntries(pv).length" style="margin-bottom:8px;color:var(--yb-ink-3);font-size:var(--yb-fs-sm)">
-              要素数 {{ pv.elementCount }} · 患者 {{ (pv.meta && pv.meta.patientId) || '-' }} · 科室 {{ (pv.meta && pv.meta.deptId) || '-' }} · 医生 {{ (pv.meta && pv.meta.doctorId) || '-' }}
-            </div>
-            <el-table v-if="pv && pivotEntries(pv).length" :data="pivotEntries(pv)" size="small" border stripe max-height="360">
+            <div v-if="pv && pivotEntries(pv).length" class="ieq-stats">共 <b>{{ pivotEntries(pv).length }}</b> 项结构化要素</div>
+            <el-table v-if="pv && pivotEntries(pv).length" :data="pivotEntries(pv)" size="small" max-height="360">
               <el-table-column prop="label" label="字段" width="180"></el-table-column>
-              <el-table-column prop="key" label="字段键" width="180" show-overflow-tooltip></el-table-column>
+              <el-table-column label="字段键" width="180" show-overflow-tooltip><template #default="s"><span class="ieq-key">{{ s.row.key }}</span></template></el-table-column>
               <el-table-column prop="value" label="值" min-width="240" show-overflow-tooltip></el-table-column>
             </el-table>
-            <div v-else class="ieq-empty">{{ pvEmptyHint || '暂无透视数据' }}</div>
+            <el-empty v-else :description="pvEmptyHint || '暂无透视数据'" :image-size="64"></el-empty>
           </div>
         </div>
 
         <div class="ieq-sec">
           <div class="ieq-hd">
             病历数据元综合检索
-            <span class="ieq-toggle" style="margin-left:auto" @click="showAdv=!showAdv">{{ showAdv ? '收起' : '展开跨患者检索' }}</span>
+            <span class="ieq-toggle" style="margin-left:auto" @click="showAdv=!showAdv">{{ showAdv ? '收起 ∧' : '展开跨患者检索 ∨' }}</span>
           </div>
-          <div v-if="!showAdv" class="ieq-empty">点击「展开跨患者检索」按字段/术语/患者/科室/医生多维检索结构化病历要素</div>
+          <el-empty v-if="!showAdv" description="按字段/术语/患者/科室/医生多维检索结构化病历要素" :image-size="64"></el-empty>
           <div v-else>
             <div class="ieq-form" style="margin-bottom:8px">
               <el-select v-model="f.scope" placeholder="范围" clearable size="small" style="width:100px">
@@ -146,10 +153,10 @@
               <el-input v-model="f.deptId" placeholder="科室ID" size="small" style="width:120px"></el-input>
               <el-input v-model="f.doctorId" placeholder="医生ID" size="small" style="width:120px"></el-input>
             </div>
-            <el-table :data="rows" v-loading="searching" size="small" border stripe max-height="360" style="margin-top:10px" empty-text="输入条件后点击检索">
+            <el-table :data="rows" v-loading="searching" size="small" max-height="360" style="margin-top:10px" empty-text="输入条件后点击检索">
               <el-table-column label="范围" width="70"><template #default="s">{{ scopeName(s.row.scope) }}</template></el-table-column>
               <el-table-column label="字段" width="150" show-overflow-tooltip><template #default="s">{{ s.row.fieldLabel || s.row.fieldKey }}</template></el-table-column>
-              <el-table-column prop="fieldKey" label="字段键" width="150" show-overflow-tooltip></el-table-column>
+              <el-table-column label="字段键" width="150" show-overflow-tooltip><template #default="s"><span class="ieq-key">{{ s.row.fieldKey }}</span></template></el-table-column>
               <el-table-column label="值" min-width="200" show-overflow-tooltip><template #default="s">{{ dispVal(s.row) }}</template></el-table-column>
               <el-table-column prop="visitId" label="就诊" width="130" show-overflow-tooltip></el-table-column>
               <el-table-column prop="recordId" label="记录" width="130" show-overflow-tooltip></el-table-column>
@@ -169,7 +176,7 @@
               <el-descriptions-item label="要素数">{{ rowPv.elementCount }}</el-descriptions-item>
               <el-descriptions-item label="记录类型">{{ rowPv.meta.recordType != null ? rowPv.meta.recordType : '-' }}</el-descriptions-item>
             </el-descriptions>
-            <el-table :data="pivotEntries(rowPv)" size="small" border stripe max-height="520" empty-text="无透视字段">
+            <el-table :data="pivotEntries(rowPv)" size="small" max-height="520" empty-text="无透视字段">
               <el-table-column prop="label" label="字段" width="160"></el-table-column>
               <el-table-column prop="value" label="值" min-width="240" show-overflow-tooltip></el-table-column>
             </el-table>
