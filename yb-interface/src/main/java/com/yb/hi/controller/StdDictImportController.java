@@ -38,7 +38,7 @@ public class StdDictImportController {
         return R.ok(importService.keys());
     }
 
-    /** 导入单类标准字典: type=drug|consumable|med_service|tcm|preparation|ivd|cons_item_rel|
+    /** 导入单类标准字典: type=drug|consumable|med_service|tcm|tcm_granule|preparation|ivd|cons_item_rel|
      *  icd10|icd9|icd10_nat|icd9_nat|morphology|tcm_disease|tcm_syndrome|tcm_mapping */
     @GetMapping("/import/{type}")
     public R<Map<String, Object>> importOne(@PathVariable String type) {

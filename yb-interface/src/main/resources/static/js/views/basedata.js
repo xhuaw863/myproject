@@ -7,6 +7,7 @@
   var DEPT_CATEGORIES = ['门诊科室', '住院科室', '病区护理', '医技科室', '行政后勤'];
   var DEPT_LEVELS = [{ v: 1, l: '大类' }, { v: 2, l: '科室' }, { v: 3, l: '窗口/诊室' }];
   var STAFF_TYPES = ['医师', '护士', '药师', '技师', '管理'];
+  /* 兜底时段常量: 班次字典(his_shift_dict, L1)未加载/接口异常时使用, 正常取数源为 HIS.shiftDict 缓存 */
   var TIME_TYPES = [{ v: 'am', l: '上午' }, { v: 'pm', l: '下午' }, { v: 'night', l: '晚间' }];
 
   /* 去除审计字段, 避免回填干扰 */
@@ -15,6 +16,9 @@
     return f;
   }
   function timeLabel(v) {
+    /* 优先班次字典缓存(含自定义班次), 未命中回落存量三值 */
+    var n = (window.HIS && HIS.shiftLabel) ? HIS.shiftLabel(v) : null;
+    if (n) { return n; }
     for (var i = 0; i < TIME_TYPES.length; i++) { if (TIME_TYPES[i].v === v) { return TIME_TYPES[i].l; } }
     return v || '-';
   }
@@ -487,27 +491,30 @@
       '  </div>',
       '    </div>',
       '  </div>',
-      '  <el-dialog v-model="dlg" :title="editing?\'编辑科室\':\'新增科室\'" width="560px">',
-      '    <el-form :model="form" label-width="100px" size="default">',
-      '      <el-form-item label="上级科室"><el-select v-model="form.parentId" filterable style="width:100%" placeholder="选择上级科室(可输拼音简码)" :filter-method="kwFilter(\'dParent\')" @change="onParentChange"><el-option v-for="o in kwOptions(\'dParent\', parentOptions, [\'label\',\'pyCode\',\'abbrCode\'])" :key="o.id" :label="o.label" :value="o.id"></el-option></el-select></el-form-item>',
-      '      <el-form-item label="科室大类"><el-select v-model="form.deptCategory" multiple clearable style="width:100%" placeholder="可多选:门诊/住院/病区护理/医技/行政后勤"><el-option v-for="c in deptCategories" :key="c" :label="c" :value="c"></el-option></el-select></el-form-item>',
-      '      <el-form-item label="层级"><el-select v-model="form.deptLevel" style="width:100%" :disabled="form.parentId !== 0 && form.parentId != null" :title="form.parentId !== 0 && form.parentId != null ? \'已选上级, 层级由上级自动推导(#3)\' : \'\'"><el-option v-for="l in deptLevels" :key="l.v" :label="l.v+\'-\'+l.l" :value="l.v"></el-option></el-select></el-form-item>',
-      '      <el-form-item label="所属机构"><el-select v-model="form.orgId" clearable filterable style="width:100%" placeholder="医共体内机构(可选; 可输拼音简码)" :filter-method="kwFilter(\'dOrg\')" @change="onDeptOrgChange"><el-option v-for="o in kwOptions(\'dOrg\', orgs, [\'label\',\'orgCode\',\'pyCode\'])" :key="o.id" :label="o.label" :value="o.id"></el-option></el-select></el-form-item>',
-      '      <el-form-item label="科室编码"><el-input v-model="form.deptCode"></el-input></el-form-item>',
-      '      <el-form-item label="科室名称"><el-input v-model="form.deptName"></el-input></el-form-item>',
-      '      <el-form-item label="拼音码"><el-input v-model="form.pyCode" disabled placeholder="保存时按名称自动生成"></el-input></el-form-item>',
-      '      <el-form-item label="自定义码"><el-input v-model="form.abbrCode" maxlength="64" placeholder="选填, 人工简码(多音字纠正等)"></el-input></el-form-item>',
-      '      <el-form-item label="科室类型"><span style="color:var(--yb-ink-2);">{{ typeFromCat(form.deptCategory) || form.deptType || \'-\' }}</span><span style="color:var(--yb-ink-4);font-size:12px;margin-left:8px;">由科室主大类自动派生, 无需单独维护</span></el-form-item>',
-      '      <el-form-item label="医保科别"><el-select v-model="form.deptCaty" filterable clearable style="width:100%" placeholder="院内科室→医保科室映射(2201 dept_code+caty 均取此值)"><el-option v-for="o in catyOpts" :key="o.code" :label="o.name + \' (\' + o.code + \')\'" :value="o.code"></el-option></el-select></el-form-item>',
-      '      <el-form-item label="联系电话"><el-input v-model="form.phone"></el-input></el-form-item>',
-      '      <el-form-item label="位置描述"><el-input v-model="form.locDesc"></el-input></el-form-item>',
+      /* 长表单弹窗双栏化(2026-10-03): 18 字段单列直排超屏需滚到底才见按钮, 改双栏+加宽+上移, 与编辑职工弹窗同范式 */
+      '  <el-dialog v-model="dlg" custom-class="form-dialog-scroll" :title="editing?\'编辑科室\':\'新增科室\'" width="680px" top="6vh">',
+      '    <el-form :model="form" label-width="92px" size="default">',
+      '      <el-row :gutter="12">',
+      '        <el-col :span="12"><el-form-item label="上级科室"><el-select v-model="form.parentId" filterable style="width:100%" placeholder="上级科室(拼音简码可搜)" :filter-method="kwFilter(\'dParent\')" @change="onParentChange"><el-option v-for="o in kwOptions(\'dParent\', parentOptions, [\'label\',\'pyCode\',\'abbrCode\'])" :key="o.id" :label="o.label" :value="o.id"></el-option></el-select></el-form-item></el-col>',
+      '        <el-col :span="12"><el-form-item label="科室大类"><el-select v-model="form.deptCategory" multiple clearable style="width:100%" placeholder="多选:门诊/住院/护理/医技/行政"><el-option v-for="c in deptCategories" :key="c" :label="c" :value="c"></el-option></el-select></el-form-item></el-col>',
+      '        <el-col :span="12"><el-form-item label="层级"><el-select v-model="form.deptLevel" style="width:100%" :disabled="form.parentId !== 0 && form.parentId != null" :title="form.parentId !== 0 && form.parentId != null ? \'已选上级, 层级由上级自动推导(#3)\' : \'\'"><el-option v-for="l in deptLevels" :key="l.v" :label="l.v+\'-\'+l.l" :value="l.v"></el-option></el-select></el-form-item></el-col>',
+      '        <el-col :span="12"><el-form-item label="所属机构"><el-select v-model="form.orgId" clearable filterable style="width:100%" placeholder="医共体内机构(可空; 拼音可搜)" :filter-method="kwFilter(\'dOrg\')" @change="onDeptOrgChange"><el-option v-for="o in kwOptions(\'dOrg\', orgs, [\'label\',\'orgCode\',\'pyCode\'])" :key="o.id" :label="o.label" :value="o.id"></el-option></el-select></el-form-item></el-col>',
+      '        <el-col :span="12"><el-form-item label="科室编码"><el-input v-model="form.deptCode"></el-input></el-form-item></el-col>',
+      '        <el-col :span="12"><el-form-item label="科室名称"><el-input v-model="form.deptName"></el-input></el-form-item></el-col>',
+      '        <el-col :span="12"><el-form-item label="拼音码"><el-input v-model="form.pyCode" disabled placeholder="保存时按名称自动生成"></el-input></el-form-item></el-col>',
+      '        <el-col :span="12"><el-form-item label="自定义码"><el-input v-model="form.abbrCode" maxlength="64" placeholder="选填, 人工简码纠正多音字"></el-input></el-form-item></el-col>',
+      '        <el-col :span="12"><el-form-item label="科室类型"><span style="color:var(--yb-ink-2);">{{ typeFromCat(form.deptCategory) || form.deptType || \'-\' }}</span><span style="color:var(--yb-ink-4);font-size:12px;margin-left:8px;">由主大类派生</span></el-form-item></el-col>',
+      '        <el-col :span="12"><el-form-item label="医保科别"><el-select v-model="form.deptCaty" filterable clearable style="width:100%" placeholder="院内科室→医保科室映射(2201)" :title="\'2201 dept_code+caty 均取此值\'"><el-option v-for="o in catyOpts" :key="o.code" :label="o.name + \' (\' + o.code + \')\'" :value="o.code"></el-option></el-select></el-form-item></el-col>',
+      '        <el-col :span="12"><el-form-item label="联系电话"><el-input v-model="form.phone"></el-input></el-form-item></el-col>',
+      '        <el-col :span="12"><el-form-item label="位置描述"><el-input v-model="form.locDesc"></el-input></el-form-item></el-col>',
       /* 三期: 科室默认发药药房(区分西药/中药渠道, 需先选定所属机构; 可空=医生开方时手工选择) */
-      '      <el-form-item label="默认药房(西)"><el-select v-model="form.defPharmacyWest" clearable filterable style="width:100%" :disabled="!form.orgId" placeholder="西药/中成药默认发药药房(可空)"><el-option v-for="p in pharmacyOpts" :key="p.id" :label="p.name" :value="p.id"></el-option></el-select></el-form-item>',
-      '      <el-form-item label="默认药房(中)"><el-select v-model="form.defPharmacyTcm" clearable filterable style="width:100%" :disabled="!form.orgId" placeholder="中药饮片默认发药药房(可空)"><el-option v-for="p in pharmacyOpts" :key="p.id" :label="p.name" :value="p.id"></el-option></el-select></el-form-item>',
-      '      <el-form-item label="排序号"><el-input v-model.number="form.sortNo" type="number"></el-input></el-form-item>',
-      '      <el-form-item label="状态"><el-switch v-model="form.status" :active-value="1" :inactive-value="0" active-text="启用" inactive-text="停用"></el-switch></el-form-item>',
-      '      <el-form-item v-if="form.deptCategory && form.deptCategory.indexOf(\'门诊科室\')>=0" label="门诊开诊" title="仅开诊的门诊科室会出现在排班/挂号科室下拉"><el-switch v-model="form.openClinic" :active-value="1" :inactive-value="0" active-text="开诊" inactive-text="未开诊"></el-switch><span style="color:var(--yb-ink-2);font-size:12px;margin-left:8px;">未开诊的门诊科室不参与排班与挂号</span></el-form-item>',
-      '      <el-form-item label="备注"><el-input v-model="form.memo" type="textarea"></el-input></el-form-item>',
+      '        <el-col :span="12"><el-form-item label="默认药房(西)"><el-select v-model="form.defPharmacyWest" clearable filterable style="width:100%" :disabled="!form.orgId" placeholder="西药/中成药(可空)"><el-option v-for="p in pharmacyOpts" :key="p.id" :label="p.name" :value="p.id"></el-option></el-select></el-form-item></el-col>',
+      '        <el-col :span="12"><el-form-item label="默认药房(中)"><el-select v-model="form.defPharmacyTcm" clearable filterable style="width:100%" :disabled="!form.orgId" placeholder="中药饮片(可空)"><el-option v-for="p in pharmacyOpts" :key="p.id" :label="p.name" :value="p.id"></el-option></el-select></el-form-item></el-col>',
+      '        <el-col :span="12"><el-form-item label="排序号"><el-input v-model.number="form.sortNo" type="number"></el-input></el-form-item></el-col>',
+      '        <el-col :span="12"><el-form-item label="状态"><el-switch v-model="form.status" :active-value="1" :inactive-value="0" active-text="启用" inactive-text="停用"></el-switch></el-form-item></el-col>',
+      '        <el-col :span="24"><el-form-item v-if="form.deptCategory && form.deptCategory.indexOf(\'门诊科室\')>=0" label="门诊开诊" title="仅开诊的门诊科室会出现在排班/挂号科室下拉"><el-switch v-model="form.openClinic" :active-value="1" :inactive-value="0" active-text="开诊" inactive-text="未开诊"></el-switch><span style="color:var(--yb-ink-2);font-size:12px;margin-left:8px;">未开诊的门诊科室不参与排班与挂号</span></el-form-item></el-col>',
+      '        <el-col :span="24"><el-form-item label="备注"><el-input v-model="form.memo" type="textarea" :rows="1"></el-input></el-form-item></el-col>',
+      '      </el-row>',
       '    </el-form>',
       '    <template #footer><el-button @click="dlg=false">取消</el-button><el-button type="primary" @click="submit">确定</el-button></template>',
       '  </el-dialog>',
@@ -527,6 +534,8 @@
         surgeryOpts: [], surgeryMap: {},
         activeTab: 'basic',
         filterOrg: null, filterDept: null, filterType: '', filterStatus: null, keyword: '',
+        /* 快速查询两项(2026-10-03): 可挂号 1/0; 处方权限快捷码 rx/narcotic/psych1/psych2/abx/abx1-3(与后端 applyRxAuth 同口径) */
+        filterReg: null, filterRx: '',
         /* 选上级科室时是否级联显示下级科室人员(默认开, 关=仅精确匹配选中科室) */
         withKids: true,
         /* 选上级机构时是否级联显示下级机构人员(默认开, 关=仅精确匹配选中机构; 仅牵头机构生效) */
@@ -801,6 +810,8 @@
         if (vm.filterDept) { q += '&deptId=' + vm.filterDept + '&withChildren=' + vm.withKids; }
         if (vm.filterType) { q += '&staffType=' + encodeURIComponent(vm.filterType); }
         if (vm.filterStatus !== '' && vm.filterStatus != null) { q += '&status=' + vm.filterStatus; }
+        if (vm.filterReg !== '' && vm.filterReg != null) { q += '&canRegister=' + vm.filterReg; }
+        if (vm.filterRx) { q += '&rxAuth=' + encodeURIComponent(vm.filterRx); }
         if (vm.keyword) { q += '&keyword=' + encodeURIComponent(vm.keyword); }
         HIS.get(q).then(function (d) {
           vm.list = d || []; vm.page = 1;
@@ -857,6 +868,8 @@
         if (vm.filterDept) { q += '&deptId=' + vm.filterDept + '&withChildren=' + vm.withKids; }
         if (vm.filterType) { q += '&staffType=' + encodeURIComponent(vm.filterType); }
         if (vm.filterStatus !== '' && vm.filterStatus != null) { q += '&status=' + vm.filterStatus; }
+        if (vm.filterReg !== '' && vm.filterReg != null) { q += '&canRegister=' + vm.filterReg; }
+        if (vm.filterRx) { q += '&rxAuth=' + encodeURIComponent(vm.filterRx); }
         if (vm.keyword) { q += '&keyword=' + encodeURIComponent(vm.keyword); }
         vm.exporting = true;
         HIS.download(q).then(function (name) {
@@ -1073,6 +1086,8 @@
       '  <div class="toolbar">',
       '    <el-select v-model="filterType" placeholder="全部类别" clearable style="width:130px" @change="load"><el-option v-for="t in staffTypes" :key="t" :label="t" :value="t"></el-option></el-select>',
       '    <el-select v-model="filterStatus" placeholder="全部状态" clearable style="width:100px" @change="load"><el-option label="在职" :value="1"></el-option><el-option label="停用" :value="0"></el-option></el-select>',
+      '    <el-select v-model="filterReg" placeholder="可挂号" clearable style="width:110px" @change="load"><el-option label="可挂号" :value="1"></el-option><el-option label="不可挂号" :value="0"></el-option></el-select>',
+      '    <el-select v-model="filterRx" placeholder="处方权限" clearable style="width:130px" @change="load"><el-option label="有处方权" value="rx"></el-option><el-option label="麻醉" value="narcotic"></el-option><el-option label="精一" value="psych1"></el-option><el-option label="精二" value="psych2"></el-option><el-option label="抗菌药物(任意级)" value="abx"></el-option><el-option label="抗菌一级" value="abx1"></el-option><el-option label="抗菌二级" value="abx2"></el-option><el-option label="抗菌三级" value="abx3"></el-option></el-select>',
       '    <el-input v-model="keyword" placeholder="工号/姓名/拼音简码, 回车查询" clearable style="width:190px" @keyup.enter="load" @clear="load"></el-input>',
       '    <el-checkbox v-if="lead" v-model="withSubOrgs" :disabled="!filterOrg" @change="load" title="选上级机构时级联显示下级机构人员; 取消勾选仅显示选中机构本身的人员(左侧选中机构后激活)" style="margin-left:4px;">含下级机构</el-checkbox>',
       '    <el-checkbox v-model="withKids" :disabled="!filterDept" @change="load" title="选上级科室时级联显示下级科室人员; 取消勾选仅显示选中科室本身的人员(左侧选中科室后激活)" style="margin-left:4px;">含下级科室</el-checkbox>',
@@ -1267,6 +1282,8 @@
         depts: [], staffs: [], allStaffs: [],
         /* 周视图: weekStart 为周一日期字符串(yyyy-MM-dd, 避免响应式 Date 内置方法陷阱) */
         weekStart: '', weekData: [], weekStats: [], weekLoading: false, weekDays: [],
+        /* 班次字典(his_shift_dict): 周视图列/表单时段选项, created 拉取后覆盖兜底三值 */
+        shiftList: TIME_TYPES.map(function (t) { return { v: t.v, l: t.l, st: '', et: '' }; }),
         /* 列表视图 */
         listStatus: null, dateRange: null,
         listData: [], listTotal: 0, listPage: 1, listSize: 20, listLoading: false,
@@ -1288,10 +1305,12 @@
       };
     },
     created: function () {
+      var vm = this;
       var ws = this.fmt(this.getMonday(new Date()));
       this.weekStart = ws;
       this.updateWeekDays();
       this.dateRange = [ws, this.addDays(ws, 6)];
+      HIS.shiftDict(function (l) { vm.shiftList = l; });
       this.loadDepts();
       this.loadStaffs();
       this.loadAllStaffs();
@@ -1299,6 +1318,12 @@
       this.loadWeek();
     },
     computed: {
+      /* 时段码有序列表(字典驱动): 周视图列循环与表单选项同源 */
+      shiftCodes: function () { return this.shiftList.map(function (t) { return t.v; }); },
+      /* 选项文本: 有起止时间时附带, 如 上午(08:00-12:00) */
+      shiftOptLabel: function () {
+        return function (t) { return t.st ? t.l + '(' + t.st + (t.et ? '-' + t.et : '') + ')' : t.l; };
+      },
       weekLabel: function () {
         return this.weekStart ? (this.weekStart + ' ~ ' + this.addDays(this.weekStart, 6)) : '';
       },
@@ -1307,6 +1332,10 @@
         if (!this.batchTplForm.deptId) { return this.allStaffs; }
         var did = this.batchTplForm.deptId;
         return this.allStaffs.filter(function (s) { return s.deptId === did; });
+      },
+      /* 挂号科室候选(筛选/模板下拉): 仅科室级(第2层); 诊室(第3层)不作挂号科室参与筛选, 只在「诊室」字段联动选择 */
+      regDeptOptions: function () {
+        return (this.depts || []).filter(function (d) { return Number(d.deptLevel) === 2; });
       },
       /* 排班表单挂号科室下拉: 仅本科室级(第2层); 诊室(第3层)是科室子级, 在「诊室」字段联动选择; 编辑旧数据时若当前科室不在列表则补一项避免丢失 */
       formDeptOptions: function () {
@@ -1396,8 +1425,9 @@
       loadStaffs: function () {
         var vm = this;
         var orgId = HIS.currentOrgId();
-        /* 出诊医师仅限当前登录机构本级: withSubOrgs=false 防牵头机构级联带出成员机构医师 */
-        var q = '/api/his/staff/list?staffType=' + encodeURIComponent('医师') + '&withSubOrgs=false';
+        /* 出诊医师仅限当前登录机构本级: withSubOrgs=false 防牵头机构级联带出成员机构医师;
+           canRegister=1 仅限可挂号医生方可排班出诊(2026-10-03, 与科室侧只列开诊门诊科室同口径) */
+        var q = '/api/his/staff/list?staffType=' + encodeURIComponent('医师') + '&canRegister=1&withSubOrgs=false';
         if (orgId) { q += '&orgId=' + orgId; }
         if (vm.filterDeptId) { q += '&deptId=' + vm.filterDeptId; }
         HIS.get(q).then(function (d) {
@@ -1407,7 +1437,8 @@
       loadAllStaffs: function () {
         var vm = this;
         var orgId = HIS.currentOrgId();
-        var q = '/api/his/staff/list?staffType=' + encodeURIComponent('医师') + '&withSubOrgs=false';
+        /* 同上: 批量模板医师候选亦仅限可挂号医生 */
+        var q = '/api/his/staff/list?staffType=' + encodeURIComponent('医师') + '&canRegister=1&withSubOrgs=false';
         if (orgId) { q += '&orgId=' + orgId; }
         HIS.get(q).then(function (d) {
           vm.allStaffs = (d && d.records) ? d.records : (d || []);
@@ -1475,7 +1506,11 @@
         return { 'is-stop': slot.status === 0, 'is-full': slot.status === 1 && Number(slot.leftNum) <= 0 };
       },
       hasAnySlot: function (row, wdKey) {
-        return !!(this.slotOf(row, wdKey, 'am').length || this.slotOf(row, wdKey, 'pm').length || this.slotOf(row, wdKey, 'night').length);
+        var vm = this;
+        for (var i = 0; i < vm.shiftCodes.length; i++) {
+          if (vm.slotOf(row, wdKey, vm.shiftCodes[i]).length) { return true; }
+        }
+        return false;
       },
       /* ===== 列表视图 ===== */
       loadList: function () {
@@ -1812,7 +1847,7 @@
       '      <el-radio-button label="week">周视图</el-radio-button>',
       '      <el-radio-button label="list">列表视图</el-radio-button>',
       '    </el-radio-group>',
-      '    <el-select v-model="filterDeptId" placeholder="科室/拼音简码" clearable filterable size="small" style="width:150px" :filter-method="kwFilter(\'fDept\')" @change="onDeptChange"><el-option v-for="d in kwOptions(\'fDept\', depts, [\'deptName\',\'deptCode\',\'pyCode\',\'abbrCode\'])" :key="d.id" :label="d.deptName" :value="d.id"></el-option></el-select>',
+      '    <el-select v-model="filterDeptId" placeholder="科室/拼音简码" clearable filterable size="small" style="width:150px" :filter-method="kwFilter(\'fDept\')" @change="onDeptChange"><el-option v-for="d in kwOptions(\'fDept\', regDeptOptions, [\'deptName\',\'deptCode\',\'pyCode\',\'abbrCode\'])" :key="d.id" :label="d.deptName" :value="d.id"></el-option></el-select>',
       '    <el-select v-model="filterStaffId" placeholder="医师/拼音简码" clearable filterable size="small" :disabled="viewMode===\'week\'" :filter-method="kwFilter(\'fStaff\')" style="width:170px" title="周视图按医师分行展示, 医师筛选仅在列表视图生效"><el-option v-for="s in kwOptions(\'fStaff\', staffs, [\'staffName\',\'staffNo\',\'pyCode\',\'abbrCode\'])" :key="s.id" :label="s.staffName+\'(\'+s.staffNo+\')\'" :value="s.id"></el-option></el-select>',
       '    <template v-if="viewMode===\'week\'">',
       '      <el-button size="small" @click="prevWeek">&lt; 上一周</el-button>',
@@ -1858,7 +1893,7 @@
       '          </div>',
       '        </template>',
       '        <template #default="s">',
-      '          <template v-for="tt in [\'am\',\'pm\',\'night\']" :key="tt">',
+      '          <template v-for="tt in shiftCodes" :key="tt">',
       '            <div v-for="slot in slotOf(s.row, wd.key, tt)" :key="slot.id" class="schedule-card" :class="slotClass(slot)" @click="openEdit(slot, s.row)">',
       '              <div class="sc-time">{{ ttLabel(tt) }}</div>',
       '              <div class="sc-level">{{ slot.regLevelName }}<span v-if="slot.deptName && slot.deptName !== s.row.deptName" style="color:var(--yb-ink-2);"> · {{ slot.deptName }}</span></div>',
@@ -1916,9 +1951,7 @@
       '      </el-row>',
       '      <el-form-item label="时段">',
       '        <el-radio-group v-model="form.timeType" @change="checkConflict">',
-      '          <el-radio label="am">上午</el-radio>',
-      '          <el-radio label="pm">下午</el-radio>',
-      '          <el-radio label="night">晚间</el-radio>',
+      '          <el-radio v-for="t in shiftList" :key="t.v" :label="t.v">{{ t.l }}</el-radio>',
       '        </el-radio-group>',
       '      </el-form-item>',
       '      <el-row :gutter="12">',
@@ -1983,7 +2016,7 @@
       /* ---- 模板管理抽屉 ---- */
       '  <el-drawer v-model="drawerVisible" title="排班模板管理" size="880px">',
       '    <div class="toolbar">',
-      '      <el-select v-model="tplFilterDeptId" placeholder="科室/拼音简码" clearable filterable size="small" style="width:150px" :filter-method="kwFilter(\'tDept\')" @change="onTplFilterChange"><el-option v-for="d in kwOptions(\'tDept\', depts, [\'deptName\',\'deptCode\',\'pyCode\',\'abbrCode\'])" :key="d.id" :label="d.deptName" :value="d.id"></el-option></el-select>',
+      '      <el-select v-model="tplFilterDeptId" placeholder="科室/拼音简码" clearable filterable size="small" style="width:150px" :filter-method="kwFilter(\'tDept\')" @change="onTplFilterChange"><el-option v-for="d in kwOptions(\'tDept\', regDeptOptions, [\'deptName\',\'deptCode\',\'pyCode\',\'abbrCode\'])" :key="d.id" :label="d.deptName" :value="d.id"></el-option></el-select>',
       '      <el-button type="primary" size="small" @click="addTpl">新增模板</el-button>',
       '      <el-button type="success" size="small" @click="openBatchTpl">批量创建</el-button>',
       '      <span style="color:var(--yb-ink-2);font-size:12px;">共 {{ tplTotal }} 条 · 同一医师同星期同时段仅一条模板</span>',
@@ -2019,7 +2052,7 @@
       '            <el-select v-model="tplForm.weekday" style="width:100%"><el-option v-for="i in 7" :key="i" :label="weekdayLabel(i)" :value="i"></el-option></el-select>',
       '          </el-form-item></el-col>',
       '          <el-col :span="12"><el-form-item label="时段">',
-      '            <el-select v-model="tplForm.timeType" style="width:100%"><el-option label="上午" value="am"></el-option><el-option label="下午" value="pm"></el-option><el-option label="晚间" value="night"></el-option></el-select>',
+      '            <el-select v-model="tplForm.timeType" style="width:100%"><el-option v-for="t in shiftList" :key="t.v" :label="shiftOptLabel(t)" :value="t.v"></el-option></el-select>',
       '          </el-form-item></el-col>',
       '        </el-row>',
       '        <el-row :gutter="12">',
@@ -2061,7 +2094,7 @@
       '          <template #default="s"><el-select v-model="s.row.weekday" size="small" style="width:90px;"><el-option v-for="i in 7" :key="i" :label="weekdayLabel(i)" :value="i"></el-option></el-select></template>',
       '        </el-table-column>',
       '        <el-table-column label="时段" width="108">',
-      '          <template #default="s"><el-select v-model="s.row.timeType" size="small" style="width:86px;"><el-option label="上午" value="am"></el-option><el-option label="下午" value="pm"></el-option><el-option label="晚间" value="night"></el-option></el-select></template>',
+      '          <template #default="s"><el-select v-model="s.row.timeType" size="small" style="width:130px;"><el-option v-for="t in shiftList" :key="t.v" :label="shiftOptLabel(t)" :value="t.v"></el-option></el-select></template>',
       '        </el-table-column>',
       '        <el-table-column label="号别" width="142">',
       '          <template #default="s"><el-select v-model="s.row.regLevelCode" size="small" @change="onLevelPick(s.row)"><el-option v-for="r in regLevels" :key="r.code" :label="r.name" :value="r.code"></el-option></el-select></template>',

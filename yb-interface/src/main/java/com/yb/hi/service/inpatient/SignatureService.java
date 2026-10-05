@@ -1,11 +1,13 @@
 package com.yb.hi.service.inpatient;
 
 import cn.hutool.crypto.digest.BCrypt;
+import com.yb.hi.common.UploadUrlSigner;
 import com.yb.hi.framework.common.BizException;
 import com.yb.hi.framework.tenant.LoginUser;
 import com.yb.hi.framework.tenant.TenantContext;
 import com.yb.hi.framework.tenant.UserContext;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
@@ -47,6 +49,9 @@ public class SignatureService {
 
     @Value("${his.upload.url-prefix:/uploads/}")
     private String urlPrefix;
+
+    @Autowired
+    private UploadUrlSigner uploadUrlSigner;
 
     public SignatureService(JdbcTemplate jdbcTemplate) {
         this.jdbcTemplate = jdbcTemplate;
@@ -150,7 +155,7 @@ public class SignatureService {
             Path dir = root.resolve("signatures").resolve(ym);
             Files.createDirectories(dir);
             Files.write(dir.resolve(filename), png);
-            return joinUrl(urlPrefix, "signatures/" + ym + "/" + filename);
+            return uploadUrlSigner.appendToken(joinUrl(urlPrefix, "signatures/" + ym + "/" + filename));
         } catch (IOException e) {
             throw new BizException("签名图片保存失败: " + e.getMessage());
         }
@@ -163,7 +168,8 @@ public class SignatureService {
             if (url == null || !url.startsWith(prefix)) {
                 return;
             }
-            Path path = Paths.get(uploadPath).toAbsolutePath().normalize().resolve(url.substring(prefix.length()));
+            Path path = Paths.get(uploadPath).toAbsolutePath().normalize()
+                    .resolve(uploadUrlSigner.pathOnly(url).substring(prefix.length()));
             Files.deleteIfExists(path);
         } catch (Exception e) {
             log.warn("签名文件补偿清理失败: url={}, msg={}", url, e.getMessage());

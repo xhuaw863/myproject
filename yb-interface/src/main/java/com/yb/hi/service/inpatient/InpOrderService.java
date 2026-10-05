@@ -12,6 +12,7 @@ import com.yb.hi.entity.basedata.HisChargeItem;
 import com.yb.hi.entity.basedata.HisStaff;
 import com.yb.hi.entity.community.HisDrugCatalog;
 import com.yb.hi.entity.community.HisOrgCatalog;
+import com.yb.hi.entity.doctor.HisChargeAddonRule;
 import com.yb.hi.entity.inpatient.HisInpChargeDetail;
 import com.yb.hi.entity.inpatient.HisInpOrder;
 import com.yb.hi.entity.inpatient.HisInpOrderExec;
@@ -31,6 +32,8 @@ import com.yb.hi.mapper.inpatient.HisInpOrderExecMapper;
 import com.yb.hi.mapper.inpatient.HisInpOrderMapper;
 import com.yb.hi.mapper.inpatient.HisInpVisitMapper;
 import com.yb.hi.platform.service.OrgAccessGuard;
+import com.yb.hi.platform.service.SystemParamResolver;
+import com.yb.hi.service.doctor.HisChargeAddonRuleService;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
@@ -68,12 +71,15 @@ public class InpOrderService extends ServiceImpl<HisInpOrderMapper, HisInpOrder>
     private final OrderTemplateService orderTemplateService;
     private final HisInpOrderExecMapper execMapper;
     private final JdbcTemplate jdbcTemplate;
+    private final HisChargeAddonRuleService chargeAddonRuleService;
+    private final SystemParamResolver paramResolver;
 
     public InpOrderService(HisInpVisitMapper visitMapper, HisInpChargeDetailMapper chargeDetailMapper,
                            HisDrugCatalogMapper drugCatalogMapper, HisChargeItemMapper chargeItemMapper,
                            HisOrgCatalogMapper orgCatalogMapper, HisStaffMapper staffMapper, OrgAccessGuard guard,
                            InpAllergyService allergyService, OrderTemplateService orderTemplateService,
-                           HisInpOrderExecMapper execMapper, JdbcTemplate jdbcTemplate) {
+                           HisInpOrderExecMapper execMapper, JdbcTemplate jdbcTemplate,
+                           HisChargeAddonRuleService chargeAddonRuleService, SystemParamResolver paramResolver) {
         this.visitMapper = visitMapper;
         this.chargeDetailMapper = chargeDetailMapper;
         this.drugCatalogMapper = drugCatalogMapper;
@@ -85,6 +91,8 @@ public class InpOrderService extends ServiceImpl<HisInpOrderMapper, HisInpOrder>
         this.orderTemplateService = orderTemplateService;
         this.execMapper = execMapper;
         this.jdbcTemplate = jdbcTemplate;
+        this.chargeAddonRuleService = chargeAddonRuleService;
+        this.paramResolver = paramResolver;
     }
 
     /** 当前登录医生(his_staff.id): 无职工关联的账号不能执行医生站操作 */
@@ -203,6 +211,12 @@ public class InpOrderService extends ServiceImpl<HisInpOrderMapper, HisInpOrder>
         o.setOrderPhase(surgeryLinked ? dto.getOrderPhase() : null);
         o.setProxyDoctorId(dto.getProxyDoctorId());
         o.setProxyReason(StringUtils.hasText(dto.getProxyReason()) ? dto.getProxyReason().trim() : null);
+        // 检查类医嘱(orderCategory=2)加收维度要素(与门诊 his_order_item 同口径): 落检查部位/计价部位数/造影方式, 驱动 part/contrast 加收
+        if (dto.getOrderCategory() != null && dto.getOrderCategory() == 2) {
+            o.setExamPart(StringUtils.hasText(dto.getExamPart()) ? dto.getExamPart().trim() : null);
+            o.setSiteCount(dto.getSiteCount() == null || dto.getSiteCount() < 1 ? 1 : dto.getSiteCount());
+            o.setContrastMode(StringUtils.hasText(dto.getContrastMode()) ? dto.getContrastMode().trim() : null);
+        }
         if (surgeryLinked && dto.getOrderCategory() != null && dto.getOrderCategory() == 1) {
             o.setSendPharmStatus(0);
         }
@@ -220,7 +234,15 @@ public class InpOrderService extends ServiceImpl<HisInpOrderMapper, HisInpOrder>
         if (dto.getOrderType() == 2 && o.getUnitPrice() != null) {
             HisInpChargeDetail cd = buildChargeDetail(o, priced);
             chargeDetailMapper.insert(cd);
-            accumulateTotalCost(visit.getId(), cd.getAmount());
+            BigDecimal visitCharge = cd.getAmount();
+            // 医保检查控费加收(住院临时检查医嘱即时加收): 命中启用加收规则且对应 inpatient 开关开启时追加多部位/增强加收费用明细
+            if (dto.getOrderCategory() != null && dto.getOrderCategory() == 2) {
+                for (HisInpChargeDetail addon : buildExamSurchargeCharges(o)) {
+                    chargeDetailMapper.insert(addon);
+                    visitCharge = visitCharge.add(addon.getAmount());
+                }
+            }
+            accumulateTotalCost(visit.getId(), visitCharge);
         }
         log.info("开立住院医嘱: id={}, visitId={}, type={}, category={}, unitPrice={}, groupNo={}",
                 o.getId(), visit.getId(), o.getOrderType(), o.getOrderCategory(), o.getUnitPrice(), o.getGroupNo());
@@ -706,6 +728,113 @@ public class InpOrderService extends ServiceImpl<HisInpOrderMapper, HisInpOrder>
         cd.setChargeDate(LocalDate.now());
         cd.setOrderId(o.getId());
         cd.setFeeType(priced.feeType == null ? 9 : priced.feeType);
+        cd.setStatus(1);
+        cd.setOperatorId(o.getDoctorId());
+        return cd;
+    }
+
+    /**
+     * 读四级作用域布尔参数(登录上下文=当前机构): 仅显式 "true" 视为启用, 缺省/空/异常一律停用(false),
+     * 与门诊 HisOrderService.paramEnabled 同口径(需启用的机构逐级覆盖为 true)。
+     */
+    private boolean paramEnabled(String paramKey) {
+        try {
+            String v = paramResolver.resolve(paramKey);
+            return StringUtils.hasText(v) && "true".equalsIgnoreCase(v.trim());
+        } catch (Exception e) {
+            log.warn("住院检查控费开关参数解析失败({}), 默认停用: {}", paramKey, e.getMessage());
+            return false;
+        }
+    }
+
+    /**
+     * 住院临时检查医嘱即时加收(仅 orderType=2 调用): 命中 his_charge_addon_rule 的 part/contrast 维度按门诊同口径追加费用明细。
+     * part 维度按计价部位数(site_count)超出首部位每个按主项目单价×比例加收; contrast 维度选增强时一次性按主项目单价×比例加收。
+     * 分别受 inpatient.exam_part_surcharge_enabled / inpatient.exam_contrast_surcharge_enabled 门控(默认停用); 异常仅告警不影响开立。
+     */
+    private List<HisInpChargeDetail> buildExamSurchargeCharges(HisInpOrder o) {
+        List<HisInpChargeDetail> addons = new ArrayList<>();
+        try {
+            if (o.getChargeItemId() == null || o.getUnitPrice() == null) {
+                return addons;
+            }
+            boolean partOn = paramEnabled(com.yb.hi.platform.ExamSurchargeParamSeeder.KEY_IP_PART);
+            boolean contrastOn = paramEnabled(com.yb.hi.platform.ExamSurchargeParamSeeder.KEY_IP_CONTRAST);
+            if (!partOn && !contrastOn) {
+                return addons;
+            }
+            List<HisChargeAddonRule> rules = chargeAddonRuleService.listByItem(o.getChargeItemId());
+            BigDecimal mainPrice = o.getUnitPrice();
+            int siteCount = o.getSiteCount() == null ? 1 : o.getSiteCount();
+            for (HisChargeAddonRule r : rules) {
+                boolean isContrast = "contrast".equalsIgnoreCase(r.getDimType());
+                boolean isPart = "part".equalsIgnoreCase(r.getDimType());
+                if (isPart && !partOn) {
+                    continue;
+                }
+                if (isContrast && !contrastOn) {
+                    continue;
+                }
+                if (!isPart && !isContrast) {
+                    continue; // 住院检查仅接 part/contrast 两维, 其余维度不适用
+                }
+                BigDecimal dim = isContrast
+                        ? ("增强".equals(o.getContrastMode()) ? BigDecimal.ONE : BigDecimal.ZERO)
+                        : new BigDecimal(siteCount);
+                int threshold = r.getDimThreshold() == null ? 1 : r.getDimThreshold();
+                if (dim.compareTo(new BigDecimal(threshold)) < 0) {
+                    continue;
+                }
+                String mode = r.getCalcMode() == null ? "fixed" : r.getCalcMode().toLowerCase();
+                BigDecimal amount;
+                BigDecimal addonQty = isContrast ? BigDecimal.ONE : dim;
+                if ("ratio".equals(mode)) {
+                    BigDecimal ratio = r.getDimRatio();
+                    if (ratio == null || mainPrice.compareTo(BigDecimal.ZERO) <= 0) {
+                        continue;
+                    }
+                    if (isContrast) {
+                        amount = mainPrice.multiply(ratio).setScale(2, BigDecimal.ROUND_HALF_UP);
+                    } else {
+                        BigDecimal extra = dim.subtract(new BigDecimal(threshold));
+                        if (extra.compareTo(BigDecimal.ZERO) <= 0) {
+                            continue;
+                        }
+                        amount = mainPrice.multiply(ratio).multiply(extra).setScale(2, BigDecimal.ROUND_HALF_UP);
+                    }
+                } else {
+                    if (r.getUnitPrice() == null) {
+                        continue;
+                    }
+                    amount = r.getUnitPrice().multiply(dim).setScale(2, BigDecimal.ROUND_HALF_UP);
+                }
+                if (amount.compareTo(BigDecimal.ZERO) <= 0) {
+                    continue;
+                }
+                addons.add(buildSurchargeDetail(o, r, isContrast, amount, addonQty));
+            }
+        } catch (Exception e) {
+            log.warn("住院检查加收计算失败(不影响开立): orderId={}, err={}", o.getId(), e.getMessage());
+        }
+        return addons;
+    }
+
+    /** 加收费用明细行(charge_item_id/item_code 置空, 与门诊加收行 itemId 为空同口径; 仅凭主项目单价与规则名称生成): 作废时按 order_id 全额冲销。 */
+    private HisInpChargeDetail buildSurchargeDetail(HisInpOrder o, HisChargeAddonRule r, boolean isContrast,
+                                                    BigDecimal amount, BigDecimal addonQty) {
+        HisInpChargeDetail cd = new HisInpChargeDetail();
+        cd.setOrgId(o.getOrgId());
+        cd.setInpVisitId(o.getInpVisitId());
+        cd.setChargeItemId(null);
+        cd.setItemCode(null);
+        cd.setItemName(StringUtils.hasText(r.getAddonItemName()) ? r.getAddonItemName()
+                : (isContrast ? "增强扫描加收" : "多部位加收"));
+        cd.setQuantity(addonQty);
+        cd.setUnitPrice(amount.divide(addonQty, 6, BigDecimal.ROUND_HALF_UP));
+        cd.setAmount(amount);
+        cd.setChargeDate(LocalDate.now());
+        cd.setOrderId(o.getId());
+        cd.setFeeType(3); // 检查
         cd.setStatus(1);
         cd.setOperatorId(o.getDoctorId());
         return cd;

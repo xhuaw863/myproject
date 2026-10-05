@@ -185,6 +185,8 @@
         partialVisible: false, partialBill: null, partialItems: [], partialReason: '',
         partialLoading: false, partialRefunding: false,
         settling: false,
+        /* 面板伸缩(工作台统一约定, 镜像挂号台): 顶部统计条/左栏可折叠; 右上下两区各自放大还原(互斥) */
+        summaryCollapsed: false, leftCollapsed: false, rightFocus: '', itemsTableH: 330, todayTableH: 240,
         timer: null
       };
     },
@@ -250,6 +252,13 @@
         this.timer = setInterval(function () { vm.loadTodo(); vm.loadSummary(); }, 30000);
       },
       stopTimer: function () { if (this.timer) { clearInterval(this.timer); this.timer = null; } },
+      /* 右两区(收费结算 / 今日收费记录)放大还原(互斥): 放大时对应表格随视口增高, 还原回默认 */
+      toggleFocus: function (which) {
+        this.rightFocus = this.rightFocus === which ? '' : which;
+        var h = window.innerHeight;
+        this.itemsTableH = this.rightFocus === 'top' ? Math.max(360, h - 360) : 330;
+        this.todayTableH = this.rightFocus === 'bottom' ? Math.max(360, h - 230) : 240;
+      },
       /* ---- 选人拉明细 ---- */
       pickVisit: function (row) {
         var vm = this;
@@ -495,8 +504,12 @@
     },
     template: [
       '<div class="cw-workstation">',
-      /* ===== 顶部统计卡 ===== */
-      '  <div class="cw-summary-bar">',
+      /* ===== 顶部统计卡(可折叠为细横条腾出主体空间) ===== */
+      '  <div v-if="summaryCollapsed" class="cw-summary-bar is-collapsed" title="展开今日统计" @click="summaryCollapsed=false">',
+      '    <span class="cw-summary-mini">≫ 今日统计</span>',
+      '    <span class="cw-summary-mini-nums">待 {{ summary.todoCount||0 }} 人 · 收 {{ summary.chargeCount||0 }}笔 ¥{{ money(summary.chargeAmount) }} · 退 {{ summary.refundCount||0 }}笔 · 现金 ¥{{ money(summary.cashTotal) }} · 票 {{ summary.invoiceCount||0 }} · {{ summary.settled ? "已日结" : "未日结" }}</span>',
+      '  </div>',
+      '  <div v-else class="cw-summary-bar">',
       '    <div class="cw-card"><div class="icon icon--orange">待</div><div><div class="num">{{ summary.todoCount || 0 }}</div><div class="label">待收费人数</div></div></div>',
       '    <div class="cw-card"><div class="icon icon--blue">收</div><div><div class="num">{{ summary.chargeCount || 0 }} 笔</div><div class="label">今日收费 ¥{{ money(summary.chargeAmount) }}</div></div></div>',
       '    <div class="cw-card"><div class="icon icon--red">退</div><div><div class="num">{{ summary.refundCount || 0 }} 笔</div><div class="label">今日退费 ¥{{ money(summary.refundAmount) }}</div></div></div>',
@@ -507,11 +520,13 @@
       '      <div><div class="num" style="font-size:15px;">{{ summary.settled ? "已日结" : "未日结" }}</div><div class="label">{{ summary.settled ? orDash(summary.settleTime).slice(0,19) : "门诊日结" }}</div></div>',
       '      <el-button v-if="!summary.settled" size="small" type="warning" plain :loading="settling" style="margin-left:auto;" @click="doDailySettle">立即日结</el-button>',
       '    </div>',
+      '    <div class="cw-summary-collapse" title="折叠统计条, 腾出收费操作空间" @click="summaryCollapsed=true">≪</div>',
       '  </div>',
       /* ===== 主体: 左待收费 | 右结算明细 ===== */
       '  <div class="cw-body">',
-      '    <div class="cw-left">',
-      '      <div class="cw-panel-title">待收费 <span class="sub">完成接诊未收费 · {{ todoTotal }} 人 · 30秒自动刷新</span></div>',
+      '    <div v-if="leftCollapsed" class="cw-left-rail" title="展开 待收费 面板" @click="leftCollapsed=false"><span class="cw-left-rail-text">≫ 待收费</span></div>',
+      '    <div v-else class="cw-left">',
+      '      <div class="cw-panel-title">待收费 <span class="sub">完成接诊未收费 · {{ todoTotal }} 人 · 30秒自动刷新</span><span style="flex:1;"></span><el-button class="cw-left-collapse-btn" link size="small" title="折叠左栏, 腾出收费/记录空间" @click="leftCollapsed=true">≪</el-button></div>',
       '      <div style="padding:0 10px 8px;">',
       '        <el-input v-model="todoKeyword" placeholder="姓名/就诊号 回车检索" size="small" clearable @keyup.enter="todoSearch" @clear="todoSearch"></el-input>',
       '      </div>',
@@ -526,7 +541,9 @@
       '      </div>',
       '      <el-pagination v-if="todoTotal>todoSize" small layout="prev, pager, next" :total="todoTotal" :page-size="todoSize" :current-page="todoPage" @current-change="onTodoPage" style="padding:6px 10px;justify-content:center;"></el-pagination>',
       '    </div>',
-      '    <div class="cw-main" v-loading="detailLoading" element-loading-text="加载费用明细...">',
+      '    <div class="cw-main" :class="{\'focus-top\': rightFocus===\'top\', \'focus-bottom\': rightFocus===\'bottom\'}" v-loading="detailLoading" element-loading-text="加载费用明细...">',
+      '      <div class="cw-main-top">',
+      '        <div class="cw-panel-title">收费结算<span style="flex:1;"></span><el-button link type="primary" size="small" @click="toggleFocus(\'top\')">{{ rightFocus===\'top\' ? \'还原\' : \'放大\' }}</el-button></div>',
       '      <div v-if="!selected" class="cw-placeholder">',
       '        <div style="font-size:40px;">￥</div><div>从左侧选择待收费患者, 核对费用后同屏完成结算</div>',
       '      </div>',
@@ -542,7 +559,7 @@
       '          <span style="margin-left:auto;color:var(--yb-danger);font-weight:700;font-size:18px;">{{ fYen(detailSummary.totalAmount) }}</span>',
       '        </div>',
       /* ---- 费用明细(含票据口径三列) ---- */
-      '        <el-table :data="items" border size="small" max-height="330" :span-method="groupSpan" show-summary :summary-method="summaryMethod" class="cw-items">',
+      '        <el-table :data="items" border size="small" :max-height="itemsTableH" :span-method="groupSpan" show-summary :summary-method="summaryMethod" class="cw-items">',
       '          <el-table-column label="项目类型" width="80" align="center"><template #default="s"><el-tag size="small" :type="itemTypeTag(s.row.itemType)">{{ itemTypeLabel(s.row.itemType) }}</el-tag></template></el-table-column>',
       '          <el-table-column prop="itemName" label="项目名称" min-width="160" show-overflow-tooltip></el-table-column>',
       '          <el-table-column prop="spec" label="规格" width="100" show-overflow-tooltip></el-table-column>',
@@ -586,11 +603,11 @@
       '          <el-button type="primary" size="large" class="cw-charge-btn" :loading="charging" :disabled="!items.length" @click="doCharge">确认收费</el-button>',
       '        </div>',
       '      </template>',
-      /* ---- 今日收费记录(同屏处理) ---- */
-      '      <div class="cw-today">',
-      '        <div class="cw-panel-title">今日收费记录 <span class="sub">共 {{ todayTotal }} 条 · 收据/票据/退费就地处理</span>',
-      '          <el-button link type="primary" size="small" style="margin-left:auto;" @click="loadToday">刷新</el-button></div>',
-      '        <el-table :data="todayList" v-loading="todayLoading" border size="small" max-height="240">',
+      '      </div>',
+      /* ---- 今日收费记录(同屏处理, 下区可放大/还原) ---- */
+      '      <div class="cw-today cw-main-bottom">',
+      '        <div class="cw-panel-title">今日收费记录 <span class="sub">共 {{ todayTotal }} 条 · 收据/票据/退费就地处理</span><span style="flex:1;"></span><el-button link type="primary" size="small" @click="toggleFocus(\'bottom\')">{{ rightFocus===\'bottom\' ? \'还原\' : \'放大\' }}</el-button><el-button link type="primary" size="small" @click="loadToday">刷新</el-button></div>',
+      '        <el-table :data="todayList" v-loading="todayLoading" border size="small" :max-height="todayTableH">',
       '          <el-table-column prop="billNo" label="单号" width="150"></el-table-column>',
       '          <el-table-column prop="patientName" label="患者" width="90"></el-table-column>',
       '          <el-table-column label="类型" width="70" align="center"><template #default="s"><el-tag size="small" :type="s.row.billType===2 ? \'danger\' : \'primary\'">{{ s.row.billType===2 ? "退费" : "收费" }}</el-tag></template></el-table-column>',

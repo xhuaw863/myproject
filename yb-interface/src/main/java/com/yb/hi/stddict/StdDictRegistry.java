@@ -24,7 +24,7 @@ public final class StdDictRegistry {
         Map<String, StdDict> map = new LinkedHashMap<>();
         for (StdDict d : new StdDict[]{
                 cvCode(),
-                drug(), consumable(), medService(), tcm(), preparation(), ivd(), consItemRel(), supplier(),
+                drug(), consumable(), medService(), tcm(), granule(), preparation(), ivd(), consItemRel(), supplier(),
                 icd10(), icd9(), icd10Nat(), icd9Nat(), morphology(), tcmDisease(), tcmSyndrome(), tcmMapping(),
                 tcmDiseaseNew(), tcmSyndromeNew(),
                 wst364(),
@@ -87,6 +87,7 @@ public final class StdDictRegistry {
             case "consumable":    return "湖北省医用耗材(20位)编码数据库·2024-11-29";
             case "med_service":   return "湖北省医疗服务项目编码数据库·2024-11-29";
             case "tcm":           return "湖北省医保药品(中药饮片)编码数据库·2024-11-28";
+            case "tcm_granule":   return "湖北省医保药品(中药配方颗粒)编码数据库·2024-11-28";
             case "preparation":   return "湖北省医保药品(医疗机构制剂)编码数据库·2024-11-25";
             case "ivd":           return "湖北省医保体外诊断试剂编码数据库·2024-11-26";
             case "cons_item_rel": return "湖北省医用耗材与医疗服务项目对应关系·2024-12-02";
@@ -301,6 +302,20 @@ public final class StdDictRegistry {
                 .cst("ver", "20241128");
         return new StdDict("tcm", "std_tcm", "中药饮片").add(s)
                 .query("nat_tcm_code", "tcm_name", "efcc_class", "material_name", "nat_tcm_code", "tcm_name", "material_name");
+    }
+
+    /** 【4b】中药配方颗粒(21列, 官方名"中药配方颗粒") */
+    private static StdDict granule() {
+        StdSource s = new StdSource(HBYB + "湖北省医保药品(中药配方颗粒)编码数据库-20241128（68898条）.xlsx", 0)
+                .col("granule_code", 0).col("granule_name", 1).col("spec", 2).col("pack_spec", 3)
+                .col("exec_std", 4).col("std_level", 5).col("shelf_life", 6).col("min_unit", 7)
+                .col("adr_info", 8).col("record_no", 9).col("record_time", 10).col("record_status", 11)
+                .col("record_bureau", 12).col("entp", 13).col("entp_addr", 14).col("sale_provinces", 15)
+                .col("tcm_code", 16).col("tcm_name", 17).col("tcm_exec_std", 18).col("chrgitm_lv", 19)
+                .col("data_source", 20).cst("ver", "20241128");
+        return new StdDict("tcm_granule", "std_tcm_granule", "中药配方颗粒").add(s)
+                .query("granule_code", "granule_name", "spec", "entp",
+                        "granule_code", "granule_name", "tcm_name");
     }
 
     /** 【5】医疗机构制剂 */

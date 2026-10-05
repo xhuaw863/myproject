@@ -16,6 +16,7 @@ import com.yb.hi.entity.basedata.HisStaff;
 import com.yb.hi.entity.cashier.HisRegPayment;
 import com.yb.hi.entity.outpatient.HisPatient;
 import com.yb.hi.entity.outpatient.HisRegistration;
+import com.yb.hi.entity.community.HisShiftDict;
 import com.yb.hi.framework.common.BizException;
 import com.yb.hi.framework.tenant.TenantContext;
 import com.yb.hi.framework.tenant.UserContext;
@@ -27,6 +28,7 @@ import com.yb.hi.service.basedata.HisDeptService;
 import com.yb.hi.service.basedata.HisScheduleService;
 import com.yb.hi.service.basedata.HisStaffService;
 import com.yb.hi.service.basedata.PayMethodDictService;
+import com.yb.hi.service.community.HisShiftDictService;
 import com.yb.hi.service.doctor.HisVisitService;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -38,6 +40,7 @@ import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.time.LocalTime;
 import java.time.format.DateTimeParseException;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -50,6 +53,9 @@ import java.util.concurrent.atomic.AtomicInteger;
  * 挂号服务: 编排院内挂号记录 + 医保2201挂号 / 2202撤销。
  * 增强: 重复挂号拦截 / 同日同科室提示(不阻断) / 减免与实收金额 / 支付方式 /
  * 候诊序号(科室简码+流水号, 同步 his_visit) / 今日概览与多维统计。
+ * 医保通道(2026-10-04): 是否走 2201/2202 由费别字典 channel 判定 —— 仅 channel=INSURANCE 走医保
+ * (仍强制科室医保科别与医师医保编码); 非医保通道(自费/公费/单位等)不要求贯标、不调医保接口,
+ * mdtrt_id/psn_no/insutype/dept_code/caty 均留 NULL, 与下游"无医保就诊信息→自费收费"口径同源。
  * 说明: JdbcTemplate 手写 SQL 不走 MyBatis-Plus 租户插件, 必须显式带 tenant_id AND deleted=0。
  */
 @Slf4j
@@ -78,12 +84,14 @@ public class HisRegistrationService extends ServiceImpl<HisRegistrationMapper, H
     private final HisRegPaymentMapper regPaymentMapper;
     private final FeeTypeDictService feeTypeDictService;
     private final PayMethodDictService payMethodDictService;
+    private final HisShiftDictService shiftDictService;
 
     public HisRegistrationService(HisPatientService patientService, HisScheduleService scheduleService,
                                   HisStaffService staffService, HisDeptService deptService,
                                   OutpatientService outpatientService, HisVisitService visitService,
                                   JdbcTemplate jdbcTemplate, HisRegPaymentMapper regPaymentMapper,
-                                  FeeTypeDictService feeTypeDictService, PayMethodDictService payMethodDictService) {
+                                  FeeTypeDictService feeTypeDictService, PayMethodDictService payMethodDictService,
+                                  HisShiftDictService shiftDictService) {
         this.patientService = patientService;
         this.scheduleService = scheduleService;
         this.staffService = staffService;
@@ -94,6 +102,7 @@ public class HisRegistrationService extends ServiceImpl<HisRegistrationMapper, H
         this.regPaymentMapper = regPaymentMapper;
         this.feeTypeDictService = feeTypeDictService;
         this.payMethodDictService = payMethodDictService;
+        this.shiftDictService = shiftDictService;
     }
 
     /** 分页查询挂号记录(按日期区间/状态/患者关键字) */
@@ -122,6 +131,50 @@ public class HisRegistrationService extends ServiceImpl<HisRegistrationMapper, H
     }
 
     /**
+     * 当日过期班次拦截(与挂号台/换号前端置灰同口径, 防绕过): 号源日期为今天且当前操作时间已越过
+     * 该班次结束时间(his_shift_dict.end_time)则拒挂。预约未来日期不受约束; 未配起止时间、
+     * 跨天班次(et<=st)、时间格式异常均保守放行避免误拒(迟到补挂等合法场景由现场人工判断)。
+     */
+    private void assertShiftNotExpired(HisSchedule schedule) {
+        LocalDate wd = schedule.getWorkDate();
+        if (wd == null || !wd.equals(LocalDate.now())) {
+            return;
+        }
+        String tt = schedule.getTimeType();
+        if (!StringUtils.hasText(tt)) {
+            return;
+        }
+        HisShiftDict shift = null;
+        for (HisShiftDict s : shiftDictService.enabledList()) {
+            if (tt.equals(s.getCode())) {
+                shift = s;
+                break;
+            }
+        }
+        if (shift == null || !StringUtils.hasText(shift.getEndTime())) {
+            return;
+        }
+        String et = shift.getEndTime().trim();
+        String st = shift.getStartTime() == null ? "" : shift.getStartTime().trim();
+        // 跨天班次(结束<=开始)无法用"当前>结束"简单判定, 保守放行
+        if (StringUtils.hasText(st) && et.compareTo(st) <= 0) {
+            return;
+        }
+        LocalTime end;
+        try {
+            String[] p = et.split(":");
+            end = LocalTime.of(Integer.parseInt(p[0].trim()), p.length > 1 ? Integer.parseInt(p[1].trim()) : 0);
+        } catch (RuntimeException e) {
+            return;
+        }
+        if (LocalTime.now().isAfter(end)) {
+            throw new BizException("号源日期为今天, 该班次("
+                    + shift.getName() + (StringUtils.hasText(st) ? (" " + st + "-" + et) : (" ~" + et))
+                    + ")已过当前操作时间, 不能挂过期号; 如需预约请改选未过期班次或明日号源");
+        }
+    }
+
+    /**
      * 挂号: 校验患者/排班/重复 -> 组装2201 -> 调用医保 -> 回填mdtrt_id -> 落库 -> 扣减号源 -> 建候诊。
      * 增强: 同号源重复挂号拦截; 同日同科室提示(不阻断, 瞬态字段返回);
      * 减免自动判定(年龄>=70 自动 age70free 全免, 其他类型由前端传入); 实收金额/支付方式;
@@ -145,6 +198,8 @@ public class HisRegistrationService extends ServiceImpl<HisRegistrationMapper, H
         if (schedule.getLeftNum() == null || schedule.getLeftNum() <= 0) {
             throw new BizException("该时段号源已用完");
         }
+        // 当日过期班次拦截(晚上不能挂上午/下午的号): 换号经 register 复用本守卫, 事务回滚保证退号+挂号原子
+        assertShiftNotExpired(schedule);
 
         // 重复挂号校验: 同患者+同号源已有有效挂号(status=1)则拦截
         long dupCnt = lambdaQuery()
@@ -159,18 +214,23 @@ public class HisRegistrationService extends ServiceImpl<HisRegistrationMapper, H
         HisStaff staff = staffService.getById(schedule.getStaffId());
         HisDept dept = deptService.getById(schedule.getDeptId());
 
-        // 医保报送守卫(2201): 科室/医师必须已维护医保编码, 不允许回退院内编码, 未配则拒挂
+        // 医保通道判定(仅 channel=INSURANCE 走 2201): 非医保通道不要求科室/医师贯标编码, 也不调医保接口
+        boolean insurance = isInsuranceChannel(feeType);
+
         if (dept == null) {
             throw new BizException("排班科室不存在或已删除, 不能挂号");
-        }
-        if (!StringUtils.hasText(dept.getDeptCaty())) {
-            throw new BizException("科室【" + dept.getDeptName() + "】未维护医保科别, 请先在[科室管理-编辑]从医保标准字典选择后再挂号");
         }
         if (staff == null) {
             throw new BizException("排班医师不存在或已删除, 不能挂号");
         }
-        if (!StringUtils.hasText(staff.getAtddrNo())) {
-            throw new BizException("医师【" + staff.getStaffName() + "】未维护医保医师编码, 请先在[职工管理]维护后再挂号");
+        if (insurance) {
+            // 医保报送守卫(2201): 科室/医师必须已维护医保编码, 不允许回退院内编码, 未配则拒挂
+            if (!StringUtils.hasText(dept.getDeptCaty())) {
+                throw new BizException("科室【" + dept.getDeptName() + "】未维护医保科别, 请先在[科室管理-编辑]从医保标准字典选择后再挂号");
+            }
+            if (!StringUtils.hasText(staff.getAtddrNo())) {
+                throw new BizException("医师【" + staff.getStaffName() + "】未维护医保医师编码, 请先在[职工管理]维护后再挂号");
+            }
         }
 
         // 同日同科室挂号检测(不阻断, 通过瞬态字段提示): 同患者+同出诊日+同科室已有有效挂号
@@ -206,32 +266,34 @@ public class HisRegistrationService extends ServiceImpl<HisRegistrationMapper, H
         // 候诊序号: 科室简码+4位流水号(当日同科室同时段 MAX+1, 如 NK-0015)
         String queueNo = generateQueueNo(schedule.getDeptId(), schedule.getTimeType(), schedule.getWorkDate());
 
-        // 组装医保2201请求
-        OutpatientRegisterReq req = new OutpatientRegisterReq();
-        req.setPsnNo(patient.getPsnNo());
-        req.setInsutype(patient.getInsutype());
-        req.setBegntime(DateUtil.currentDateTime());
-        req.setMdtrtCertType(StringUtils.hasText(patient.getMdtrtCertType()) ? patient.getMdtrtCertType() : "02");
-        req.setMdtrtCertNo(StringUtils.hasText(patient.getMdtrtCertNo()) ? patient.getMdtrtCertNo() : patient.getIdCard());
-        req.setIptOtpNo(iptOtpNo);
-        req.setAtddrNo(staff.getAtddrNo());
-        req.setDrName(staff.getStaffName());
-        // 医保科室映射(守卫已保证非空): 医保科别(dept_caty)为单一维护字段, 同时填充 dept_code 与 caty 两个必填槽位
-        req.setDeptCode(dept.getDeptCaty());
-        req.setDeptName(dept.getDeptName());
-        req.setCaty(dept.getDeptCaty());
-        req.setMedType(StringUtils.hasText(medType) ? medType : "11");
-
-        // 调用医保2201(带患者参保地区划, 规范表3: 输入含psn_no时insuplc_admdvs必填)
-        YbResponse resp = outpatientService.register(req, patient.getInsuplcAdmdvs());
-        if (resp == null || !resp.isSuccess()) {
-            String err = resp == null ? "医保无响应" : resp.getErrMsg();
-            throw new BizException("医保挂号失败: " + err);
-        }
+        // 组装医保2201请求(仅医保通道; 非医保通道整段跳过, 相关医保字段留 NULL)
         String mdtrtId = null;
-        JSONObject dataNode = resp.getOutputNode("data");
-        if (dataNode != null) {
-            mdtrtId = dataNode.getString("mdtrt_id");
+        if (insurance) {
+            OutpatientRegisterReq req = new OutpatientRegisterReq();
+            req.setPsnNo(patient.getPsnNo());
+            req.setInsutype(patient.getInsutype());
+            req.setBegntime(DateUtil.currentDateTime());
+            req.setMdtrtCertType(StringUtils.hasText(patient.getMdtrtCertType()) ? patient.getMdtrtCertType() : "02");
+            req.setMdtrtCertNo(StringUtils.hasText(patient.getMdtrtCertNo()) ? patient.getMdtrtCertNo() : patient.getIdCard());
+            req.setIptOtpNo(iptOtpNo);
+            req.setAtddrNo(staff.getAtddrNo());
+            req.setDrName(staff.getStaffName());
+            // 医保科室映射(守卫已保证非空): 医保科别(dept_caty)为单一维护字段, 同时填充 dept_code 与 caty 两个必填槽位
+            req.setDeptCode(dept.getDeptCaty());
+            req.setDeptName(dept.getDeptName());
+            req.setCaty(dept.getDeptCaty());
+            req.setMedType(StringUtils.hasText(medType) ? medType : "11");
+
+            // 调用医保2201(带患者参保地区划, 规范表3: 输入含psn_no时insuplc_admdvs必填)
+            YbResponse resp = outpatientService.register(req, patient.getInsuplcAdmdvs());
+            if (resp == null || !resp.isSuccess()) {
+                String err = resp == null ? "医保无响应" : resp.getErrMsg();
+                throw new BizException("医保挂号失败: " + err);
+            }
+            JSONObject dataNode = resp.getOutputNode("data");
+            if (dataNode != null) {
+                mdtrtId = dataNode.getString("mdtrt_id");
+            }
         }
 
         // 落库挂号记录
@@ -240,24 +302,25 @@ public class HisRegistrationService extends ServiceImpl<HisRegistrationMapper, H
         reg.setPatientId(patient.getId());
         reg.setPatientNo(patient.getPatientNo());
         reg.setPatientName(patient.getName());
-        reg.setPsnNo(patient.getPsnNo());
-        reg.setInsutype(patient.getInsutype());
-        reg.setMdtrtCertType(req.getMdtrtCertType());
-        reg.setMdtrtCertNo(req.getMdtrtCertNo());
+        reg.setPsnNo(insurance ? patient.getPsnNo() : null);
+        reg.setInsutype(insurance ? patient.getInsutype() : null);
+        reg.setMdtrtCertType(StringUtils.hasText(patient.getMdtrtCertType()) ? patient.getMdtrtCertType() : "02");
+        reg.setMdtrtCertNo(StringUtils.hasText(patient.getMdtrtCertNo()) ? patient.getMdtrtCertNo() : patient.getIdCard());
         reg.setDeptId(schedule.getDeptId());
-        reg.setDeptCode(req.getDeptCode());
-        reg.setDeptName(req.getDeptName());
-        reg.setCaty(req.getCaty());
+        // 医保编码槽位只存医保口径值: 自费无码保留 NULL, 不回退院内编码(避免污染上报与统计取数)
+        reg.setDeptCode(insurance ? dept.getDeptCaty() : null);
+        reg.setDeptName(dept.getDeptName());
+        reg.setCaty(insurance ? dept.getDeptCaty() : null);
         reg.setStaffId(schedule.getStaffId());
-        reg.setAtddrNo(req.getAtddrNo());
-        reg.setDrName(req.getDrName());
+        reg.setAtddrNo(staff.getAtddrNo());
+        reg.setDrName(staff.getStaffName());
         reg.setScheduleId(schedule.getId());
         reg.setWorkDate(schedule.getWorkDate());
         reg.setTimeType(schedule.getTimeType());
         reg.setRegLevelCode(schedule.getRegLevelCode());
         reg.setRegLevelName(schedule.getRegLevelName());
         reg.setRegFee(schedule.getRegFee());
-        reg.setMedType(req.getMedType());
+        reg.setMedType(StringUtils.hasText(medType) ? medType : "11");
         reg.setIptOtpNo(iptOtpNo);
         reg.setMdtrtId(mdtrtId);
         reg.setRegTime(LocalDateTime.now());
@@ -327,13 +390,18 @@ public class HisRegistrationService extends ServiceImpl<HisRegistrationMapper, H
         req.setPsnNo(reg.getPsnNo());
         req.setMdtrtId(reg.getMdtrtId());
         req.setIptOtpNo(reg.getIptOtpNo());
-        // 带患者参保地区划(规范表3: 输入含psn_no时insuplc_admdvs必填)
+        // 非医保通道(挂号未取到 mdtrt_id)不发 2202: 与下游 2203/2207 的"无医保就诊信息→自费"口径同源
         HisPatient regPatient = reg.getPatientId() == null ? null : patientService.getById(reg.getPatientId());
-        YbResponse resp = outpatientService.cancelRegister(req,
-                regPatient == null ? null : regPatient.getInsuplcAdmdvs());
-        if (resp == null || !resp.isSuccess()) {
-            String err = resp == null ? "医保无响应" : resp.getErrMsg();
-            throw new BizException("医保退号失败: " + err);
+        if (StringUtils.hasText(reg.getMdtrtId())) {
+            // 带患者参保地区划(规范表3: 输入含psn_no时insuplc_admdvs必填)
+            YbResponse resp = outpatientService.cancelRegister(req,
+                    regPatient == null ? null : regPatient.getInsuplcAdmdvs());
+            if (resp == null || !resp.isSuccess()) {
+                String err = resp == null ? "医保无响应" : resp.getErrMsg();
+                throw new BizException("医保退号失败: " + err);
+            }
+        } else {
+            log.info("非医保通道挂号(无 mdtrt_id), 跳过 2202 撤销: regNo={}, feeType={}", reg.getRegNo(), reg.getFeeType());
         }
 
         reg.setStatus(2);
@@ -667,6 +735,22 @@ public class HisRegistrationService extends ServiceImpl<HisRegistrationMapper, H
             }
         }
         return new Object[]{effDiscountType, effDiscountAmount};
+    }
+
+    /**
+     * 医保通道判定: 仅费别字典 channel=INSURANCE 走 2201/2202。
+     * 宁严不松——费别为空、字典查无此码(历史直传值)或字典未维护 channel 时一律按医保处理,
+     * 保持既有强贯标+强上报行为不变, 避免脏值静默绕过医保上报。
+     */
+    private boolean isInsuranceChannel(String feeType) {
+        if (!StringUtils.hasText(feeType)) {
+            return true;
+        }
+        HisFeeTypeDict ft = feeTypeDictService.findByCode(feeType.trim());
+        if (ft == null || !StringUtils.hasText(ft.getChannel())) {
+            return true;
+        }
+        return "INSURANCE".equalsIgnoreCase(ft.getChannel().trim());
     }
 
     /**

@@ -49,4 +49,11 @@ public class InpOrderDTO {
     private Long proxyDoctorId;
     /** 代开原因 */
     private String proxyReason;
+    /* ---------- 检查多部位/增强加收(仅检查类 orderCategory=2 临时医嘱生效) ---------- */
+    /** 检查部位(多选, 逗号分隔) */
+    private String examPart;
+    /** 计价部位数(多部位加收维度) */
+    private Integer siteCount;
+    /** 造影方式(平扫/增强; 增强扫描加收维度) */
+    private String contrastMode;
 }

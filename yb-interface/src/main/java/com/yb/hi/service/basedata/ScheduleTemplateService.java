@@ -22,6 +22,7 @@ import java.math.BigDecimal;
 import java.util.Arrays;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
+import java.util.ArrayList;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
@@ -35,17 +36,26 @@ import java.util.Set;
 @Service
 public class ScheduleTemplateService {
 
-    /** 时段受控值(与 his_schedule.time_type 一致) */
+    /** 存量硬编码三值: 仅作班次字典(his_shift_dict, L1 受控源)未初始化时的回落 */
     private static final Set<String> TIME_TYPES = new HashSet<>(Arrays.asList("am", "pm", "night"));
 
     private final HisScheduleTemplateMapper templateMapper;
     private final HisStaffMapper staffMapper;
     private final HisDeptMapper deptMapper;
+    private final com.yb.hi.service.community.HisShiftDictService shiftDictService;
 
-    public ScheduleTemplateService(HisScheduleTemplateMapper templateMapper, HisStaffMapper staffMapper, HisDeptMapper deptMapper) {
+    public ScheduleTemplateService(HisScheduleTemplateMapper templateMapper, HisStaffMapper staffMapper, HisDeptMapper deptMapper,
+                                   com.yb.hi.service.community.HisShiftDictService shiftDictService) {
         this.templateMapper = templateMapper;
         this.staffMapper = staffMapper;
         this.deptMapper = deptMapper;
+        this.shiftDictService = shiftDictService;
+    }
+
+    /** 启用班次编码(字典未初始化时回落存量三值) */
+    private List<String> timeCodes() {
+        List<String> l = shiftDictService.enabledCodes();
+        return l.isEmpty() ? new ArrayList<>(TIME_TYPES) : l;
     }
 
     /**
@@ -210,7 +220,7 @@ public class ScheduleTemplateService {
     /* ================= 内部工具 ================= */
 
     /** 基础校验: 医师/星期/时段必填且受控 */
-    private static void validateBase(HisScheduleTemplate t) {
+    private void validateBase(HisScheduleTemplate t) {
         if (t == null) {
             throw new BizException(400, "模板数据不能为空");
         }
@@ -220,13 +230,13 @@ public class ScheduleTemplateService {
         validateWeekTime(t.getWeekday(), t.getTimeType());
     }
 
-    /** 星期(1~7)与时段(am/pm/night)受控校验 */
-    private static void validateWeekTime(Integer weekday, String timeType) {
+    /** 星期(1~7)受控 + 时段须为启用班次(his_shift_dict, 字典未初始化时回落存量三值) */
+    private void validateWeekTime(Integer weekday, String timeType) {
         if (weekday == null || weekday < 1 || weekday > 7) {
             throw new BizException(400, "星期几取值须为 1(周一)~7(周日)");
         }
-        if (timeType == null || !TIME_TYPES.contains(timeType)) {
-            throw new BizException(400, "时段取值须为 am/pm/night");
+        if (timeType == null || !timeCodes().contains(timeType)) {
+            throw new BizException(400, "时段须为启用班次, 请到医共体字典「门诊班次」维护: " + timeType);
         }
     }
 
@@ -329,7 +339,7 @@ public class ScheduleTemplateService {
     }
 
     /** 模板名称生成: 医师 科室 周X上午排班模板 */
-    private static String buildTemplateName(String staffName, String deptName, Integer weekday, String timeType) {
+    private String buildTemplateName(String staffName, String deptName, Integer weekday, String timeType) {
         StringBuilder sb = new StringBuilder();
         if (StringUtils.hasText(staffName)) {
             sb.append(staffName).append(' ');
@@ -347,7 +357,12 @@ public class ScheduleTemplateService {
         return "一二三四五六日".substring(weekday - 1, weekday);
     }
 
-    private static String timeTypeText(String timeType) {
+    /** 班次名取字典(含停用, 历史模板重生成时名称不丢); 查不到回落旧硬编码语义 */
+    private String timeTypeText(String timeType) {
+        String name = shiftDictService.nameOf(timeType);
+        if (StringUtils.hasText(name)) {
+            return name;
+        }
         if ("am".equals(timeType)) {
             return "上午";
         }

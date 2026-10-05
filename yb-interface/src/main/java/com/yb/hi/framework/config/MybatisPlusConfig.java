@@ -37,6 +37,12 @@ public class MybatisPlusConfig {
             "std_drug",
             "std_consumable",
             "std_med_service",
+            // 医保药品目录其余四类(中药饮片/中药配方颗粒/医疗机构制剂/体外诊断试剂): 全局共享、无 tenant_id 列,
+            // 对照有效性校验(validExistsSql)子查询经 MP 包装器执行, 不入此集合会被注入 tenant_id 使查询报错
+            "std_tcm",
+            "std_tcm_granule",
+            "std_preparation",
+            "std_ivd",
             "sys_param",
             "sys_param_group",
             // 1301-1307 目录下载全局共享表(dict_schema.sql 无 tenant_id 列, 下载全链路跨租户共享)

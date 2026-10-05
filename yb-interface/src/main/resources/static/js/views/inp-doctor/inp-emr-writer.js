@@ -43,6 +43,14 @@
   var HIS = (global.HIS = global.HIS || {});
   HIS.components = HIS.components || {};
 
+  /* 编辑器引擎对象防响应式包装(与门诊 outp-emr-writer 同修复):
+   * editorWrapper 存于 data() 会被 Vue3 深度 reactive 代理整棵 ProseMirror 文档树;
+   * PM 以对象恒等校验事务, 经 Proxy 读出的 state/doc 与 view 内部 raw 不同 →
+   * editor.commands.*(如插入内容)报 "Applying a mismatched transaction"。*/
+  function markRawEngine(obj) {
+    return (obj && global.Vue && typeof global.Vue.markRaw === 'function') ? global.Vue.markRaw(obj) : obj;
+  }
+
   /* ================= 样式(一次性注入, 全部 iew- 前缀) ================= */
   (function ensureStyles() {
     if (document.getElementById('inp-emr-writer-style')) { return; }
@@ -889,7 +897,7 @@
           onFieldChange: function () { vm.dirty = true; }
         }).then(function (wrapper) {
           if (seq !== vm._editorSeq) { try { wrapper.destroy(); } catch (e) { /* 已被更新批次取代 */ } return; }
-          vm.editorWrapper = wrapper;
+          vm.editorWrapper = markRawEngine(wrapper);   /* 防 Vue 深度代理(否则 commands 写事务 mismatch) */
           vm.editorLoading = false;
           if (typeof wrapper.on === 'function') {
             wrapper.on('update', function () { vm.dirty = true; });

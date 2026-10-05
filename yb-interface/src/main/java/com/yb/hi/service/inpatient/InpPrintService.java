@@ -25,11 +25,13 @@ import com.yb.hi.mapper.inpatient.HisInpVisitMapper;
 import com.yb.hi.mapper.inpatient.HisPrintTemplateMapper;
 import com.yb.hi.platform.service.OrgAccessGuard;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.boot.ApplicationArguments;
+import org.springframework.boot.ApplicationRunner;
+import org.springframework.core.annotation.Order;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
 
-import javax.annotation.PostConstruct;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.time.LocalDate;
@@ -60,7 +62,8 @@ import java.util.regex.Pattern;
  */
 @Slf4j
 @Service
-public class InpPrintService {
+@Order(2)
+public class InpPrintService implements ApplicationRunner {
 
     /** 费用类别名称(与 InpChargeService 同口径): 1西药 2中药 3检查 4检验 5治疗 6护理 7材料 8床位 9其他 */
     private static final Map<Integer, String> FEE_TYPE_NAMES = new LinkedHashMap<>();
@@ -487,24 +490,28 @@ public class InpPrintService {
      * 启动幂等种入内置模板: 按租户逐个检查(sys_tenant 全量), 该租户无任何模板则插入8个
      * (org_id=0 表机构通用)。表未建(全新库首启)时整体跳过, 下次启动补种。
      */
-    @PostConstruct
+    @Override
+    public void run(ApplicationArguments args) {
+        seedTemplates();
+    }
+
     public void seedTemplates() {
         try {
             List<Long> tenantIds = jdbcTemplate.queryForList(
                     "SELECT id FROM sys_tenant WHERE deleted = 0", Long.class);
             int seededTenants = 0;
             for (Long tid : tenantIds) {
-                Integer cnt = jdbcTemplate.queryForObject(
-                        "SELECT COUNT(*) FROM his_print_template WHERE tenant_id = ?", Integer.class, tid);
-                if (cnt != null && cnt > 0) {
-                    continue;
-                }
                 for (SeedTemplate t : SEED_TEMPLATES) {
-                    jdbcTemplate.update(
-                            "INSERT INTO his_print_template (tenant_id, org_id, template_code, template_name,"
-                                    + " template_type, paper_size, orientation, template_content, version, status,"
-                                    + " create_time) VALUES (?, 0, ?, ?, ?, ?, ?, ?, 1, 1, NOW())",
-                            tid, t.code, t.name, t.type, t.paper, t.orientation, t.content);
+                    Integer cnt = jdbcTemplate.queryForObject(
+                            "SELECT COUNT(*) FROM his_print_template WHERE tenant_id = ? AND template_code = ? AND deleted = 0",
+                            Integer.class, tid, t.code);
+                    if (cnt == null || cnt == 0) {
+                        jdbcTemplate.update(
+                                "INSERT INTO his_print_template (tenant_id, org_id, template_code, template_name,"
+                                        + " template_type, paper_size, orientation, template_content, version, status,"
+                                        + " create_time) VALUES (?, 0, ?, ?, ?, ?, ?, ?, 1, 1, NOW())",
+                                tid, t.code, t.name, t.type, t.paper, t.orientation, t.content);
+                    }
                 }
                 seededTenants++;
             }

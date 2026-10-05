@@ -36,24 +36,26 @@ public class OrgCatalogController {
         this.service = service;
     }
 
-    /** 机构目录选用分页(L2 项目 + 本机构开展状态); enabled=空 全部 / 1 仅已开展 / 0 仅未开展 */
+    /** 机构目录选用分页(L2 项目 + 本机构开展状态); enabled=空 全部 / 1 仅已开展 / 0 仅未开展; majorClass 仅药品大类过滤 */
     @GetMapping("/selection")
     public R<Map<String, Object>> selection(@RequestParam String catalogType,
                                             @RequestParam(required = false) String keyword,
                                             @RequestParam(required = false) Integer enabled,
                                             @RequestParam(defaultValue = "1") long page,
-                                            @RequestParam(defaultValue = "20") long size) {
-        return R.ok(service.selectionPage(catalogType, keyword, enabled, page, size));
+                                            @RequestParam(defaultValue = "20") long size,
+                                            @RequestParam(required = false) String majorClass) {
+        return R.ok(service.selectionPage(catalogType, keyword, enabled, page, size, majorClass));
     }
 
-    /** 导出本院目录选用(xlsx): 与列表同一筛选(目录类型/关键字/开展状态), 一次性导出全部匹配行 */
+    /** 导出本院目录选用(xlsx): 与列表同一筛选(目录类型/关键字/开展状态/大类), 一次性导出全部匹配行 */
     @GetMapping("/export")
     @SuppressWarnings("unchecked")
     public void export(@RequestParam String catalogType,
                        @RequestParam(required = false) String keyword,
                        @RequestParam(required = false) Integer enabled,
+                       @RequestParam(required = false) String majorClass,
                        HttpServletResponse resp) throws IOException {
-        Map<String, Object> data = service.exportRows(catalogType, keyword, enabled);
+        Map<String, Object> data = service.exportRows(catalogType, keyword, enabled, majorClass);
         String fname = "机构目录选用_" + typeLabel(catalogType) + "_" + LocalDate.now() + ".xlsx";
         String enc = URLEncoder.encode(fname, "UTF-8").replace("+", "%20");
         resp.setContentType("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");

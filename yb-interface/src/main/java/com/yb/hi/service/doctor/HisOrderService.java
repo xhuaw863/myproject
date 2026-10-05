@@ -43,16 +43,19 @@ public class HisOrderService extends ServiceImpl<HisOrderMapper, HisOrder> {
     private final org.springframework.jdbc.core.JdbcTemplate jdbcTemplate;
     private final HisOrderFreqService orderFreqService;
     private final HisChargeAddonRuleService chargeAddonRuleService;
+    private final com.yb.hi.platform.service.SystemParamResolver paramResolver;
 
     public HisOrderService(HisVisitService visitService, HisDiagnosisService diagnosisService,
                            HisOrderItemMapper itemMapper, org.springframework.jdbc.core.JdbcTemplate jdbcTemplate,
-                           HisOrderFreqService orderFreqService, HisChargeAddonRuleService chargeAddonRuleService) {
+                           HisOrderFreqService orderFreqService, HisChargeAddonRuleService chargeAddonRuleService,
+                           com.yb.hi.platform.service.SystemParamResolver paramResolver) {
         this.visitService = visitService;
         this.diagnosisService = diagnosisService;
         this.itemMapper = itemMapper;
         this.jdbcTemplate = jdbcTemplate;
         this.orderFreqService = orderFreqService;
         this.chargeAddonRuleService = chargeAddonRuleService;
+        this.paramResolver = paramResolver;
     }
 
     /** 查询某次就诊的单据列表 */
@@ -268,30 +271,80 @@ public class HisOrderService extends ServiceImpl<HisOrderMapper, HisOrder> {
         return o;
     }
 
-    /** OP-C 自动加收: 逐主项目命中启用中的固定计价(fixed)加收规则, 按数量维度追加附加收费行; 异常仅告警不影响开单。 */
+    /** OP-C 自动加收: 逐主项目命中启用中的加收规则。part 维度按计价部位数(site_count)驱动,
+     * contrast 维度按是否增强(contrast_mode=增强)驱动(一次性加收不随部位累乘),
+     * ratio 模式按主项目单价×比例追加加收行, fixed 模式按维度数量×固定单价追加; 异常仅告警不影响开单。 */
     private List<HisOrderItem> buildAddonItems(List<HisOrderItem> mainItems, long tid) {
         List<HisOrderItem> addons = new ArrayList<>();
         try {
+            // 医保检查控费加收双开关(门诊多部位/门诊增强各自独立, 租户/机构可分级, 默认停用): 仅分别跳过对应维度, 不影响其他加收维度
+            boolean partOn = paramEnabled(com.yb.hi.platform.ExamSurchargeParamSeeder.KEY_OP_PART);
+            boolean contrastOn = paramEnabled(com.yb.hi.platform.ExamSurchargeParamSeeder.KEY_OP_CONTRAST);
             for (HisOrderItem mi : mainItems) {
                 if (mi.getItemId() == null) {
                     continue;
                 }
                 List<HisChargeAddonRule> rules = chargeAddonRuleService.listByItem(mi.getItemId());
-                BigDecimal dim = mi.getQuantity() == null ? BigDecimal.ONE : mi.getQuantity();
+                BigDecimal mainPrice = mi.getPrice() == null ? BigDecimal.ZERO : mi.getPrice();
                 for (HisChargeAddonRule r : rules) {
-                    if (!"fixed".equalsIgnoreCase(r.getCalcMode()) || r.getUnitPrice() == null) {
+                    boolean isContrast = "contrast".equalsIgnoreCase(r.getDimType());
+                    boolean isPart = "part".equalsIgnoreCase(r.getDimType());
+                    if (isPart && !partOn) {
                         continue;
+                    }
+                    if (isContrast && !contrastOn) {
+                        continue;
+                    }
+                    // 维度数量: part 取计价部位数(空=1), contrast 取是否增强(增强=1/平扫=0), 其余维度取数量
+                    BigDecimal dim;
+                    if ("part".equalsIgnoreCase(r.getDimType())) {
+                        int sc = mi.getSiteCount() == null ? 1 : mi.getSiteCount();
+                        dim = new BigDecimal(sc);
+                    } else if (isContrast) {
+                        dim = "增强".equals(mi.getContrastMode()) ? BigDecimal.ONE : BigDecimal.ZERO;
+                    } else {
+                        dim = mi.getQuantity() == null ? BigDecimal.ONE : mi.getQuantity();
                     }
                     int threshold = r.getDimThreshold() == null ? 1 : r.getDimThreshold();
                     if (dim.compareTo(new BigDecimal(threshold)) < 0) {
                         continue;
                     }
+                    String mode = r.getCalcMode() == null ? "fixed" : r.getCalcMode().toLowerCase();
+                    BigDecimal amount;
+                    if ("ratio".equals(mode)) {
+                        BigDecimal ratio = r.getDimRatio();
+                        if (ratio == null || mainPrice.compareTo(BigDecimal.ZERO) <= 0) {
+                            continue;
+                        }
+                        if (isContrast) {
+                            // 增强加收: 平扫基础上一次性按主项目单价×比例加收(不随部位数累乘)
+                            amount = mainPrice.multiply(ratio).setScale(2, BigDecimal.ROUND_HALF_UP);
+                        } else {
+                            // 多部位: 超出首部位的每个部位按主项目×比例加收 mainPrice × ratio × (dim - threshold)
+                            BigDecimal extra = dim.subtract(new BigDecimal(threshold));
+                            if (extra.compareTo(BigDecimal.ZERO) <= 0) {
+                                continue;
+                            }
+                            amount = mainPrice.multiply(ratio).multiply(extra).setScale(2, BigDecimal.ROUND_HALF_UP);
+                        }
+                    } else {
+                        // fixed: 固定单价 × 维度数量(contrast 维度 dim=1 即一次性固定加收)
+                        if (r.getUnitPrice() == null) {
+                            continue;
+                        }
+                        amount = r.getUnitPrice().multiply(dim).setScale(2, BigDecimal.ROUND_HALF_UP);
+                    }
+                    if (amount.compareTo(BigDecimal.ZERO) <= 0) {
+                        continue;
+                    }
+                    BigDecimal addonQty = isContrast ? BigDecimal.ONE : dim;
                     HisOrderItem a = new HisOrderItem();
                     a.setItemCode(r.getAddonItemCode());
-                    a.setItemName(r.getAddonItemName());
-                    a.setPrice(r.getUnitPrice());
-                    a.setQuantity(dim);
-                    a.setAmount(r.getUnitPrice().multiply(dim).setScale(2, BigDecimal.ROUND_HALF_UP));
+                    a.setItemName(StringUtils.hasText(r.getAddonItemName()) ? r.getAddonItemName() : (isContrast ? "增强扫描加收" : "多部位加收"));
+                    a.setPrice(amount.divide(addonQty, 6, BigDecimal.ROUND_HALF_UP));
+                    a.setQuantity(addonQty);
+                    a.setAmount(amount);
+                    a.setUnit(mi.getUnit());
                     if (r.getAddonItemCode() != null) {
                         List<Map<String, Object>> rows = jdbcTemplate.queryForList(
                                 "SELECT id, item_name FROM his_charge_item WHERE item_code = ? AND tenant_id = ? AND status = 1 AND deleted = 0 LIMIT 1",
@@ -308,6 +361,20 @@ public class HisOrderService extends ServiceImpl<HisOrderMapper, HisOrder> {
             log.warn("自动加收计算失败(不影响开单): {}", e.getMessage());
         }
         return addons;
+    }
+
+    /**
+     * 读四级作用域布尔参数(登录上下文=当前机构): 仅显式 "true" 视为启用, 缺省/空/异常一律停用(false),
+     * 与本轮"默认停用"口径一致(需启用的机构逐级覆盖为 true)。
+     */
+    private boolean paramEnabled(String paramKey) {
+        try {
+            String v = paramResolver.resolve(paramKey);
+            return StringUtils.hasText(v) && "true".equalsIgnoreCase(v.trim());
+        } catch (Exception e) {
+            log.warn("检查控费开关参数解析失败({}), 默认停用: {}", paramKey, e.getMessage());
+            return false;
+        }
     }
 
     /** 医嘱高频累计: 按 itemCode 记录(个人/科室), 异常仅告警。 */

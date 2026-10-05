@@ -48,9 +48,8 @@ import java.util.stream.Collectors;
 @Service
 public class HisScheduleService extends ServiceImpl<HisScheduleMapper, HisSchedule> {
 
-    /** 合法时段(有序, 周视图 slot 初始化顺序) */
+    /** 存量硬编码三值: 仅作班次字典(his_shift_dict, L1 受控源)未初始化时的回落, 新班次由字典维护页自定义 */
     private static final String[] TIME_ORDER = {"am", "pm", "night"};
-    private static final Set<String> TIME_TYPES = new HashSet<>(Arrays.asList(TIME_ORDER));
     /** ISO weekday(1=周一...7=周日) -> 周视图 slot 键前缀 */
     private static final String[] WEEKDAY_PREFIX = {null, "mon", "tue", "wed", "thu", "fri", "sat", "sun"};
     /** 生成排班日期范围上限(防误操作超大范围) */
@@ -58,10 +57,19 @@ public class HisScheduleService extends ServiceImpl<HisScheduleMapper, HisSchedu
 
     private final HisScheduleMapper scheduleMapper;
     private final JdbcTemplate jdbc;
+    private final com.yb.hi.service.community.HisShiftDictService shiftDictService;
 
-    public HisScheduleService(HisScheduleMapper scheduleMapper, JdbcTemplate jdbc) {
+    public HisScheduleService(HisScheduleMapper scheduleMapper, JdbcTemplate jdbc,
+                              com.yb.hi.service.community.HisShiftDictService shiftDictService) {
         this.scheduleMapper = scheduleMapper;
         this.jdbc = jdbc;
+        this.shiftDictService = shiftDictService;
+    }
+
+    /** 启用班次编码有序列表(周视图列序/号源按钮序); 字典未初始化时回落存量三值防排班锁死 */
+    private List<String> timeCodes() {
+        List<String> l = shiftDictService.enabledCodes();
+        return l.isEmpty() ? Arrays.asList(TIME_ORDER) : l;
     }
 
     // ===== 排班列表(分页+增强筛选) =====
@@ -212,8 +220,9 @@ public class HisScheduleService extends ServiceImpl<HisScheduleMapper, HisSchedu
         LocalDate workDate = schedule.getWorkDate() != null ? schedule.getWorkDate() : old.getWorkDate();
         String timeType = StringUtils.hasText(schedule.getTimeType())
                 ? schedule.getTimeType().trim() : old.getTimeType();
-        if (!TIME_TYPES.contains(timeType)) {
-            throw new BizException(400, "时段不合法(应为 am/pm/night): " + schedule.getTimeType());
+        // 新设时段须为启用班次; 未换时段时沿用原值放行(停用班次存量排班仍可编辑号数等其他字段)
+        if (!timeCodes().contains(timeType) && !Objects.equals(timeType, old.getTimeType())) {
+            throw new BizException(400, "时段不合法(须为启用班次): " + schedule.getTimeType());
         }
         // 排班科室(未传沿用原值)必须仍属本机构且为开诊门诊科室
         Long effDeptId = schedule.getDeptId() != null ? schedule.getDeptId() : old.getDeptId();
@@ -538,7 +547,7 @@ public class HisScheduleService extends ServiceImpl<HisScheduleMapper, HisSchedu
                 staffRow.put("deptName", anchorDeptName);
                 Map<String, Object> slots = new LinkedHashMap<>();
                 for (int wd = 1; wd <= 7; wd++) {
-                    for (String tt : TIME_ORDER) {
+                    for (String tt : timeCodes()) {
                         slots.put(WEEKDAY_PREFIX[wd] + "_" + tt, null);
                     }
                 }
@@ -654,11 +663,11 @@ public class HisScheduleService extends ServiceImpl<HisScheduleMapper, HisSchedu
         return keys;
     }
 
-    /** 时段规范化: 空默认 am, 校验合法值 */
-    private static String normalizeTimeType(String timeType) {
+    /** 时段规范化: 空默认 am, 校验须为启用班次(字典未初始化时回落存量三值) */
+    private String normalizeTimeType(String timeType) {
         String tt = StringUtils.hasText(timeType) ? timeType.trim() : "am";
-        if (!TIME_TYPES.contains(tt)) {
-            throw new BizException(400, "时段不合法(应为 am/pm/night): " + timeType);
+        if (!timeCodes().contains(tt)) {
+            throw new BizException(400, "时段不合法(须为启用班次): " + timeType);
         }
         return tt;
     }

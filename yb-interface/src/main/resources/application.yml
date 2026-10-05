@@ -6,6 +6,8 @@ server:
       force: true
 
 spring:
+  profiles:
+    default: dev
   application:
     name: yb-interface
   # 文件上传(头像/签名图片/企业资质PDF)大小限制
@@ -24,9 +26,9 @@ spring:
     driver-class-name: com.mysql.cj.jdbc.Driver
     # sessionVariables=max_execution_time=60000: 会话级 SELECT 超时 60s(MySQL 8.0 仅约束只读查询, 不伤 DDL/DML), 防失控大查询拖垮库(导出防护 e3)
     url: jdbc:mysql://localhost:3306/yb_interface?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai&useSSL=false&allowPublicKeyRetrieval=true&rewriteBatchedStatements=true&sessionVariables=max_execution_time=60000
-    username: root
-    # 数据库口令经环境变量注入(生产严禁使用默认值): DB_PASSWORD
-    password: ${DB_PASSWORD:bsoft}
+    username: ${DB_USERNAME}
+    # 数据库账号/口令经环境变量注入; 开发默认值见 application-dev.yml
+    password: ${DB_PASSWORD}
     hikari:
       minimum-idle: 5
       maximum-pool-size: 20
@@ -47,7 +49,7 @@ mybatis-plus:
 # 医保接口配置
 yb:
   # 模拟医保平台模式: true-本地模拟响应(界面验证用), false-调用真实医保平台
-  mock-enabled: true
+  mock-enabled: ${YB_MOCK_ENABLED:false}
   # 交易接口地址(地方医保局前置机)
   api-url: http://127.0.0.1:8000/hsa-mdtrt/api/medical/insurance
   # 字典文件下载地址
@@ -82,7 +84,7 @@ yb:
   # 签名证书编号
   sign-no: ""
   # SM2 私钥(Base64), 配置后启用真实SM2签名
-  sm2-private-key: ""
+  sm2-private-key: ${YB_SM2_PRIVATE_KEY:}
   # SM2 公钥(Base64)
   sm2-public-key: ""
   # 加密类型
@@ -102,13 +104,13 @@ logging:
 # HIS 应用配置
 his:
   jwt:
-    # 令牌签名密钥: 环境变量 HIS_JWT_SECRET 注入(生产必须 ≥32字符独立强密钥; 使用默认密钥时启动报错级日志)
-    secret: ${HIS_JWT_SECRET:yb-his-default-secret-key-2026}
+    # 令牌签名密钥: 环境变量 HIS_JWT_SECRET 注入; 开发默认值见 application-dev.yml
+    secret: ${HIS_JWT_SECRET}
     # 令牌有效期(分钟)
     expire-minutes: 720
   demo-data:
-    # 启动时幂等初始化演示医院与管理员账号
-    enabled: true
+    # 启动时幂等初始化演示医院与管理员账号; 开发环境由 application-dev.yml 打开
+    enabled: ${HIS_DEMO_DATA_ENABLED:false}
   upload:
     # 上传文件本地保存根目录(相对运行目录, 与 dict-file-path 一致风格)
     path: ./data/upload/

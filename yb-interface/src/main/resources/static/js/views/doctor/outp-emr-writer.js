@@ -163,6 +163,28 @@
     document.head.appendChild(st);
   })();
 
+  /* 模板文档装载归一(与设计器 normalizeDocIn 同口径): 存量模板 emrSection 仅有 attrs.key 时补 sectionKey,
+   * 否则 章节定位/质控清单/版本快照 等 sectionKey 消费点全部落空 */
+  function normalizeDocIn(json) {
+    (function walk(n) {
+      if (!n || typeof n !== 'object') { return; }
+      var a = n.attrs || {};
+      if (n.type === 'emrSection' && !String(a.sectionKey || '') && String(a.key || '')) { a.sectionKey = String(a.key); }
+      (n.content || []).forEach(walk);
+    })(json);
+    return json;
+  }
+
+  /* 编辑器引擎对象防响应式包装(核心修复):
+   * editorWrapper 存于 data() 会被 Vue3 深度 reactive 代理整棵 ProseMirror 文档树。
+   * PM 以对象恒等校验事务(tr.before.eq(state.doc)/st.tr.state), 经 Proxy 读出的 state/doc
+   * 与 view 内部 raw 引用不同 → 任何“JS 取 state 建事务再 dispatch”均报
+   * "Applying a mismatched transaction"(被 appendSectionText 的 catch 吞掉后误弹“无章节”)。
+   * markRaw 标记后 Vue 跳过代理 → 整条链回归 raw(同时避免大文档深度响应式的性能开销)。*/
+  function markRawEngine(obj) {
+    return (obj && global.Vue && typeof global.Vue.markRaw === 'function') ? global.Vue.markRaw(obj) : obj;
+  }
+
   /* ================= 常量 ================= */
   /* 门诊 SOAP 章节键(his_emr_template scope=2 种子 OUTP_SOAP_SECTIONS 同口径;
    * 章节 emrSection attrs.sectionKey 与数据元 emrField attrs.fieldKey 双写一致) */
@@ -176,6 +198,19 @@
     treatment: 'treatmentOpinion',  /* 处理意见 */
     followup: 'followupNote'        /* 随访备注 */
   };
+  /* SOAP 章节标题兜底: 存量模板(如数据集生成)章节键不同体系甚至无 sectionKey 时按标题命中(findSectionEnd 三级回退) */
+  var SECTION_TITLE_FALLBACK = {
+    chiefComplaint: '主诉', presentIllness: '现病史', pastHistory: '既往史', allergyHistory: '过敏史',
+    physicalExam: '体格检查', auxExam: '辅助检查', treatmentOpinion: '处理意见', followupNote: '随访备注'
+  };
+  /* 互操作别名: 数据集生成模板(createFromDataset 按 his_emr_dataset_element.chapter_key/section_key 建节,
+   * 如 soapP=处置/计划(P))与 SOAP 种子键体系的语义等价映射(findSectionEnd 二级回退) */
+  var SECTION_KEY_ALIASES = {
+    chiefComplaint: ['soapS'], presentIllness: ['present'], pastHistory: ['past'],
+    physicalExam: ['exam'], auxExam: ['aux'], treatmentOpinion: ['soapP', 'plan']
+  };
+  /* 标题前缀兜底: 数据集章节标题常带编号后缀(如"处置(P)"/"计划(P)"), 精确匹配落空后按前缀命中 */
+  var SECTION_TITLE_PREFIX = { treatmentOpinion: '处置', auxExam: '辅助', physicalExam: '体格' };
   /* 病历类型(门诊 scope=2, 与 NLG/CDSS 规则的 recordType 门诊口径一致) */
   var RECORD_TYPE_OUTP = '2';
   /* 常用语类别(与 his_emr_phrase.category 口径一致) */
@@ -555,18 +590,28 @@
         }
         return applied;
       },
-      /* 定位章节(emrSection attrs.sectionKey), 返回末尾插入位(inner end)或 null */
+      /* 定位章节(emrSection attrs.sectionKey), 返回末尾插入位(inner end)或 null;
+       * 四级回退: 主键 → 语义别名键(SECTION_KEY_ALIASES, 覆盖数据集模板 soapP 体系)
+       * → 标题精确(SECTION_TITLE_FALLBACK) → 标题前缀(SECTION_TITLE_PREFIX) */
       findSectionEnd: function (ed, sectionKey) {
-        var hit = null;
+        var want = {}; want[sectionKey] = 1;
+        (SECTION_KEY_ALIASES[sectionKey] || []).forEach(function (k) { want[k] = 1; });
+        var title = SECTION_TITLE_FALLBACK[sectionKey] || '';
+        var prefix = SECTION_TITLE_PREFIX[sectionKey] || '';
+        var hit = null, byTitle = null, byPrefix = null;
         ed.state.doc.descendants(function (n, pos) {
           if (hit != null) { return false; }
-          if (n.type.name === 'emrSection' && n.attrs.sectionKey === sectionKey) {
+          if (n.type.name !== 'emrSection') { return true; }
+          if (n.attrs.sectionKey && want[n.attrs.sectionKey]) {
             hit = pos + n.nodeSize - 1;
             return false;
           }
+          var t = String(n.attrs.title || '').trim();
+          if (hit == null && byTitle == null && title && t === title) { byTitle = pos + n.nodeSize - 1; }
+          if (hit == null && byTitle == null && byPrefix == null && prefix && t.indexOf(prefix) === 0) { byPrefix = pos + n.nodeSize - 1; }
           return true;
         });
-        return hit;
+        return hit != null ? hit : (byTitle != null ? byTitle : byPrefix);
       },
       /* 定位数据元(emrField attrs.fieldKey), 返回其宿主段落文本末位或 null */
       findFieldTextEnd: function (ed, fieldKey) {
@@ -614,10 +659,12 @@
         var w = this.editorWrapper;
         var ed = w && w.editor;
         if (!ed || !ed.state) { return ''; }
+        var want = {}; want[sectionKey] = 1;
+        (SECTION_KEY_ALIASES[sectionKey] || []).forEach(function (k) { want[k] = 1; });
         var out = '';
         ed.state.doc.descendants(function (n) {
           if (out) { return false; }
-          if (n.type.name === 'emrSection' && n.attrs.sectionKey === sectionKey) {
+          if (n.type.name === 'emrSection' && n.attrs.sectionKey && want[n.attrs.sectionKey]) {
             out = docToPlainText(n.toJSON());
           }
         });
@@ -700,6 +747,7 @@
         var doc = null;
         if (tpl.document) {
           try { doc = typeof tpl.document === 'string' ? JSON.parse(tpl.document) : tpl.document; } catch (e) { doc = null; }
+          if (doc) { normalizeDocIn(doc); }
         }
         if (!doc || doc.type !== 'doc' || !Array.isArray(doc.content)) {
           vm.templateNoDoc = true;
@@ -734,7 +782,7 @@
           onFieldChange: function () { vm.dirty = true; }
         }).then(function (wrapper) {
           if (seq !== vm._editorSeq) { try { wrapper.destroy(); } catch (e) { /* 已被更新批次取代 */ } return; }
-          vm.editorWrapper = wrapper;
+          vm.editorWrapper = markRawEngine(wrapper);   /* 防 Vue 深度代理(否则事务 mismatch, 插入/宏解析/回填集体静默失败) */
           vm.editorLoading = false;
           if (typeof wrapper.on === 'function') {
             vm._unsubUpdate = wrapper.on('update', function () {

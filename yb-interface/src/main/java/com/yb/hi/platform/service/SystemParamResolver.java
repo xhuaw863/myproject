@@ -22,7 +22,9 @@ import java.util.Map;
  *  - 租户级 scope_id=tenantId, 机构级 scope_id=orgId, 科室级 scope_id=deptId。
  *
  * 解析语义: 在"全局行 + 调用者命中的各层级覆盖行"中取 scope_level 最大的且 param_value 非空
- * 的行; 无任何命中时回退定义行(scope_level=0)的 default_value 兜底; 参数未定义时返回 null。
+ * 的行; 无任何命中时回退定义行(scope_level=0)的 default_value 作为内置默认; 参数未定义时返回 null。
+ * "非空"按"空白即无效"口径实现(TRIM 后非空字符串): saveParam 写入空串代表清除该层覆盖并恢复继承
+ * (见 ParamSaveReq 注释), 故空串行不得参与层级优先级竞争, 否则高层级空行会遮蔽低层级真值与全局默认。
  * orgId/deptId 为 null 时对应层级不参与解析, 故未登录(无租户上下文)时仅全局行可见。
  */
 @Component
@@ -83,7 +85,7 @@ public class SystemParamResolver {
             return new ParamHit(null, -1);
         }
         StringBuilder sql = new StringBuilder("SELECT param_value, scope_level FROM sys_param")
-                .append(" WHERE param_key = ? AND deleted = 0 AND param_value IS NOT NULL")
+                .append(" WHERE param_key = ? AND deleted = 0 AND param_value IS NOT NULL AND TRIM(param_value) <> ''")
                 .append(" AND ((scope_level = 0 AND tenant_id = 0)");
         List<Object> args = new ArrayList<>();
         args.add(paramKey);
@@ -107,8 +109,12 @@ public class SystemParamResolver {
         if (!rows.isEmpty()) {
             Map<String, Object> row = rows.get(0);
             Object v = row.get("param_value");
+            String sv = v == null ? null : String.valueOf(v);
             Number lv = (Number) row.get("scope_level");
-            return new ParamHit(v == null ? null : String.valueOf(v), lv == null ? 0 : lv.intValue());
+            // SQL 已过滤空串, 此处再兼容历史脏数据(空白值视为未覆盖, 继续回退默认值)
+            if (StringUtils.hasText(sv)) {
+                return new ParamHit(sv, lv == null ? 0 : lv.intValue());
+            }
         }
         // 无覆盖命中: 回退全局定义行的 default_value 兜底
         List<Map<String, Object>> defs = jdbcTemplate.queryForList(
@@ -169,7 +175,7 @@ public class SystemParamResolver {
     private Map<String, ParamHit> batchResolve(List<Map<String, Object>> defs, Long tenantId, Long orgId, Long deptId) {
         Map<String, ParamHit> hits = new HashMap<>();
         StringBuilder sql = new StringBuilder("SELECT param_key, param_value, scope_level FROM sys_param")
-                .append(" WHERE deleted = 0 AND param_value IS NOT NULL AND param_key IN (");
+                .append(" WHERE deleted = 0 AND param_value IS NOT NULL AND TRIM(param_value) <> '' AND param_key IN (");
         List<Object> args = new ArrayList<>();
         for (int i = 0; i < defs.size(); i++) {
             if (i > 0) {
@@ -197,11 +203,16 @@ public class SystemParamResolver {
         sql.append(") ORDER BY param_key, scope_level DESC");
         for (Map<String, Object> row : jdbcTemplate.queryForList(sql.toString(), args.toArray())) {
             String key = String.valueOf(row.get("param_key"));
+            Object v = row.get("param_value");
+            String sv = v == null ? null : String.valueOf(v);
+            // 空白值不产生命中(既不占优先级), 由调用方回退 default_value
+            if (!StringUtils.hasText(sv)) {
+                continue;
+            }
             ParamHit exist = hits.get(key);
             if (exist == null) {
-                Object v = row.get("param_value");
                 Number lv = (Number) row.get("scope_level");
-                hits.put(key, new ParamHit(v == null ? null : String.valueOf(v), lv == null ? 0 : lv.intValue()));
+                hits.put(key, new ParamHit(sv, lv == null ? 0 : lv.intValue()));
             }
         }
         return hits;

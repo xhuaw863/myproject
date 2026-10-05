@@ -16,6 +16,10 @@ spring:
 yb:
   mock-enabled: true
 
+his:
+  jwt:
+    secret: ${HIS_JWT_SECRET:yb-his-default-secret-key-2026}
+
 logging:
   level:
     com.yb.hi: info

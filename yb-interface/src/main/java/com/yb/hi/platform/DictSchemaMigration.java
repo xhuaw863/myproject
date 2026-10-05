@@ -386,6 +386,8 @@ public class DictSchemaMigration implements ApplicationRunner {
             // 供货商(企业)字典基表: 全局共享(不分租户), 含元数据/生命周期列, 供目录企业引用与专用维护屏
             ensureStdSupplierTable(conn);
             ensureSupplierFileTable(conn);
+            // 中药配方颗粒标准字典(湖北医保·68898条): 全局共享无 tenant_id, 元数据/生命周期列内联, 供药品目录导入与医保对照
+            ensureStdTcmGranuleTable(conn);
             for (String[] c : cols) {
                 if (!columnExists(conn, c[0], c[1])) {
                     try (Statement st = conn.createStatement()) {
@@ -501,6 +503,8 @@ public class DictSchemaMigration implements ApplicationRunner {
             ensureEmrArchiveTables(conn);
             // 存量表补列: 药库/药房归属 + 混合支付/发票号/退费关联/部分退费已退数量(幂等, 列已存在则跳过)
             alterExistingTables(conn);
+            // 检查多部位医保计费: his_order_item 补 检查部位/计价部位数 两列 + his_charge_addon_rule 补 加收比例 列(幂等)
+            ensureExamBillingColumns(conn);
         } catch (Exception e) {
             log.warn("字典化字段建列迁移跳过: {}", e.getMessage());
             return;
@@ -524,11 +528,107 @@ public class DictSchemaMigration implements ApplicationRunner {
             ensureStockWarehouseIsolation(conn);
             // 两级库存基座: 为存量药房幂等创建 PHARMACY 库存位并回填 stock_location_id(需在库存隔离之后)
             ensurePharmacyStockLocations(conn);
+            // 打印模板按租户隔离: 修正历史全局唯一键, 使各租户可拥有独立内置模板
+            ensurePrintTemplateTenantUnique(conn);
         } catch (Exception e) {
             throw new IllegalStateException("HIS 门诊业务关键结构迁移失败, 拒绝启动(避免运行期缺列全线报错)", e);
         }
+        // 检查多部位医保计费数据种子: 影像目录启用 + CT/MR 按部位加收规则(幂等, 依赖上面 ensureExamBillingColumns 已补 dim_ratio 列)
+        try (Connection conn = dataSource.getConnection()) {
+            seedImagingCatalogEnabled(conn);
+            seedExamPartAddonRules(conn);
+            seedExamContrastAddonRules(conn);
+        } catch (Exception e) {
+            log.warn("检查影像目录启用/加收规则种子跳过: {}", e.getMessage());
+        }
         if (added > 0) {
             log.info("字典化字段建列迁移完成, 新增/变更 {} 列", added);
+        }
+    }
+
+    /**
+     * 检查多部位医保计费基座(幂等补列):
+     * his_order_item 补 exam_part(检查部位多选文本) 与 site_count(计价部位数, 驱动按部位加收);
+     * his_charge_addon_rule 补 dim_ratio(ratio 模式加收比例, 如 CT/MR 每增加一部位按主项目50%)。
+     * 依据国家医保局《放射检查类价格项目立项指南(试行)》与湖北 std_med_service 项目内涵"每增加一个部位按前一个部位50%收费"。
+     */
+    private void ensureExamBillingColumns(Connection conn) throws Exception {
+        addColumnIfNotExists(conn, "his_order_item", "exam_part", "VARCHAR(200) DEFAULT NULL COMMENT '检查部位(多选,逗号分隔)'");
+        addColumnIfNotExists(conn, "his_order_item", "site_count", "INT DEFAULT 1 COMMENT '计价部位数(检查多部位计费维度)'");
+        addColumnIfNotExists(conn, "his_order_item", "contrast_mode", "VARCHAR(20) DEFAULT NULL COMMENT '造影方式(平扫/增强; 驱动增强扫描加收维度)'");
+        addColumnIfNotExists(conn, "his_charge_addon_rule", "dim_ratio", "DECIMAL(6,4) DEFAULT NULL COMMENT 'ratio模式加收比例(0.5=每增一部位按主项目50%)'");
+        // 住院检查医嘱同源加收(临时医嘱即时加收): his_inp_order 补 检查部位/计价部位数/造影方式 三列, 与门诊口径一致驱动 part/contrast 维度
+        addColumnIfNotExists(conn, "his_inp_order", "exam_part", "VARCHAR(200) DEFAULT NULL COMMENT '检查部位(多选,逗号分隔; 住院检查加收)'");
+        addColumnIfNotExists(conn, "his_inp_order", "site_count", "INT DEFAULT NULL COMMENT '计价部位数(住院检查多部位加收维度)'");
+        addColumnIfNotExists(conn, "his_inp_order", "contrast_mode", "VARCHAR(20) DEFAULT NULL COMMENT '造影方式(平扫/增强; 住院检查增强扫描加收维度)'");
+    }
+
+    /**
+     * 影像/超声检查目录启用(幂等种子): 将本租户医学影像类(X线/CT/MR等)及超声检查类收费项目启用到牵头机构目录(his_org_catalog),
+     * 使医生站检查申请单可通过鼠标搜索点选这些项目。牵头机构判定: sys_org.is_lead=1 且同租户。
+     * 仅补齐尚未启用的条目, 不改动已存在记录; 非牵头机构不自动启用(由机构管理员自行选用)。
+     */
+    private void seedImagingCatalogEnabled(Connection conn) throws Exception {
+        String sql = "INSERT INTO his_org_catalog (tenant_id, org_id, org_name, catalog_type, catalog_id, catalog_name, enabled, deleted, create_time)"
+                + " SELECT ci.tenant_id, o.id, o.org_name, 'charge', ci.id, ci.item_name, 1, 0, NOW()"
+                + " FROM his_charge_item ci"
+                + " JOIN sys_org o ON o.tenant_id = ci.tenant_id AND o.is_lead = 1 AND o.deleted = 0"
+                + " WHERE ci.deleted = 0 AND ci.status = 1 AND (ci.item_cat LIKE '%医学影像%' OR ci.item_cat LIKE '%超声检查%')"
+                + " AND NOT EXISTS (SELECT 1 FROM his_org_catalog oc"
+                + "   WHERE oc.tenant_id = ci.tenant_id AND oc.org_id = o.id AND oc.catalog_type = 'charge' AND oc.catalog_id = ci.id AND oc.deleted = 0)";
+        try (java.sql.Statement st = conn.createStatement()) {
+            int n = st.executeUpdate(sql);
+            if (n > 0) {
+                log.info("影像检查目录启用种子: 新增 {} 条牵头机构可开项目", n);
+            }
+        }
+    }
+
+    /**
+     * 影像/超声多部位按部位加收规则种子(幂等, ratio 模式 50%):
+     * 依据国家医保局《放射检查类价格项目立项指南(试行)》《超声检查类价格项目立项指南》及湖北 std_med_service 项目内涵
+     * "每增加一个部位按前一个部位50%收费"。覆盖:
+     *   - 放射类: X线摄影(item_code 2101*)/MRI(2102*)/CT(2103*)扫描项目(不含 2104 院外会诊、2105 其他);
+     *   - 超声诊断: 归属"二、医技诊疗类 >（二）超声检查"的项目(22xx), 排除内镜超声/超声乳化等 3xxx 操作类项目。
+     * 预置 part 维度 dim_threshold=1 / calc_mode=ratio / dim_ratio=0.5, 使开立多部位时服务端自动追加"多部位加收"行(第2个部位起每个按主项目50%)。
+     * 比例为合理默认, 后续可在配置页(仅牵头机构管理员)按湖北正式文件调整或停用。
+     */
+    private void seedExamPartAddonRules(Connection conn) throws Exception {
+        String sql = "INSERT INTO his_charge_addon_rule (tenant_id, item_id, item_name, dim_type, dim_threshold, calc_mode, dim_ratio, addon_item_name, status, deleted, create_time)"
+                + " SELECT ci.tenant_id, ci.id, ci.item_name, 'part', 1, 'ratio', 0.5000, '多部位加收', 1, 0, NOW()"
+                + " FROM his_charge_item ci"
+                + " WHERE ci.deleted = 0 AND ci.status = 1 AND (ci.item_code LIKE '2101%' OR ci.item_code LIKE '2102%' OR ci.item_code LIKE '2103%' OR ci.item_cat LIKE '%超声检查%')"
+                + " AND NOT EXISTS (SELECT 1 FROM his_charge_addon_rule r"
+                + "   WHERE r.tenant_id = ci.tenant_id AND r.item_id = ci.id AND r.dim_type = 'part' AND r.deleted = 0)";
+        try (java.sql.Statement st = conn.createStatement()) {
+            int n = st.executeUpdate(sql);
+            if (n > 0) {
+                log.info("影像/超声多部位加收规则种子: 新增 {} 条 ratio=50% 按部位加收规则", n);
+            }
+        }
+    }
+
+    /**
+     * CT/MR 增强扫描加收规则种子(幂等, ratio 模式 50%):
+     * 依据湖北 std_med_service 项目内涵"磁共振平扫(同时增强扫描酌情加收)""CT扫描(同时增强扫描酌情加收)",
+     * 而"增强扫描"独立项目仅适用于"直接做增强扫描"。因此仅对 CT(2103*)/MRI(2102*) 的平扫/扫描基础项目
+     * (排除名称含增强/造影的独立增强项目)预置 contrast 维度 dim_threshold=1 / calc_mode=ratio / dim_ratio=0.5 规则:
+     * 开单时选"平扫项目+造影方式=增强"则自动追加"增强扫描加收"行(一次性按平扫单价50%), 选平扫不加收。
+     * 政策为"酌情加收"无全国定值, 0.5 为合理默认, 后续可在配置页(仅牵头机构管理员)按正式文件调整或停用。
+     */
+    private void seedExamContrastAddonRules(Connection conn) throws Exception {
+        String sql = "INSERT INTO his_charge_addon_rule (tenant_id, item_id, item_name, dim_type, dim_threshold, calc_mode, dim_ratio, addon_item_name, status, deleted, create_time)"
+                + " SELECT ci.tenant_id, ci.id, ci.item_name, 'contrast', 1, 'ratio', 0.5000, '增强扫描加收', 1, 0, NOW()"
+                + " FROM his_charge_item ci"
+                + " WHERE ci.deleted = 0 AND ci.status = 1 AND (ci.item_code LIKE '2102%' OR ci.item_code LIKE '2103%')"
+                + " AND ci.item_name NOT LIKE '%增强%' AND ci.item_name NOT LIKE '%造影%'"
+                + " AND NOT EXISTS (SELECT 1 FROM his_charge_addon_rule r"
+                + "   WHERE r.tenant_id = ci.tenant_id AND r.item_id = ci.id AND r.dim_type = 'contrast' AND r.deleted = 0)";
+        try (java.sql.Statement st = conn.createStatement()) {
+            int n = st.executeUpdate(sql);
+            if (n > 0) {
+                log.info("CT/MR 增强扫描加收规则种子: 新增 {} 条 contrast=50% 平扫增强加收规则", n);
+            }
         }
     }
 
@@ -970,6 +1070,26 @@ public class DictSchemaMigration implements ApplicationRunner {
                 }
                 log.info("{} 归属科室唯一索引 uk_dept 已建立", t);
             }
+        }
+    }
+
+    /**
+     * 打印模板唯一键修复: 历史实现误将唯一键建成 (template_code, deleted), 导致多租户共享同一套
+     * 打印模板, 后续租户种子全部撞键失败。改为 (tenant_id, template_code, deleted) 幂等重建。
+     */
+    private void ensurePrintTemplateTenantUnique(Connection conn) throws Exception {
+        if (!tableExists(conn, "his_print_template") || !columnExists(conn, "his_print_template", "tenant_id")) {
+            return;
+        }
+        if (!indexExists(conn, "his_print_template", "uk_print_tpl_tenant_code")) {
+            try (Statement st = conn.createStatement()) {
+                if (indexExists(conn, "his_print_template", "uk_print_tpl_code")) {
+                    st.executeUpdate("ALTER TABLE his_print_template DROP INDEX uk_print_tpl_code");
+                }
+                st.executeUpdate("ALTER TABLE his_print_template ADD UNIQUE KEY uk_print_tpl_tenant_code "
+                        + "(tenant_id, template_code, deleted)");
+            }
+            log.info("his_print_template 唯一键已重建为租户维度(tenant_id, template_code, deleted)");
         }
     }
 
@@ -1703,7 +1823,55 @@ public class DictSchemaMigration implements ApplicationRunner {
                     + "deleted TINYINT DEFAULT 0 COMMENT '软删:1已删 0正常',"
                     + "PRIMARY KEY (id),"
                     + "KEY idx_sup_code (sup_code)"
-                    + ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='企业资质证照附件(全局共享, 关联std_supplier)'");
+                    + ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='企业资质证照附件(全局共享, 关联std_supplier)'"
+            );
+        }
+    }
+
+    /**
+     * 幂等建表: 中药配方颗粒标准字典 std_tcm_granule —— 全局共享(不分租户), 无 tenant_id。
+     * 数据源于湖北医保药品(中药配方颗粒)编码数据库-20241128(68898条), 由 StdDictImportService 流式导入。
+     * 列集对齐 std_* 惯例: 表头列 + 注入常量(ver/std_type/src_doc) + 生命周期(vali_flag/begn_time/end_time)
+     * + py_code(由 ensureStdPyCodeColumns 自动补) ; 生命周期列靠 MySQL DEFAULT 自动填充。
+     */
+    private void ensureStdTcmGranuleTable(Connection conn) throws Exception {
+        try (Statement st = conn.createStatement()) {
+            st.executeUpdate("CREATE TABLE IF NOT EXISTS std_tcm_granule ("
+                    + "id BIGINT NOT NULL AUTO_INCREMENT COMMENT '主键',"
+                    + "granule_code VARCHAR(50) DEFAULT NULL COMMENT '中药配方颗粒代码',"
+                    + "granule_name VARCHAR(200) DEFAULT NULL COMMENT '中药配方颗粒名称',"
+                    + "spec VARCHAR(255) DEFAULT NULL COMMENT '规格',"
+                    + "pack_spec VARCHAR(255) DEFAULT NULL COMMENT '包装规格',"
+                    + "exec_std VARCHAR(500) DEFAULT NULL COMMENT '中药配方颗粒执行标准',"
+                    + "std_level VARCHAR(100) DEFAULT NULL COMMENT '执行标准(国标/省标)',"
+                    + "shelf_life VARCHAR(100) DEFAULT NULL COMMENT '保质期',"
+                    + "min_unit VARCHAR(100) DEFAULT NULL COMMENT '最小计价计量单位',"
+                    + "adr_info VARCHAR(1000) DEFAULT NULL COMMENT '不良反应监测信息',"
+                    + "record_no VARCHAR(100) DEFAULT NULL COMMENT '上市备案号',"
+                    + "record_time VARCHAR(50) DEFAULT NULL COMMENT '上市备案时间',"
+                    + "record_status VARCHAR(50) DEFAULT NULL COMMENT '上市备案状态',"
+                    + "record_bureau VARCHAR(200) DEFAULT NULL COMMENT '上市备案省局',"
+                    + "entp VARCHAR(300) DEFAULT NULL COMMENT '生产企业',"
+                    + "entp_addr VARCHAR(500) DEFAULT NULL COMMENT '生产地址',"
+                    + "sale_provinces VARCHAR(500) DEFAULT NULL COMMENT '销往省份',"
+                    + "tcm_code VARCHAR(50) DEFAULT NULL COMMENT '中药饮片代码',"
+                    + "tcm_name VARCHAR(200) DEFAULT NULL COMMENT '中药饮片名称',"
+                    + "tcm_exec_std VARCHAR(500) DEFAULT NULL COMMENT '中药饮片执行标准',"
+                    + "chrgitm_lv VARCHAR(20) DEFAULT NULL COMMENT '医保类别(甲乙丙)',"
+                    + "data_source VARCHAR(50) DEFAULT NULL COMMENT '数据来源',"
+                    + "ver VARCHAR(30) DEFAULT NULL COMMENT '数据版本',"
+                    + "std_type VARCHAR(30) DEFAULT '医保字典' COMMENT '字典标准类型',"
+                    + "src_doc VARCHAR(200) DEFAULT NULL COMMENT '来源文档',"
+                    + "vali_flag VARCHAR(3) DEFAULT '1' COMMENT '有效标志:1-有效 0-无效',"
+                    + "begn_time DATETIME DEFAULT NULL COMMENT '生效时间',"
+                    + "end_time DATETIME DEFAULT NULL COMMENT '作废时间',"
+                    + "py_code VARCHAR(64) DEFAULT NULL COMMENT '拼音简码(名称首字母, 自动生成只读)',"
+                    + "PRIMARY KEY (id),"
+                    + "KEY idx_granule_code (granule_code),"
+                    + "KEY idx_granule_name (granule_name(80)),"
+                    + "KEY idx_granule_tcm_name (tcm_name(80))"
+                    + ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='标准字典-中药配方颗粒(湖北医保)'"
+            );
         }
     }
 
@@ -1868,6 +2036,36 @@ public class DictSchemaMigration implements ApplicationRunner {
                     + "PRIMARY KEY (id), UNIQUE KEY uk_tenant_type_code (tenant_id, dict_type, code),"
                     + "KEY idx_md_type (dict_type), KEY idx_md_tenant (tenant_id)"
                     + ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='医共体用药字典(用法/用药频次, 牵头机构维护)'");
+            /* 医共体门诊班次字典: 排班/号源时段(time_type)由此字典受控, 牵头机构统一维护(L1);
+               起止时间仅供展示与分诊参考, 不参与号源扣减; 存量标准码 am/pm/night 按租户种子预置(幂等) */
+            st.executeUpdate("CREATE TABLE IF NOT EXISTS his_shift_dict ("
+                    + "id BIGINT NOT NULL AUTO_INCREMENT COMMENT '主键',"
+                    + "tenant_id BIGINT NOT NULL COMMENT '租户(医共体)ID',"
+                    + "code VARCHAR(20) NOT NULL COMMENT '班次编码(租户内唯一, 存量兼容 am/pm/night)',"
+                    + "name VARCHAR(50) NOT NULL COMMENT '班次名称(上午/下午/晚间等)',"
+                    + "start_time VARCHAR(5) NULL COMMENT '开始时间 HH:mm',"
+                    + "end_time VARCHAR(5) NULL COMMENT '结束时间 HH:mm',"
+                    + "sort_no INT NULL DEFAULT 0 COMMENT '排序号(周视图列/号源按钮顺序)',"
+                    + "status TINYINT NULL DEFAULT 1 COMMENT '状态:1启用 0停用',"
+                    + "memo VARCHAR(500) NULL COMMENT '备注',"
+                    + "py_code VARCHAR(20) NULL COMMENT '拼音简码',"
+                    + "abbr_code VARCHAR(20) NULL COMMENT '自定义简码',"
+                    + "create_by VARCHAR(50) NULL, create_time DATETIME NULL,"
+                    + "update_by VARCHAR(50) NULL, update_time DATETIME NULL, deleted TINYINT DEFAULT 0,"
+                    + "PRIMARY KEY (id), UNIQUE KEY uk_tenant_code (tenant_id, code), KEY idx_sd_tenant (tenant_id)"
+                    + ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='医共体门诊班次字典(排班/号源时段, 牵头机构维护)'");
+            /* 班次种子: 每个存量租户预置 am/pm/night 三班次(院内惯例默认起止时间, 可在维护页修改; NOT EXISTS 幂等) */
+            String[][] shiftSeed = {
+                    {"am", "上午", "08:00", "12:00", "10", "SW"},
+                    {"pm", "下午", "14:00", "17:30", "20", "XW"},
+                    {"night", "晚间", "18:00", "22:00", "30", "WQ"}};
+            for (String[] s : shiftSeed) {
+                st.executeUpdate("INSERT INTO his_shift_dict"
+                        + " (tenant_id, code, name, start_time, end_time, sort_no, status, py_code, create_time)"
+                        + " SELECT t.id, '" + s[0] + "', '" + s[1] + "', '" + s[2] + "', '" + s[3] + "', " + s[4] + ", 1, '" + s[5] + "', NOW()"
+                        + " FROM sys_tenant t WHERE NOT EXISTS (SELECT 1 FROM his_shift_dict h"
+                        + "  WHERE h.tenant_id = t.id AND h.code = '" + s[0] + "' AND h.deleted = 0)");
+            }
             /* 医共体诊断字典: 西医诊断/中医诊断/症候/手术/肿瘤, 单表按 dict_type 区分, 牵头机构从标准字典(ICD-10/ICD-9/形态学/中医病证)导入 */
             st.executeUpdate("CREATE TABLE IF NOT EXISTS his_diag_dict ("
                     + "id BIGINT NOT NULL AUTO_INCREMENT COMMENT '主键',"
@@ -1933,7 +2131,7 @@ public class DictSchemaMigration implements ApplicationRunner {
                     + "name VARCHAR(100) NOT NULL COMMENT '费别名称(自费/医保/公费/本院职工等)',"
                     + "py_code VARCHAR(64) NULL COMMENT '拼音简码(名称首字母, 自动生成只读)',"
                     + "scope VARCHAR(20) NOT NULL DEFAULT 'BOTH' COMMENT '适用场景:OTP门诊 IPT住院 BOTH通用(多选逗号分隔)',"
-                    + "channel VARCHAR(20) NULL COMMENT '结算通道:INSURANCE医保 SELF自费 GOV公费 UNIT单位 HOSP本院 HELP救助 OTHER(本期仅作展示/数据, 不改2201触发条件)',"
+                    + "channel VARCHAR(20) NULL COMMENT '结算通道:INSURANCE医保 SELF自费 GOV公费 UNIT单位 HOSP本院 HELP救助 OTHER(仅INSURANCE走2201/2202与贯标强制, 其余通道不要求医保编码)',"
                     + "insutype VARCHAR(10) NULL COMMENT '默认医保险种(仅INSURANCE通道)',"
                     + "auto_flag TINYINT NOT NULL DEFAULT 0 COMMENT '系统内置:1不可删/编码锁定 0自定义',"
                     + "ctl_flag TINYINT NOT NULL DEFAULT 0 COMMENT '控费开关:1启用控费规则',"
@@ -1979,7 +2177,11 @@ public class DictSchemaMigration implements ApplicationRunner {
                     + "update_by VARCHAR(50) NULL, update_time DATETIME NULL, deleted TINYINT DEFAULT 0,"
                     + "PRIMARY KEY (id), UNIQUE KEY uk_pay_method_org_code (tenant_id, org_id, code),"
                     + "KEY idx_pmd_scope (scope, status, deleted), KEY idx_pmd_org (org_id)"
-                    + ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='支付方式字典(机构级自定义, 门诊住院统一, 混合支付/预交金取数源)'");
+                    + ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='支付方式字典(机构级自定义, 门诊住院统一, 混合支付/预交金取数源)'" );
+            /* channel 语义已从"仅展示/数据"升级为医保通道判定依据(挂号侧 HisRegistrationService.isInsuranceChannel):
+               存量表 COMMENT 幂等刷新(元数据操作, 不重写数据); 只按非 INSURANCE 通道即跳过 2201/2202。 */
+            st.executeUpdate("ALTER TABLE his_fee_type_dict MODIFY COLUMN channel VARCHAR(20) NULL "
+                    + "COMMENT '结算通道:INSURANCE医保 SELF自费 GOV公费 UNIT单位 HOSP本院 HELP救助 OTHER(仅INSURANCE走2201/2202与贯标强制, 其余通道不要求医保编码)'");
         }
         // 住院就诊费别列(与 his_registration.fee_type 同语义; 首跑时 his_inp_visit 尚未建, 由 ensureInpatientTables 建表后的存量补列链下一跑补齐, 此处跳过)
         if (columnExists(conn, "his_inp_visit", "id")) {
@@ -5148,7 +5350,7 @@ public class DictSchemaMigration implements ApplicationRunner {
                     + "create_by VARCHAR(50) DEFAULT NULL, create_time DATETIME DEFAULT NULL,"
                     + "update_by VARCHAR(50) DEFAULT NULL, update_time DATETIME DEFAULT NULL, deleted TINYINT DEFAULT 0,"
                     + "PRIMARY KEY (id),"
-                    + "UNIQUE KEY uk_print_tpl_code (template_code, deleted)"
+                    + "UNIQUE KEY uk_print_tpl_tenant_code (tenant_id, template_code, deleted)"
                     + ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='打印模板'");
             /* 报表快照: 床位/费用/科室/住院日/DRG五类报表按日落盘, data 为 JSON */
             st.executeUpdate("CREATE TABLE IF NOT EXISTS his_inp_report_snapshot ("
@@ -5450,6 +5652,29 @@ public class DictSchemaMigration implements ApplicationRunner {
         addColumnIfNotExists(conn, "his_inp_order", "pharm_audit_id", "BIGINT DEFAULT NULL COMMENT '审核药师ID(his_staff.id)'");
         addColumnIfNotExists(conn, "his_inp_order", "pharm_audit_time", "DATETIME DEFAULT NULL COMMENT '药审时间'");
         addColumnIfNotExists(conn, "his_inp_order", "pharm_reject_reason", "VARCHAR(500) DEFAULT NULL COMMENT '驳回原因'");
+        /* 病案首页对齐国标(国卫办医发2016-24号)补列: P0 离院与转归 + 主诊入院病情, P1 诊断/手术/费用/落款完整填报 */
+        addColumnIfNotExists(conn, "his_case_front_page", "discharge_mode", "TINYINT DEFAULT NULL COMMENT '离院方式:1医嘱离院 2医嘱转院 3转社区乡镇卫生院 4非医嘱离院 5死亡 9其他'");
+        addColumnIfNotExists(conn, "his_case_front_page", "trans_inst", "VARCHAR(200) DEFAULT NULL COMMENT '离院转往机构名称'");
+        addColumnIfNotExists(conn, "his_case_front_page", "treat_result", "TINYINT DEFAULT NULL COMMENT '治疗转归:1治愈 2好转 3未愈 4死亡 5其他'");
+        addColumnIfNotExists(conn, "his_case_front_page", "readmit_plan", "TINYINT DEFAULT NULL COMMENT '出院31天内再住院计划:0无 1有'");
+        addColumnIfNotExists(conn, "his_case_front_page", "readmit_purpose", "VARCHAR(200) DEFAULT NULL COMMENT '再住院计划目的'");
+        addColumnIfNotExists(conn, "his_case_front_page", "main_diag_admit_cond", "TINYINT DEFAULT NULL COMMENT '主要诊断入院病情:1有 2临床未确定 3情况不明 4无'");
+        addColumnIfNotExists(conn, "his_case_front_page", "outp_diag_code", "VARCHAR(50) DEFAULT NULL COMMENT '门急诊诊断编码(ICD-10)'");
+        addColumnIfNotExists(conn, "his_case_front_page", "outp_diag_name", "VARCHAR(200) DEFAULT NULL COMMENT '门急诊诊断名称'");
+        addColumnIfNotExists(conn, "his_case_front_page", "injury_poison_name", "VARCHAR(200) DEFAULT NULL COMMENT '损伤中毒外部原因名称'");
+        addColumnIfNotExists(conn, "his_case_front_page", "pathology_code", "VARCHAR(50) DEFAULT NULL COMMENT '病理诊断编码'");
+        addColumnIfNotExists(conn, "his_case_front_page", "pathology_no", "VARCHAR(50) DEFAULT NULL COMMENT '病理号'");
+        addColumnIfNotExists(conn, "his_case_front_page", "allergy_flag", "TINYINT DEFAULT NULL COMMENT '药物过敏:0无 1有'");
+        addColumnIfNotExists(conn, "his_case_front_page", "coma_before", "VARCHAR(20) DEFAULT NULL COMMENT '颅脑损伤昏迷时间入院前(天时分)'");
+        addColumnIfNotExists(conn, "his_case_front_page", "coma_after", "VARCHAR(20) DEFAULT NULL COMMENT '颅脑损伤昏迷时间入院后(天时分)'");
+        addColumnIfNotExists(conn, "his_case_front_page", "newborn_birth_weight", "INT DEFAULT NULL COMMENT '新生儿出生体重(g)'");
+        addColumnIfNotExists(conn, "his_case_front_page", "newborn_admit_weight", "INT DEFAULT NULL COMMENT '新生儿入院体重(g)'");
+        addColumnIfNotExists(conn, "his_case_front_page", "native_place", "VARCHAR(100) DEFAULT NULL COMMENT '籍贯'");
+        addColumnIfNotExists(conn, "his_case_front_page", "mr_grade", "TINYINT DEFAULT NULL COMMENT '病案质量:1甲 2乙 3丙'");
+        addColumnIfNotExists(conn, "his_case_front_page", "chief_doctor", "VARCHAR(50) DEFAULT NULL COMMENT '主任医师(科主任)姓名'");
+        addColumnIfNotExists(conn, "his_case_front_page", "resident_doctor", "VARCHAR(50) DEFAULT NULL COMMENT '住院医师姓名'");
+        addColumnIfNotExists(conn, "his_case_front_page", "qc_nurse", "VARCHAR(50) DEFAULT NULL COMMENT '质控护士姓名'");
+        addColumnIfNotExists(conn, "his_case_front_page", "cost_class_detail", "TEXT DEFAULT NULL COMMENT '病案首页费用分项聚合JSON(按his_charge_item.mr_cost_class归并)'");
         // 播种常见危急值规则(tenant_id=1 默认租户; INSERT IGNORE 幂等, 已有规则不覆盖)
         seedCriticalValueRules(conn);
     }
@@ -6348,13 +6573,14 @@ public class DictSchemaMigration implements ApplicationRunner {
         }
     }
 
-    /** 幂等补种子: 医共体值域「药品大类」(医保目录分类: 西药/中成药/中药饮片/医疗机构制剂/其他, code=name 存文本, 供药品目录大类下拉; 现有目录数据均在牵头租户 1) */
+    /** 幂等补种子: 医共体值域「药品大类」(医保目录分类: 西药/中成药/中药饮片/医疗机构制剂/中药配方颗粒/体外诊断试剂/其他, code=name 存文本, 供药品目录大类下拉; 现有目录数据均在牵头租户 1) */
     private void ensureDrugMajorClassDict(Connection conn) throws Exception {
         String sql = "INSERT INTO his_val_dict (tenant_id, dict_type, type_name, code, name, sort_no, status, src_type, src_doc, create_time, deleted) "
                 + "SELECT 1, '药品大类', '药品大类', ?, ?, ?, 1, '院内补充', '医共体目录管理值域(药品大类, 医保目录分类补充种子)', NOW(), 0 "
                 + "FROM DUAL WHERE NOT EXISTS (SELECT 1 FROM his_val_dict v WHERE v.tenant_id = 1 AND v.dict_type = '药品大类' AND v.code = ?)";
         String[][] seeds = {
-                {"西药", "1"}, {"中成药", "2"}, {"中药饮片", "3"}, {"医疗机构制剂", "4"}, {"其他", "9"},
+                {"西药", "1"}, {"中成药", "2"}, {"中药饮片", "3"}, {"医疗机构制剂", "4"},
+                {"中药配方颗粒", "5"}, {"体外诊断试剂", "6"}, {"其他", "9"},
         };
         try (PreparedStatement ps = conn.prepareStatement(sql)) {
             for (String[] s : seeds) {

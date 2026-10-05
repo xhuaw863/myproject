@@ -104,8 +104,24 @@
     };
   }
   function genCode(prefix) { return text(prefix) + '_' + Date.now(); }
-  /* 仅接受 <svg> 根字符串(与扩展层口径一致, 防杂散 HTML 注入预览) */
-  function validSvg(v) { var s = typeof v === 'string' ? v : ''; return s.replace(/^\s+/, '').indexOf('<svg') === 0 ? s : ''; }
+  /* 仅接受 <svg> 根字符串, 并做基础白名单清洗: 移除 script/foreignObject、事件属性与 javascript 伪协议 */
+  function sanitizeSvg(v) {
+    var s = typeof v === 'string' ? v : '';
+    s = s.replace(/<!--[\s\S]*?-->/g, '');
+    s = s.replace(/<script[\s\S]*?<\/script>/gi, '');
+    s = s.replace(/<script\b[^>]*\/?>/gi, '');
+    s = s.replace(/<foreignObject[\s\S]*?<\/foreignObject>/gi, '');
+    s = s.replace(/<foreignObject\b[^>]*\/?>/gi, '');
+    s = s.replace(/\son[a-z0-9_-]+\s*=\s*("[^"]*"|'[^']*'|[^\s>]+)/gi, '');
+    s = s.replace(/(?:href|xlink:href|src)\s*=\s*("javascript:[^"]*"|'javascript:[^']*'|javascript:[^\s>]+)/gi, '');
+    return s;
+  }
+  function validSvg(v) {
+    var s = typeof v === 'string' ? v : '';
+    s = s.replace(/^\s+/, '');
+    if (s.indexOf('<svg') !== 0) { return ''; }
+    return sanitizeSvg(s);
+  }
 
   /* 组件私有样式: 三栏布局 + 数据元树 + 属性面板(不动全局 his.css) */
   (function injectCss() {

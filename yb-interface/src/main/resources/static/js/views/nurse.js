@@ -660,8 +660,8 @@
       return {
         tab: 'prepare',
         loading: false, list: [], total: 0, page: 1, size: 20,
-        /* 配液弹窗 */
-        prepVisible: false, prepRow: null, prepSeat: '', prepSolution: '', prepRate: 60, prepping: false,
+        /* 配液弹窗(配液即穿刺合并: 溶液+座位+滴速+穿刺部位一步完成) */
+        prepVisible: false, prepRow: null, prepSeat: '', prepSolution: '', prepRate: 60, prepSite: '', prepping: false,
         /* 巡视弹窗 */
         patrolVisible: false, patrolRow: null, patrolRate: null, patrolStatus: '正常', patrolNote: '', patrolling: false,
         patrolStatuses: PATROL_STATUS,
@@ -742,6 +742,7 @@
         this.prepSeat = '';
         this.prepSolution = row.itemName || '';
         this.prepRate = 60;
+        this.prepSite = '';
         this.prepVisible = true;
       },
       doPrep: function () {
@@ -751,19 +752,26 @@
           ElementPlus.ElMessage.warning('请填写溶液(液体名称与容量, 如 0.9%氯化钠 250ml)');
           return;
         }
+        if (!(vm.prepSite || '').trim()) {
+          ElementPlus.ElMessage.warning('请填写穿刺部位(如左手背)');
+          return;
+        }
         var rate = vm.prepRate == null || vm.prepRate === '' ? null : Number(vm.prepRate);
         if (rate != null && (isNaN(rate) || rate < 1 || rate > 300)) {
           ElementPlus.ElMessage.warning('滴速须在 1-300 滴/分之间');
           return;
         }
         vm.prepping = true;
+        // 配液即穿刺(合并): 先建输液记录拿 infusionId, 紧接着记穿刺, 一步进入"输液中"页签
         HIS.post('/api/nurse/infusion', {
           execId: vm.prepRow.execId,
           seatNo: (vm.prepSeat || '').trim() || null,
           solution: vm.prepSolution.trim(),
           dripRate: rate
+        }).then(function (rec) {
+          return HIS.post('/api/nurse/infusion/' + rec.id + '/puncture', { site: vm.prepSite.trim() });
         }).then(function () {
-          HIS.notifySuccess('配液完成, 请穿刺后开始输注');
+          HIS.notifySuccess('配液穿刺完成, 已进入输液中');
           vm.prepVisible = false;
           vm.tab = 'infusing';
           vm.page = 1;
@@ -940,7 +948,7 @@
       '  <el-empty v-if="!loading && !list.length" description="暂无输液记录" :image-size="60"></el-empty>',
 
       /* 配液弹窗 */
-      '  <el-dialog v-model="prepVisible" title="配液(创建输液记录)" width="500px" :close-on-click-modal="false">',
+      '  <el-dialog v-model="prepVisible" title="配液穿刺(创建输液记录并穿刺)" width="500px" :close-on-click-modal="false">',
       '    <div v-if="prepRow">',
       '      <div class="ns-banner">',
       '        <span class="name">{{ prepRow.patientName }}</span>',
@@ -956,11 +964,13 @@
       '      </div>',
       '      <div style="font-weight:600;margin-bottom:6px;">溶液(名称与容量, 含容量可折算预计结束)</div>',
       '      <el-input v-model="prepSolution" placeholder="如 0.9%氯化钠注射液 250ml"></el-input>',
-      '      <div class="ns-soft" style="margin-top:8px;">确认后执行单转为执行中; 穿刺后在"输液中"页签巡视观察。</div>',
+      '      <div style="font-weight:600;margin:10px 0 6px;">穿刺部位</div>',
+      '      <el-input v-model="prepSite" placeholder="如 左手背"></el-input>',
+      '      <div class="ns-soft" style="margin-top:8px;">确认后执行单转为执行中并完成穿刺, 直接进入"输液中"页签巡视观察。</div>',
       '    </div>',
       '    <template #footer>',
       '      <el-button @click="prepVisible = false">取消</el-button>',
-      '      <el-button type="primary" :loading="prepping" @click="doPrep">确认配液</el-button>',
+      '      <el-button type="primary" :loading="prepping" @click="doPrep">确认配液穿刺</el-button>',
       '    </template>',
       '  </el-dialog>',
 

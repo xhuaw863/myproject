@@ -464,5 +464,48 @@
       });
   };
 
+  /* ===== 门诊班次字典(his_shift_dict, L1 全局缓存) =====
+   * 挂号/排班/周视图的时段数据源: HIS.shiftDict(cb) 首次拉取后缓存,
+   * 字典维护页保存后调 HIS.clearShifts() 失效; 接口异常/空字典回落存量三值防白屏。
+   */
+  var SHIFT_FALLBACK = [{ v: 'am', l: '上午', st: '', et: '' }, { v: 'pm', l: '下午', st: '', et: '' }, { v: 'night', l: '晚间', st: '', et: '' }];
+  HIS.shiftDict = function (cb) {
+    if (HIS._shifts && HIS._shifts.length) {
+      if (cb) { cb(HIS._shifts); }
+      return Promise.resolve(HIS._shifts);
+    }
+    return HIS.get('/api/community-dict/shift-dict/values').then(function (l) {
+      HIS._shifts = (l || []).map(function (s) {
+        return { v: s.code, l: s.name, st: s.startTime || '', et: s.endTime || '' };
+      });
+      if (!HIS._shifts.length) { HIS._shifts = SHIFT_FALLBACK.slice(); }
+      if (cb) { cb(HIS._shifts); }
+      return HIS._shifts;
+    }).catch(function () {
+      HIS._shifts = SHIFT_FALLBACK.slice();
+      if (cb) { cb(HIS._shifts); }
+      return HIS._shifts;
+    });
+  };
+  /* 同步取缓存选项(未加载返回 null, 调用方自备兜底常量) */
+  HIS.shiftOptions = function () { return HIS._shifts; };
+  /* 班次码→名称(缓存未命中返回 null 由调用方兜底); 模板展示用可附起止时间 */
+  HIS.shiftLabel = function (code) {
+    if (!HIS._shifts || !code) { return null; }
+    for (var i = 0; i < HIS._shifts.length; i++) {
+      if (HIS._shifts[i].v === code) { return HIS._shifts[i].l; }
+    }
+    return null;
+  };
+  HIS.shiftRange = function (code) {
+    if (!HIS._shifts || !code) { return ''; }
+    for (var i = 0; i < HIS._shifts.length; i++) {
+      var s = HIS._shifts[i];
+      if (s.v === code) { return s.st && s.et ? s.st + '-' + s.et : (s.st || s.et || ''); }
+    }
+    return '';
+  };
+  HIS.clearShifts = function () { HIS._shifts = null; };
+
   HIS.views = HIS.views || {};
 })();

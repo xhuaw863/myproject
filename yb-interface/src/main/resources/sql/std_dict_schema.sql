@@ -176,6 +176,46 @@ CREATE TABLE std_tcm (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='标准字典-中药饮片';
 
 -- ------------------------------------------------------------
+-- 【4b】中药配方颗粒(湖北医保)
+--   元数据列(std_type/src_doc/vali_flag/begn_time/end_time)随建表内联, 与其他 std_* 表保持一致
+-- ------------------------------------------------------------
+DROP TABLE IF EXISTS std_tcm_granule;
+CREATE TABLE std_tcm_granule (
+    id              BIGINT       NOT NULL AUTO_INCREMENT COMMENT '主键',
+    granule_code    VARCHAR(50)  DEFAULT NULL COMMENT '中药配方颗粒代码',
+    granule_name    VARCHAR(200) DEFAULT NULL COMMENT '中药配方颗粒名称',
+    spec            VARCHAR(255) DEFAULT NULL COMMENT '规格',
+    pack_spec       VARCHAR(255) DEFAULT NULL COMMENT '包装规格',
+    exec_std        VARCHAR(500) DEFAULT NULL COMMENT '中药配方颗粒执行标准',
+    std_level       VARCHAR(100) DEFAULT NULL COMMENT '执行标准(国标/省标)',
+    shelf_life      VARCHAR(100) DEFAULT NULL COMMENT '保质期',
+    min_unit        VARCHAR(100) DEFAULT NULL COMMENT '最小计价计量单位',
+    adr_info        VARCHAR(1000) DEFAULT NULL COMMENT '不良反应监测信息',
+    record_no       VARCHAR(100) DEFAULT NULL COMMENT '上市备案号',
+    record_time     VARCHAR(50)  DEFAULT NULL COMMENT '上市备案时间',
+    record_status   VARCHAR(50)  DEFAULT NULL COMMENT '上市备案状态',
+    record_bureau   VARCHAR(200) DEFAULT NULL COMMENT '上市备案省局',
+    entp            VARCHAR(300) DEFAULT NULL COMMENT '生产企业',
+    entp_addr       VARCHAR(500) DEFAULT NULL COMMENT '生产地址',
+    sale_provinces  VARCHAR(500) DEFAULT NULL COMMENT '销往省份',
+    tcm_code        VARCHAR(50)  DEFAULT NULL COMMENT '中药饮片代码',
+    tcm_name        VARCHAR(200) DEFAULT NULL COMMENT '中药饮片名称',
+    tcm_exec_std    VARCHAR(500) DEFAULT NULL COMMENT '中药饮片执行标准',
+    chrgitm_lv      VARCHAR(20)  DEFAULT NULL COMMENT '医保类别(甲乙丙)',
+    data_source     VARCHAR(50)  DEFAULT NULL COMMENT '数据来源',
+    ver             VARCHAR(30)  DEFAULT NULL COMMENT '数据版本',
+    std_type        VARCHAR(30)  DEFAULT '医保字典' COMMENT '字典标准类型',
+    src_doc         VARCHAR(200) DEFAULT NULL COMMENT '来源文档',
+    vali_flag       VARCHAR(3)   DEFAULT '1' COMMENT '有效标志:1-有效 0-无效',
+    begn_time       DATETIME     DEFAULT NULL COMMENT '生效时间',
+    end_time        DATETIME     DEFAULT NULL COMMENT '作废时间',
+    PRIMARY KEY (id),
+    KEY idx_granule_code (granule_code),
+    KEY idx_granule_name (granule_name(80)),
+    KEY idx_granule_tcm_name (tcm_name(80))
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='标准字典-中药配方颗粒';
+
+-- ------------------------------------------------------------
 -- 【5】医疗机构制剂(湖北医保)
 -- ------------------------------------------------------------
 DROP TABLE IF EXISTS std_preparation;

@@ -85,6 +85,65 @@ public class CatalogMapService {
         throw new BizException(400, "不支持的目录: " + catalog);
     }
 
+    /** 非西药/中成药的医保药品来源 srcType 集(药品目录按此路由到各自标准字典) */
+    private static final String[] DRUG_NON_DEFAULT_SRC = {"tcm", "tcm_granule", "preparation", "ivd"};
+
+    /** 药品来源(srcType) -> 医保药品标准字典 key: null/空/西药/中成药等一律归 drug, 其余按来源。 */
+    private String drugStdKey(String srcType) {
+        if (!StringUtils.hasText(srcType)) {
+            return "drug";
+        }
+        switch (srcType) {
+            case "tcm":
+            case "tcm_granule":
+            case "preparation":
+            case "ivd":
+                return srcType;
+            default:
+                return "drug";
+        }
+    }
+
+    /** 目录(结合条目来源 srcType) -> 标准字典 key: drug 按来源路由五类医保药品字典, cons/charge 固定。 */
+    private String stdKeyOfSrc(String catalog, String srcType) {
+        if (CAT_DRUG.equals(catalog)) {
+            return drugStdKey(srcType);
+        }
+        return stdKeyOf(catalog);
+    }
+
+    /** 标准字典 key -> 该字典主码列名(各医保药品字典列名不同)。 */
+    private String stdCodeColOf(String stdKey) {
+        switch (stdKey == null ? "" : stdKey) {
+            case "tcm":
+                return "nat_tcm_code";
+            case "tcm_granule":
+                return "granule_code";
+            case "preparation":
+                return "prep_code";
+            case "ivd":
+                return "ivd_code";
+            case "consumable":
+                return "cons_code";
+            case "med_service":
+                return "nat_item_code";
+            default:
+                return "drug_code";
+        }
+    }
+
+    /** 医保药品各标准字典的甲乙丙来源列: drug/tcm/tcm_granule=chrgitm_lv, preparation=policy_flag, ivd=无(返回 null)。 */
+    private String drugLvCol(String stdKey) {
+        switch (stdKey == null ? "" : stdKey) {
+            case "preparation":
+                return "policy_flag";
+            case "ivd":
+                return null;
+            default:
+                return "chrgitm_lv";
+        }
+    }
+
     /** 目录 -> 院内表的医保码列(带表名限定), 供标准字典有效性子查询引用外层列 */
     private String ybColRef(String catalog) {
         if (CAT_DRUG.equals(catalog)) {
@@ -113,14 +172,28 @@ public class CatalogMapService {
         return out;
     }
 
-    /** 对照失效条数: 已对照且医保码在标准字典中已无有效行(作废/过期/删除) */
+    /** 对照失效条数: 已对照且医保码在其对应标准字典中已无有效行(作废/过期/删除)。
+     *  药品按来源 srcType 分组统计(每组用各自字典的有效性子查询), 避免跨字典误判。 */
     private long invalidCount(String catalog) {
-        String validSub = stdMaintain.validExistsSql(stdKeyOf(catalog), ybColRef(catalog));
         if (CAT_DRUG.equals(catalog)) {
-            return drugService.count(new LambdaQueryWrapper<HisDrugCatalog>()
+            String col = ybColRef(CAT_DRUG);
+            long inv = 0;
+            // 默认桶: srcType 为空/非四类西药中成药以外的来源, 对 std_drug
+            inv += drugService.count(new LambdaQueryWrapper<HisDrugCatalog>()
                     .isNotNull(HisDrugCatalog::getYbDrugCode).ne(HisDrugCatalog::getYbDrugCode, "")
-                    .notExists(validSub));
+                    .and(w -> w.isNull(HisDrugCatalog::getSrcType)
+                            .or().notIn(HisDrugCatalog::getSrcType, (Object[]) DRUG_NON_DEFAULT_SRC))
+                    .notExists(stdMaintain.validExistsSql("drug", col)));
+            // 其余四类来源: 按 srcType 限定, 用各自字典判有效
+            for (String key : DRUG_NON_DEFAULT_SRC) {
+                inv += drugService.count(new LambdaQueryWrapper<HisDrugCatalog>()
+                        .eq(HisDrugCatalog::getSrcType, key)
+                        .isNotNull(HisDrugCatalog::getYbDrugCode).ne(HisDrugCatalog::getYbDrugCode, "")
+                        .notExists(stdMaintain.validExistsSql(key, col)));
+            }
+            return inv;
         }
+        String validSub = stdMaintain.validExistsSql(stdKeyOf(catalog), ybColRef(catalog));
         if (CAT_CONS.equals(catalog)) {
             return consService.count(new LambdaQueryWrapper<HisConsCatalog>()
                     .isNotNull(HisConsCatalog::getYbConsCode).ne(HisConsCatalog::getYbConsCode, "")
@@ -142,12 +215,13 @@ public class CatalogMapService {
 
     /* ================= 院内工作队列 ================= */
 
-    /** 院内条目归一视图分页: {id,code,name,spec,manufacturer,unit,ybCode,ybName,ybValid,mapped} */
+    /** 院内条目归一视图分页: {id,code,name,spec,manufacturer,unit,ybCode,ybName,ybValid,mapped}; majorClass 仅对药品按大类过滤 */
     public IPage<Map<String, Object>> items(String catalog, long page, long size,
-                                            Integer mapped, String keyword, String itemType) {
+                                            Integer mapped, String keyword, String itemType, String majorClass) {
         boolean hasKw = StringUtils.hasText(keyword);
         if (CAT_DRUG.equals(catalog)) {
-            LambdaQueryChainWrapper<HisDrugCatalog> q = drugService.lambdaQuery();
+            LambdaQueryChainWrapper<HisDrugCatalog> q = drugService.lambdaQuery()
+                    .eq(StringUtils.hasText(majorClass), HisDrugCatalog::getMajorClass, majorClass);
             applyMapped(q, mapped, HisDrugCatalog::getYbDrugCode, catalog);
             if (hasKw) {
                 q.and(w -> w.like(HisDrugCatalog::getGenericName, keyword)
@@ -160,7 +234,7 @@ public class CatalogMapService {
             IPage<HisDrugCatalog> p = q.orderByDesc(HisDrugCatalog::getId).page(new Page<>(page, size));
             return enrichYbInfo(catalog, mapView(p, e -> hosp(e.getId(), e.getDrugCode(), e.getGenericName(), e.getSpec(),
                     e.getManufacturer(), "", e.getYbDrugCode(), e.getRetailPrice(), e.getPrevYbCode(), e.getYbMapEffTime(),
-                    firstNonEmpty(e.getChrgitmLvName(), e.getChrgitmLv()))));
+                    firstNonEmpty(e.getChrgitmLvName(), e.getChrgitmLv()), e.getSrcType())));
         }
         if (CAT_CONS.equals(catalog)) {
             LambdaQueryChainWrapper<HisConsCatalog> q = consService.lambdaQuery();
@@ -198,16 +272,18 @@ public class CatalogMapService {
     /** 左栏回显医保名称与有效性: 按已对照医保码批量查标准字典(一页一次),
      *  便于直接肉眼核对对照是否正确; 医保码已作废/过期/删除的行标记为对照失效, 需重新对照 */
     private IPage<Map<String, Object>> enrichYbInfo(String catalog, IPage<Map<String, Object>> pg) {
-        String stdKey = stdKeyOf(catalog);
-        List<String> codes = new ArrayList<>();
+        // 按条目来源路由到各自标准字典分组回查(drug 五类/cons/charge 单类), 避免跨字典误判名称与有效性
+        Map<String, List<String>> codesByStdKey = new LinkedHashMap<>();
         for (Map<String, Object> m : pg.getRecords()) {
             String c = str(m.get("ybCode"));
             if (!c.isEmpty()) {
-                codes.add(c);
+                codesByStdKey.computeIfAbsent(stdKeyOfSrc(catalog, str(m.get("srcType"))), k -> new ArrayList<>()).add(c);
             }
         }
-        Map<String, Map<String, Object>> info = codes.isEmpty()
-                ? new LinkedHashMap<>() : stdMaintain.infoByCode(stdKey, codes);
+        Map<String, Map<String, Map<String, Object>>> infoByStdKey = new LinkedHashMap<>();
+        for (Map.Entry<String, List<String>> en : codesByStdKey.entrySet()) {
+            infoByStdKey.put(en.getKey(), stdMaintain.infoByCode(en.getKey(), en.getValue()));
+        }
         for (Map<String, Object> m : pg.getRecords()) {
             String c = str(m.get("ybCode"));
             if (c.isEmpty()) {
@@ -216,9 +292,10 @@ public class CatalogMapService {
                 m.put("ybInvalidReason", null);
                 continue;
             }
-            Map<String, Object> si = info.get(c);
+            Map<String, Object> si = infoByStdKey
+                    .getOrDefault(stdKeyOfSrc(catalog, str(m.get("srcType"))), new LinkedHashMap<>()).get(c);
             if (si == null) {
-                /* 标准字典中已无此医保码: 目录行被删除, 必须重新对照 */
+                /* 对应标准字典中已无此医保码: 目录行被删除, 必须重新对照 */
                 m.put("ybName", null);
                 m.put("ybValid", false);
                 m.put("ybInvalidReason", REASON_DELETED);
@@ -238,9 +315,9 @@ public class CatalogMapService {
             "医保码", "医保名称", "对照有效性", "变更前医保码", "对照生效时间", "对照状态"};
 
     /** 导出对照结果: 复用列表查询与医保名称回显, 返回 {head, rows, total} */
-    public Map<String, Object> exportRows(String catalog, Integer mapped, String keyword, String itemType) {
+    public Map<String, Object> exportRows(String catalog, Integer mapped, String keyword, String itemType, String majorClass) {
         stdKeyOf(catalog);
-        IPage<Map<String, Object>> pg = items(catalog, 1, EXPORT_MAX, mapped, keyword, itemType);
+        IPage<Map<String, Object>> pg = items(catalog, 1, EXPORT_MAX, mapped, keyword, itemType, majorClass);
         List<List<String>> head = new ArrayList<>();
         for (String h : EXPORT_HEAD) {
             head.add(Collections.singletonList(h));
@@ -289,9 +366,22 @@ public class CatalogMapService {
         if (mapped == 1) {
             q.isNotNull(col).ne(col, "");
         } else if (mapped == 2) {
-            /* 已对照但标准字典中已无有效行: NOT EXISTS 覆盖"作废/过期"与"被删除"两种情况 */
-            q.isNotNull(col).ne(col, "")
-                    .notExists(stdMaintain.validExistsSql(stdKeyOf(catalog), ybColRef(catalog)));
+            /* 已对照但对应标准字典中已无有效行: NOT EXISTS 覆盖"作废/过期"与"被删除"两种情况 */
+            q.isNotNull(col).ne(col, "");
+            if (CAT_DRUG.equals(catalog)) {
+                /* 药品按来源分桶: 每桶只对自身字典判失效, 避免跨字典误判 */
+                String dcol = ybColRef(CAT_DRUG);
+                q.and(w -> {
+                    w.apply("(src_type IS NULL OR src_type NOT IN ('tcm','tcm_granule','preparation','ivd'))"
+                            + " AND NOT EXISTS (" + stdMaintain.validExistsSql("drug", dcol) + ")");
+                    for (String key : DRUG_NON_DEFAULT_SRC) {
+                        w.or().apply("src_type = '" + key + "'"
+                                + " AND NOT EXISTS (" + stdMaintain.validExistsSql(key, dcol) + ")");
+                    }
+                });
+            } else {
+                q.notExists(stdMaintain.validExistsSql(stdKeyOf(catalog), ybColRef(catalog)));
+            }
         } else {
             q.and(w -> w.isNull(col).or().eq(col, ""));
         }
@@ -320,6 +410,7 @@ public class CatalogMapService {
         m.put("prevYbCode", h.prevYbCode);
         m.put("mapEffTime", h.mapEffTime);
         m.put("chrgitmLv", h.chrgitmLv);
+        m.put("srcType", h.srcType);
         m.put("mapped", StringUtils.hasText(h.ybCode));
         return m;
     }
@@ -337,11 +428,18 @@ public class CatalogMapService {
         String prevYbCode;
         LocalDateTime mapEffTime;
         String chrgitmLv;
+        String srcType;
     }
 
     private HospItem hosp(Long id, String code, String name, String spec,
                           String manufacturer, String unit, String ybCode, BigDecimal price,
                           String prevYbCode, LocalDateTime mapEffTime, String chrgitmLv) {
+        return hosp(id, code, name, spec, manufacturer, unit, ybCode, price, prevYbCode, mapEffTime, chrgitmLv, null);
+    }
+
+    private HospItem hosp(Long id, String code, String name, String spec,
+                          String manufacturer, String unit, String ybCode, BigDecimal price,
+                          String prevYbCode, LocalDateTime mapEffTime, String chrgitmLv, String srcType) {
         HospItem h = new HospItem();
         h.id = id;
         h.code = code;
@@ -354,6 +452,7 @@ public class CatalogMapService {
         h.prevYbCode = prevYbCode;
         h.mapEffTime = mapEffTime;
         h.chrgitmLv = chrgitmLv;
+        h.srcType = srcType;
         return h;
     }
 
@@ -362,7 +461,7 @@ public class CatalogMapService {
         if (CAT_DRUG.equals(catalog)) {
             HisDrugCatalog e = drugService.getById(id);
             return e == null ? null : hosp(e.getId(), e.getDrugCode(), e.getGenericName(), e.getSpec(),
-                    e.getManufacturer(), "", e.getYbDrugCode(), e.getRetailPrice(), e.getPrevYbCode(), e.getYbMapEffTime(), firstNonEmpty(e.getChrgitmLvName(), e.getChrgitmLv()));
+                    e.getManufacturer(), "", e.getYbDrugCode(), e.getRetailPrice(), e.getPrevYbCode(), e.getYbMapEffTime(), firstNonEmpty(e.getChrgitmLvName(), e.getChrgitmLv()), e.getSrcType());
         }
         if (CAT_CONS.equals(catalog)) {
             HisConsCatalog e = consService.getById(id);
@@ -380,11 +479,12 @@ public class CatalogMapService {
      *  未传 keyword 时按院内条目名称自动推荐, 仅保留 score>=0.5;
      *  传 keyword 时为人工检索医保目录, 返回检索到的全部行(按置信度降序), 便于人工挑选。 */
     public List<Map<String, Object>> candidates(String catalog, Long itemId, String keyword, int limit) {
-        String stdKey = stdKeyOf(catalog);
         HospItem h = loadHosp(catalog, itemId);
         if (h == null) {
             throw new BizException(404, "院内条目不存在: " + itemId);
         }
+        // 药品按条目来源路由到对应医保字典取候选/打分/标注有效性; cons/charge 固定字典
+        String stdKey = stdKeyOfSrc(catalog, h.srcType);
         boolean manual = StringUtils.hasText(keyword);
         String base = manual ? keyword : h.name;
         List<Map<String, Object>> stdRows = fetchStdCandidates(stdKey, base, limit * 2);
@@ -519,39 +619,41 @@ public class CatalogMapService {
 
     /** 写入对照并留痕: force=false 时, 已对照且目标医保码不同的条目视为"变更对照", 直接拒绝(需前端二次确认后带 force=true) */
     public int apply(String catalog, List<CatalogMapApplyReq.Item> items, String src, boolean force) {
-        String stdKey = stdKeyOf(catalog);
         int applied = 0;
         for (CatalogMapApplyReq.Item it : items) {
             if (it == null || it.getItemId() == null || it.getStdId() == null) {
                 continue;
             }
+            // 药品按条目来源路由到对应医保字典取行; cons/charge 固定字典
+            HospItem h = loadHosp(catalog, it.getItemId());
+            if (h == null) {
+                continue;
+            }
+            String stdKey = stdKeyOfSrc(catalog, h.srcType);
             Map<String, Object> std = stdMaintain.row(stdKey, it.getStdId());
             /* 人工对照不得写入已作废/已删除的医保码(自动对照已在候选阶段剔除) */
             if (HisYbMapLog.SRC_MANUAL.equals(src)) {
-                guardStdValid(catalog, std);
+                guardStdValid(stdKey, std);
             }
-            if (applyOne(catalog, it.getItemId(), std, src, force)) {
+            if (applyOne(catalog, stdKey, it.getItemId(), std, src, force)) {
                 applied++;
             }
         }
         return applied;
     }
 
-    /** 目录 -> 标准字典主码列名 */
+    /** 标准字典 key -> 主码列(兼容旧调用: 按目录取默认字典主码列) */
     private String stdCodeCol(String catalog) {
-        if (CAT_DRUG.equals(catalog)) {
-            return "drug_code";
-        }
-        return CAT_CONS.equals(catalog) ? "cons_code" : "nat_item_code";
+        return stdCodeColOf(stdKeyOf(catalog));
     }
 
-    /** 目标医保码在标准字典中已作废/过期/删除时禁止写入对照, 避免把院内条目对到失效编码上 */
-    private void guardStdValid(String catalog, Map<String, Object> std) {
-        String code = str(std.get(stdCodeCol(catalog)));
+    /** 目标医保码在其对应标准字典中已作废/过期/删除时禁止写入对照, 避免把院内条目对到失效编码上 */
+    private void guardStdValid(String stdKey, Map<String, Object> std) {
+        String code = str(std.get(stdCodeColOf(stdKey)));
         if (code.isEmpty()) {
             return;
         }
-        Map<String, Object> si = stdMaintain.infoByCode(stdKeyOf(catalog), Collections.singletonList(code)).get(code);
+        Map<String, Object> si = stdMaintain.infoByCode(stdKey, Collections.singletonList(code)).get(code);
         if (si == null) {
             throw new BizException(409, "医保码 " + code + " 已从标准字典删除, 不能用于对照, 请另选有效的医保项目");
         }
@@ -561,14 +663,16 @@ public class CatalogMapService {
         }
     }
 
-    /** 统一字典编辑手工填写/改动的医保码守卫: 非空则必须在标准字典存在且有效(与对照工作台同守卫) */
-    public void guardStdCode(String catalog, String code) {
+    /** 统一字典编辑手工填写/改动的医保码守卫: 非空则必须在对应标准字典存在且有效(与对照工作台同守卫)。
+     *  药品按 srcType 路由到对应医保字典, cons/charge 的 srcType 忽略。 */
+    public void guardStdCode(String catalog, String code, String srcType) {
         if (!StringUtils.hasText(code)) {
             return;
         }
+        String stdKey = stdKeyOfSrc(catalog, srcType);
         Map<String, Object> std = new java.util.HashMap<String, Object>();
-        std.put(stdCodeCol(catalog), code.trim());
-        guardStdValid(catalog, std);
+        std.put(stdCodeColOf(stdKey), code.trim());
+        guardStdValid(stdKey, std);
     }
 
     /** 统一字典编辑手工改医保码留痕: 按新旧码归类新增/变更/清除, 未变化不记 */
@@ -582,9 +686,14 @@ public class CatalogMapService {
         logChange(catalog, itemId, itemCode, itemName, o, n, type, null, HisYbMapLog.SRC_MANUAL, "医共体统一字典手工编辑");
     }
 
-    /** 按医保药品码回查 std_drug.chrgitm_lv 并归一为编码(1/2/3/4), 供统一字典建立/改动医保码时同步甲乙丙类; 无码或字典无值返回 "" */
-    public String drugChrgitmLvByCode(String drugCode) {
-        return normalizeChrgitmLvToCode(stdMaintain.valueByCode("drug", drugCode, "chrgitm_lv"));
+    /** 按医保药品码回查其来源字典的甲乙丙列并归一为编码(1/2/3/4), 供统一字典建立/改动医保码时同步; 无码/无字典值/无列返回 ""。 */
+    public String drugChrgitmLvByCode(String drugCode, String srcType) {
+        String stdKey = drugStdKey(srcType);
+        String lvCol = drugLvCol(stdKey);
+        if (lvCol == null) {
+            return "";
+        }
+        return normalizeChrgitmLvToCode(stdMaintain.valueByCode(stdKey, drugCode, lvCol));
     }
 
     /** 按医保服务项目码(nat_item_code)回查 std_med_service.policy_flag 并归一为 his_charge_item 自身码表(01甲/02乙/03丙),
@@ -595,22 +704,55 @@ public class CatalogMapService {
 
     /** 按医保码回查标准字典的医保名称与医保甲乙分类(归一为 cv_code:chrgitm_lv 编码),
      *  供统一字典编辑弹窗显示与保存前不一致提示; 分类来源列: 药品=chrgitm_lv, 耗材/医疗服务项目=policy_flag; 无码返回空 */
-    public Map<String, Object> ybClassInfoByCode(String catalog, String code) {
+    public Map<String, Object> ybClassInfoByCode(String catalog, String code, String srcType) {
         Map<String, Object> out = new LinkedHashMap<>();
         out.put("name", "");
         out.put("chrgitmLv", "");
         if (!StringUtils.hasText(code)) {
             return out;
         }
-        String stdKey = stdKeyOf(catalog);
+        String stdKey = stdKeyOfSrc(catalog, srcType);
         String c = code.trim();
         Map<String, String> names = stdMaintain.namesByCode(stdKey, Collections.singletonList(c));
         if (names != null && names.get(c) != null) {
             out.put("name", names.get(c));
         }
-        String col = CAT_DRUG.equals(catalog) ? "chrgitm_lv" : "policy_flag";
-        out.put("chrgitmLv", normalizeChrgitmLvToCode(stdMaintain.valueByCode(stdKey, c, col)));
+        String col;
+        if (CAT_DRUG.equals(catalog)) {
+            col = drugLvCol(stdKey);
+        } else {
+            col = "policy_flag";
+        }
+        if (col != null) {
+            out.put("chrgitmLv", normalizeChrgitmLvToCode(stdMaintain.valueByCode(stdKey, c, col)));
+        }
         return out;
+    }
+
+    /** 药品目录列表医保名称回显: 按每条行来源 srcType 路由到对应医保字典分组批量回查(西药中成药=std_drug, 中药饮片=std_tcm 等)。 */
+    public void fillDrugYbNames(List<HisDrugCatalog> rows) {
+        if (rows == null || rows.isEmpty()) {
+            return;
+        }
+        // 来源字典 key -> 该组待回查的医保码集
+        Map<String, List<String>> codesByStdKey = new LinkedHashMap<>();
+        for (HisDrugCatalog r : rows) {
+            String c = r.getYbDrugCode();
+            if (StringUtils.hasText(c)) {
+                codesByStdKey.computeIfAbsent(drugStdKey(r.getSrcType()), k -> new ArrayList<>()).add(c);
+            }
+        }
+        Map<String, Map<String, String>> namesByStdKey = new LinkedHashMap<>();
+        for (Map.Entry<String, List<String>> en : codesByStdKey.entrySet()) {
+            namesByStdKey.put(en.getKey(), stdMaintain.namesByCode(en.getKey(), en.getValue()));
+        }
+        for (HisDrugCatalog r : rows) {
+            String c = r.getYbDrugCode();
+            if (StringUtils.hasText(c)) {
+                Map<String, String> names = namesByStdKey.getOrDefault(drugStdKey(r.getSrcType()), new LinkedHashMap<>());
+                r.setYbName(names.get(c));
+            }
+        }
     }
 
     /** 甲乙丙类文本(甲/乙/乙(单独支付)/丙) -> cv_code:chrgitm_lv 编码(1甲类/2乙类/3丙类/4可报丙类); 已是编码则原样透传 */
@@ -711,29 +853,33 @@ public class CatalogMapService {
     /** 单条写入: 主对照码必写, 附带字段仅空才回填, 并写溯源三件套;
      *  对照码发生变化时记录 prev_yb_code + yb_map_eff_time 并写变更留痕;
      *  已对照条目改码需 force=true(前端二次确认), 否则拒绝写入。 */
-    private boolean applyOne(String catalog, Long itemId, Map<String, Object> std, String src, boolean force) {
+    private boolean applyOne(String catalog, String stdKey, Long itemId, Map<String, Object> std, String src, boolean force) {
         LocalDateTime now = LocalDateTime.now();
         if (CAT_DRUG.equals(catalog)) {
             HisDrugCatalog e = drugService.getById(itemId);
             if (e == null) {
                 return false;
             }
+            String codeCol = stdCodeColOf(stdKey);
             String old = str(e.getYbDrugCode());
-            String neu = str(std.get("drug_code"));
+            String neu = str(std.get(codeCol));
             guardChange(catalog, force, old, neu, e.getGenericName());
             e.setYbDrugCode(neu);
             fillIfEmpty(e::setDrugStdCode, e.getDrugStdCode(), str(std.get("drug_std_code")));
             fillIfEmpty(e::setApprovalNo, e.getApprovalNo(), str(std.get("approval_no")));
             fillIfEmpty(e::setManufacturer, e.getManufacturer(), str(std.get("drug_entp")));
             fillIfEmpty(e::setSpec, e.getSpec(), composeDrugSpec(str(std.get("act_spec")), str(std.get("min_pack_qty"))));
-            // 甲乙丙类以标准字典为准强制覆盖(对照/改码即同步): std_drug.chrgitm_lv 存文本(甲/乙/乙(单独支付)), 归一为 cv_code:chrgitm_lv 编码(1/2/3/4)
-            e.setChrgitmLv(normalizeChrgitmLvToCode(str(std.get("chrgitm_lv"))));
+            // 甲乙丙类以来源字典为准强制覆盖(对照/改码即同步): drug/tcm/tcm_granule 取 chrgitm_lv, preparation 取 policy_flag, ivd 无则保留原值
+            String lvCol = drugLvCol(stdKey);
+            if (lvCol != null) {
+                e.setChrgitmLv(normalizeChrgitmLvToCode(str(std.get(lvCol))));
+            }
             fillIfEmpty(e::setPayStdPrep, e.getPayStdPrep(), str(std.get("pay_std_prep")));
             fillIfEmpty(e::setTradeName, e.getTradeName(), str(std.get("trade_name")));
             fillIfEmpty(e::setMktHolder, e.getMktHolder(), str(std.get("mkt_holder")));
-            e.setSrcType("drug");
-            e.setSrcCode(str(std.get("drug_code")));
-            e.setSrcDoc(firstNonEmpty(str(std.get("src_doc")), "湖北省医保药品(西药、中成药)编码数据库"));
+            e.setSrcType(stdKey);
+            e.setSrcCode(str(std.get(codeCol)));
+            e.setSrcDoc(firstNonEmpty(str(std.get("src_doc")), srcDocFallback(stdKey)));
             boolean changed = !neu.equals(old);
             if (changed) {
                 e.setPrevYbCode(old.isEmpty() ? null : old);
@@ -850,14 +996,14 @@ public class CatalogMapService {
 
     /** 批量自动对照: dryRun 仅预览; 否则写入达阈值项。返回 {dryRun,threshold,matched,reviewed,skipped,preview} */
     public Map<String, Object> auto(String catalog, List<Long> itemIds, Double threshold, boolean dryRun) {
-        String stdKey = stdKeyOf(catalog);
         double thr = threshold != null ? threshold : CatalogMapMatcher.DEFAULT_AUTO_THRESHOLD;
         List<HospItem> scope = loadUnmapped(catalog, itemIds);
 
         List<Map<String, Object>> preview = new ArrayList<>();
         int reviewed = 0;
         for (HospItem h : scope) {
-            Map<String, Object> best = bestMatch(catalog, stdKey, h, thr);
+            // 药品按条目来源路由到对应医保字典取候选; cons/charge 固定字典
+            Map<String, Object> best = bestMatch(catalog, stdKeyOfSrc(catalog, h.srcType), h, thr);
             if (best == null) {
                 reviewed++;
                 continue;
@@ -909,7 +1055,7 @@ public class CatalogMapService {
             for (HisDrugCatalog e : q.list()) {
                 out.add(hosp(e.getId(), e.getDrugCode(), e.getGenericName(), e.getSpec(),
                         e.getManufacturer(), "", e.getYbDrugCode(), e.getRetailPrice(), e.getPrevYbCode(), e.getYbMapEffTime(),
-                        firstNonEmpty(e.getChrgitmLvName(), e.getChrgitmLv())));
+                        firstNonEmpty(e.getChrgitmLvName(), e.getChrgitmLv()), e.getSrcType()));
             }
             return out;
         }
@@ -1144,6 +1290,22 @@ public class CatalogMapService {
 
     private static String firstNonEmpty(String a, String b) {
         return StringUtils.hasText(a) ? a : b;
+    }
+
+    /** 各医保药品字典的默认来源文档回退标签(std 行未携 src_doc 时使用)。 */
+    private static String srcDocFallback(String stdKey) {
+        switch (stdKey == null ? "" : stdKey) {
+            case "tcm":
+                return "湖北省医保药品(中药饮片)编码数据库";
+            case "tcm_granule":
+                return "湖北省医保药品(中药配方颗粒)编码数据库";
+            case "preparation":
+                return "湖北省医保药品(医疗机构制剂)编码数据库";
+            case "ivd":
+                return "湖北省医保体外诊断试剂编码数据库";
+            default:
+                return "湖北省医保药品(西药、中成药)编码数据库";
+        }
     }
 
     private static double round2(double d) {

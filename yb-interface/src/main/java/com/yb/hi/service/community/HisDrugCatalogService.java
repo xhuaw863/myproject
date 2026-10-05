@@ -35,10 +35,11 @@ public class HisDrugCatalogService extends ServiceImpl<HisDrugCatalogMapper, His
         this.valDict = valDict;
     }
 
-    /** 分页查询(关键字: 通用名/商品名/院内码/医保码; mapped=1已对照/0未对照/空全部) */
-    public IPage<HisDrugCatalog> pageQuery(long page, long size, String keyword, Integer status, String mapped) {
+    /** 分页查询(关键字: 通用名/商品名/院内码/医保码; mapped=1已对照/0未对照/空全部; majorClass=药品大类精确匹配/空全部) */
+    public IPage<HisDrugCatalog> pageQuery(long page, long size, String keyword, Integer status, String mapped, String majorClass) {
         LambdaQueryChainWrapper<HisDrugCatalog> q = lambdaQuery()
-                .eq(status != null, HisDrugCatalog::getStatus, status);
+                .eq(status != null, HisDrugCatalog::getStatus, status)
+                .eq(StringUtils.hasText(majorClass), HisDrugCatalog::getMajorClass, majorClass);
         if (StringUtils.hasText(keyword)) {
             q.and(w -> w.like(HisDrugCatalog::getGenericName, keyword)
                     .or().like(HisDrugCatalog::getTradeName, keyword)

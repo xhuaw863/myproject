@@ -230,7 +230,7 @@ public class SkinTestService {
         dataArgs.add((p - 1) * s);
         dataArgs.add(s);
         List<Map<String, Object>> rows = jdbcTemplate.queryForList(
-                "SELECT st.id AS testId, st.exec_id AS execId, st.drug_name AS drugName, st.drug_id AS drugId, st.test_dose AS testDose,"
+                "SELECT st.id AS testId, e.id AS execId, st.drug_name AS drugName, st.drug_id AS drugId, st.test_dose AS testDose,"
                         + " DATE_FORMAT(st.observe_start, '%Y-%m-%d %H:%i:%s') AS observeStart,"
                         + " DATE_FORMAT(st.observe_end, '%Y-%m-%d %H:%i:%s') AS observeEnd,"
                         + " st.result, st.result_desc AS resultDesc,"

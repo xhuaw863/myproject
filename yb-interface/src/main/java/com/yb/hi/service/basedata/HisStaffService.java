@@ -1,5 +1,6 @@
 package com.yb.hi.service.basedata;
 
+import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
 import com.yb.hi.entity.basedata.HisDept;
 import com.yb.hi.entity.basedata.HisStaff;
@@ -131,28 +132,59 @@ public class HisStaffService extends ServiceImpl<HisStaffMapper, HisStaff> {
      * status 非空时按在职状态(1在职/0停用)精确过滤。
      */
     public List<HisStaff> listByFilter(Long orgId, boolean withSubOrgs, Long deptId, String staffType, String keyword, boolean withChildren, Integer status) {
+        return listByFilter(orgId, withSubOrgs, deptId, staffType, keyword, withChildren, status, null, null);
+    }
+
+    /**
+     * 同上 + 快速查询两项(2026-10-03 职工列表工具栏新增):
+     * canRegister 非空按可挂号(1可/0否)精确过滤; rxAuth 处方权限快捷项见 applyRxAuth。
+     */
+    public List<HisStaff> listByFilter(Long orgId, boolean withSubOrgs, Long deptId, String staffType, String keyword, boolean withChildren,
+                                       Integer status, Integer canRegister, String rxAuth) {
         List<Long> orgIds = (orgId == null || !withSubOrgs) ? null : orgService.subtreeIds(orgId);
         List<Long> deptIds = (deptId == null || !withChildren) ? null : deptService.subtreeIds(deptId);
-        return lambdaQuery()
+        LambdaQueryWrapper<HisStaff> qw = new LambdaQueryWrapper<HisStaff>()
                 .in(orgIds != null, HisStaff::getOrgId, orgIds)
                 .eq(orgId != null && orgIds == null, HisStaff::getOrgId, orgId)
                 .in(deptIds != null, HisStaff::getDeptId, deptIds)
                 .eq(deptId != null && deptIds == null, HisStaff::getDeptId, deptId)
                 .eq(StringUtils.hasText(staffType), HisStaff::getStaffType, staffType)
                 .eq(status != null, HisStaff::getStatus, status)
-                .and(StringUtils.hasText(keyword), w -> w
-                        .like(HisStaff::getStaffName, keyword)
-                        .or().like(HisStaff::getStaffNo, keyword)
-                        .or().like(HisStaff::getPyCode, keyword)
-                        .or().like(HisStaff::getAbbrCode, keyword))
-                .orderByAsc(HisStaff::getSortNo)
-                .orderByAsc(HisStaff::getId)
-                .list();
+                .eq(canRegister != null, HisStaff::getCanRegister, canRegister);
+        if (StringUtils.hasText(keyword)) {
+            qw.and(w -> w.like(HisStaff::getStaffName, keyword)
+                    .or().like(HisStaff::getStaffNo, keyword)
+                    .or().like(HisStaff::getPyCode, keyword)
+                    .or().like(HisStaff::getAbbrCode, keyword));
+        }
+        applyRxAuth(qw, rxAuth);
+        qw.orderByAsc(HisStaff::getSortNo).orderByAsc(HisStaff::getId);
+        return list(qw);
     }
 
-    /** 导出职工列表(head/rows/total): 与列表同一筛选(含级联开关), 一次性导出全部匹配行 */
-    public Map<String, Object> exportRows(Long orgId, boolean withSubOrgs, Long deptId, String staffType, String keyword, boolean withChildren, Integer status) {
-        List<HisStaff> list = listByFilter(orgId, withSubOrgs, deptId, staffType, keyword, withChildren, status);
+    /** 处方权限快捷过滤: rx处方权/narcotic麻醉/psych1精一/psych2精二/abx任一抗菌级/abx1|2|3按分级(与列表 rx 标签同口径) */
+    private void applyRxAuth(LambdaQueryWrapper<HisStaff> qw, String rxAuth) {
+        if (!StringUtils.hasText(rxAuth)) {
+            return;
+        }
+        switch (rxAuth.trim()) {
+            case "rx": qw.eq(HisStaff::getRxRight, 1); break;
+            case "narcotic": qw.eq(HisStaff::getNarcoticRight, 1); break;
+            case "psych1": qw.eq(HisStaff::getPsych1Right, 1); break;
+            case "psych2": qw.eq(HisStaff::getPsych2Right, 1); break;
+            case "abx": qw.isNotNull(HisStaff::getAntibioticLevel).ne(HisStaff::getAntibioticLevel, ""); break;
+            /* HBCV08.50.029 分级码实为 11非限制/12限制/13特殊使用(库内无单字符 1/2/3) */
+            case "abx1": qw.eq(HisStaff::getAntibioticLevel, "11"); break;
+            case "abx2": qw.eq(HisStaff::getAntibioticLevel, "12"); break;
+            case "abx3": qw.eq(HisStaff::getAntibioticLevel, "13"); break;
+            default: break;
+        }
+    }
+
+    /** 导出职工列表(head/rows/total): 与列表同一筛选(含级联开关与可挂号/处方权限快捷项), 一次性导出全部匹配行 */
+    public Map<String, Object> exportRows(Long orgId, boolean withSubOrgs, Long deptId, String staffType, String keyword, boolean withChildren,
+                                          Integer status, Integer canRegister, String rxAuth) {
+        List<HisStaff> list = listByFilter(orgId, withSubOrgs, deptId, staffType, keyword, withChildren, status, canRegister, rxAuth);
         Map<Long, String> deptNames = new LinkedHashMap<>();
         for (HisDept d : deptService.listAll()) {
             deptNames.put(d.getId(), d.getDeptName());

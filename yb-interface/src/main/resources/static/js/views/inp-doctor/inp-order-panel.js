@@ -238,8 +238,11 @@
         mark: { emergency: false, dischargeDays: 0, standby: '' },
         dripRate: '',
         skinLinked: false,
-        examSel: { sites: [], film: '', report: false },
+        examSel: { sites: [], film: '', report: false, contrast: '平扫' },
         labSel: { specimen: '', metrics: '' },
+        /* 医保检查控费加收双开关(后端 inpatient.exam_part_surcharge_enabled / exam_contrast_surcharge_enabled, 默认停用; 未启用时隐藏对应加收预估避免误导) */
+        examPartEnabled: false,
+        examContrastEnabled: false,
         siteOptions: ['头部', '颈部', '胸部', '腹部', '骨盆', '脊柱', '左上肢', '右上肢', '左下肢', '右下肢'],
         specimenOptions: ['全血', '血清', '血浆', '尿液', '粪便', '痰液', '分泌物', '脑脊液', '胸腹水'],
         filmOptions: ['纸质(按项目)', '纸质(按部位)', '数字胶片'],
@@ -256,6 +259,29 @@
     },
     computed: {
       isDrug() { return Number(this.form.orderCategory) === 1; },
+      /* 住院检查计价部位数(按已选部位去重计数) */
+      examSiteCount() {
+        const s = (this.examSel && this.examSel.sites) || [];
+        const uniq = {};
+        s.forEach(function (x) { if (x) { uniq[x] = 1; } });
+        return Object.keys(uniq).length || 0;
+      },
+      /* 多部位/增强加收预估(仅前端提示, 实际以服务端计费规则为准): 放射类 CT(2103*)/MR(2102*)/X线(2101*) 及超声(22xx) 第2个部位起每个按主项目50%; CT/MR平扫项目选"增强"再一次性加收50% */
+      examSurchargeEstimate() {
+        if (Number(this.form.orderCategory) !== 2) { return 0; }
+        const price = Number(this.pickedCharge && (this.pickedCharge.execPrice != null ? this.pickedCharge.execPrice : this.pickedCharge.price)) || 0;
+        if (price <= 0) { return 0; }
+        const code = String((this.pickedCharge && this.pickedCharge.itemCode) || '');
+        const name = String((this.pickedCharge && this.pickedCharge.itemName) || '');
+        const n = this.examSiteCount;
+        const contrast = this.examSel && this.examSel.contrast === '增强';
+        const isImg = code.indexOf('2101') === 0 || code.indexOf('2102') === 0 || code.indexOf('2103') === 0 || code.indexOf('22') === 0;
+        let sur = 0;
+        if (this.examPartEnabled && isImg && n > 1) { sur += price * 0.5 * (n - 1); }
+        const isCtMrPlain = (code.indexOf('2102') === 0 || code.indexOf('2103') === 0) && name.indexOf('增强') < 0 && name.indexOf('造影') < 0;
+        if (this.examContrastEnabled && contrast && isCtMrPlain) { sur += price * 0.5; }
+        return sur;
+      },
       usageMap() {
         const map = {};
         this.usageOptions.forEach(o => { map[o.code] = o.name; });
@@ -472,7 +498,7 @@
         this.mark = { emergency: false, dischargeDays: 0, standby: '' };
         this.dripRate = '';
         this.skinLinked = false;
-        this.examSel = { sites: [], film: '', report: false };
+        this.examSel = { sites: [], film: '', report: false, contrast: '平扫' };
         this.labSel = { specimen: '', metrics: '' };
       },
       /* 切换医疗单形态(导航轨/前缀路由共用) */
@@ -785,6 +811,11 @@
             ? [f.dosage ? f.dosage + (f.dosageUnit || '') : '', this.usageMap[f.usageCode] || '', this.freqMap[f.freqCode] || ''].filter(Boolean).join(' ')
             : ''
         };
+        if (Number(f.orderCategory) === 2) {
+          item.examPart = (this.examSel.sites || []).join(',') || null;
+          item.siteCount = this.examSiteCount || null;
+          item.contrastMode = this.examSel.contrast || null;
+        }
         const dup = this.findDuplicate(item);
         if (dup) {
           ElementPlus.ElMessageBox.confirm('已存在相同药品/项目与用法频次的医嘱「' + (dup.orderContent || '') + '」, 确认重复开立?', '重复开嘱提醒', {
@@ -812,7 +843,7 @@
       },
       removePending(index) { this.pendingItems.splice(index, 1); },
       buildDto(item) {
-        return {
+        const dto = {
           inpVisitId: HIS.id(this.visitId),
           orderType: item.orderType,
           orderCategory: item.orderCategory,
@@ -826,6 +857,12 @@
           freqCode: item.freqCode || null,
           quantity: item.quantity
         };
+        if (Number(item.orderCategory) === 2) {
+          dto.examPart = item.examPart || null;
+          dto.siteCount = item.siteCount || null;
+          dto.contrastMode = item.contrastMode || null;
+        }
+        return dto;
       },
       submitOrders() {
         const vm = this;
@@ -857,6 +894,11 @@
             quantity: Number(f.quantity) || 1
           };
           vm.submitting = true;
+          if (Number(f.orderCategory) === 2) {
+            single.examPart = (vm.examSel.sites || []).join(',') || null;
+            single.siteCount = vm.examSiteCount || null;
+            single.contrastMode = vm.examSel.contrast || null;
+          }
           HIS.post('/api/his/inp/order', vm.buildDto(single)).then(function (order) {
             HIS.notifySuccess('医嘱已开立: ' + ((order && order.orderContent) || '成功')
               + (order && order.insuranceCategory ? '(' + order.insuranceCategory + ')' : ''));
@@ -1043,7 +1085,7 @@
         this.mark = { emergency: m.emergency, dischargeDays: m.dischargeDays, standby: m.standby };
         this.dripRate = m.dripRate;
         this.skinLinked = m.linkedSkin;
-        this.examSel = { sites: m.sites ? m.sites.split(',') : [], film: m.film, report: m.report };
+        this.examSel = { sites: m.sites ? m.sites.split(',') : [], film: m.film, report: m.report, contrast: m.contrastMode || '平扫' };
         this.labSel = { specimen: m.specimen, metrics: m.metrics };
         this.pickedDrug = null;
         this.pickedCharge = null;
@@ -1102,6 +1144,16 @@
     },
     mounted() {
       this.loadDepts();
+      /* 拉取住院检查控费加收双开关(默认停用), 驱动加收预估显隐; 拉取失败保持默认停用不阻断面板 */
+      const vmSw = this;
+      if (window.HIS && HIS.get) {
+        HIS.get('/api/sys/param/resolve/inpatient.exam_part_surcharge_enabled').then(function (v) {
+          vmSw.examPartEnabled = String(v).toLowerCase() === 'true';
+        }).catch(function () { /* 保持默认停用 */ });
+        HIS.get('/api/sys/param/resolve/inpatient.exam_contrast_surcharge_enabled').then(function (v) {
+          vmSw.examContrastEnabled = String(v).toLowerCase() === 'true';
+        }).catch(function () { /* 保持默认停用 */ });
+      }
       /* 点击任意处 / 在别处右键 自动关闭行右键菜单 */
       this._onDocClick = this.closeCtx.bind(this);
       this._onDocCtxMenu = this.closeCtx.bind(this);
@@ -1349,6 +1401,13 @@
                   </el-select>
                 </div>
                 <div class="iw-form-row">
+                  <span class="lb">造影方式</span>
+                  <el-radio-group v-model="examSel.contrast" size="small">
+                    <el-radio-button label="平扫">平扫</el-radio-button>
+                    <el-radio-button label="增强">增强</el-radio-button>
+                  </el-radio-group>
+                </div>
+                <div class="iw-form-row">
                   <span class="lb">胶片/报告</span>
                   <el-select v-model="examSel.film" size="small" clearable placeholder="胶片类型" style="width:160px">
                     <el-option v-for="f in filmOptions" :key="f" :label="f" :value="f"></el-option>
@@ -1357,8 +1416,9 @@
                 </div>
                 <div class="iw-conv" v-if="pickedCharge">
                   <span>项目基准价 <b class="iw-money">{{ money(pickedCharge.execPrice != null ? pickedCharge.execPrice : pickedCharge.price) }}</b> 元</span>
-                  <span>已选部位 <b>{{ (examSel.sites || []).length }}</b> 个</span>
-                  <span class="iw-dim">按部位/胶片加收由计费规则落库, 此处为预估与结构化记录</span>
+                  <span>计价部位 <b>{{ examSiteCount }}</b> 个{{ examSel.contrast==='增强' ? '（增强）' : '' }}</span>
+                  <span class="iw-dim" v-if="examSurchargeEstimate>0">加收预估 ￥{{ money(examSurchargeEstimate) }}（多部位第2个起每个50%、增强另按主项目50%，实际以计费规则为准）</span>
+                  <span class="iw-dim" v-else>按部位/增强加收由计费规则落库（当前机构住院控费开关停用则不自动加收）</span>
                 </div>
               </template>
 

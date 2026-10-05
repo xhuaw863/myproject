@@ -92,6 +92,15 @@ public class InpCaseFirstPageService {
                     + " insurance_pay AS insurancePay, quality_score AS qualityScore,"
                     + " qc_doctor_id AS qcDoctorId, qc_time AS qcTime, status,"
                     + " doctor_sign_img AS doctorSignImg, nurse_sign_img AS nurseSignImg, qc_sign_img AS qcSignImg,"
+                    + " discharge_mode AS dischargeMode, trans_inst AS transInst, treat_result AS treatResult,"
+                    + " readmit_plan AS readmitPlan, readmit_purpose AS readmitPurpose, main_diag_admit_cond AS mainDiagAdmitCond,"
+                    + " outp_diag_code AS outpDiagCode, outp_diag_name AS outpDiagName,"
+                    + " injury_poison_name AS injuryPoisonName, pathology_code AS pathologyCode, pathology_no AS pathologyNo,"
+                    + " allergy_flag AS allergyFlag, coma_before AS comaBefore, coma_after AS comaAfter,"
+                    + " newborn_birth_weight AS newbornBirthWeight, newborn_admit_weight AS newbornAdmitWeight,"
+                    + " native_place AS nativePlace, mr_grade AS mrGrade,"
+                    + " chief_doctor AS chiefDoctor, resident_doctor AS residentDoctor, qc_nurse AS qcNurse,"
+                    + " cost_class_detail AS costClassDetail,"
                     + " create_time AS createTime, update_time AS updateTime"
                     + " FROM his_case_front_page WHERE visit_id = ? AND tenant_id = ? AND deleted = 0 LIMIT 1";
 
@@ -145,15 +154,19 @@ public class InpCaseFirstPageService {
             otherDiags.add(o);
         }
 
-        // 3) 手术记录: [{name, code, date, surgeon, surgeonId, anesthesia, incisionType, healLevel}]
+        // 3) 手术记录: [{name, code, date, surgeon, surgeonId, anesthesia, anesthesiaDoctor, firstAssistant, surgeryLevel, asaGrade, incisionType, healLevel}]
         JSONArray operationRecords = new JSONArray();
         for (Map<String, Object> s : jdbcTemplate.queryForList(
                 "SELECT s.surgery_code AS surgery_code, s.surgery_name AS surgery_name,"
                         + " s.schedule_date AS schedule_date, s.surgeon_id AS surgeon_id,"
                         + " st.staff_name AS surgeon_name, s.incision_type AS incision_type,"
+                        + " s.surgery_level AS surgery_level, s.asa_grade AS asa_grade,"
+                        + " fa.staff_name AS first_assistant_name, an.staff_name AS anesthesiologist_name,"
                         + " a.anesthesia_type AS anesthesia_type, a.anesthesia_method AS anesthesia_method"
                         + " FROM his_surgery s"
                         + " LEFT JOIN his_staff st ON st.id = s.surgeon_id AND st.deleted = 0"
+                        + " LEFT JOIN his_staff fa ON fa.id = s.first_assistant_id AND fa.deleted = 0"
+                        + " LEFT JOIN his_staff an ON an.id = s.anesthesiologist_id AND an.deleted = 0"
                         + " LEFT JOIN his_anesthesia a ON a.surgery_id = s.id AND a.deleted = 0"
                         + " WHERE s.inp_visit_id = ? AND s.tenant_id = ? AND s.deleted = 0"
                         + " ORDER BY s.schedule_date ASC, s.id ASC",
@@ -168,6 +181,10 @@ public class InpCaseFirstPageService {
             Integer anesType = intOrNull(s.get("anesthesia_type"));
             o.put("anesthesia", StringUtils.hasText(method) ? method
                     : (anesType == null ? null : ANESTHESIA_TYPES.getOrDefault(anesType, "其他")));
+            o.put("anesthesiaDoctor", strVal(s.get("anesthesiologist_name")));
+            o.put("firstAssistant", strVal(s.get("first_assistant_name")));
+            o.put("surgeryLevel", intOrNull(s.get("surgery_level")));
+            o.put("asaGrade", intOrNull(s.get("asa_grade")));
             o.put("incisionType", anestInt(s.get("incision_type")));
             o.put("healLevel", "");
             operationRecords.add(o);
@@ -225,6 +242,22 @@ public class InpCaseFirstPageService {
             }
         }
 
+        // 4b) 病案首页费用分项: 按 his_charge_item.mr_cost_class 归并聚合(std_mr_cost_class 值域), 未维护归"未归类"
+        JSONArray costClassDetail = new JSONArray();
+        for (Map<String, Object> row : jdbcTemplate.queryForList(
+                "SELECT ci.mr_cost_class AS cls, COALESCE(SUM(d.amount), 0) AS amt FROM his_inp_charge_detail d"
+                        + " LEFT JOIN his_charge_item ci ON ci.id = d.charge_item_id"
+                        + " WHERE d.inp_visit_id = ? AND d.status = 1 AND d.deleted = 0 AND d.tenant_id = ?"
+                        + " GROUP BY ci.mr_cost_class ORDER BY amt DESC",
+                visitId, tid)) {
+            JSONObject o = new JSONObject();
+            String cls = strVal(row.get("cls"));
+            o.put("cls", StringUtils.hasText(cls) ? cls : "未归类");
+            o.put("amount", nvl(decVal(row.get("amt"))));
+            costClassDetail.add(o);
+        }
+        String costClassJson = costClassDetail.isEmpty() ? null : JSON.toJSONString(costClassDetail);
+
         // 5) 自付/医保支付: 取最新一条结算(出院/中途); 未结算按 0
         Map<String, Object> settle = queryFirst(
                 "SELECT self_pay, fund_pay, acct_pay FROM his_inp_settle"
@@ -278,9 +311,9 @@ public class InpCaseFirstPageService {
                             + " discharge_main_diag_code, discharge_main_diag_name, discharge_other_diags,"
                             + " operation_records, blood_type, allergy_drugs, autopsy,"
                             + " total_cost, drug_cost, exam_cost, treatment_cost, bed_cost, nursing_cost,"
-                            + " material_cost, other_cost, self_pay, insurance_pay,"
+                            + " material_cost, other_cost, self_pay, insurance_pay, cost_class_detail,"
                             + " status, tenant_id, deleted, update_time)"
-                            + " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, 0, NOW())"
+                            + " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, 0, NOW())"
                             + " ON DUPLICATE KEY UPDATE admission_date = VALUES(admission_date),"
                             + " discharge_date = VALUES(discharge_date), los_days = VALUES(los_days),"
                             + " admission_dept_id = VALUES(admission_dept_id), discharge_dept_id = VALUES(discharge_dept_id),"
@@ -294,13 +327,14 @@ public class InpCaseFirstPageService {
                             + " treatment_cost = VALUES(treatment_cost), bed_cost = VALUES(bed_cost),"
                             + " nursing_cost = VALUES(nursing_cost), material_cost = VALUES(material_cost),"
                             + " other_cost = VALUES(other_cost), self_pay = VALUES(self_pay),"
-                            + " insurance_pay = VALUES(insurance_pay), update_time = NOW()",
+                            + " insurance_pay = VALUES(insurance_pay), cost_class_detail = VALUES(cost_class_detail),"
+                            + " update_time = NOW()",
                     visitId, patientId, admissionDate, dischargeDate, losDays,
                     deptId, deptId, admDiagCode, admDiagName,
                     mainDiagCode, mainDiagName, otherDiagsJson,
                     operationsJson, bloodType, allergyText,
                     totalCost, drugCost, examCost, treatmentCost, bedCost, nursingCost,
-                    materialCost, otherCost, selfPay, insurancePay, tid);
+                    materialCost, otherCost, selfPay, insurancePay, costClassJson, tid);
         } else {
             jdbcTemplate.update("UPDATE his_case_front_page SET"
                             + " admission_date = ?, discharge_date = ?, los_days = ?,"
@@ -310,7 +344,7 @@ public class InpCaseFirstPageService {
                             + " discharge_other_diags = ?, operation_records = ?, blood_type = ?, allergy_drugs = ?,"
                             + " total_cost = ?, drug_cost = ?, exam_cost = ?, treatment_cost = ?,"
                             + " bed_cost = ?, nursing_cost = ?, material_cost = ?, other_cost = ?,"
-                            + " self_pay = ?, insurance_pay = ?, update_time = NOW()"
+                            + " self_pay = ?, insurance_pay = ?, cost_class_detail = ?, update_time = NOW()"
                             + " WHERE id = ? AND status = 1 AND tenant_id = ? AND deleted = 0",
                     admissionDate, dischargeDate, losDays,
                     deptId, deptId,
@@ -319,7 +353,7 @@ public class InpCaseFirstPageService {
                     otherDiagsJson, operationsJson, bloodType, allergyText,
                     totalCost, drugCost, examCost, treatmentCost,
                     bedCost, nursingCost, materialCost, otherCost,
-                    selfPay, insurancePay, longVal(exist.get("id")), tid);
+                    selfPay, insurancePay, costClassJson, longVal(exist.get("id")), tid);
         }
         log.info("生成病案首页: visitId={}, 状态={}, 费用合计={}, 手术数={}",
                 visitId, exist == null ? "新建" : "覆盖草稿", totalCost, operationRecords.size());
@@ -376,7 +410,20 @@ public class InpCaseFirstPageService {
                 {"pathologyDiag", "pathology_diag"},
                 {"injuryPoisonCode", "injury_poison_code"},
                 {"bloodType", "blood_type"},
-                {"rh", "rh"}
+                {"rh", "rh"},
+                {"outpDiagCode", "outp_diag_code"},
+                {"outpDiagName", "outp_diag_name"},
+                {"injuryPoisonName", "injury_poison_name"},
+                {"pathologyCode", "pathology_code"},
+                {"pathologyNo", "pathology_no"},
+                {"transInst", "trans_inst"},
+                {"readmitPurpose", "readmit_purpose"},
+                {"comaBefore", "coma_before"},
+                {"comaAfter", "coma_after"},
+                {"nativePlace", "native_place"},
+                {"chiefDoctor", "chief_doctor"},
+                {"residentDoctor", "resident_doctor"},
+                {"qcNurse", "qc_nurse"}
         };
         for (String[] col : textCols) {
             if (!data.containsKey(col[0])) {
@@ -390,7 +437,8 @@ public class InpCaseFirstPageService {
         // JSON 列(前端传数组或 JSON 字符串, 保存前校验合法性)
         String[][] jsonCols = {
                 {"dischargeOtherDiags", "discharge_other_diags"},
-                {"operationRecords", "operation_records"}
+                {"operationRecords", "operation_records"},
+                {"costClassDetail", "cost_class_detail"}
         };
         for (String[] col : jsonCols) {
             if (!data.containsKey(col[0])) {
@@ -438,6 +486,29 @@ public class InpCaseFirstPageService {
             sets.add(col[1] + " = ?");
             args.add(d);
         }
+        // 编码/整型列(P0/P1 关键项): 空串置 NULL 而非 0, 以便提交硬校验能识别未填(0 对过敏/再住院为合法值)
+        String[][] codeCols = {
+                {"dischargeMode", "discharge_mode"}, {"treatResult", "treat_result"},
+                {"readmitPlan", "readmit_plan"}, {"mainDiagAdmitCond", "main_diag_admit_cond"},
+                {"allergyFlag", "allergy_flag"}, {"mrGrade", "mr_grade"},
+                {"newbornBirthWeight", "newborn_birth_weight"}, {"newbornAdmitWeight", "newborn_admit_weight"}
+        };
+        for (String[] col : codeCols) {
+            if (!data.containsKey(col[0])) {
+                continue;
+            }
+            Object v = data.get(col[0]);
+            if (v == null || String.valueOf(v).trim().isEmpty()) {
+                sets.add(col[1] + " = NULL");
+                continue;
+            }
+            Integer iv = intOrNull(v);
+            if (iv == null) {
+                throw new BizException(400, col[0] + " 必须为整数");
+            }
+            sets.add(col[1] + " = ?");
+            args.add(iv);
+        }
         if (sets.isEmpty()) {
             throw new BizException(400, "无可保存的字段");
         }
@@ -459,6 +530,36 @@ public class InpCaseFirstPageService {
         loadVisitContext(visitId, tid);
         if (!StringUtils.hasText(doctorSignImg)) {
             throw new BizException(400, "医师签名不能为空, 请完成电子签名后提交");
+        }
+        // 提交前硬校验: 国考/DRG 对首页质量要求, P0 关键字段缺失禁止提交并列出缺项
+        Map<String, Object> fp = loadFrontPage(visitId, tid);
+        if (fp == null) {
+            throw new BizException(400, "病案首页尚未生成, 请先点击「生成」");
+        }
+        if (intVal(fp.get("status"), 0) != 1) {
+            throw new BizException(400, "病案首页已提交或已审核, 不可重复提交");
+        }
+        List<String> miss = new ArrayList<>();
+        if (intOrNull(fp.get("dischargeMode")) == null) {
+            miss.add("离院方式");
+        }
+        if (intOrNull(fp.get("treatResult")) == null) {
+            miss.add("治疗转归");
+        }
+        if (intOrNull(fp.get("readmitPlan")) == null) {
+            miss.add("31天内再住院计划");
+        } else if (intVal(fp.get("readmitPlan"), 0) == 1 && !StringUtils.hasText(strVal(fp.get("readmitPurpose")))) {
+            miss.add("再住院目的");
+        }
+        if (intOrNull(fp.get("mainDiagAdmitCond")) == null) {
+            miss.add("主要诊断入院病情");
+        }
+        if (!StringUtils.hasText(strVal(fp.get("dischargeMainDiagCode")))
+                && !StringUtils.hasText(strVal(fp.get("dischargeMainDiagName")))) {
+            miss.add("出院主要诊断");
+        }
+        if (!miss.isEmpty()) {
+            throw new BizException(400, "病案首页缺少必填项: " + String.join("、", miss));
         }
         int affected = jdbcTemplate.update(
                 "UPDATE his_case_front_page SET status = 2, doctor_sign_img = ?, update_time = NOW()"
@@ -536,6 +637,7 @@ public class InpCaseFirstPageService {
         result.putAll(fp);
         result.put("dischargeOtherDiags", parseJsonArray(fp.get("dischargeOtherDiags")));
         result.put("operationRecords", parseJsonArray(fp.get("operationRecords")));
+        result.put("costClassDetail", parseJsonArray(fp.get("costClassDetail")));
         Long qcDoctorId = longVal(fp.get("qcDoctorId"));
         if (qcDoctorId != null) {
             Map<String, Object> qc = queryFirst(

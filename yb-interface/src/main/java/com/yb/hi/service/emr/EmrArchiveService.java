@@ -4,6 +4,7 @@ import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import com.baomidou.mybatisplus.core.metadata.IPage;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
+import com.yb.hi.common.UploadUrlSigner;
 import com.yb.hi.entity.emr.HisEmrQcNode;
 import com.yb.hi.entity.inpatient.HisInpMedicalRecord;
 import com.yb.hi.entity.inpatient.HisInpVisit;
@@ -143,6 +144,9 @@ public class EmrArchiveService {
 
     @Value("${his.upload.url-prefix:/uploads/}")
     private String urlPrefix;
+
+    @Autowired
+    private UploadUrlSigner uploadUrlSigner;
 
     public EmrArchiveService(HisInpMedicalRecordMapper recordMapper, HisInpVisitMapper visitMapper,
                              JdbcTemplate jdbcTemplate, EmrEventPublisher eventPublisher,
@@ -814,7 +818,7 @@ public class EmrArchiveService {
         Files.createDirectories(dir);
         Files.write(dir.resolve(filename), pdf);
         String prefix = urlPrefix.endsWith("/") ? urlPrefix : urlPrefix + "/";
-        return prefix + "emr-archive/" + ym + "/" + filename;
+        return uploadUrlSigner.appendToken(prefix + "emr-archive/" + ym + "/" + filename);
     }
 
     /* ==================== 副作用助手(best-effort) ==================== */

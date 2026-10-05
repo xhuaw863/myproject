@@ -86,11 +86,32 @@ public class EmrTemplateService implements ApplicationRunner {
             {"EMR_TCM_PROG", "中医病程记录", "3", "3", "1"}
     };
 
-    /** 播种时附加 Tiptap 文档骨架的模板编码(P2 新增 10-15 类 + P3 门诊两模板): 由种子字段定义生成章节/数据元节点, 书写器可直接渲染 */
+    /** 播种时附加 Tiptap 文档骨架的模板编码(P2 新增 10-15 类 + P3 门诊两模板 + 8 类住院基本文书): 由种子字段定义生成章节/数据元节点, 书写器可直接渲染 */
     private static final Set<String> SEED_DOC_CODES = new HashSet<>(Arrays.asList(
             "EMR_HOMEPAGE", "EMR_HANDOVER", "EMR_TRANSFER", "EMR_CONSENT", "EMR_DISCUSSION", "EMR_CONSULTATION",
             "EMR_OUTP_GENERAL", "EMR_OUTP_TCM",
-            "EMR_TCM_HOMEPAGE", "EMR_TCM_ADMIT", "EMR_TCM_PROG"));
+            "EMR_TCM_HOMEPAGE", "EMR_TCM_ADMIT", "EMR_TCM_PROG",
+            "EMR_ADMIT", "EMR_FIRST_PROG", "EMR_DAILY_PROG", "EMR_SENIOR_ROUND",
+            "EMR_SURGERY", "EMR_POST_SURGERY", "EMR_DISCHARGE", "EMR_DEATH"));
+
+    /**
+     * 8 类住院基本文书编码(按病历书写规范补齐分节结构化模板): 存量回填时, 对"未改动的全院标准行"
+     * 同时回写充实后的 fields 与 document(其余 SEED_DOC_CODES 只补 document, 不动其 fields)。
+     */
+    private static final Set<String> INP_BASIC_DOC_CODES = new HashSet<>(Arrays.asList(
+            "EMR_ADMIT", "EMR_FIRST_PROG", "EMR_DAILY_PROG", "EMR_SENIOR_ROUND",
+            "EMR_SURGERY", "EMR_POST_SURGERY", "EMR_DISCHARGE", "EMR_DEATH"));
+
+    /**
+     * 需在升级时刷新"未改动全院标准行"(含已有文档)的种子编码: 8 类住院基本文书 + 门诊通用病历。
+     * 这些均为全租户共享的标准主数据(机构定制走 dept/personal 克隆行), 故升级时从种子重刷 fields+document 以传播规范缺项补充。
+     */
+    private static final Set<String> STD_TEMPLATE_REFRESH_CODES;
+    static {
+        Set<String> s = new HashSet<>(INP_BASIC_DOC_CODES);
+        s.add("EMR_OUTP_GENERAL");
+        STD_TEMPLATE_REFRESH_CODES = Collections.unmodifiableSet(s);
+    }
 
     /** 中医三模板文档编码(P8): 走 buildTcmSeedDocument 逐章节生成(与 SEED_OUTP_CODES 同级分流) */
     private static final Set<String> SEED_TCM_CODES = new HashSet<>(Arrays.asList(
@@ -241,27 +262,42 @@ public class EmrTemplateService implements ApplicationRunner {
     }
 
     /**
-     * 存量模板 Tiptap 文档幂等补种: SEED_DOC_CODES 命中且本地已存在但 document 为空的模板回填种子文档
-     * (老库升级新种子编码时逐码判空会跳过已存在行, 此处保证存量行也能拿到 P3 门诊文档/早期漏种的文档骨架)。
-     * 仅补空不覆盖已有文档; 失败只告警不阻断后续种子。
+     * 存量模板 Tiptap 文档/字段幂等补种与升级:
+     * (1) document 缺失的行(SEED_DOC_CODES 命中): 回填种子文档(不覆盖已有文档)。
+     * (2) STD_TEMPLATE_REFRESH_CODES 命中且为"未改动全院标准行"(scope_level=0/dept_id=0/staff_id 为空):
+     *     即使已有文档也从最新种子重刷 fields+document, 以传播规范缺项补充(如门诊通用病历的就诊日期/医师签名);
+     *     租户定制行(scope_level>0 或已挂 dept/staff)与非刷新集的标准行一律不覆盖。
+     * 失败只告警不阻断后续种子。
      */
     private void backfillSeedDocIfMissing(String code) {
         if (!SEED_DOC_CODES.contains(code)) {
             return;
         }
         try {
-            List<HisEmrTemplate> missing = templateMapper.selectList(Wrappers.<HisEmrTemplate>lambdaQuery()
-                    .eq(HisEmrTemplate::getTemplateCode, code)
-                    .and(w -> w.isNull(HisEmrTemplate::getDocument).or().eq(HisEmrTemplate::getDocument, "")));
-            for (HisEmrTemplate t : missing) {
+            List<HisEmrTemplate> rows = templateMapper.selectList(Wrappers.<HisEmrTemplate>lambdaQuery()
+                    .eq(HisEmrTemplate::getTemplateCode, code));
+            boolean refreshable = STD_TEMPLATE_REFRESH_CODES.contains(code);
+            for (HisEmrTemplate t : rows) {
+                boolean docEmpty = t.getDocument() == null || t.getDocument().isEmpty();
+                boolean pristineGlobal = (t.getScopeLevel() == null || t.getScopeLevel() == 0)
+                        && (t.getDeptId() == null || t.getDeptId() == 0L)
+                        && t.getStaffId() == null;
+                boolean rewriteFields = pristineGlobal && refreshable; // 全局标准行且属刷新集: fields↔document 同步
+                if (!docEmpty && !rewriteFields) {
+                    continue; // 已有文档且非需刷新的标准行(定制/非刷新集): 不覆盖
+                }
                 HisEmrTemplate upd = new HisEmrTemplate();
                 upd.setId(t.getId());
                 upd.setDocument(buildSeedDocument(code, t.getTemplateName()));
-                templateMapper.updateById(upd); // 仅非 null 字段更新, 只回填 document
-                log.info("模板[{}] 存量行缺 Tiptap 文档, 已回填种子文档", code);
+                if (rewriteFields) {
+                    upd.setFields(buildSeedFields(code));
+                }
+                templateMapper.updateById(upd); // 仅非 null 字段更新
+                log.info("模板[{}] 存量行{}{}", code, docEmpty ? "缺 Tiptap 文档已回填" : "为全院标准行已从种子重刷",
+                        rewriteFields ? "并同步 fields" : "");
             }
         } catch (Exception e) {
-            log.warn("模板[{}] Tiptap 文档补种跳过: {}", code, e.getMessage());
+            log.warn("模板[{}] Tiptap 文档/字段补种跳过: {}", code, e.getMessage());
         }
     }
 
@@ -1477,80 +1513,125 @@ public class EmrTemplateService implements ApplicationRunner {
         JSONArray a = new JSONArray();
         switch (code) {
             case "EMR_ADMIT":
+                a.add(f("sec_general", "患者一般信息", "section", false));
+                a.add(f("generalInfo", "患者一般信息(姓名/性别/年龄/民族/婚姻/职业/籍贯地址/入院及记录时间/病史陈述者)", "textarea", false));
+                a.add(f("sec_history", "病史", "section", false));
                 a.add(f("chiefComplaint", "主诉", "textarea", true, "maxLength", 200));
                 a.add(f("presentIllness", "现病史", "textarea", true));
                 a.add(f("pastHistory", "既往史", "textarea", false, "defaultMacro", "past_history"));
                 a.add(f("personalHistory", "个人史", "textarea", false));
+                a.add(f("marriageHistory", "婚育史", "textarea", false));
                 a.add(f("familyHistory", "家族史", "textarea", false));
                 a.add(f("allergyHistory", "过敏史", "textarea", true, "defaultMacro", "allergy_info"));
-                a.add(f("physicalExam", "体格检查", "textarea", true));
+                a.add(f("sec_exam", "体格检查", "section", false));
+                a.add(f("vitals", "生命体征(T/P/R/BP)", "vitals", false, "defaultMacro", "vital_signs"));
+                a.add(f("physicalExam", "体格检查(一般检查)", "textarea", true));
+                a.add(f("systemExam", "系统查体(头颈胸腹脊柱四肢神经系统)", "textarea", false));
                 a.add(f("specialExam", "专科检查", "textarea", false));
                 a.add(f("auxiliaryExam", "辅助检查", "textarea", false));
+                a.add(f("sec_diag", "诊断与计划", "section", false));
                 a.add(f("admitDiagnosis", "初步诊断", "textarea", true, "defaultMacro", "admit_diag"));
                 a.add(f("treatPlan", "诊疗计划", "textarea", true));
+                a.add(f("physicianSign", "医师签名", "text", true, "defaultMacro", "attending_doctor"));
                 break;
             case "EMR_FIRST_PROG":
+                a.add(f("sec_features", "病例特点", "section", false));
                 a.add(f("caseFeatures", "病例特点", "textarea", true));
+                a.add(f("sec_discussion", "拟诊讨论", "section", false));
                 a.add(f("diagBasis", "诊断依据", "textarea", true));
                 a.add(f("diffDiag", "鉴别诊断", "textarea", true));
+                a.add(f("sec_plan", "诊疗计划", "section", false));
                 a.add(f("treatPlan", "诊疗计划", "textarea", true));
+                a.add(f("physicianSign", "医师签名", "text", true, "defaultMacro", "attending_doctor"));
                 break;
             case "EMR_DAILY_PROG":
+                a.add(f("sec_subjective", "主观资料(S)", "section", false));
                 a.add(f("subjective", "主观(S)", "textarea", true));
+                a.add(f("sec_objective", "客观资料(O)", "section", false));
+                a.add(f("vitals", "生命体征(T/P/R/BP)", "vitals", false, "defaultMacro", "vital_signs"));
                 a.add(f("objective", "客观(O)", "textarea", true, "defaultMacro", "vital_signs"));
+                a.add(f("sec_assessment", "病情评估(A)", "section", false));
                 a.add(f("assessment", "评估(A)", "textarea", true));
+                a.add(f("sec_plan", "诊疗计划(P)", "section", false));
                 a.add(f("plan", "计划(P)", "textarea", true));
+                a.add(f("physicianSign", "医师签名", "text", true, "defaultMacro", "attending_doctor"));
                 break;
             case "EMR_SENIOR_ROUND": {
                 JSONArray roundOpts = new JSONArray();
                 roundOpts.add("主治医师查房");
                 roundOpts.add("副主任医师查房");
                 roundOpts.add("主任医师查房");
+                a.add(f("sec_round", "查房记录", "section", false));
                 a.add(f("roundLevel", "查房级别", "select", true, "options", roundOpts));
                 a.add(f("attendingDoctor", "查房医师", "text", true, "defaultMacro", "attending_doctor"));
                 a.add(f("patientCondition", "病情汇报", "textarea", true));
                 a.add(f("attendingOpinion", "上级医师意见", "textarea", true));
                 a.add(f("treatAdjust", "诊疗调整", "textarea", false));
+                a.add(f("physicianSign", "记录医师签名", "text", true, "defaultMacro", "attending_doctor"));
                 break;
             }
             case "EMR_SURGERY":
+                a.add(f("sec_base", "手术基本信息", "section", false));
                 a.add(f("surgeryName", "手术名称", "text", true, "defaultMacro", "surgery_name"));
                 a.add(f("surgeryDate", "手术日期", "date", true, "defaultMacro", "surgery_date"));
                 a.add(f("surgeon", "术者", "text", true, "defaultMacro", "surgeon_name"));
                 a.add(f("assistant", "助手", "text", false));
                 a.add(f("anesthesia", "麻醉方式", "text", true));
+                a.add(f("sec_diag", "手术诊断", "section", false));
                 a.add(f("preOpDiag", "术前诊断", "textarea", true));
                 a.add(f("postOpDiag", "术后诊断", "textarea", true));
+                a.add(f("sec_process", "手术经过", "section", false));
                 a.add(f("surgeryProcess", "手术经过", "textarea", true));
                 a.add(f("specimen", "术中标本", "textarea", false));
                 a.add(f("bleeding", "术中出血量(ml)", "number", true));
                 a.add(f("infusion", "术中输液量(ml)", "number", false));
+                a.add(f("transfusion", "术中输血量", "text", false));
+                a.add(f("sec_sign", "签名", "section", false));
+                a.add(f("surgeonSign", "术者签名", "text", true, "defaultMacro", "surgeon_name"));
+                a.add(f("recorderSign", "记录医师签名", "text", true));
                 break;
             case "EMR_POST_SURGERY":
+                a.add(f("sec_op", "手术情况", "section", false));
                 a.add(f("surgeryName", "手术名称", "text", true));
                 a.add(f("anesthesiaRecovery", "麻醉恢复", "textarea", true));
+                a.add(f("sec_condition", "术后情况", "section", false));
+                a.add(f("vitals", "生命体征(T/P/R/BP)", "vitals", false, "defaultMacro", "vital_signs"));
                 a.add(f("postCondition", "术后情况", "textarea", true));
+                a.add(f("drainTube", "引流/管路情况", "textarea", false));
+                a.add(f("intakeOutput", "24小时出入量", "textarea", false));
+                a.add(f("sec_orders", "术后医嘱", "section", false));
                 a.add(f("postOrders", "术后医嘱", "textarea", true));
                 a.add(f("attention", "注意事项", "textarea", false));
+                a.add(f("physicianSign", "医师签名", "text", true, "defaultMacro", "attending_doctor"));
                 break;
             case "EMR_DISCHARGE":
+                a.add(f("sec_dates", "入院与出院时间", "section", false));
                 a.add(f("admitDate", "入院日期", "date", true, "defaultMacro", "admit_date"));
                 a.add(f("dischargeDate", "出院日期", "date", true, "defaultMacro", "discharge_date"));
+                a.add(f("sec_diag", "诊断", "section", false));
                 a.add(f("admitDiag", "入院诊断", "textarea", true, "defaultMacro", "admit_diag"));
                 a.add(f("dischargeDiag", "出院诊断", "textarea", true, "defaultMacro", "discharge_diag"));
+                a.add(f("sec_summary", "诊疗经过", "section", false));
                 a.add(f("treatSummary", "诊疗经过", "textarea", true));
+                a.add(f("sec_condition", "出院情况与医嘱", "section", false));
                 a.add(f("dischargeCondition", "出院情况", "textarea", true));
                 a.add(f("dischargeOrders", "出院医嘱", "textarea", true));
                 a.add(f("followUp", "随访计划", "textarea", false));
+                a.add(f("physicianSign", "医师签名", "text", true, "defaultMacro", "attending_doctor"));
                 break;
             case "EMR_DEATH":
+                a.add(f("sec_dates", "入院与死亡时间", "section", false));
                 a.add(f("admitDate", "入院日期", "date", true, "defaultMacro", "admit_date"));
                 a.add(f("deathTime", "死亡时间", "datetime", true));
+                a.add(f("sec_diag", "诊断", "section", false));
                 a.add(f("admitDiag", "入院诊断", "textarea", true));
                 a.add(f("deathDiag", "死亡诊断", "textarea", true));
+                a.add(f("sec_cause", "死亡原因与抢救", "section", false));
+                a.add(f("deathPreCondition", "死亡前情况", "textarea", false));
                 a.add(f("deathCause", "死亡原因", "textarea", true));
                 a.add(f("treatProcess", "诊疗经过", "textarea", true));
                 a.add(f("rescueProcess", "抢救经过", "textarea", false));
+                a.add(f("physicianSign", "医师签名", "text", true, "defaultMacro", "attending_doctor"));
                 break;
             case "EMR_OUTP_GENERAL":
                 a.add(f("sec_1", "主诉与病史", "section", false));
@@ -1566,6 +1647,9 @@ public class EmrTemplateService implements ApplicationRunner {
                 a.add(f("diagnosis", "门诊诊断", "diagnosis", false, "defaultMacro", "main_diag"));
                 a.add(f("treatmentOpinion", "处理意见", "textarea", true));
                 a.add(f("followupNote", "随访建议", "textarea", false));
+                a.add(f("sec_4", "就诊信息", "section", false));
+                a.add(f("visitDate", "就诊日期", "date", true));
+                a.add(f("physicianSign", "医师签名", "text", true));
                 break;
             case "EMR_OUTP_TCM":
                 a.add(f("chiefComplaint", "主诉", "textarea", true, "maxLength", 200));
@@ -1727,6 +1811,12 @@ public class EmrTemplateService implements ApplicationRunner {
             {"syndromeAnalysis", "辨证分析", "text", "0"}
     };
 
+    /** 门诊通用病历追加章节(就诊日期/医师签名, 按书写规范): 仅通用病历追加, 中医门诊不取 */
+    private static final String[][] OUTP_GENERAL_EXTRA_SECTIONS = {
+            {"visitDate", "就诊日期", "date", "1"},
+            {"physicianSign", "医师签名", "text", "1"}
+    };
+
     /**
      * 门诊模板 Tiptap 文档(P3): 逐章节生成 emrSection(每章节独立标题, 内含单个数据元段落)。
      * 章节 attrs 双写 key=sectionKey(前端编辑器 schema 读 sectionKey, 后端 propagate/batchReplaceSection 以 attrs.key 命中,
@@ -1741,6 +1831,10 @@ public class EmrTemplateService implements ApplicationRunner {
         if ("EMR_OUTP_TCM".equals(code)) {
             for (int i = 0; i < OUTP_TCM_EXTRA_SECTIONS.length; i++) {
                 sections.add(4 + i, OUTP_TCM_EXTRA_SECTIONS[i]); // 插在过敏史(索引3)之后
+            }
+        } else {
+            for (String[] extra : OUTP_GENERAL_EXTRA_SECTIONS) {
+                sections.add(extra); // 门诊通用病历尾部追加就诊日期/医师签名
             }
         }
         JSONArray docContent = new JSONArray();
@@ -1868,10 +1962,11 @@ public class EmrTemplateService implements ApplicationRunner {
     }
 
     /**
-     * 由种子字段定义生成 Tiptap 文档骨架: 单章节 emrSection(editMode=mixed) 内含各字段段落
-     * (文本标签 + emrField 内联节点), 节点口径与 createFromDataset 的 buildTiptapDocument 一致,
-     * 书写器可直接渲染; section 的 key 取模板编码小写(如 emr_homepage), section 分组标记不生成数据元节点。
-     * 门诊两模板(P3)分流至 buildOutpSeedDocument 逐章节生成 SOAP 多章节文档。
+     * 由种子字段定义生成 Tiptap 文档骨架: 顺序扫描 fields, 遇 type=section 标记即开新 emrSection
+     * (key=标记 fieldKey, title=标记 label), 首个标记前的字段并入以模板名为标题的引导章节; 每个数据元
+     * 生成 [文本标签 + emrField 内联节点] 段落, 节点口径经 buildSeedSection 与 createFromDataset 一致, 书写器可直接渲染。
+     * 门诊两模板(P3)分流至 buildOutpSeedDocument, 中医三模板分流至 buildTcmSeedDocument;
+     * 无 section 标记的扩展模板退化为单引导章节(与旧行为等价)。
      */
     private static String buildSeedDocument(String code, String title) {
         if (SEED_OUTP_CODES.contains(code)) {
@@ -1881,45 +1976,33 @@ public class EmrTemplateService implements ApplicationRunner {
             return buildTcmSeedDocument(code);
         }
         JSONArray fields = JSON.parseArray(buildSeedFields(code));
-        JSONArray paragraphs = new JSONArray();
+        JSONArray docContent = new JSONArray();
+        String secKey = code.toLowerCase();
+        String secTitle = title;
+        List<String[]> rows = new ArrayList<>();
         for (int i = 0; i < fields.size(); i++) {
             JSONObject def = fields.getJSONObject(i);
             if ("section".equals(def.getString("type"))) {
-                continue; // 分组标记行不生成数据元节点
+                if (!rows.isEmpty()) {
+                    docContent.add(buildSeedSection(secKey, secTitle, rows.toArray(new String[0][])));
+                    rows = new ArrayList<>();
+                }
+                secKey = def.getString("fieldKey");
+                secTitle = def.getString("label");
+                continue; // 分组标记行自身不生成数据元节点, 仅切换当前章节
             }
-            JSONObject paragraph = new JSONObject();
-            paragraph.put("type", "paragraph");
-            JSONArray content = new JSONArray();
-            JSONObject label = new JSONObject();
-            label.put("type", "text");
-            label.put("text", def.getString("label") + "：");
-            content.add(label);
-            JSONObject fieldNode = new JSONObject();
-            fieldNode.put("type", NODE_FIELD);
-            JSONObject attrs = new JSONObject();
-            attrs.put("fieldKey", def.getString("fieldKey"));
-            attrs.put("fieldName", def.getString("label"));
-            attrs.put("valueType", seedValueType(def.getString("type")));
-            attrs.put("required", Boolean.TRUE.equals(def.getBoolean("required")));
-            attrs.put("value", null);
-            fieldNode.put("attrs", attrs);
-            content.add(fieldNode);
-            paragraph.put("content", content);
-            paragraphs.add(paragraph);
+            rows.add(new String[]{
+                    def.getString("fieldKey"),
+                    def.getString("label"),
+                    seedValueType(def.getString("type")),
+                    Boolean.TRUE.equals(def.getBoolean("required")) ? "1" : "0"
+            });
         }
-        JSONObject section = new JSONObject();
-        section.put("type", NODE_SECTION);
-        JSONObject sectionAttrs = new JSONObject();
-        sectionAttrs.put("key", code.toLowerCase());
-        sectionAttrs.put("title", title);
-        sectionAttrs.put("editMode", "mixed");
-        sectionAttrs.put("locked", false);
-        section.put("attrs", sectionAttrs);
-        section.put("content", paragraphs);
+        if (!rows.isEmpty()) {
+            docContent.add(buildSeedSection(secKey, secTitle, rows.toArray(new String[0][])));
+        }
         JSONObject doc = new JSONObject();
         doc.put("type", NODE_DOC);
-        JSONArray docContent = new JSONArray();
-        docContent.add(section);
         doc.put("content", docContent);
         return JSON.toJSONString(doc);
     }

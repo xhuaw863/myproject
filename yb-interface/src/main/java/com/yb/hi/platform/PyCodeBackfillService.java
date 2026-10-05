@@ -79,6 +79,7 @@ public class PyCodeBackfillService implements ApplicationRunner {
         jobs.add(new String[]{"his_charge_item", "id", "item_name"});
         jobs.add(new String[]{"his_cons_catalog", "id", "name"});
         jobs.add(new String[]{"his_med_dict", "id", "name"});
+        jobs.add(new String[]{"his_shift_dict", "id", "name"});
         jobs.add(new String[]{"his_diag_dict", "id", "name"});
         jobs.add(new String[]{"his_val_dict", "id", "name"});
         jobs.add(new String[]{"his_fee_type_dict", "id", "name"});

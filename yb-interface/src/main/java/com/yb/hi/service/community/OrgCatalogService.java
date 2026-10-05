@@ -131,8 +131,8 @@ public class OrgCatalogService {
 
     /* ================= 机构选用列表(带启用状态) ================= */
 
-    /** 机构目录选用分页: 返回 L2 项目 + 本机构开展状态; enabledFilter=null 全部 / 1 仅已开展 / 0 仅未开展 */
-    public Map<String, Object> selectionPage(String catalogType, String keyword, Integer enabledFilter, long page, long size) {
+    /** 机构目录选用分页: 返回 L2 项目 + 本机构开展状态; enabledFilter=null 全部 / 1 仅已开展 / 0 仅未开展; majorClass 仅对药品按大类精确过滤 */
+    public Map<String, Object> selectionPage(String catalogType, String keyword, Integer enabledFilter, long page, long size, String majorClass) {
         SysOrg org = currentOrg();
         boolean lead = isLead(org);
         Set<Long> enabled = enabledIds(org.getId(), catalogType);
@@ -140,11 +140,13 @@ public class OrgCatalogService {
         long total;
         switch (catalogType == null ? "" : catalogType) {
             case "drug": {
-                IPage<HisDrugCatalog> r = drugSelQ(keyword, enabledFilter, enabled).page(new Page<>(page, size));
+                IPage<HisDrugCatalog> r = drugSelQ(keyword, enabledFilter, enabled, majorClass).page(new Page<>(page, size));
                 total = r.getTotal();
                 for (HisDrugCatalog d : r.getRecords()) {
-                    records.add(row(d.getId(), d.getDrugCode(), d.getGenericName(), d.getSpec(),
-                            d.getMinUnit(), price(d.getRetailPrice()), flag(enabled, d.getId())));
+                    Map<String, Object> rm = row(d.getId(), d.getDrugCode(), d.getGenericName(), d.getSpec(),
+                            d.getMinUnit(), price(d.getRetailPrice()), flag(enabled, d.getId()));
+                    rm.put("majorClass", d.getMajorClass());
+                    records.add(rm);
                 }
                 break;
             }
@@ -609,8 +611,9 @@ public class OrgCatalogService {
         }
     }
 
-    private LambdaQueryChainWrapper<HisDrugCatalog> drugSelQ(String keyword, Integer ef, Set<Long> enabled) {
-        LambdaQueryChainWrapper<HisDrugCatalog> q = drugService.lambdaQuery();
+    private LambdaQueryChainWrapper<HisDrugCatalog> drugSelQ(String keyword, Integer ef, Set<Long> enabled, String majorClass) {
+        LambdaQueryChainWrapper<HisDrugCatalog> q = drugService.lambdaQuery()
+                .eq(StringUtils.hasText(majorClass), HisDrugCatalog::getMajorClass, majorClass);
         if (StringUtils.hasText(keyword)) {
             q.and(w -> w.like(HisDrugCatalog::getGenericName, keyword)
                     .or().like(HisDrugCatalog::getTradeName, keyword)
@@ -666,16 +669,16 @@ public class OrgCatalogService {
     /* ================= 导出(与选用列表同筛选, 一次性导出全部匹配行) ================= */
 
     /** 导出行数据: 返回 {head: List<List<String>>, rows: List<List<Object>>} */
-    public Map<String, Object> exportRows(String catalogType, String keyword, Integer enabledFilter) {
+    public Map<String, Object> exportRows(String catalogType, String keyword, Integer enabledFilter, String majorClass) {
         SysOrg org = currentOrg();
         Set<Long> enabled = enabledIds(org.getId(), catalogType);
         List<List<String>> head = new ArrayList<>();
         List<List<Object>> rows = new ArrayList<>();
         switch (catalogType == null ? "" : catalogType) {
             case "drug": {
-                head = headOf("院内药品码", "通用名", "规格", "最小单位", "零售价", "开展状态");
-                for (HisDrugCatalog d : drugSelQ(keyword, enabledFilter, enabled).list()) {
-                    rows.add(vals(d.getDrugCode(), d.getGenericName(), d.getSpec(), d.getMinUnit(),
+                head = headOf("院内药品码", "通用名", "大类", "规格", "最小单位", "零售价", "开展状态");
+                for (HisDrugCatalog d : drugSelQ(keyword, enabledFilter, enabled, majorClass).list()) {
+                    rows.add(vals(d.getDrugCode(), d.getGenericName(), d.getMajorClass(), d.getSpec(), d.getMinUnit(),
                             price(d.getRetailPrice()), statText(flag(enabled, d.getId()))));
                 }
                 break;

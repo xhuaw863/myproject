@@ -6,7 +6,7 @@
  *       POST /{visitId}/audit  {score, qcSignImg} (已提交→已审核)
  *       GET  /{visitId}/print (打印数据, 前端组装 HTML)
  * 状态机: 1草稿(可编辑) → 2已提交(质控可操作) → 3已审核(全部只读)
- * 布局按《住院病案首页》标准六区: 患者信息/入院信息/出院信息/手术操作/费用汇总/签名与质控
+ * 布局按《住院病案首页》国标分区: 患者信息/入院信息/出院信息/手术操作/离院与转归/费用汇总(含费用分项)/签名与质控
  * 签名: HIS.SignaturePad.open({actionType, refType:'case_front_page', refId}) 返回签名图URL
  * 注册: HIS.components.InpCasePagePanel (须在 inp-doctor.js 之前加载) */
 ;(function () {
@@ -19,6 +19,13 @@
   const INCISION_TYPES = { 1: '清洁', 2: '清洁污染', 3: '污染', 4: '感染' };
   /* 愈合等级(病案首页手工填写): 甲/乙/丙级 */
   const HEAL_LEVELS = { '甲': '甲级', '乙': '乙级', '丙': '丙级' };
+  /* 国标值域(内联, 与 INCISION_TYPES/HEAL_LEVELS 同风格, 无需新字典): 离院/转归/入院病情/病案等级/是否/手术级别 */
+  const DISCHARGE_MODES = { 1: '医嘱离院', 2: '医嘱转院', 3: '转社区/乡镇卫生院', 4: '非医嘱离院', 5: '死亡', 9: '其他' };
+  const TREAT_RESULTS = { 1: '治愈', 2: '好转', 3: '未愈', 4: '死亡', 5: '其他' };
+  const ADMIT_CONDS = { 1: '有', 2: '临床未确定', 3: '情况不明', 4: '无' };
+  const MR_GRADES = { 1: '甲', 2: '乙', 3: '丙' };
+  const YES_NO = { 0: '无', 1: '有' };
+  const SURGERY_LEVELS = { 1: '一级', 2: '二级', 3: '三级', 4: '四级' };
 
   function dateText(v) {
     if (v == null || v === '') { return '—'; }
@@ -41,6 +48,11 @@
   function num(v) {
     const n = Number(v);
     return isNaN(n) ? 0 : n;
+  }
+
+  /* 编码/整型值转换: 空(null/'')→''(未选), 否则转数字(供 el-select value 匹配) */
+  function cd(v) {
+    return (v == null || v === '') ? '' : Number(v);
   }
 
   function esc(v) {
@@ -105,7 +117,13 @@
       pathologyDiag: '', injuryPoisonCode: '', bloodType: '', rh: '',
       totalCost: 0, drugCost: 0, examCost: 0, treatmentCost: 0, bedCost: 0,
       nursingCost: 0, materialCost: 0, otherCost: 0, selfPay: 0, insurancePay: 0,
-      autopsy: 0
+      autopsy: 0,
+      /* P0 离院与转归 + 主诊入院病情 */
+      dischargeMode: '', transInst: '', treatResult: '', readmitPlan: '', readmitPurpose: '', mainDiagAdmitCond: '',
+      /* P1 诊断/手术/费用/落款 */
+      outpDiagCode: '', outpDiagName: '', injuryPoisonName: '', pathologyCode: '', pathologyNo: '',
+      allergyFlag: '', comaBefore: '', comaAfter: '', newbornBirthWeight: '', newbornAdmitWeight: '',
+      nativePlace: '', mrGrade: '', chiefDoctor: '', residentDoctor: '', qcNurse: ''
     };
   }
 
@@ -129,9 +147,16 @@
         form: emptyForm(),
         otherDiags: [],
         opRecords: [],
+        costClassDetail: [],
         score: null,
         incisionTypes: INCISION_TYPES,
-        healLevels: HEAL_LEVELS
+        healLevels: HEAL_LEVELS,
+        dischargeModes: DISCHARGE_MODES,
+        treatResults: TREAT_RESULTS,
+        admitConds: ADMIT_CONDS,
+        mrGrades: MR_GRADES,
+        yesNo: YES_NO,
+        surgeryLevels: SURGERY_LEVELS
       };
     },
     computed: {
@@ -188,6 +213,7 @@
         const vm = this;
         vm.otherDiags = [];
         vm.opRecords = [];
+        vm.costClassDetail = [];
         vm.score = null;
         vm.form = emptyForm();
         if (!vm.visitId) {
@@ -225,10 +251,20 @@
           treatmentCost: num(d.treatmentCost), bedCost: num(d.bedCost), nursingCost: num(d.nursingCost),
           materialCost: num(d.materialCost), otherCost: num(d.otherCost),
           selfPay: num(d.selfPay), insurancePay: num(d.insurancePay),
-          autopsy: num(d.autopsy)
+          autopsy: num(d.autopsy),
+          dischargeMode: cd(d.dischargeMode), transInst: nz(d.transInst), treatResult: cd(d.treatResult),
+          readmitPlan: cd(d.readmitPlan), readmitPurpose: nz(d.readmitPurpose), mainDiagAdmitCond: cd(d.mainDiagAdmitCond),
+          outpDiagCode: nz(d.outpDiagCode), outpDiagName: nz(d.outpDiagName), injuryPoisonName: nz(d.injuryPoisonName),
+          pathologyCode: nz(d.pathologyCode), pathologyNo: nz(d.pathologyNo), allergyFlag: cd(d.allergyFlag),
+          comaBefore: nz(d.comaBefore), comaAfter: nz(d.comaAfter),
+          newbornBirthWeight: cd(d.newbornBirthWeight), newbornAdmitWeight: cd(d.newbornAdmitWeight),
+          nativePlace: nz(d.nativePlace), mrGrade: cd(d.mrGrade),
+          chiefDoctor: nz(d.chiefDoctor), residentDoctor: nz(d.residentDoctor), qcNurse: nz(d.qcNurse)
         };
         vm.otherDiags = Array.isArray(d.dischargeOtherDiags)
-          ? d.dischargeOtherDiags.map(function (x) { return { code: nz(x && x.code), name: nz(x && x.name) }; })
+          ? d.dischargeOtherDiags.map(function (x) {
+              return { code: nz(x && x.code), name: nz(x && x.name), admitCond: cd(x && x.admitCond) };
+            })
           : [];
         vm.opRecords = Array.isArray(d.operationRecords)
           ? d.operationRecords.map(function (r) {
@@ -236,10 +272,17 @@
                 name: nz(r && r.name), code: nz(r && r.code), date: nz(r && r.date),
                 surgeon: nz(r && r.surgeon),
                 anesthesia: nz(r && r.anesthesia),
+                anesthesiaDoctor: nz(r && r.anesthesiaDoctor),
+                firstAssistant: nz(r && r.firstAssistant),
+                surgeryLevel: cd(r && r.surgeryLevel),
+                asaGrade: cd(r && r.asaGrade),
                 incisionType: r && r.incisionType != null ? r.incisionType : '',
                 healLevel: nz(r && r.healLevel)
               };
             })
+          : [];
+        vm.costClassDetail = Array.isArray(d.costClassDetail)
+          ? d.costClassDetail.map(function (c) { return { cls: nz(c && c.cls), amount: num(c && c.amount) }; })
           : [];
         vm.score = d.qualityScore != null ? Number(d.qualityScore) : null;
       },
@@ -365,9 +408,9 @@
           .catch(HIS.notifyError)
           .finally(function () { vm.printing = false; });
       },
-      addOtherDiag() { this.otherDiags.push({ code: '', name: '' }); },
+      addOtherDiag() { this.otherDiags.push({ code: '', name: '', admitCond: '' }); },
       addOpRecord() {
-        this.opRecords.push({ name: '', code: '', date: '', surgeon: '', anesthesia: '', incisionType: '', healLevel: '' });
+        this.opRecords.push({ name: '', code: '', date: '', surgeon: '', anesthesia: '', anesthesiaDoctor: '', firstAssistant: '', surgeryLevel: '', asaGrade: '', incisionType: '', healLevel: '' });
       },
       /* 打印 HTML: 纸质病案首页样式(宋体/黑边框/签名区), 签名图转绝对路径供 iframe 加载 */
       buildPrintHtml(d) {
@@ -381,22 +424,39 @@
           return '<td class="lb">' + esc(lb) + '</td><td class="vl"' + (colspan ? ' colspan="' + colspan + '"' : '') + '>'
             + esc(val == null || val === '' ? '—' : val) + '</td>';
         };
+        /* 编码值域文本: 默认带数字前缀(上报口径), withCode=false 仅显文本 */
+        const codedText = function (v, map, withCode) {
+          if (v == null || v === '' || map[v] == null) { return '—'; }
+          return (withCode === false ? '' : (v + ' ')) + map[v];
+        };
         const ops = Array.isArray(d.operationRecords) ? d.operationRecords : [];
         let opRows = '';
         if (ops.length) {
           ops.forEach(function (r, i) {
             opRows += '<tr><td>' + (i + 1) + '</td><td>' + esc(r.name) + '</td><td>' + esc(r.date)
               + '</td><td>' + esc(r.surgeon) + '</td><td>' + esc(r.anesthesia)
+              + '</td><td>' + esc(codedText(r.surgeryLevel, SURGERY_LEVELS, false))
+              + '</td><td>' + esc(r.anesthesiaDoctor) + '</td><td>' + esc(r.firstAssistant)
               + '</td><td>' + esc(r.incisionType == null || r.incisionType === '' ? '—' : (INCISION_TYPES[r.incisionType] || r.incisionType))
               + '</td><td>' + esc(r.healLevel ? (HEAL_LEVELS[r.healLevel] || r.healLevel) : '—') + '</td></tr>';
           });
         } else {
-          opRows = '<tr><td colspan="7" style="text-align:center">无手术操作记录</td></tr>';
+          opRows = '<tr><td colspan="10" style="text-align:center">无手术操作记录</td></tr>';
         }
         const others = Array.isArray(d.dischargeOtherDiags) ? d.dischargeOtherDiags : [];
         const otherText = others.length
-          ? others.map(function (x) { return (x.code ? x.code + ' ' : '') + (x.name || ''); }).join('; ')
+          ? others.map(function (x) { return (x.code ? x.code + ' ' : '') + (x.name || '') + (x.admitCond != null && x.admitCond !== '' ? '(' + (ADMIT_CONDS[x.admitCond] || x.admitCond) + ')' : ''); }).join('; ')
           : '—';
+        const costs = Array.isArray(d.costClassDetail) ? d.costClassDetail : [];
+        let costRows = '<tr><td colspan="4" style="text-align:left;background:#f7f7f7">病案首页费用分项(按 mr_cost_class 归并)</td></tr>';
+        if (costs.length) {
+          costs.forEach(function (c) {
+            costRows += '<tr><td class="lb" style="width:auto">' + esc(c.cls) + '</td><td class="money">' + moneyText(c.amount) + '</td>'
+              + '<td class="lb" style="width:auto">' + esc(c.cls) + '</td><td class="money">' + moneyText(c.amount) + '</td></tr>';
+          });
+        } else {
+          costRows += '<tr><td colspan="4" style="text-align:center;color:#999">无费用分项(收费项目未维护归并时均计入“未归类”)</td></tr>';
+        }
         const signImg = function (url) {
           return url ? '<img src="' + esc(abs(url)) + '"/>' : '<span class="ph">待签署</span>';
         };
@@ -435,21 +495,28 @@
           + '<div class="sec"><h2>三、出院信息</h2><table><tr>'
           + td('出院日期', d.dischargeDate ? dateText(d.dischargeDate) : '—') + td('出院科室', d.deptName) + td('住院天数', d.losDays) + td('主治医师', d.doctorName)
           + '</tr><tr>' + td('主诊断编码', d.dischargeMainDiagCode) + td('主诊断名称', d.dischargeMainDiagName, 2)
-          + td('病理诊断', d.pathologyDiag)
+          + td('主诊入院病情', codedText(d.mainDiagAdmitCond, ADMIT_CONDS))
+          + '</tr><tr>' + td('病理诊断', d.pathologyDiag) + td('病理编码', d.pathologyCode) + td('病理号', d.pathologyNo)
           + '</tr><tr>' + td('其他诊断', otherText, 4)
-          + '</tr><tr>' + td('损伤/中毒', d.injuryPoisonCode, 4)
+          + '</tr><tr>' + td('损伤/中毒', (d.injuryPoisonCode ? d.injuryPoisonCode + ' ' : '') + (d.injuryPoisonName || ''), 4)
           + '</tr></table></div>'
-          + '<div class="sec"><h2>四、手术操作</h2><table class="op"><tr><td>#</td><td>手术名称</td><td>日期</td><td>术者</td><td>麻醉方式</td><td>切口等级</td><td>愈合等级</td></tr>'
+          + '<div class="sec"><h2>四、手术操作</h2><table class="op"><tr><td>#</td><td>手术名称</td><td>日期</td><td>术者</td><td>麻醉方式</td><td>级别</td><td>麻醉医师</td><td>一助</td><td>切口等级</td><td>愈合等级</td></tr>'
           + opRows + '</table></div>'
-          + '<div class="sec"><h2>五、费用汇总</h2><table><tr>'
+          + '<div class="sec"><h2>五、离院与转归</h2><table><tr>'
+          + td('离院方式', codedText(d.dischargeMode, DISCHARGE_MODES)) + td('转往机构', d.transInst)
+          + td('治疗转归', codedText(d.treatResult, TREAT_RESULTS)) + td('31天再住院计划', codedText(d.readmitPlan, YES_NO, false))
+          + '</tr><tr>' + td('再住院目的', d.readmitPurpose, 2) + td('昏迷时间(前/后)', (d.comaBefore || '—') + ' / ' + (d.comaAfter || '—'), 2)
+          + '</tr></table></div>'
+          + '<div class="sec"><h2>六、费用汇总</h2><table><tr>'
           + td('药品费', moneyText(d.drugCost)) + td('总费用', moneyText(d.totalCost))
           + '</tr><tr>' + td('检查费', moneyText(d.examCost)) + td('自付金额', moneyText(d.selfPay))
           + '</tr><tr>' + td('治疗费', moneyText(d.treatmentCost)) + td('医保支付', moneyText(d.insurancePay))
           + '</tr><tr>' + td('床位费', moneyText(d.bedCost)) + td('护理费', moneyText(d.nursingCost))
           + '</tr><tr>' + td('材料费', moneyText(d.materialCost)) + td('其他费用', moneyText(d.otherCost))
-          + '</tr></table></div>'
-          + '<div class="sec"><h2>六、签名与质控</h2><table><tr>'
-          + td('主治医师', d.doctorName) + td('质控评分', d.qualityScore != null && d.qualityScore !== '' ? d.qualityScore : '—')
+          + '</tr>' + costRows + '</table></div>'
+          + '<div class="sec"><h2>七、签名与质控</h2><table><tr>'
+          + td('主任医师', d.chiefDoctor) + td('住院医师', d.residentDoctor) + td('质控护士', d.qcNurse) + td('病案质量', codedText(d.mrGrade, MR_GRADES, false))
+          + '</tr><tr>' + td('主治医师', d.doctorName) + td('质控评分', d.qualityScore != null && d.qualityScore !== '' ? d.qualityScore : '—')
           + td('质控医师', d.qcDoctorName || '—') + td('质控时间', d.qcTime ? timeText(d.qcTime) : '—')
           + '</tr></table>'
           + '<div class="sign">'
@@ -542,8 +609,32 @@
                   <td class="lb">现住址</td><td colspan="3">{{ disp(base.presentAddr) }}</td>
                 </tr>
                 <tr>
-                  <td class="lb">过敏史</td>
-                  <td colspan="7">{{ base.allergyDrugs ? base.allergyDrugs.split(',').join('、') : '—' }}</td>
+                  <td class="lb">药物过敏</td>
+                  <td class="in" colspan="2">
+                    <el-select v-if="canEdit" v-model="form.allergyFlag" size="small" clearable placeholder="无/有" style="width:120px">
+                      <el-option v-for="(l, k) in yesNo" :key="'af-'+k" :label="l" :value="Number(k)"></el-option>
+                    </el-select>
+                    <span v-else>{{ form.allergyFlag===''?'—':yesNo[form.allergyFlag] }}</span>
+                  </td>
+                  <td class="lb2">过敏药物</td>
+                  <td colspan="4">{{ base.allergyDrugs ? base.allergyDrugs.split(',').join('、') : '—' }}</td>
+                </tr>
+                <tr>
+                  <td class="lb">籍贯</td>
+                  <td class="in" colspan="3">
+                    <el-input v-if="canEdit" v-model="form.nativePlace" size="small" placeholder="籍贯"></el-input>
+                    <span v-else>{{ disp(form.nativePlace) }}</span>
+                  </td>
+                  <td class="lb">新生儿体重</td>
+                  <td class="lb2">出生/入院(g)</td>
+                  <td class="in" colspan="2">
+                    <template v-if="canEdit">
+                      <el-input v-model="form.newbornBirthWeight" size="small" style="width:78px" placeholder="出生"></el-input>
+                      <span class="iw-dim"> / </span>
+                      <el-input v-model="form.newbornAdmitWeight" size="small" style="width:78px" placeholder="入院"></el-input>
+                    </template>
+                    <span v-else>{{ disp(form.newbornBirthWeight) }} / {{ disp(form.newbornAdmitWeight) }}</span>
+                  </td>
                 </tr>
               </table>
             </section>
@@ -569,6 +660,19 @@
                   <td class="in" colspan="3">
                     <el-input v-if="canEdit" v-model="form.admissionDiagName" size="small" placeholder="入院诊断名称"></el-input>
                     <span v-else>{{ disp(form.admissionDiagName) }}</span>
+                  </td>
+                </tr>
+                <tr>
+                  <td class="lb">门(急)诊诊断</td>
+                  <td class="lb2">编码</td>
+                  <td class="in" colspan="2">
+                    <el-input v-if="canEdit" v-model="form.outpDiagCode" size="small" placeholder="ICD编码"></el-input>
+                    <span v-else>{{ disp(form.outpDiagCode) }}</span>
+                  </td>
+                  <td class="lb2">名称</td>
+                  <td class="in" colspan="3">
+                    <el-input v-if="canEdit" v-model="form.outpDiagName" size="small" placeholder="门急诊诊断名称"></el-input>
+                    <span v-else>{{ disp(form.outpDiagName) }}</span>
                   </td>
                 </tr>
                 <tr>
@@ -610,12 +714,24 @@
                   </td>
                 </tr>
                 <tr>
+                  <td class="lb">主诊入院病情</td>
+                  <td class="in" colspan="7">
+                    <el-select v-if="canEdit" v-model="form.mainDiagAdmitCond" size="small" clearable placeholder="选择入院病情" style="width:220px">
+                      <el-option v-for="(l, k) in admitConds" :key="'mdac-'+k" :label="k+' '+l" :value="Number(k)"></el-option>
+                    </el-select>
+                    <span v-else>{{ form.mainDiagAdmitCond===''?'—':(form.mainDiagAdmitCond+' '+admitConds[form.mainDiagAdmitCond]) }}</span>
+                  </td>
+                </tr>
+                <tr>
                   <td class="lb">其他诊断</td>
                   <td colspan="7">
                     <template v-if="canEdit">
                       <div class="cp-edit-line" v-for="(d, i) in otherDiags" :key="'od-' + i">
-                        <el-input v-model="d.code" size="small" style="width:130px" placeholder="编码"></el-input>
+                        <el-input v-model="d.code" size="small" style="width:120px" placeholder="编码"></el-input>
                         <el-input v-model="d.name" size="small" class="iw-grow" placeholder="诊断名称"></el-input>
+                        <el-select v-model="d.admitCond" size="small" clearable placeholder="入院病情" style="width:150px">
+                          <el-option v-for="(l, k) in admitConds" :key="'odac-'+i+'-'+k" :label="k+' '+l" :value="Number(k)"></el-option>
+                        </el-select>
                         <el-button link type="danger" size="small" @click="otherDiags.splice(i, 1)">删除</el-button>
                       </div>
                       <el-button link type="primary" size="small" @click="addOtherDiag">+ 添加其他诊断</el-button>
@@ -623,6 +739,7 @@
                     <template v-else>
                       <div class="cp-diag-line" v-for="(d, i) in otherDiags" :key="'odv-' + i">
                         <span class="code">{{ d.code || '—' }}</span><span class="name">{{ d.name }}</span>
+                        <span class="iw-dim" v-if="d.admitCond!=='' && d.admitCond!=null">（{{ admitConds[d.admitCond] }}）</span>
                       </div>
                       <span v-if="!otherDiags.length" class="iw-dim">无其他诊断</span>
                     </template>
@@ -630,16 +747,34 @@
                 </tr>
                 <tr>
                   <td class="lb">病理诊断</td>
-                  <td class="in" colspan="7">
-                    <el-input v-if="canEdit" v-model="form.pathologyDiag" size="small" placeholder="病理诊断(选填)"></el-input>
+                  <td class="in" colspan="3">
+                    <el-input v-if="canEdit" v-model="form.pathologyDiag" size="small" placeholder="病理诊断名称(选填)"></el-input>
                     <span v-else>{{ disp(form.pathologyDiag) }}</span>
+                  </td>
+                  <td class="lb2">编码</td>
+                  <td class="in" colspan="3">
+                    <el-input v-if="canEdit" v-model="form.pathologyCode" size="small" placeholder="病理编码"></el-input>
+                    <span v-else>{{ disp(form.pathologyCode) }}</span>
+                  </td>
+                </tr>
+                <tr>
+                  <td class="lb">病理号</td>
+                  <td class="in" colspan="7">
+                    <el-input v-if="canEdit" v-model="form.pathologyNo" size="small" placeholder="病理号(选填)"></el-input>
+                    <span v-else>{{ disp(form.pathologyNo) }}</span>
                   </td>
                 </tr>
                 <tr>
                   <td class="lb">损伤/中毒</td>
-                  <td class="in" colspan="7">
-                    <el-input v-if="canEdit" v-model="form.injuryPoisonCode" size="small" placeholder="损伤中毒外部原因编码(选填)"></el-input>
+                  <td class="lb2">编码</td>
+                  <td class="in" colspan="2">
+                    <el-input v-if="canEdit" v-model="form.injuryPoisonCode" size="small" placeholder="外部原因编码"></el-input>
                     <span v-else>{{ disp(form.injuryPoisonCode) }}</span>
+                  </td>
+                  <td class="lb2">名称</td>
+                  <td class="in" colspan="3">
+                    <el-input v-if="canEdit" v-model="form.injuryPoisonName" size="small" placeholder="外部原因名称"></el-input>
+                    <span v-else>{{ disp(form.injuryPoisonName) }}</span>
                   </td>
                 </tr>
               </table>
@@ -669,10 +804,30 @@
                       <span v-else>{{ disp(s.row.surgeon) }}</span>
                     </template>
                   </el-table-column>
-                  <el-table-column label="麻醉方式" width="132">
+                  <el-table-column label="麻醉方式" width="120">
                     <template #default="s">
                       <el-input v-if="canEdit" v-model="s.row.anesthesia" size="small"></el-input>
                       <span v-else>{{ disp(s.row.anesthesia) }}</span>
+                    </template>
+                  </el-table-column>
+                  <el-table-column label="手术级别" width="100">
+                    <template #default="s">
+                      <el-select v-if="canEdit" v-model="s.row.surgeryLevel" size="small" clearable placeholder="选择">
+                        <el-option v-for="(l, k) in surgeryLevels" :key="'sl-' + k" :label="l" :value="Number(k)"></el-option>
+                      </el-select>
+                      <span v-else>{{ s.row.surgeryLevel===''||s.row.surgeryLevel==null?'—':surgeryLevels[s.row.surgeryLevel] }}</span>
+                    </template>
+                  </el-table-column>
+                  <el-table-column label="麻醉医师" width="110">
+                    <template #default="s">
+                      <el-input v-if="canEdit" v-model="s.row.anesthesiaDoctor" size="small"></el-input>
+                      <span v-else>{{ disp(s.row.anesthesiaDoctor) }}</span>
+                    </template>
+                  </el-table-column>
+                  <el-table-column label="一助" width="110">
+                    <template #default="s">
+                      <el-input v-if="canEdit" v-model="s.row.firstAssistant" size="small"></el-input>
+                      <span v-else>{{ disp(s.row.firstAssistant) }}</span>
                     </template>
                   </el-table-column>
                   <el-table-column label="切口等级" width="118">
@@ -704,9 +859,66 @@
               </div>
             </section>
 
-            <!-- 第五区 费用汇总 -->
+            <!-- 第五区 离院与转归 -->
             <section class="cp-sec">
-              <div class="cp-sec-hd">五、费用汇总</div>
+              <div class="cp-sec-hd">五、离院与转归</div>
+              <table class="cp-tb">
+                <tr>
+                  <td class="lb">离院方式</td>
+                  <td class="in" colspan="3">
+                    <el-select v-if="canEdit" v-model="form.dischargeMode" size="small" clearable placeholder="选择离院方式" style="width:220px">
+                      <el-option v-for="(l, k) in dischargeModes" :key="'dm-'+k" :label="k+' '+l" :value="Number(k)"></el-option>
+                    </el-select>
+                    <span v-else>{{ form.dischargeMode===''||form.dischargeMode==null?'—':(form.dischargeMode+' '+dischargeModes[form.dischargeMode]) }}</span>
+                  </td>
+                  <td class="lb">转往机构</td>
+                  <td class="in" colspan="3">
+                    <el-input v-if="canEdit" v-model="form.transInst" size="small" placeholder="转院/转社区接收机构名称"></el-input>
+                    <span v-else>{{ disp(form.transInst) }}</span>
+                  </td>
+                </tr>
+                <tr>
+                  <td class="lb">治疗转归</td>
+                  <td class="in" colspan="3">
+                    <el-select v-if="canEdit" v-model="form.treatResult" size="small" clearable placeholder="选择转归" style="width:220px">
+                      <el-option v-for="(l, k) in treatResults" :key="'tr-'+k" :label="k+' '+l" :value="Number(k)"></el-option>
+                    </el-select>
+                    <span v-else>{{ form.treatResult===''||form.treatResult==null?'—':(form.treatResult+' '+treatResults[form.treatResult]) }}</span>
+                  </td>
+                  <td class="lb">31天再住院计划</td>
+                  <td class="in" colspan="3">
+                    <el-select v-if="canEdit" v-model="form.readmitPlan" size="small" clearable placeholder="无/有" style="width:120px">
+                      <el-option v-for="(l, k) in yesNo" :key="'rp-'+k" :label="l" :value="Number(k)"></el-option>
+                    </el-select>
+                    <span v-else>{{ form.readmitPlan===''||form.readmitPlan==null?'—':yesNo[form.readmitPlan] }}</span>
+                  </td>
+                </tr>
+                <tr>
+                  <td class="lb">再住院目的</td>
+                  <td class="in" colspan="7">
+                    <el-input v-if="canEdit" v-model="form.readmitPurpose" size="small" placeholder="31天内再住院计划目的(有必填)"></el-input>
+                    <span v-else>{{ disp(form.readmitPurpose) }}</span>
+                  </td>
+                </tr>
+                <tr>
+                  <td class="lb">昏迷时间</td>
+                  <td class="lb2">入院前</td>
+                  <td class="in" colspan="2">
+                    <el-input v-if="canEdit" v-model="form.comaBefore" size="small" placeholder="如 2小时"></el-input>
+                    <span v-else>{{ disp(form.comaBefore) }}</span>
+                  </td>
+                  <td class="lb2">入院后</td>
+                  <td class="in" colspan="3">
+                    <el-input v-if="canEdit" v-model="form.comaAfter" size="small" placeholder="如 12小时"></el-input>
+                    <span v-else>{{ disp(form.comaAfter) }}</span>
+                  </td>
+                </tr>
+              </table>
+            </section>
+
+            <!-- 第六区 费用汇总 -->
+            <section class="cp-sec">
+              <div class="cp-sec-hd">六、费用汇总</div>
               <table class="cp-tb">
                 <tr>
                   <td class="lb">药品费</td>
@@ -769,11 +981,53 @@
                   </td>
                 </tr>
               </table>
+              <div class="cp-sec-hd" style="margin-top:10px">病案首页费用分项(按收费项目 mr_cost_class 归并)</div>
+              <table class="cp-tb">
+                <tr v-if="costClassDetail.length">
+                  <td class="lb" style="width:auto">费用归类</td>
+                  <td class="lb" style="width:140px">金额(元)</td>
+                </tr>
+                <tr v-for="(c, i) in costClassDetail" :key="'cc-'+i">
+                  <td>{{ disp(c.cls) }}</td>
+                  <td class="money">{{ moneyText(c.amount) }}</td>
+                </tr>
+                <tr v-if="!costClassDetail.length">
+                  <td colspan="2" class="iw-dim" style="text-align:center">暂无费用分项(收费项目未维护病案首页费用归并时均计入“未归类”)</td>
+                </tr>
+              </table>
             </section>
 
-            <!-- 第六区 签名与质控 -->
+            <!-- 第七区 签名与质控 -->
             <section class="cp-sec">
-              <div class="cp-sec-hd">六、签名与质控</div>
+              <div class="cp-sec-hd">七、签名与质控</div>
+              <table class="cp-tb">
+                <tr>
+                  <td class="lb">主任医师</td>
+                  <td class="in" colspan="3">
+                    <el-input v-if="canEdit" v-model="form.chiefDoctor" size="small" placeholder="姓名"></el-input>
+                    <span v-else>{{ disp(form.chiefDoctor) }}</span>
+                  </td>
+                  <td class="lb">住院医师</td>
+                  <td class="in" colspan="3">
+                    <el-input v-if="canEdit" v-model="form.residentDoctor" size="small" placeholder="姓名"></el-input>
+                    <span v-else>{{ disp(form.residentDoctor) }}</span>
+                  </td>
+                </tr>
+                <tr>
+                  <td class="lb">质控护士</td>
+                  <td class="in" colspan="3">
+                    <el-input v-if="canEdit" v-model="form.qcNurse" size="small" placeholder="姓名"></el-input>
+                    <span v-else>{{ disp(form.qcNurse) }}</span>
+                  </td>
+                  <td class="lb">病案质量</td>
+                  <td class="in" colspan="3">
+                    <el-select v-if="canEdit" v-model="form.mrGrade" size="small" clearable placeholder="甲/乙/丙" style="width:120px">
+                      <el-option v-for="(l, k) in mrGrades" :key="'mg-'+k" :label="l" :value="Number(k)"></el-option>
+                    </el-select>
+                    <span v-else>{{ form.mrGrade===''||form.mrGrade==null?'—':mrGrades[form.mrGrade] }}</span>
+                  </td>
+                </tr>
+              </table>
               <div class="cp-sign-row">
                 <div class="cp-sign-cell">
                   <div class="cp-sign-lb">主治医师签名</div>

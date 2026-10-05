@@ -1,5 +1,7 @@
 package com.yb.hi.controller;
 
+import com.yb.hi.common.FileMagicUtil;
+import com.yb.hi.common.UploadUrlSigner;
 import com.yb.hi.framework.common.R;
 import com.yb.hi.framework.common.Roles;
 import com.yb.hi.framework.tenant.LoginUser;
@@ -7,6 +9,7 @@ import com.yb.hi.framework.tenant.UserContext;
 import com.yb.hi.platform.service.OrgAccessGuard;
 import com.yb.hi.service.StdDictImportService;
 import com.yb.hi.service.StdDictMaintainService;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.util.StringUtils;
@@ -55,6 +58,9 @@ public class SupplierDictController {
 
     @Value("${his.upload.path:./data/upload/}")
     private String uploadPath;
+
+    @Autowired
+    private UploadUrlSigner uploadUrlSigner;
 
     public SupplierDictController(StdDictMaintainService maintainService,
                                   StdDictImportService importService,
@@ -138,13 +144,17 @@ public class SupplierDictController {
             return R.fail("不支持的文件格式, 仅允许: " + String.join("/", ALLOWED_EXT));
         }
         try {
+            byte[] bytes = file.getBytes();
+            if (!FileMagicUtil.matchesSupplierDoc(bytes, ext)) {
+                return R.fail("文件内容与所选格式不匹配, 已拒绝上传");
+            }
             String ym = LocalDate.now().format(YM);
             String filename = UUID.randomUUID().toString().replace("-", "") + "." + ext;
             Path root = Paths.get(uploadPath).toAbsolutePath().normalize();
             Path dir = root.resolve("supplier-doc").resolve(ym);
             Files.createDirectories(dir);
             Path target = dir.resolve(filename);
-            try (InputStream in = file.getInputStream()) { Files.copy(in, target, StandardCopyOption.REPLACE_EXISTING); }
+            Files.write(target, bytes);
             String relPath = "supplier-doc/" + ym + "/" + filename;
             String dbDocType = (StringUtils.hasText(docType) && DOC_TYPES.contains(docType)) ? docType : "其他";
             LoginUser u = UserContext.get();
@@ -159,7 +169,7 @@ public class SupplierDictController {
             data.put("fileName", file.getOriginalFilename());
             data.put("docType", dbDocType);
             data.put("fileSize", file.getSize());
-            data.put("url", "/uploads/" + relPath);
+            data.put("url", uploadUrlSigner.appendToken("/uploads/" + relPath));
             return R.ok(data);
         } catch (Exception e) {
             return R.fail("文件上传失败: " + e.getMessage());

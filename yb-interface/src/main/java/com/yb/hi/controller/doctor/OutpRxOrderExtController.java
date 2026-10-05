@@ -4,12 +4,15 @@ import com.yb.hi.entity.doctor.HisChronicDisease;
 import com.yb.hi.framework.common.R;
 import com.yb.hi.framework.tenant.LoginUser;
 import com.yb.hi.framework.tenant.UserContext;
+import com.yb.hi.platform.service.OrgAccessGuard;
 import com.yb.hi.service.doctor.HisChargeAddonRuleService;
 import com.yb.hi.service.doctor.HisChronicDiseaseService;
 import com.yb.hi.service.doctor.HisOrderFreqService;
 import com.yb.hi.service.doctor.HisPrescribeAuthService;
 import com.yb.hi.service.doctor.HisRxSplitRuleService;
+import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
@@ -37,17 +40,20 @@ public class OutpRxOrderExtController {
     private final HisOrderFreqService orderFreqService;
     private final HisRxSplitRuleService rxSplitRuleService;
     private final HisChargeAddonRuleService chargeAddonRuleService;
+    private final OrgAccessGuard guard;
 
     public OutpRxOrderExtController(HisPrescribeAuthService prescribeAuthService,
                                     HisChronicDiseaseService chronicDiseaseService,
                                     HisOrderFreqService orderFreqService,
                                     HisRxSplitRuleService rxSplitRuleService,
-                                    HisChargeAddonRuleService chargeAddonRuleService) {
+                                    HisChargeAddonRuleService chargeAddonRuleService,
+                                    OrgAccessGuard guard) {
         this.prescribeAuthService = prescribeAuthService;
         this.chronicDiseaseService = chronicDiseaseService;
         this.orderFreqService = orderFreqService;
         this.rxSplitRuleService = rxSplitRuleService;
         this.chargeAddonRuleService = chargeAddonRuleService;
+        this.guard = guard;
     }
 
     /* ---------- 处方权限只读校验 ---------- */
@@ -119,5 +125,20 @@ public class OutpRxOrderExtController {
             return R.ok(chargeAddonRuleService.listByItem(itemId));
         }
         return R.ok(chargeAddonRuleService.listEffective(deptId));
+    }
+
+    /** 加收规则可配置(检查多部位医保计费): 新增/更新, 仅牵头机构管理员可写。 */
+    @PostMapping("/charge-addon-rule/save")
+    public R<HisChargeAddonRule> saveAddonRule(@RequestBody HisChargeAddonRule rule) {
+        guard.requireLeadOrg("仅牵头机构管理员可维护自动计费加收规则");
+        return R.ok(chargeAddonRuleService.save(rule));
+    }
+
+    /** 停用加收规则: 仅牵头机构管理员可写。 */
+    @DeleteMapping("/charge-addon-rule/{id}")
+    public R<Void> deleteAddonRule(@PathVariable Long id) {
+        guard.requireLeadOrg("仅牵头机构管理员可维护自动计费加收规则");
+        chargeAddonRuleService.delete(id);
+        return R.ok();
     }
 }

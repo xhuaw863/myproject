@@ -1,5 +1,6 @@
 package com.yb.hi.controller;
 
+import com.yb.hi.common.FileMagicUtil;
 import com.yb.hi.framework.common.R;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -66,15 +67,17 @@ public class FileUploadController {
         String safeBiz = (StringUtils.hasText(biz) && biz.matches(BIZ_PATTERN)) ? biz : "common";
 
         try {
+            byte[] bytes = file.getBytes();
+            if (!FileMagicUtil.matchesImage(bytes, ext)) {
+                return R.fail("文件内容与图片格式不匹配, 已拒绝上传");
+            }
             String ym = LocalDate.now().format(YM);
             String filename = UUID.randomUUID().toString().replace("-", "") + "." + ext;
             Path root = Paths.get(uploadPath).toAbsolutePath().normalize();
             Path dir = root.resolve(safeBiz).resolve(ym);
             Files.createDirectories(dir);
             Path target = dir.resolve(filename);
-            try (InputStream in = file.getInputStream()) {
-                Files.copy(in, target, StandardCopyOption.REPLACE_EXISTING);
-            }
+            Files.write(target, bytes);
             String url = joinUrl(urlPrefix, safeBiz + "/" + ym + "/" + filename);
             Map<String, Object> data = new HashMap<>();
             data.put("url", url);

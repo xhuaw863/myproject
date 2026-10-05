@@ -35,8 +35,10 @@ public class FeePayDictController {
                                                 @RequestParam(defaultValue = "20") long size,
                                                 @RequestParam(required = false) String keyword,
                                                 @RequestParam(required = false) String scope,
-                                                @RequestParam(required = false) Integer status) {
-        return R.ok(feeTypeService.listPage(page, size, keyword, scope, status));
+                                                @RequestParam(required = false) Integer status,
+                                                @RequestParam(required = false) Long orgId,
+                                                @RequestParam(defaultValue = "false") boolean withSubOrgs) {
+        return R.ok(feeTypeService.listPage(page, size, keyword, scope, status, orgId, withSubOrgs));
     }
 
     /** 业务下拉(scene=OTP/IPT, 空=全部启用项) */
@@ -68,13 +70,17 @@ public class FeePayDictController {
                                               @RequestParam(defaultValue = "20") long size,
                                               @RequestParam(required = false) String keyword,
                                               @RequestParam(required = false) String scope,
-                                              @RequestParam(required = false) Integer status) {
-        return R.ok(payMethodService.listPage(page, size, keyword, scope, status));
+                                              @RequestParam(required = false) Integer status,
+                                              @RequestParam(required = false) Long orgId,
+                                              @RequestParam(defaultValue = "false") boolean withSubOrgs) {
+        return R.ok(payMethodService.listPage(page, size, keyword, scope, status, orgId, withSubOrgs));
     }
 
+    /** 业务下拉(scene=OTP/IPT, 空=全部启用项); orgId 仅牵头维护端可指定(费别弹窗按行机构取支付候选), 非牵头后端恒锁本机构 */
     @GetMapping("/pay-method/options")
-    public R<List<HisPayMethodDict>> payOptions(@RequestParam(required = false) String scene) {
-        return R.ok(payMethodService.options(scene));
+    public R<List<HisPayMethodDict>> payOptions(@RequestParam(required = false) String scene,
+                                                @RequestParam(required = false) Long orgId) {
+        return R.ok(payMethodService.options(scene, orgId));
     }
 
     @PostMapping("/pay-method/create")

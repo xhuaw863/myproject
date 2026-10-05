@@ -1,10 +1,11 @@
 # -*- coding: utf-8 -*-
-"""浏览器级网络计时 v2: 打开 用户/科室/职工 管理页(先切工作台再切回以触发重载), 记录 /api/ 耗时。"""
+"""浏览器级网络计时 v2: 打开 用户/科室/职工 管理页(先切工作台再切回以触发重载), 记录 /api/ 耗时。用法: python _perf_pages.py [端口, 默认18082]"""
+import sys
 import time
 
 from playwright.sync_api import sync_playwright
 
-BASE = 'http://localhost:18082/'
+BASE = 'http://localhost:%d/' % (int(sys.argv[1]) if len(sys.argv) > 1 else 18082)
 
 with sync_playwright() as pw:
     browser = pw.chromium.launch(channel='msedge', headless=True)
@@ -49,4 +50,6 @@ with sync_playwright() as pw:
             print('%7dms  %s' % (ms, url[:120]))
         if not results:
             print('   (未捕获到请求)')
+        if label == '用户管理':
+            print('   渲染行数=%d' % page.locator('.el-table tbody tr').count())
     browser.close()

@@ -90,15 +90,38 @@ public class StdDictMaintainService {
 
     /** 分页列表(含 id, 供 CRUD 定位): {records:[{id,code,name,spec,extra}], total} */
     public Map<String, Object> page(String key, String keyword, long page, long size) {
+        return page(key, keyword, page, size, null, null, null);
+    }
+
+    /**
+     * 分页列表, 可选按"是否已导入本机构目录"过滤(过滤在 SQL 层完成, 保证 total/分页正确)。
+     * importFilter: null/all=全部, imported=仅已导入, notImported=仅未导入。
+     * codeSetSql: 返回已导入编码集合的参数化 SELECT(须自带 IS NOT NULL 以保 NOT IN 语义正确); codeSetParams 为其占位参数。
+     */
+    public Map<String, Object> page(String key, String keyword, long page, long size,
+                                    String importFilter, String codeSetSql, List<Object> codeSetParams) {
         StdDict dict = requireDict(key);
         boolean hasKw = StringUtils.hasText(keyword);
         List<String> searchCols = effectiveSearchCols(dict);
+        boolean kwOn = hasKw && !searchCols.isEmpty();
+        boolean filterOn = StringUtils.hasText(importFilter) && !"all".equals(importFilter)
+                && StringUtils.hasText(codeSetSql);
         StringBuilder where = new StringBuilder();
-        if (hasKw && !searchCols.isEmpty()) {
+        if (kwOn || filterOn) {
             where.append(" WHERE ");
-            for (int i = 0; i < searchCols.size(); i++) {
-                if (i > 0) where.append(" OR ");
-                where.append(searchCols.get(i)).append(" LIKE ?");
+            if (kwOn) {
+                where.append("(");
+                for (int i = 0; i < searchCols.size(); i++) {
+                    if (i > 0) where.append(" OR ");
+                    where.append(searchCols.get(i)).append(" LIKE ?");
+                }
+                where.append(")");
+                if (filterOn) where.append(" AND ");
+            }
+            if (filterOn) {
+                where.append(dict.getCodeCol())
+                        .append("imported".equals(importFilter) ? " IN (" : " NOT IN (")
+                        .append(codeSetSql).append(")");
             }
         }
         String selectSql = "SELECT id, " + dict.getCodeCol() + " AS code, "
@@ -113,13 +136,15 @@ public class StdDictMaintainService {
         long total = 0;
         try (Connection conn = dataSource.getConnection()) {
             try (PreparedStatement ps = conn.prepareStatement(countSql)) {
-                bindKw(ps, searchCols, keyword, hasKw, 1);
+                int pc = bindKw(ps, searchCols, keyword, hasKw, 1);
+                if (filterOn) { pc = bindCodeSet(ps, codeSetParams, pc); }
                 try (ResultSet rs = ps.executeQuery()) {
                     if (rs.next()) total = rs.getLong(1);
                 }
             }
             try (PreparedStatement ps = conn.prepareStatement(selectSql)) {
                 int p = bindKw(ps, searchCols, keyword, hasKw, 1);
+                if (filterOn) { p = bindCodeSet(ps, codeSetParams, p); }
                 ps.setLong(p++, offset);
                 ps.setLong(p, size);
                 try (ResultSet rs = ps.executeQuery()) {
@@ -145,6 +170,21 @@ public class StdDictMaintainService {
         out.put("page", page);
         out.put("size", size);
         return out;
+    }
+
+    /** 绑定已导入编码子查询的占位参数(数值按 long, 其余按字符串) */
+    private int bindCodeSet(PreparedStatement ps, List<Object> params, int start) throws Exception {
+        int p = start;
+        if (params != null) {
+            for (Object v : params) {
+                if (v instanceof Number) {
+                    ps.setLong(p++, ((Number) v).longValue());
+                } else {
+                    ps.setString(p++, v == null ? null : String.valueOf(v));
+                }
+            }
+        }
+        return p;
     }
 
     /** 单行完整数据(所有列以字符串返回, 便于表单绑定) */

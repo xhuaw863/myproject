@@ -14,7 +14,7 @@
     { v: '02', l: '02-身份证' },
     { v: '03', l: '03-社保卡' }
   ];
-  var TIME_TYPES = [{ v: 'am', l: '上午' }, { v: 'pm', l: '下午' }, { v: 'night', l: '晚间' }];
+  var TIME_TYPES = [{ v: 'am', l: '上午' }, { v: 'pm', l: '下午' }, { v: 'night', l: '晚间' }];  /* 兜底: 正常取数源为班次字典 HIS.shiftDict */
   var REG_STATUS = [
     { v: 1, l: '已挂号', t: 'primary' },
     { v: 2, l: '已退号', t: 'danger' },
@@ -25,7 +25,22 @@
     delete f.createTime; delete f.updateTime; delete f.createBy; delete f.updateBy; delete f.deleted;
     return f;
   }
+  /* 身份证解析出生日期/性别(建档一致性校验用, 2026-10-03): 18位取 7-14 位生日+第17位奇男偶女, 15位取 7-12 位(19xx)+末位;
+     格式/月日非法返回 null(不校验校验位, 新生儿出生8位简写等场景静默跳过)。性别码值对齐 cv_code:gend 1男/2女 */
+  function idCardParse(idCard) {
+    var s = String(idCard || '').trim().toUpperCase();
+    var y, m, d, g;
+    if (/^\d{17}[\dX]$/.test(s)) { y = s.slice(6, 10); m = s.slice(10, 12); d = s.slice(12, 14); g = parseInt(s.charAt(16), 10); }
+    else if (/^\d{15}$/.test(s)) { y = '19' + s.slice(6, 8); m = s.slice(8, 10); d = s.slice(10, 12); g = parseInt(s.charAt(14), 10); }
+    else { return null; }
+    if (+m < 1 || +m > 12 || +d < 1 || +d > 31) { return null; }
+    return { birthDate: y + '-' + m + '-' + d, gender: g % 2 === 1 ? '1' : '2' };
+  }
+  function gendLabel(code) { return code === '1' ? '男' : (code === '2' ? '女' : code); }
   function timeLabel(v) {
+    /* 优先班次字典缓存(含自定义班次), 未命中回落存量三值 */
+    var n = (window.HIS && HIS.shiftLabel) ? HIS.shiftLabel(v) : null;
+    if (n) { return n; }
     for (var i = 0; i < TIME_TYPES.length; i++) { if (TIME_TYPES[i].v === v) { return TIME_TYPES[i].l; } }
     return v || '-';
   }
@@ -100,7 +115,25 @@
         vm.csDept = row.deptId || null; vm.csStaff = null;
         vm.csDate = row.workDate || today();
         vm.csDlg = true;
-        vm.csLoadSchedules();
+        /* 预热班次字典(退号页未自行加载): 缓存就绪后再拉号源, 以便过期判定生效 */
+        HIS.shiftDict(function () { vm.csLoadSchedules(); });
+      },
+      /* 换号目标班次是否已过期: 仅当 csDate 为今天且当前操作时间越过班次结束时间(et)才算过期(与挂号台同口径) */
+      csShiftExpired: function (tt) {
+        if (this.csDate && this.csDate !== today()) { return false; }
+        var opts = (window.HIS && HIS.shiftOptions) ? HIS.shiftOptions() : null;
+        if (!opts) { return false; }
+        for (var i = 0; i < opts.length; i++) {
+          if (opts[i].v === tt) {
+            var et = opts[i].et;
+            if (!et) { return false; }
+            var p = String(et).split(':');
+            var now = new Date();
+            var end = new Date(now.getFullYear(), now.getMonth(), now.getDate(), Number(p[0]) || 0, Number(p[1]) || 0, 0);
+            return now.getTime() > end.getTime();
+          }
+        }
+        return false;
       },
       /* 科室切换: 清空不属于该科室的已选医师后重查号源 */
       csOnFilterChange: function () {
@@ -120,14 +153,15 @@
         if (vm.csDate) { q += '&from=' + vm.csDate + '&to=' + vm.csDate; }
         HIS.get(q).then(function (d) {
           var all = (d && d.records) ? d.records : (d || []);
-          /* 仅开诊号源; 排除原号自身号源(同槽换号无意义, 后端同样有兑底拦截) */
+          /* 仅开诊号源; 排除原号自身号源(同槽换号无意义, 后端同样有兜底拦截); 今日已过操作时间的班次不作为换号目标 */
           vm.csSchedules = all.map(normScheduleRow).filter(function (s) {
-            return s.status === 1 && (!vm.csRow || !vm.csRow.scheduleId || s.id !== vm.csRow.scheduleId);
+            return s.status === 1 && !vm.csShiftExpired(s.timeType) && (!vm.csRow || !vm.csRow.scheduleId || s.id !== vm.csRow.scheduleId);
           });
         }).catch(HIS.notifyError).finally(function () { vm.csLoading = false; });
       },
       csPickRow: function (row) {
         if (!row) { return; }
+        if (this.csShiftExpired(row.timeType)) { ElementPlus.ElMessage.warning('该班次已过当前操作时间, 不可选为换号目标'); return; }
         if (row.leftNum <= 0) { ElementPlus.ElMessage.warning('该号源已无余号, 不可选为换号目标'); return; }
         this.csSelected = row;
       },
@@ -181,7 +215,7 @@
     '        <el-option v-for="s in csStaffOptions" :key="s.id" :label="s.staffName" :value="s.id"></el-option>',
     '      </el-select>',
     '      <el-button type="primary" size="small" :loading="csLoading" @click="csLoadSchedules">查询号源</el-button>',
-    '      <span style="color:var(--yb-ink-2);font-size:12px;">单击行选中目标号源(余号为0不可选)</span>',
+    '      <span style="color:var(--yb-ink-2);font-size:12px;">单击行选中目标号源(余号为0不可选; 换到今日时已过当前操作时间的班次不展示)</span>',
     '    </div>',
     '    <el-table :data="csSchedules" v-loading="csLoading" border stripe size="small" max-height="280" highlight-current-row @row-click="csPickRow">',
     '      <el-table-column type="index" label="序号" width="56"></el-table-column>',
@@ -236,7 +270,7 @@
         insuList: [], insuLoading: false
       };
     },
-    created: function () { this._base = this.size; if (!this.paged) { this.size = 100000; } this.loadDicts(); this.loadOrgs(); this.load(); },
+    created: function () { this._base = this.size; if (!this.paged) { this.size = 100000; } this.loadDicts(); this.loadOrgs(); this.load(); this.consumePendingFull(); },
     methods: {
       empty: function () {
         return {
@@ -341,6 +375,17 @@
               } else { apply(); }
             },
       add: function () { this.editing = false; this.form = this.empty(); this.areaOpts = []; this.resetAreaPaths(); this.activeTab = 'basic'; this.insuList = []; this.dlg = true; },
+      /* 快速建档切换交接(RegistrationDesk.toFullForm): 消费待建档子集并自动弹开新增建档弹窗 */
+      consumePendingFull: function () {
+        var p = HIS._pendingPatientFull;
+        if (!p) { return; }
+        HIS._pendingPatientFull = null;
+        this.editing = false;
+        this.form = clean(Object.assign(this.empty(), p));
+        this.areaOpts = []; this.resetAreaPaths(); this.buildAllAreaPaths(this.form);
+        this.activeTab = 'basic'; this.insuList = []; this.dlg = true;
+        ElementPlus.ElMessage.info('已带入快速建档已录信息, 可继续完善完整档案');
+      },
       edit: function (row) {
         this.editing = true; this.form = clean(Object.assign(this.empty(), row));
         this.setAreaOpt(row.insuplcAdmdvs, row.insuplcAdmdvsName); this.buildAllAreaPaths(row); this.activeTab = 'basic'; this.loadInsu(row.id); this.dlg = true;
@@ -367,6 +412,28 @@
           }
         }
         if (!f.mdtrtCertNo && f.idCard) { f.mdtrtCertNo = f.idCard; }
+      },
+      /* 身份证失焦: 先算年龄再做解析一致性校验 */
+      onIdBlur: function () { this.calcAge(); this.checkIdCard(); },
+      /* 身份证解析信息与已填不一致时询问是否按身份证覆盖(仅非空字段比对; 覆盖时同步重算年龄) */
+      checkIdCard: function () {
+        var vm = this; var f = vm.form;
+        var p = idCardParse(f.idCard);
+        if (!p) { return; }
+        var diffs = [];
+        var bd = f.birthDate ? String(f.birthDate).slice(0, 10) : '';
+        if (bd && bd !== p.birthDate) { diffs.push('出生日期 ' + bd + ' → ' + p.birthDate); }
+        if (f.gender && f.gender !== p.gender) { diffs.push('性别 ' + gendLabel(f.gender) + ' → ' + gendLabel(p.gender)); }
+        if (!diffs.length) { return; }
+        ElementPlus.ElMessageBox.confirm(
+          '身份证解析结果: ' + p.birthDate + ' / ' + gendLabel(p.gender) + ', 与当前录入不一致(' + diffs.join('; ') + ')。是否用身份证信息覆盖?',
+          '身份证信息不一致',
+          { confirmButtonText: '按身份证覆盖', cancelButtonText: '保持当前录入', type: 'warning' }
+        ).then(function () {
+          f.gender = p.gender;
+          f.birthDate = p.birthDate + ' 00:00:00'; /* 建档弹窗为 datetime 格式 */
+          vm.calcAge();
+        }).catch(function () { });
       },
       submit: function () {
         var vm = this;
@@ -474,12 +541,12 @@
       '        <el-tab-pane label="基本信息" name="basic">',
       '      <el-divider content-position="left">基本信息</el-divider>',
       '      <el-row :gutter="12">',
-      '        <el-col :span="12"><el-form-item label="姓名"><el-input v-model="form.name"></el-input></el-form-item></el-col>',
+      '        <el-col :span="12"><el-form-item label="姓名" required><el-input v-model="form.name"></el-input></el-form-item></el-col>',
       '        <el-col :span="12"><el-form-item label="性别"><el-select v-model="form.gender" style="width:100%"><el-option v-for="o in gendOpts" :key="o.code" :label="o.name" :value="o.code"></el-option></el-select></el-form-item></el-col>',
       '        <el-col :span="12"><el-form-item label="出生时间"><el-date-picker v-model="form.birthDate" type="datetime" value-format="YYYY-MM-DD HH:mm:ss" placeholder="新生儿可精确到时分秒" style="width:100%" @change="calcAge"></el-date-picker></el-form-item></el-col>',
       '        <el-col :span="12"><el-form-item label="年龄"><el-input v-model.number="form.age" type="number"></el-input></el-form-item></el-col>',
       '        <el-col :span="12"><el-form-item label="身份证件类别"><el-select v-model="form.certType" style="width:100%" filterable><el-option v-for="o in idTypeOpts" :key="o.code" :label="o.name + \' (\' + o.code + \')\'" :value="o.code"></el-option></el-select></el-form-item></el-col>',
-      '        <el-col :span="12"><el-form-item label="身份证号"><el-input v-model="form.idCard" placeholder="新生儿无证件号可填出生8位" @blur="calcAge"></el-input></el-form-item></el-col>',
+      '        <el-col :span="12"><el-form-item label="身份证号"><el-input v-model="form.idCard" placeholder="新生儿无证件号可填出生8位" @blur="onIdBlur"></el-input></el-form-item></el-col>',
       '        <el-col :span="12"><el-form-item label="民族"><el-select v-model="form.nation" style="width:100%" filterable clearable><el-option v-for="o in nationOpts" :key="o.code" :label="o.name" :value="o.code"></el-option></el-select></el-form-item></el-col>',
       '        <el-col :span="12"><el-form-item label="国籍"><el-select v-model="form.nationality" style="width:100%" filterable clearable><el-option v-for="o in natlOpts" :key="o.code" :label="o.name + \' (\' + o.code + \')\'" :value="o.code"></el-option></el-select></el-form-item></el-col>',
       '        <el-col :span="12"><el-form-item label="婚姻状况"><el-select v-model="form.maritalStatus" style="width:100%" filterable clearable><el-option v-for="o in maritalOpts" :key="o.code" :label="o.name" :value="o.code"></el-option></el-select></el-form-item></el-col>',
@@ -591,6 +658,8 @@
         selectedPatient: null, lastVisit: null,
         /* 挂号表单: 医疗类别/费别/挂号类别/挂号减免/支付方式/备注 */
         medType: '11', feeType: 'self', regCaty: 'normal',
+        /* 挂号默认费别参数(outpatient.default_fee_type): null=尚未取到, 取不到时内置回退 insurance */
+        defaultFeeType: null, feeTypeFromPref: false,
         discountType: 'none', discountReason: '', payMethod: 'cash', remark: '',
         submitting: false,
         /* 费别/支付方式字典(机构级自定义, created 拉取; 空则回落内置硬编码) */
@@ -600,6 +669,8 @@
         /* 号源筛选: 科室/医师(联动)/日期(今明后快捷)/时段勾选 */
         depts: [], staffs: [], filterDept: null, filterStaff: null, filterDate: today(),
         timeChecked: ['am', 'pm', 'night'], timeTypes: TIME_TYPES,
+        /* 面板伸缩(工作台统一约定): 左栏可折叠为细导轨; 右侧号源/记录两区各自放大占满、再点还原; 顶部统计条可折叠为细横条 */
+        leftCollapsed: false, rightFocus: '', slotTableH: 240, summaryCollapsed: false,
         sLoading: false, schedules: [], selectedSchedule: null,
         /* 今日挂号记录(30秒自动刷新) */
         regList: [], regTotal: 0, regPage: 1, regSize: 20, regKeyword: '', regStatus: '',
@@ -616,22 +687,39 @@
       };
     },
     computed: {
-      /* 挂号科室下拉仅列科室级节点(deptLevel=2): 诊室(第3层)不作为科室可选;
-         depts 仍保留全量供 deptName(id) 解析历史号源的诊室科室 */
+      /* 号源区科室/医师候选与下方号源列表同源(2026-10-03): 只列当日实际有开放号源的科室与医师,
+         避免选了无号源的机构主数据(开诊科室/可挂号医生)后空转; 号源行挂诊室(第3层)时上卷到父科室 */
+      schedDeptParent: function () {
+        var m = {};
+        (this.depts || []).forEach(function (d) { if (Number(d.deptLevel) === 3 && d.parentId) { m[d.id] = d.parentId; } });
+        return m;
+      },
       deptFilterOptions: function () {
-        return (this.depts || []).filter(function (d) { return Number(d.deptLevel) === 2; });
+        var vm = this; var up = vm.schedDeptParent; var ids = {};
+        (vm.schedules || []).forEach(function (s) { ids[up[s.deptId] || s.deptId] = 1; });
+        return (vm.depts || []).filter(function (d) { return Number(d.deptLevel) === 2 && ids[d.id]; });
       },
-      /* 医师下拉联动科室: 选科室后仅列该科室医师 */
+      /* 医师候选: 当日号源行出现过的医师(选定科室时仅限该科室含诊室上卷); 反查 staffs 取完整对象, 查不到用号源行名兜底 */
       staffOptions: function () {
-        var vm = this;
-        if (!vm.filterDept) { return vm.staffs || []; }
-        return (vm.staffs || []).filter(function (s) { return s.deptId === vm.filterDept; });
+        var vm = this; var up = vm.schedDeptParent; var ids = {}; var names = {};
+        (vm.schedules || []).forEach(function (s) {
+          if (!s.staffId) { return; }
+          if (vm.filterDept && s.deptId !== vm.filterDept && up[s.deptId] !== vm.filterDept) { return; }
+          ids[s.staffId] = 1; names[s.staffId] = s.staffName;
+        });
+        var out = (vm.staffs || []).filter(function (s) { return ids[s.id]; });
+        (vm.staffs || []).forEach(function (s) { delete ids[s.id]; });
+        Object.keys(ids).forEach(function (k) { out.push({ id: Number(k), staffName: names[k] }); });
+        return out;
       },
-      /* 号源客户端二次过滤: 医师 + 时段勾选 */
+      /* 号源客户端过滤: 科室(含诊室上卷) + 医师 + 时段勾选(科室/医师不再走服务端参数, 与候选池同源) */
       filteredSchedules: function () {
-        var vm = this;
+        var vm = this; var up = vm.schedDeptParent;
         return (vm.schedules || []).filter(function (s) {
+          if (vm.filterDept && s.deptId !== vm.filterDept && up[s.deptId] !== vm.filterDept) { return false; }
           if (vm.filterStaff && s.staffId !== vm.filterStaff) { return false; }
+          /* 今日已过期班次一律不展示(与勾选框置灰同口径, 不依赖 timeChecked 状态) */
+          if (vm.shiftExpiredByCode(s.timeType)) { return false; }
           if (vm.timeChecked && vm.timeChecked.length && vm.timeChecked.indexOf(s.timeType) < 0) { return false; }
           return true;
         });
@@ -677,6 +765,16 @@
         if (this.feeType === 'insurance') { return 'reg-patient-card--insurance'; }
         return this.discountType !== 'none' ? 'reg-patient-card--discount' : 'reg-patient-card--self';
       },
+      /* 费别结算通道提示: 仅 channel=INSURANCE 的费别走 2201/2202 并强制科室与医师贯标;
+       * 字典未就绪时不提示(空串); 内置 insurance 码查不到字典行时仍按医保提示(后端费别为空同样按医保处理) */
+      feeTypeChannelHintC: function () {
+        var code = this.feeType, list = this.feeTypeOpts || [], ft = null;
+        for (var i = 0; i < list.length; i++) { if (list[i].code === code) { ft = list[i]; break; } }
+        if (!ft) { return code === 'insurance' ? '医保通道：需科室医保科别与医师医保编码' : ''; }
+        var ch = String(ft.channel || '').toUpperCase();
+        if (!ch) { return '未维护结算通道，默认按医保通道处理'; }
+        return ch === 'INSURANCE' ? '医保通道：需科室医保科别与医师医保编码' : '非医保通道：不要求贯标、不调 2201/2202';
+      },
       /* 身份证脱敏: 中间8位* */
       maskIdCardC: function () {
         var v = ((this.selectedPatient || {}).idCard) || '';
@@ -705,6 +803,7 @@
     watch: {
       /* 费别切换: 支付方式联动到该费别可用项(医保默认医保结算, 减免默认免费, 其余现金) */
       feeType: function (v) {
+        try { localStorage.setItem('his.regFeeType', v); } catch (e) { }
         var opts = this.payMethodOptions || [];
         var want = v === 'insurance' ? 'INSURANCE' : (this.discountType !== 'none' ? 'FREE' : 'CASH');
         var hit = opts.filter(function (o) { return String(o.v).toUpperCase() === want; })[0];
@@ -731,6 +830,8 @@
       var vm = this;
       vm.loadRefs();
       vm.loadDicts();
+      /* 班次字典: 号源时段按钮/筛选改字典驱动(含起止时间); 默认仅勾选未过期班次, 已过当前操作时间的班次置灰不可选 */
+      HIS.shiftDict(function (l) { vm.timeTypes = l; vm.syncShiftDefaults(); });
       vm.loadSchedules();
       vm.loadSummary();
       vm.loadRegs();
@@ -738,9 +839,11 @@
       HIS.loadFeePayDict('OTP').then(function () {
         vm.feeTypeOpts = HIS.feeTypeOpts('OTP');
         vm.payMethodDictOpts = HIS.payMethodOpts('OTP');
-        if (vm.feeTypeOpts.length && !vm.feeTypeOpts.some(function (f) { return f.code === vm.feeType; })) {
-          vm.feeType = vm.feeTypeOpts[0].code;
-        }
+        /* 费别默认值: 先取挂号默认费别参数再应用三级优先级(本地记忆 › 参数 › insurance) */
+        HIS.get('/api/sys/param/resolve/outpatient.default_fee_type')
+          .then(function (v) { vm.defaultFeeType = v || 'insurance'; })
+          .catch(function () { vm.defaultFeeType = 'insurance'; })
+          .then(function () { vm.applyDefaultFeeType(); });
         var opts = vm.payMethodOptions || [];
         if (opts.length && !opts.some(function (o) { return o.v === vm.payMethod; })) {
           var cash = opts.filter(function (o) { return String(o.v).toUpperCase() === 'CASH'; })[0];
@@ -978,7 +1081,8 @@
         f.presentProv = v[0] || ''; f.presentCity = v[1] || '';
         f.presentCounty = v[2] || ''; f.presentTown = v[3] || '';
       },
-      /* 快速建档保存: POST /patient/save; 接口未就绪(404)时降级现有 POST /patient */
+      /* 快速建档保存: 直接 POST /patient(与档案管理同一端点, createPatient 按身份证/人员编号查重复用);
+         旧 /patient/save 系从未实现的计划端点, 每次白吃一个 404 再降级, 2026-10-03 收口清理 */
       submitBuild: function () {
         var vm = this;
         var f = vm.buildForm;
@@ -990,21 +1094,122 @@
         delete payload.feeType; /* 患者档案无费别列, 费别仅用于挂号表单 */
         var fee = f.feeType || 'self';
         vm.buildSaving = true;
-        HIS.post('/api/his/patient/save', payload).then(function (p) { return p; }, function (e) {
-          if (/404/.test(String(e && e.message))) { return HIS.post('/api/his/patient', payload); }
-          throw e;
-        }).then(function (p) {
+        HIS.post('/api/his/patient', payload).then(function (p) {
           vm.buildDlg = false;
           HIS.notifySuccess('建档成功, 患者号: ' + ((p && p.patientNo) || ''));
           vm.applyPatient(p || {}, fee);
         }).catch(HIS.notifyError).finally(function () { vm.buildSaving = false; });
       },
+      /* 快速建档身份证失焦一致性校验: 读卡置灰(locked)字段来自医保卡/身份证读取, 不参与比对也不可覆盖; 生日为 date 格式 YYYY-MM-DD */
+      checkBuildIdCard: function () {
+        var vm = this; var f = vm.buildForm;
+        var p = idCardParse(f.idCard);
+        if (!p || vm.buildLocked.idCard) { return; }
+        var diffs = [];
+        if (!vm.buildLocked.birthDate && f.birthDate && String(f.birthDate).slice(0, 10) !== p.birthDate) { diffs.push('出生日期 ' + String(f.birthDate).slice(0, 10) + ' → ' + p.birthDate); }
+        if (!vm.buildLocked.gender && f.gender && f.gender !== p.gender) { diffs.push('性别 ' + gendLabel(f.gender) + ' → ' + gendLabel(p.gender)); }
+        if (!diffs.length) { return; }
+        ElementPlus.ElMessageBox.confirm(
+          '身份证解析结果: ' + p.birthDate + ' / ' + gendLabel(p.gender) + ', 与当前录入不一致(' + diffs.join('; ') + ')。是否用身份证信息覆盖?',
+          '身份证信息不一致',
+          { confirmButtonText: '按身份证覆盖', cancelButtonText: '保持当前录入', type: 'warning' }
+        ).then(function () {
+          if (!vm.buildLocked.gender) { f.gender = p.gender; }
+          if (!vm.buildLocked.birthDate) { f.birthDate = p.birthDate; }
+        }).catch(function () { });
+      },
+      /* 切换到完整建档: 携已录字段跳转档案管理并自动弹开新增建档弹窗(快速建档仅字段子集, 生日补齐 datetime 格式) */
+      toFullForm: function () {
+        var f = this.buildForm;
+        var p = { name: f.name, gender: f.gender, idCard: f.idCard, phone: f.phone, psnNo: f.psnNo, insutype: f.insutype,
+          presentProv: f.presentProv, presentCity: f.presentCity, presentCounty: f.presentCounty, presentTown: f.presentTown, presentDetail: f.presentDetail,
+          contactName: f.contactName, contactPhone: f.contactPhone };
+        if (f.birthDate) { p.birthDate = String(f.birthDate).length === 10 ? f.birthDate + ' 00:00:00' : f.birthDate; }
+        HIS._pendingPatientFull = p;
+        this.buildDlg = false;
+        HIS.go('patient');
+      },
       /* ---------- 号源 ---------- */
+      /* 按班次码取班次对象(含起止时间) */
+      shiftOf: function (code) {
+        var ts = this.timeTypes || [];
+        for (var i = 0; i < ts.length; i++) { if (ts[i].v === code) { return ts[i]; } }
+        return null;
+      },
+      /* 班次是否已过期: 仅当号源日期为今天且当前操作时间已越过该班次结束时间(et)才算过期。
+         预约未来日期不受当前时间约束; 无 et(字典未配起止)保守放行; 未开始的当日班次(如上午挂下午号)仍可挂。 */
+      shiftExpired: function (t) {
+        if (!t || !t.et) { return false; }
+        if (this.filterDate && this.filterDate !== today()) { return false; }
+        var p = String(t.et).split(':');
+        var now = new Date();
+        var end = new Date(now.getFullYear(), now.getMonth(), now.getDate(), Number(p[0]) || 0, Number(p[1]) || 0, 0);
+        return now.getTime() > end.getTime();
+      },
+      /* 按班次码判定过期(供号源过滤/提交守卫复用) */
+      shiftExpiredByCode: function (code) {
+        var t = this.shiftOf(code);
+        return t ? this.shiftExpired(t) : false;
+      },
+      /**
+       * 费别默认项三级优先级: 本地记忆的上次选择 › 参数 outpatient.default_fee_type(机构/租户级可覆盖, 全局默认 insurance)
+       * › 内置 insurance; 候选必须限本机构启用中的费别字典, 命中码已删除/停用时逐级下调并清理陈旧本地偏好。
+       */
+      applyDefaultFeeType: function () {
+        var vm = this, list = vm.feeTypeOpts || [];
+        if (!list.length) { return; }
+        var avail = function (c) { return !!c && list.some(function (f) { return f.code === c; }); };
+        var local = null;
+        try { local = localStorage.getItem('his.regFeeType'); } catch (e) { }
+        if (local && !avail(local)) {
+          try { localStorage.removeItem('his.regFeeType'); } catch (e) { }
+          local = null;
+        }
+        var want = local || vm.defaultFeeType || 'insurance';
+        if (!avail(want)) { want = avail('insurance') ? 'insurance' : list[0].code; }
+        vm.feeTypeFromPref = !!local && want === local;
+        if (vm.feeType !== want) { vm.feeType = want; }
+      },
+      /* 取当前时刻所处班次(用字典 st/et 时间窗); 落在班次间隙(如午间休诊)或全部班次之外时返回 null */
+      shiftAt: function (now) {
+        var ts = this.timeTypes || [];
+        var toMin = function (s) {
+          if (!s) { return null; }
+          var p = String(s).split(':');
+          return (Number(p[0]) || 0) * 60 + (Number(p[1]) || 0);
+        };
+        var cur = now.getHours() * 60 + now.getMinutes();
+        for (var i = 0; i < ts.length; i++) {
+          var a = toMin(ts[i].st), b = toMin(ts[i].et);
+          if (a === null || b === null) { continue; }
+          if (cur >= a && cur <= b) { return ts[i]; }
+        }
+        return null;
+      },
+      /* 时段默认勾选口径(2026-10-04):
+         - 当日号源: 只勾选当前时刻所处班次, 其它时段默认不展示(仍手动勾选放开); 已过点班次保持置灰。
+           当前时刻落在班次间隙/全部已过(如午间休诊、夜间)时, 退化为最早一个未到结束时间的班次; 全部已过则不展示。
+         - 非当日(预约明日/后天): 默认只勾选上午班次, 无上午班次时取首个启用班次。 */
+      syncShiftDefaults: function () {
+        var vm = this;
+        var types = vm.timeTypes || [];
+        if (!types.length) { vm.timeChecked = []; }
+        else if (!vm.filterDate || vm.filterDate === today()) {
+          var live = types.filter(function (t) { return !vm.shiftExpired(t); });
+          var cur = vm.shiftAt(new Date());
+          if (cur && !vm.shiftExpired(cur)) { vm.timeChecked = [cur.v]; }
+          else { vm.timeChecked = live.length ? [live[0].v] : []; }
+        } else {
+          var am = types.filter(function (t) { return t.v === 'am'; })[0];
+          vm.timeChecked = [(am || types[0]).v];
+        }
+        if (vm.selectedSchedule && vm.shiftExpiredByCode(vm.selectedSchedule.timeType)) { vm.selectedSchedule = null; }
+      },
       loadSchedules: function () {
         var vm = this; vm.sLoading = true; vm.selectedSchedule = null;
-        /* /schedule/list 为分页结构: 显式拉大页容量取全当日号源, 兼容数组/分页两种响应 */
-        var q = '/api/his/schedule/list?1=1&page=1&size=200';
-        if (vm.filterDept) { q += '&deptId=' + vm.filterDept; }
+        /* /schedule/list 为分页结构: 显式拉大页容量取全当日号源, 兼容数组/分页两种响应;
+           不再传 deptId: 一次拉全后科室/医师/时段均客户端过滤, 下拉候选与列表同源(2026-10-03) */
+        var q = '/api/his/schedule/list?1=1&page=1&size=500';
         if (vm.filterDate) { q += '&from=' + vm.filterDate + '&to=' + vm.filterDate; }
         HIS.get(q).then(function (d) {
           var all = (d && d.records) ? d.records : (d || []);
@@ -1031,9 +1236,16 @@
               atddrNo: s.atddrNo || s.atddr_no
             };
           }).filter(function (s) { return s.status === 1; });
+          /* 日期/刷新后重算时段默认勾选(切到今日时自动置灰已过期班次) */
+          vm.syncShiftDefaults();
         }).catch(HIS.notifyError).finally(function () { vm.sLoading = false; });
       },
-      onDeptChange: function () { this.filterStaff = null; this.loadSchedules(); },
+      onDeptChange: function () { this.filterStaff = null; /* 纯客户端过滤, 候选与列表同源, 无需重拉号源 */ },
+      /* 右两区放大/还原(互斥): 号源区放大时表格随视口增高, 还原回 240 */
+      toggleFocus: function (which) {
+        this.rightFocus = this.rightFocus === which ? '' : which;
+        this.slotTableH = this.rightFocus === 'top' ? Math.max(360, window.innerHeight - 330) : 240;
+      },
       quickDate: function (n) {
         var d = new Date(); d.setDate(d.getDate() + n);
         var m = ('0' + (d.getMonth() + 1)).slice(-2);
@@ -1139,6 +1351,11 @@
         if (!vm.selectedPatient) { ElementPlus.ElMessage.warning('请先选择患者(F3读医保卡 / F4读身份证 / 输入关键字检索)'); return; }
         if (!vm.selectedSchedule) { ElementPlus.ElMessage.warning('请先选择号源'); return; }
         if (vm.selectedSchedule.leftNum <= 0) { ElementPlus.ElMessage.warning('该号源已无余号, 可点击“加号”追加'); return; }
+        /* 防挂过期号: 当前操作时间已越过选中号源班次结束时间(仅今日) */
+        if (vm.shiftExpiredByCode(vm.selectedSchedule.timeType)) {
+          ElementPlus.ElMessage.warning('该号源班次(' + timeLabel(vm.selectedSchedule.timeType) + ')已过当前操作时间, 不能挂过期号, 请改选未过期班次或预约明日');
+          vm.selectedSchedule = null; return;
+        }
         if (vm.discountType === 'other' && !(vm.discountReason || '').trim()) { ElementPlus.ElMessage.warning('选择“其他减免”时必须填写减免原因'); return; }
         vm.submitting = true;
         /* 重复挂号预检: duplicate 阻断; sameDept 警告可继续(预检失败不阻断, 后端挂号内有兜底校验) */
@@ -1216,8 +1433,12 @@
     },
     template: [
       '<div class="reg-workstation">',
-      /* 顶部: 今日统计(6卡片, GET todaySummary, 挂号/退号后刷新) */
-      '  <div class="reg-summary-bar">',
+      /* 顶部: 今日统计(6卡片, GET todaySummary, 挂号/退号后刷新; 可折叠为细横条腾出主体空间) */
+      '  <div v-if="summaryCollapsed" class="reg-summary-bar is-collapsed" title="展开今日统计" @click="summaryCollapsed=false">',
+      '    <span class="reg-summary-mini">≫ 今日统计</span>',
+      '    <span class="reg-summary-mini-nums">挂 {{ summary.registered||0 }} · 退 {{ summary.cancelled||0 }} · 候 {{ summary.waiting||0 }} · 诊 {{ summary.visited||0 }} · 减 {{ summary.discountCount||0 }} · 实收 ¥{{ fmtMoney(summary.actualTotal) }}</span>',
+      '  </div>',
+      '  <div v-else class="reg-summary-bar">',
       '    <div class="reg-summary-card">',
       '      <div class="icon icon--blue">挂</div>',
       '      <div>',
@@ -1260,11 +1481,13 @@
       '        <div class="label">实收金额</div>',
       '      </div>',
       '    </div>',
+      '    <div class="reg-summary-collapse" title="折叠统计条, 腾出挂号操作空间" @click="summaryCollapsed=true">≪</div>',
       '  </div>',
       /* 主体: 左患者+挂号 / 右号源+记录 */
       '  <div class="reg-body">',
-      '    <div class="reg-left">',
-      '      <div class="reg-section-title">患者</div>',
+      '    <div v-if="leftCollapsed" class="reg-left-rail" title="展开 患者/挂号 面板" @click="leftCollapsed=false"><span class="reg-left-rail-text">≫ 患者/挂号</span></div>',
+      '    <div v-else class="reg-left">',
+      '      <div class="reg-section-title">患者<span style="flex:1;"></span><el-button class="reg-left-collapse-btn" link size="small" title="折叠左栏, 腾出号源/记录空间" @click="leftCollapsed=true">≪</el-button></div>',
       '      <div class="reg-search-box">',
       '        <el-input ref="kwInput" v-model="pKeyword" placeholder="姓名/身份证/患者号/拼音简码" clearable @input="onSearchInput" @blur="hideSearchDrop" @keyup.enter="searchCandidates()">',
       '          <template #append><el-button :loading="pLoading" @click="searchCandidates()">检索</el-button></template>',
@@ -1304,7 +1527,7 @@
       '      <el-form class="reg-form" label-position="top" size="small">',
       '        <el-row :gutter="10">',
       '          <el-col :span="12"><el-form-item label="医疗类别"><el-select v-model="medType" style="width:100%"><el-option v-for="m in medTypeOpts" :key="m.code" :label="m.code + \'-\' + m.name" :value="m.code"></el-option><template v-if="!medTypeOpts.length"><el-option label="11-普通门诊" value="11"></el-option><el-option label="12-门诊挂号" value="12"></el-option><el-option label="92-门诊慢特病" value="92"></el-option></template></el-select></el-form-item></el-col>',
-      '          <el-col :span="12"><el-form-item label="费别"><el-select v-model="feeType" style="width:100%"><el-option v-if="!feeTypeOpts.length" label="医保" value="insurance"></el-option><el-option v-if="!feeTypeOpts.length" label="自费" value="self"></el-option><el-option v-for="f in feeTypeOpts" :key="f.code" :label="f.name" :value="f.code"></el-option></el-select></el-form-item></el-col>',
+      '          <el-col :span="12"><el-form-item label="费别"><el-select v-model="feeType" style="width:100%"><el-option v-if="!feeTypeOpts.length" label="医保" value="insurance"></el-option><el-option v-if="!feeTypeOpts.length" label="自费" value="self"></el-option><el-option v-for="f in feeTypeOpts" :key="f.code" :label="f.name" :value="f.code"></el-option></el-select><div v-if="feeTypeChannelHintC" style="font-size:11px;line-height:1.5;color:var(--yb-ink-2);margin-top:2px;">{{ feeTypeChannelHintC }}</div></el-form-item></el-col>',
       '          <el-col :span="12"><el-form-item label="挂号类别"><el-select v-model="regCaty" style="width:100%"><el-option label="普通" value="normal"></el-option><el-option label="急诊" value="emergency"></el-option></el-select></el-form-item></el-col>',
       '          <el-col :span="12"><el-form-item label="挂号减免"><el-select v-model="discountType" style="width:100%"><el-option label="无减免" value="none"></el-option><el-option label="70岁以上免挂号费" value="age70free"></el-option><el-option label="军人减免" value="military"></el-option><el-option label="残疾人减免" value="disabled"></el-option><el-option label="低保减免" value="dibao"></el-option><el-option label="其他减免" value="other"></el-option></el-select></el-form-item></el-col>',
       '          <el-col v-if="discountType===\'other\'" :span="24"><el-form-item label="减免原因(其他减免必填)"><el-input v-model="discountReason" placeholder="请输入其他减免的原因"></el-input></el-form-item></el-col>',
@@ -1312,6 +1535,7 @@
       '          <el-col :span="12"><el-form-item label="备注"><el-input v-model="remark" placeholder="选填"></el-input></el-form-item></el-col>',
       '        </el-row>',
       '      </el-form>',
+      '      <el-button type="primary" size="large" style="width:100%;margin:0;" :loading="submitting" :disabled="!selectedPatient || !selectedSchedule" @click="submitRegister">确认挂号 F5</el-button>',
       '      <div v-if="selectedSchedule" class="reg-fee-summary">',
       '        <div class="fee-src">{{ selectedSchedule.deptName }} · {{ selectedSchedule.staffName }} · {{ selectedSchedule.workDate }} {{ timeLabel(selectedSchedule.timeType) }} · {{ selectedSchedule.regLevelName || "普通" }}</div>',
       '        <div class="fee-row"><span>挂号费</span><span>¥ {{ fmtMoney(selectedSchedule.regFee) }}</span></div>',
@@ -1319,11 +1543,10 @@
       '        <div class="fee-row fee-row--total"><span>实收</span><span>¥ {{ fmtMoney(actualFeeC) }}</span></div>',
       '      </div>',
       '      <div v-else class="reg-fee-summary"><div class="fee-src" style="text-align:center;">请在右侧选择号源(双击行快速选号)</div></div>',
-      '      <el-button type="primary" size="large" style="width:100%;" :loading="submitting" :disabled="!selectedPatient || !selectedSchedule" @click="submitRegister">确认挂号 F5</el-button>',
       '    </div>',
-      '    <div class="reg-right">',
+      '    <div class="reg-right" :class="{\'focus-top\': rightFocus===\'top\', \'focus-bottom\': rightFocus===\'bottom\'}">',
       '      <div class="reg-right-top">',
-      '        <div class="reg-section-title">号源选择 <span style="font-weight:normal;color:var(--yb-ink-2);font-size:12px;">(科室联动医师, 双击行选号, 余号=0可加号)</span></div>',
+      '        <div class="reg-section-title">号源选择 <span style="font-weight:normal;color:var(--yb-ink-2);font-size:12px;">(科室联动医师, 双击行选号, 余号=0可加号)</span><span style="flex:1;"></span><el-button link type="primary" size="small" @click="toggleFocus(\'top\')">{{ rightFocus===\'top\' ? \'还原\' : \'放大\' }}</el-button></div>',
       '        <div class="toolbar" style="margin-bottom:8px;">',
       '          <el-select v-model="filterDept" placeholder="全部科室(可输拼音简码)" clearable filterable style="width:170px" :filter-method="kwFilter(\'rdDept\')" @change="onDeptChange"><el-option v-for="d in kwOptions(\'rdDept\', deptFilterOptions, [\'deptName\',\'deptCode\',\'pyCode\',\'abbrCode\'])" :key="d.id" :label="d.deptName" :value="d.id"></el-option></el-select>',
       '          <el-select v-model="filterStaff" placeholder="全部医师" clearable filterable style="width:130px"><el-option v-for="s in staffOptions" :key="s.id" :label="s.staffName" :value="s.id"></el-option></el-select>',
@@ -1334,11 +1557,11 @@
       '            <el-button size="small" @click="quickDate(2)">后天</el-button>',
       '          </el-button-group>',
       '          <el-checkbox-group v-model="timeChecked" size="small">',
-      '            <el-checkbox-button v-for="t in timeTypes" :key="t.v" :label="t.v">{{ t.l }}</el-checkbox-button>',
+      '            <el-checkbox-button v-for="t in timeTypes" :key="t.v" :label="t.v" :disabled="shiftExpired(t)" :title="shiftExpired(t) ? (\'已过 \' + t.et + \', 当前操作时间不可挂该班次\') : \'\'">{{ t.l }}{{ t.st ? \' \' + t.st + \'-\' + t.et : \'\' }}<span v-if="shiftExpired(t)" style="color:var(--yb-danger);">（已过）</span></el-checkbox-button>',
       '          </el-checkbox-group>',
       '          <el-button size="small" :loading="sLoading" @click="loadSchedules()">刷新</el-button>',
       '        </div>',
-      '        <el-table :data="filteredSchedules" v-loading="sLoading" size="small" height="240" border highlight-current-row :row-class-name="sourceRowCls" @row-dblclick="onRowDblclick" @current-change="chooseSchedule">',
+      '        <el-table :data="filteredSchedules" v-loading="sLoading" size="small" :height="slotTableH" border highlight-current-row :row-class-name="sourceRowCls" @row-dblclick="onRowDblclick" @current-change="chooseSchedule">',
       '          <el-table-column type="index" label="#" width="40"></el-table-column>',
       '          <el-table-column label="时段" width="64"><template #default="s"><el-tag size="small" :type="timeTagType(s.row.timeType)" :class="{\'reg-tag--night\': s.row.timeType===\'night\'}">{{ timeLabel(s.row.timeType) }}</el-tag></template></el-table-column>',
       '          <el-table-column label="科室" width="100" show-overflow-tooltip><template #default="s">{{ s.row.deptName || deptName(s.row.deptId) }}</template></el-table-column>',
@@ -1355,7 +1578,7 @@
       '        </el-table>',
       '      </div>',
       '      <div class="reg-right-bottom">',
-      '        <div class="reg-section-title">今日挂号记录 <span style="font-weight:normal;color:var(--yb-ink-2);font-size:12px;">(30秒自动刷新, 共 {{ regTotal }} 条)</span></div>',
+      '        <div class="reg-section-title">今日挂号记录 <span style="font-weight:normal;color:var(--yb-ink-2);font-size:12px;">(30秒自动刷新, 共 {{ regTotal }} 条)</span><span style="flex:1;"></span><el-button link type="primary" size="small" @click="toggleFocus(\'bottom\')">{{ rightFocus===\'bottom\' ? \'还原\' : \'放大\' }}</el-button></div>',
       '        <div class="toolbar" style="margin-bottom:8px;">',
       '          <el-input v-model="regKeyword" placeholder="患者/挂号单号/门诊号(支持拼音简码)" clearable style="width:210px" size="small" @keyup.enter="regSearch"></el-input>',
       '          <el-select v-model="regStatus" placeholder="全部状态" clearable size="small" style="width:104px" @change="regSearch"><el-option v-for="s in regStatusOpts" :key="s.v" :label="s.l" :value="s.v"></el-option></el-select>',
@@ -1373,7 +1596,7 @@
       '            <el-table-column prop="queueNo" label="候诊号" width="84"></el-table-column>',
       '            <el-table-column label="实收" width="78" align="right"><template #default="s"><span :style="Number(s.row.actualFee) < Number(s.row.regFee) ? \'color:var(--yb-danger);\' : \'\'">¥{{ fmtMoney(s.row.actualFee) }}</span></template></el-table-column>',
       '            <el-table-column label="状态" width="70"><template #default="s"><el-tag size="small" :type="statusTag(s.row.status)">{{ statusLabel(s.row.status) }}</el-tag></template></el-table-column>',
-      '            <el-table-column label="操作" width="150" fixed="right"><template #default="s">',
+      '            <el-table-column label="操作" width="176" class-name="op-nowrap" fixed="right"><template #default="s">',
       '              <el-button v-if="s.row.status===1" link type="danger" size="small" @click="doCancel(s.row)">退号</el-button>',
       '              <el-button v-if="s.row.status===1" link type="warning" size="small" @click="openChangeSlot(s.row)">换号</el-button>',
       '              <el-button v-if="s.row.status===2" link type="warning" size="small" @click="doReRegister(s.row)">重挂</el-button>',
@@ -1402,7 +1625,7 @@
       '        <el-col :span="12"><el-form-item label="姓名" required><el-input v-model="buildForm.name" :disabled="buildLocked.name"></el-input></el-form-item></el-col>',
       '        <el-col :span="12"><el-form-item label="性别"><el-select v-model="buildForm.gender" :disabled="buildLocked.gender" style="width:100%"><el-option v-for="o in gendOpts" :key="o.code" :label="o.name" :value="o.code"></el-option></el-select></el-form-item></el-col>',
       '        <el-col :span="12"><el-form-item label="出生日期"><el-date-picker v-model="buildForm.birthDate" type="date" value-format="YYYY-MM-DD" :disabled="buildLocked.birthDate" style="width:100%"></el-date-picker></el-form-item></el-col>',
-      '        <el-col :span="12"><el-form-item label="身份证号" required><el-input v-model="buildForm.idCard" :disabled="buildLocked.idCard"></el-input></el-form-item></el-col>',
+      '        <el-col :span="12"><el-form-item label="身份证号" required><el-input v-model="buildForm.idCard" :disabled="buildLocked.idCard" @blur="checkBuildIdCard"></el-input></el-form-item></el-col>',
       '        <el-col :span="12"><el-form-item label="联系电话"><el-input v-model="buildForm.phone"></el-input></el-form-item></el-col>',
       '        <el-col :span="12"><el-form-item label="医保人员编号"><el-input v-model="buildForm.psnNo" :disabled="buildLocked.psnNo"></el-input></el-form-item></el-col>',
       '        <el-col :span="12"><el-form-item label="险种"><el-select v-model="buildForm.insutype" :disabled="buildLocked.insutype" style="width:100%"><el-option v-for="o in insutypeOpts" :key="o.code" :label="o.name" :value="o.code"></el-option></el-select></el-form-item></el-col>',
@@ -1414,6 +1637,7 @@
       '      </el-row>',
       '    </el-form>',
       '    <template #footer>',
+      '      <el-button link type="primary" style="float:left;" @click="toFullForm">切换完整档案建档</el-button>',
       '      <el-button @click="buildDlg=false">取消</el-button>',
       '      <el-button type="primary" :loading="buildSaving" @click="submitBuild()">保存并选中</el-button>',
       '    </template>',
@@ -1838,7 +2062,7 @@
       '    <el-table-column label="状态" width="78" align="center"><template #default="s"><el-tag size="small" :type="statusTag(s.row.status)">{{ statusLabel(s.row.status) }}</el-tag></template></el-table-column>',
       '    <el-table-column label="退号时间" width="140"><template #default="s">{{ fmtDateTime(s.row.cancelTime) }}</template></el-table-column>',
       '    <el-table-column prop="cancelReason" label="退号原因" width="130" show-overflow-tooltip></el-table-column>',
-      '    <el-table-column label="操作" width="150" fixed="right"><template #default="s">',
+      '    <el-table-column label="操作" width="176" class-name="op-nowrap" fixed="right"><template #default="s">',
       '      <el-button v-if="s.row.status===1" link type="danger" size="small" @click="doCancel(s.row)">退号</el-button>',
       '      <el-button v-if="s.row.status===1" link type="warning" size="small" @click="openChangeSlot(s.row)">换号</el-button>',
       '      <el-button v-if="s.row.status===1 || s.row.status===3" link type="info" size="small" @click="showTicket(s.row)">凭条</el-button>',
@@ -1931,7 +2155,7 @@
     return out;
   }
   function mmdd(s) { return s ? String(s).slice(5) : ''; }
-  function timeLabel(v) { return v === 'am' ? '上午' : (v === 'pm' ? '下午' : (v === 'night' ? '晚间' : (v || '-'))); }
+  function timeLabel(v) { var n = (window.HIS && HIS.shiftLabel) ? HIS.shiftLabel(v) : null; if (n) { return n; } return v === 'am' ? '上午' : (v === 'pm' ? '下午' : (v === 'night' ? '晚间' : (v || '-'))); }
   function statusLabel(v) {
     var s = Number(v);
     if (s === 1) { return '已挂号'; }
@@ -2253,21 +2477,21 @@
           }]
         });
       },
-      /* 图2: 时段分布饼图(上午/下午/晚间固定三色) */
+      /* 图2: 时段分布饼图(班次字典驱动, 自定义班次循环取色; 字典未加载回落存量三值) */
       renderTimeChart: function (rows) {
         var vm = this;
-        var meta = { am: { n: '上午', c: HIS.theme.link }, pm: { n: '下午', c: HIS.theme.warning }, night: { n: '晚间', c: HIS.theme.purple } };
+        var palette = [HIS.theme.link, HIS.theme.warning, HIS.theme.purple, '#5ac8fa', '#f5a623', '#2fc97e'];
+        var opts = HIS.shiftOptions() || TIME_TYPES.map(function (t) { return { v: t.v, l: t.l }; });
         var seen = {}, data = [];
-        ['am', 'pm', 'night'].forEach(function (k) {
-          rows.forEach(function (r) {
-            if (r.time_type === k) {
-              seen[k] = true;
-              data.push({ name: meta[k].n, value: Number(r['count']) || 0, itemStyle: { color: meta[k].c } });
-            }
-          });
+        opts.forEach(function (t, i) {
+          var sum = 0;
+          rows.forEach(function (r) { if (r.time_type === t.v) { sum += Number(r['count']) || 0; } });
+          seen[t.v] = 1;
+          if (sum > 0) { data.push({ name: t.l, value: sum, itemStyle: { color: palette[i % palette.length] } }); }
         });
         rows.forEach(function (r) {
-          if (!seen[r.time_type]) { data.push({ name: timeLabel(r.time_type), value: Number(r['count']) || 0 }); }
+          /* 字典外存量码兜底单独计入, 防历史数据丢图 */
+          if (!seen[r.time_type]) { seen[r.time_type] = 1; data.push({ name: timeLabel(r.time_type), value: Number(r['count']) || 0 }); }
         });
         vm.chartTime.setOption({
           tooltip: { trigger: 'item', formatter: '{b}: {c} 笔 ({d}%)' },
@@ -2417,7 +2641,7 @@
       '        <div ref="chartDept" style="height:300px;"></div></el-card>',
       '    </el-col>',
       '    <el-col :span="12">',
-      '      <el-card shadow="never"><template #header><span style="font-weight:600;font-size:14px;color:var(--yb-ink-1);">时段分布(上午/下午/晚间)</span></template>',
+      '      <el-card shadow="never"><template #header><span style="font-weight:600;font-size:14px;color:var(--yb-ink-1);">时段分布(按启用班次)</span></template>',
       '        <div ref="chartTime" style="height:300px;"></div></el-card>',
       '    </el-col>',
       '  </el-row>',

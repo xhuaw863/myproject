@@ -1,6 +1,7 @@
 package com.yb.hi.platform;
 
 import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
+import com.baomidou.mybatisplus.core.toolkit.IdWorker;
 import com.yb.hi.entity.cashier.HisChargeBill;
 import com.yb.hi.entity.cashier.HisChargeBillItem;
 import com.yb.hi.entity.community.HisDrugCatalog;
@@ -252,6 +253,10 @@ public class DemoDataInitializer implements ApplicationRunner {
                 {"outpatient", "outpatient.allow_same_day_refund", "允许当日退号", "bool", "true", null, null, null, 1, "0,1,2,3", "当日挂号是否允许退号"},
                 {"outpatient", "outpatient.queue_call_enabled", "叫号功能启用", "bool", "false", null, null, null, 0, "0,1,2,3", "候诊叫号屏开关"},
                 {"outpatient", "outpatient.visit_timeout_minutes", "接诊超时时间(分钟)", "int", "120", null, "10", "1440", 1, "0,1,2,3", "接诊记录超时归档时长"},
+                /* 挂号费别默认项(2026-10-04): 值域为机构自己的费别码(his_fee_type_dict.code 按机构独立), 故不声明 enum 校验
+                 * 以免机构自定义费别被全局枚举卡死; 前端取不到或码已停用时回退 insurance。医保通道(2201/贯标强制)
+                 * 仅当该费别 channel=INSURANCE, 选非医保费别即不走医保流程 */
+                {"outpatient", "outpatient.default_fee_type", "挂号默认费别", "string", "insurance", null, null, null, 0, "0,1,2", "挂号台费别默认选中项(机构级可覆盖); 收银员本地记忆的上次选择优先于本参数"},
                 {"pharmacy", "pharmacy.dispense_double_check", "发药双人核对", "bool", "true", null, null, null, 1, "0,1,2,3", "发药时需第二人核对"},
                 {"pharmacy", "pharmacy.auto_refresh_seconds", "待发药自动刷新间隔(秒)", "int", "30", null, "0", "600", 0, "0,1,2", "待发药工作站列表自动刷新间隔秒数; 设为0则不自动刷新"},
                 {"pharmacy", "pharmacy.return_need_approval", "退药需审批", "bool", "true", null, null, null, 0, "0,1,2,3", "退药是否需药师长审批"},
@@ -1208,10 +1213,11 @@ public class DemoDataInitializer implements ApplicationRunner {
                 continue;
             }
             jdbcTemplate.update(
-                    "INSERT INTO his_emr_score_standard (tenant_id, org_id, standard_code, standard_name, category,"
+                    "INSERT INTO his_emr_score_standard (id, tenant_id, org_id, standard_code, standard_name, category,"
                             + " base_score, weight, description, status, create_by, create_time, update_by, update_time, deleted)"
-                            + " VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, 'demo-seed', NOW(), 'demo-seed', NOW(), 0)",
-                    tenantId, orgId, s[0], s[1], s[2], new BigDecimal((String) s[4]), new BigDecimal((String) s[3]), s[5]);
+                            + " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 'demo-seed', NOW(), 'demo-seed', NOW(), 0)",
+                    IdWorker.getId(), tenantId, orgId, s[0], s[1], s[2],
+                    new BigDecimal((String) s[4]), new BigDecimal((String) s[3]), s[5]);
             added++;
         }
         if (added > 0) {

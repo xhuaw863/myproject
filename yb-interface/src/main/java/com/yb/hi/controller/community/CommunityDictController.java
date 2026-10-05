@@ -10,8 +10,11 @@ import com.yb.hi.entity.community.HisDrugCatalog;
 import com.yb.hi.entity.community.HisDictEditLog;
 import com.yb.hi.entity.community.HisMedDict;
 import com.yb.hi.entity.community.HisPriceAdjust;
+import com.yb.hi.entity.community.HisShiftDict;
 import com.yb.hi.entity.community.HisValDict;
+import com.yb.hi.framework.common.BizException;
 import com.yb.hi.framework.common.R;
+import com.yb.hi.framework.tenant.TenantContext;
 import com.yb.hi.platform.service.OrgAccessGuard;
 import com.yb.hi.service.StdDictMaintainService;
 import com.yb.hi.service.basedata.HisChargeItemService;
@@ -23,6 +26,7 @@ import com.yb.hi.service.community.HisConsCatalogService;
 import com.yb.hi.service.community.HisDiagDictService;
 import com.yb.hi.service.community.HisDrugCatalogService;
 import com.yb.hi.service.community.HisMedDictService;
+import com.yb.hi.service.community.HisShiftDictService;
 import com.yb.hi.service.community.HisValDictService;
 import org.springframework.format.annotation.DateTimeFormat;
 import org.springframework.util.StringUtils;
@@ -31,8 +35,10 @@ import org.springframework.web.bind.annotation.*;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.function.BiConsumer;
 import java.util.function.Function;
 
@@ -49,6 +55,7 @@ public class CommunityDictController {
     private final HisConsCatalogService consService;
     private final HisChargeItemService chargeService;
     private final HisMedDictService medDictService;
+    private final HisShiftDictService shiftDictService;
     private final HisDiagDictService diagDictService;
     private final HisValDictService valDictService;
     private final CommunityPriceAdjustService adjustService;
@@ -62,6 +69,7 @@ public class CommunityDictController {
                                    HisConsCatalogService consService,
                                    HisChargeItemService chargeService,
                                    HisMedDictService medDictService,
+                                   HisShiftDictService shiftDictService,
                                    HisDiagDictService diagDictService,
                                    HisValDictService valDictService,
                                    CommunityPriceAdjustService adjustService,
@@ -74,6 +82,7 @@ public class CommunityDictController {
         this.consService = consService;
         this.chargeService = chargeService;
         this.medDictService = medDictService;
+        this.shiftDictService = shiftDictService;
         this.diagDictService = diagDictService;
         this.valDictService = valDictService;
         this.adjustService = adjustService;
@@ -119,8 +128,9 @@ public class CommunityDictController {
 
     /** 按医保码回查标准字典的医保名称与医保甲乙分类(编码), 供三目录编辑弹窗显示与保存前不一致提示 */
     @GetMapping("/yb-info")
-    public R<Map<String, Object>> ybInfo(@RequestParam String catalog, @RequestParam(required = false) String code) {
-        return R.ok(mapService.ybClassInfoByCode(catalog, code));
+    public R<Map<String, Object>> ybInfo(@RequestParam String catalog, @RequestParam(required = false) String code,
+                                         @RequestParam(required = false) String srcType) {
+        return R.ok(mapService.ybClassInfoByCode(catalog, code, srcType));
     }
 
     @GetMapping("/drug/page")
@@ -128,9 +138,10 @@ public class CommunityDictController {
                                              @RequestParam(defaultValue = "20") long size,
                                              @RequestParam(required = false) String keyword,
                                              @RequestParam(required = false) Integer status,
-                                             @RequestParam(required = false) String mapped) {
-        IPage<HisDrugCatalog> p = drugService.pageQuery(page, size, keyword, status, mapped);
-        fillYbName(p.getRecords(), "drug", HisDrugCatalog::getYbDrugCode, HisDrugCatalog::setYbName);
+                                             @RequestParam(required = false) String mapped,
+                                             @RequestParam(required = false) String majorClass) {
+        IPage<HisDrugCatalog> p = drugService.pageQuery(page, size, keyword, status, mapped, majorClass);
+        mapService.fillDrugYbNames(p.getRecords());
         return R.ok(p);
     }
 
@@ -145,10 +156,10 @@ public class CommunityDictController {
     public R<Void> drugCreate(@RequestBody HisDrugCatalog e) {
         requireLeadOrg();
         e.setId(null);
-        mapService.guardStdCode(CatalogMapService.CAT_DRUG, e.getYbDrugCode());
-        // 甲乙丙类以标准字典为准: 录入医保码即按 std_drug.chrgitm_lv 同步(归一为编码)
+        mapService.guardStdCode(CatalogMapService.CAT_DRUG, e.getYbDrugCode(), e.getSrcType());
+        // 甲乙丙类以来源字典为准: 录入医保码即按对应字典甲乙丙列同步(归一为编码)
         if (StringUtils.hasText(e.getYbDrugCode())) {
-            e.setChrgitmLv(mapService.drugChrgitmLvByCode(e.getYbDrugCode()));
+            e.setChrgitmLv(mapService.drugChrgitmLvByCode(e.getYbDrugCode(), e.getSrcType()));
         }
         drugService.save(e);
         editLogService.logCreate(CatalogMapService.CAT_DRUG, drugService.getById(e.getId()));
@@ -161,12 +172,12 @@ public class CommunityDictController {
         requireLeadOrg();
         HisDrugCatalog old = drugService.getById(e.getId());
         String oldCode = old == null ? null : old.getYbDrugCode();
-        mapService.guardStdCode(CatalogMapService.CAT_DRUG, e.getYbDrugCode());
+        mapService.guardStdCode(CatalogMapService.CAT_DRUG, e.getYbDrugCode(), e.getSrcType());
         if (ybCodeChanged(oldCode, e.getYbDrugCode())) {
             e.setPrevYbCode(StringUtils.hasText(oldCode) ? oldCode.trim() : null);
             e.setYbMapEffTime(LocalDateTime.now());
-            // 甲乙丙类随医保码变更同步: 以新码对应 std_drug.chrgitm_lv 为准强制覆盖(无值则置空)
-            e.setChrgitmLv(mapService.drugChrgitmLvByCode(e.getYbDrugCode()));
+            // 甲乙丙类随医保码变更同步: 以新码对应来源字典甲乙丙列为准强制覆盖(无值则置空)
+            e.setChrgitmLv(mapService.drugChrgitmLvByCode(e.getYbDrugCode(), e.getSrcType()));
         }
         drugService.updateById(e);
         editLogService.logChanges(CatalogMapService.CAT_DRUG, old, drugService.getById(e.getId()), HisDictEditLog.SRC_EDIT);
@@ -203,7 +214,7 @@ public class CommunityDictController {
     public R<Void> consCreate(@RequestBody HisConsCatalog e) {
         requireLeadOrg();
         e.setId(null);
-        mapService.guardStdCode(CatalogMapService.CAT_CONS, e.getYbConsCode());
+        mapService.guardStdCode(CatalogMapService.CAT_CONS, e.getYbConsCode(), null);
         consService.save(e);
         editLogService.logCreate(CatalogMapService.CAT_CONS, consService.getById(e.getId()));
         mapService.logDictEditCodeChange(CatalogMapService.CAT_CONS, e.getId(), e.getConsCode(), e.getName(), null, e.getYbConsCode());
@@ -215,7 +226,7 @@ public class CommunityDictController {
         requireLeadOrg();
         HisConsCatalog old = consService.getById(e.getId());
         String oldCode = old == null ? null : old.getYbConsCode();
-        mapService.guardStdCode(CatalogMapService.CAT_CONS, e.getYbConsCode());
+        mapService.guardStdCode(CatalogMapService.CAT_CONS, e.getYbConsCode(), null);
         if (ybCodeChanged(oldCode, e.getYbConsCode())) {
             e.setPrevYbCode(StringUtils.hasText(oldCode) ? oldCode.trim() : null);
             e.setYbMapEffTime(LocalDateTime.now());
@@ -266,7 +277,7 @@ public class CommunityDictController {
     public R<Void> chargeCreate(@RequestBody HisChargeItem e) {
         requireLeadOrg();
         e.setId(null);
-        mapService.guardStdCode(CatalogMapService.CAT_CHARGE, e.getMedListCodg());
+        mapService.guardStdCode(CatalogMapService.CAT_CHARGE, e.getMedListCodg(), null);
         chargeService.save(e);
         editLogService.logCreate(CatalogMapService.CAT_CHARGE, chargeService.getById(e.getId()));
         mapService.logDictEditCodeChange(CatalogMapService.CAT_CHARGE, e.getId(), e.getItemCode(), e.getItemName(), null, e.getMedListCodg());
@@ -278,7 +289,7 @@ public class CommunityDictController {
         requireLeadOrg();
         HisChargeItem old = chargeService.getById(e.getId());
         String oldCode = old == null ? null : old.getMedListCodg();
-        mapService.guardStdCode(CatalogMapService.CAT_CHARGE, e.getMedListCodg());
+        mapService.guardStdCode(CatalogMapService.CAT_CHARGE, e.getMedListCodg(), null);
         if (ybCodeChanged(oldCode, e.getMedListCodg())) {
             e.setPrevYbCode(StringUtils.hasText(oldCode) ? oldCode.trim() : null);
             e.setYbMapEffTime(LocalDateTime.now());
@@ -306,6 +317,45 @@ public class CommunityDictController {
     public R<Void> chargeDelete(@PathVariable Long id) {
         requireLeadOrg();
         chargeService.removeById(id);
+        return R.ok();
+    }
+
+    /* ================= 门诊班次字典(排班/号源时段受控, L1 牵头统一维护, 含起止时间) ================= */
+
+    @GetMapping("/shift-dict/page")
+    public R<IPage<HisShiftDict>> shiftDictPage(@RequestParam(defaultValue = "1") long page,
+                                                @RequestParam(defaultValue = "20") long size,
+                                                @RequestParam(required = false) String keyword,
+                                                @RequestParam(required = false) Integer status) {
+        return R.ok(shiftDictService.pageQuery(keyword, status, page, size));
+    }
+
+    /** 启用班次有序列表(含起止时间): 排班/挂号/周视图业务的唯一时段数据源, 全机构可读 */
+    @GetMapping("/shift-dict/values")
+    public R<java.util.List<HisShiftDict>> shiftDictValues() {
+        return R.ok(shiftDictService.enabledList());
+    }
+
+    @PostMapping("/shift-dict")
+    public R<Void> shiftDictCreate(@RequestBody HisShiftDict e) {
+        requireLeadOrg();
+        e.setId(null);
+        shiftDictService.save(e);
+        return R.ok();
+    }
+
+    @PutMapping("/shift-dict")
+    public R<Void> shiftDictUpdate(@RequestBody HisShiftDict e) {
+        requireLeadOrg();
+        shiftDictService.updateById(e);
+        return R.ok();
+    }
+
+    /** 删除班次(逻辑删): 已停用/无排班引用时使; 存量排班历史翻译由前端兜底退化为原码 */
+    @DeleteMapping("/shift-dict/{id}")
+    public R<Void> shiftDictDelete(@PathVariable Long id) {
+        requireLeadOrg();
+        shiftDictService.removeById(id);
         return R.ok();
     }
 
@@ -494,13 +544,126 @@ public class CommunityDictController {
 
     /* ================= 标准字典导入(牵头机构) ================= */
 
-    /** 浏览标准字典(供导入选择, 复用维护服务的通用分页) */
+    /** 浏览标准字典(供导入选择, 复用维护服务的通用分页); catalog 非空时标注每行是否已导入, importFilter 可按已导/未导过滤 */
     @GetMapping("/std/page")
     public R<Map<String, Object>> stdPage(@RequestParam String dictKey,
                                           @RequestParam(required = false) String keyword,
                                           @RequestParam(defaultValue = "1") long page,
-                                          @RequestParam(defaultValue = "20") long size) {
-        return R.ok(stdMaintain.page(dictKey, keyword, page, size));
+                                          @RequestParam(defaultValue = "20") long size,
+                                          @RequestParam(required = false) String catalog,
+                                          @RequestParam(required = false) String importFilter) {
+        String codeSetSql = null;
+        List<Object> codeSetParams = null;
+        Long tid = TenantContext.get();
+        if (StringUtils.hasText(importFilter) && !"all".equals(importFilter)
+                && tid != null && StringUtils.hasText(catalog)) {
+            Object[] built = buildImportedCodeSet(catalog, dictKey, tid);
+            if (built != null) {
+                codeSetSql = (String) built[0];
+                @SuppressWarnings("unchecked")
+                List<Object> ps = (List<Object>) built[1];
+                codeSetParams = ps;
+            }
+        }
+        Map<String, Object> res = stdMaintain.page(dictKey, keyword, page, size, importFilter, codeSetSql, codeSetParams);
+        annotateImported(catalog, dictKey, res);
+        return R.ok(res);
+    }
+
+    /**
+     * 构造"本机构已导入编码集合"的参数化子查询, 供标准字典分页按 imported/notImported 过滤。
+     * 与 annotateImported 匹配口径一致: src_type=dictKey 且 src_code=标准行编码(收费项额外并上 item_code)。
+     * 自带 IS NOT NULL 保护 NOT IN 语义。返回 {sql, List<Object>params}, 不支持的 catalog 返回 null。
+     */
+    private Object[] buildImportedCodeSet(String catalog, String dictKey, Long tid) {
+        List<Object> params = new ArrayList<>();
+        String sql;
+        switch (catalog) {
+            case "drug":
+                sql = "SELECT src_code FROM his_drug_catalog WHERE src_type=? AND tenant_id=? AND deleted=0 AND src_code IS NOT NULL";
+                params.add(dictKey); params.add(tid);
+                break;
+            case "cons":
+                sql = "SELECT src_code FROM his_cons_catalog WHERE src_type=? AND tenant_id=? AND deleted=0 AND src_code IS NOT NULL";
+                params.add(dictKey); params.add(tid);
+                break;
+            case "charge":
+                sql = "SELECT src_code FROM his_charge_item WHERE src_type=? AND tenant_id=? AND deleted=0 AND src_code IS NOT NULL"
+                        + " UNION SELECT item_code FROM his_charge_item WHERE src_type=? AND tenant_id=? AND deleted=0 AND item_code IS NOT NULL";
+                params.add(dictKey); params.add(tid); params.add(dictKey); params.add(tid);
+                break;
+            case "diag":
+                sql = "SELECT src_code FROM his_diag_dict WHERE src_type=? AND tenant_id=? AND deleted=0 AND src_code IS NOT NULL";
+                params.add(dictKey); params.add(tid);
+                break;
+            default:
+                return null;
+        }
+        return new Object[]{sql, params};
+    }
+
+    /**
+     * 按目录类型回查本租户 L2 目录, 给标准字典分页行标注 imported(是否已导入)。
+     * 匹配键与导入写入的溯源三元组一致: src_type=dictKey 且 src_code=标准行编码(收费项额外比 item_code)。
+     */
+    @SuppressWarnings("unchecked")
+    private void annotateImported(String catalog, String dictKey, Map<String, Object> pageRes) {
+        if (!StringUtils.hasText(catalog) || pageRes == null) {
+            return;
+        }
+        List<Map<String, Object>> records = (List<Map<String, Object>>) pageRes.get("records");
+        if (records == null || records.isEmpty()) {
+            return;
+        }
+        List<String> codes = new ArrayList<>();
+        for (Map<String, Object> r : records) {
+            Object c = r.get("code");
+            if (c != null && StringUtils.hasText(String.valueOf(c))) {
+                codes.add(String.valueOf(c));
+            }
+        }
+        Set<String> imported = new HashSet<>();
+        if (!codes.isEmpty()) {
+            switch (catalog) {
+                case "drug":
+                    for (HisDrugCatalog e : drugService.lambdaQuery().select(HisDrugCatalog::getSrcCode)
+                            .eq(HisDrugCatalog::getSrcType, dictKey).in(HisDrugCatalog::getSrcCode, codes).list()) {
+                        imported.add(e.getSrcCode());
+                    }
+                    break;
+                case "cons":
+                    for (HisConsCatalog e : consService.lambdaQuery().select(HisConsCatalog::getSrcCode)
+                            .eq(HisConsCatalog::getSrcType, dictKey).in(HisConsCatalog::getSrcCode, codes).list()) {
+                        imported.add(e.getSrcCode());
+                    }
+                    break;
+                case "charge":
+                    for (HisChargeItem e : chargeService.lambdaQuery()
+                            .select(HisChargeItem::getSrcCode, HisChargeItem::getItemCode)
+                            .eq(HisChargeItem::getSrcType, dictKey)
+                            .and(w -> w.in(HisChargeItem::getSrcCode, codes).or().in(HisChargeItem::getItemCode, codes)).list()) {
+                        if (e.getSrcCode() != null) {
+                            imported.add(e.getSrcCode());
+                        }
+                        if (e.getItemCode() != null) {
+                            imported.add(e.getItemCode());
+                        }
+                    }
+                    break;
+                case "diag":
+                    for (HisDiagDict e : diagDictService.lambdaQuery().select(HisDiagDict::getSrcCode)
+                            .eq(HisDiagDict::getSrcType, dictKey).in(HisDiagDict::getSrcCode, codes).list()) {
+                        imported.add(e.getSrcCode());
+                    }
+                    break;
+                default:
+                    return;
+            }
+        }
+        for (Map<String, Object> r : records) {
+            Object c = r.get("code");
+            r.put("imported", c != null && imported.contains(String.valueOf(c)));
+        }
     }
 
     /** 标准字典行详情(带中文列名, 供导入前查看物价等完整内容) */
@@ -512,9 +675,10 @@ public class CommunityDictController {
 
     /** 药品导入预览: std_drug 行 -> 药品目录映射 */
     @GetMapping("/std-preview/drug")
-    public R<HisDrugCatalog> previewDrug(@RequestParam long stdId) {
+    public R<HisDrugCatalog> previewDrug(@RequestParam long stdId,
+                                         @RequestParam(defaultValue = "drug") String dictKey) {
         requireLeadOrg();
-        return R.ok(importService.previewDrug(stdId));
+        return R.ok(importService.previewDrug(dictKey, stdId));
     }
 
     /** 耗材导入预览: std_consumable 行 -> 耗材目录映射 */
@@ -562,6 +726,46 @@ public class CommunityDictController {
     public R<Map<String, Object>> importChargeBatch(@RequestParam String dictKey) {
         requireLeadOrg();
         return R.ok(importService.importChargeBatch(dictKey));
+    }
+
+    /** 标准字典导入(L1 勾选行 -> L2): 按类型分派逐行幂等导入, 返回 total/inserted/updated/skipped/failed */
+    @PostMapping("/std/import-selected")
+    @SuppressWarnings("unchecked")
+    public R<Map<String, Object>> stdImportSelected(@RequestBody Map<String, Object> req) {
+        requireLeadOrg();
+        String type = req.get("type") == null ? "" : String.valueOf(req.get("type"));
+        String dictKey = req.get("dictKey") == null ? null : String.valueOf(req.get("dictKey"));
+        String dictType = req.get("dictType") == null ? null : String.valueOf(req.get("dictType"));
+        List<Long> stdIds = new ArrayList<>();
+        Object raw = req.get("stdIds");
+        if (raw instanceof List) {
+            for (Object o : (List<Object>) raw) {
+                if (o != null) {
+                    stdIds.add(Long.valueOf(String.valueOf(o)));
+                }
+            }
+        }
+        if (stdIds.isEmpty()) {
+            throw new BizException(400, "未选择要导入的标准字典行");
+        }
+        Map<String, Object> res;
+        switch (type) {
+            case "drug":
+                res = importService.importDrugSelected(dictKey, stdIds);
+                break;
+            case "cons":
+                res = importService.importConsSelected(stdIds);
+                break;
+            case "charge":
+                res = importService.importChargeSelected(dictKey, stdIds);
+                break;
+            case "diag":
+                res = diagDictService.importSelected(dictType, dictKey, stdIds);
+                break;
+            default:
+                throw new BizException(400, "该类型不支持批量选择导入: " + type);
+        }
+        return R.ok(res);
     }
 
     /* ================= 守卫 ================= */

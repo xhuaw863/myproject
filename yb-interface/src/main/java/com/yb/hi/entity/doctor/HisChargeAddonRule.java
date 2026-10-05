@@ -37,6 +37,8 @@ public class HisChargeAddonRule extends BaseEntity {
     private String calcMode;
     /** 加收单位价格(按超出阈值数量计费; fixed 模式使用) */
     private BigDecimal unitPrice;
+    /** 加收比例(ratio 模式使用: 如 0.5000=每增加一部位按主项目50%加收) */
+    private BigDecimal dimRatio;
     /** 计费公式(formula 模式使用, 服务端求值, 禁止前端传入) */
     private String formula;
     /** 加收项编码(his_base_item.item_code): 加收落到该收费项目 */

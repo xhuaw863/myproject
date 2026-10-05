@@ -288,8 +288,6 @@
       '          <el-option v-for="o in orgTypeOpts" :key="o.code" :label="o.name + \' (\' + o.code + \')\'" :value="o.code"></el-option>',
       '        </el-select>',
       '      </el-form-item>',
-      '      <el-form-item label="定点机构编号"><el-input v-model="form.fixmedinsCode" placeholder="fixmedins_code(机构级)"></el-input></el-form-item>',
-      '      <el-form-item label="定点机构名称"><el-input v-model="form.fixmedinsName" placeholder="医保登记的定点医药机构名称"></el-input></el-form-item>',
       '      <el-form-item label="统一社会信用代码"><el-input v-model="form.uscc" placeholder="uscc"></el-input></el-form-item>',
       '      <el-form-item label="定点机构类型">',
       '        <el-select v-model="form.fixmedinsType" style="width:100%" filterable clearable placeholder="选择医保字典 fixmedins_type">',
@@ -326,6 +324,9 @@
       '          <div style="max-height:50vh;overflow-y:auto;padding-right:6px;">',
       '            <el-alert type="info" :closable="false" show-icon style="margin-bottom:10px;"',
       '              title="机构级医保接口参数; 留空则继承租户/全局配置。"></el-alert>',
+      /* 定点编号/名称从「基本信息」移入(2026-10-03): 医保报文 fixmedins_code 身份字段, 归医保接口配置页签, 基本信息只留院内属性 */
+      '      <el-form-item label="定点机构编号"><el-input v-model="form.fixmedinsCode" placeholder="fixmedins_code(机构级, 留空继承医共体)"></el-input></el-form-item>',
+      '      <el-form-item label="定点机构名称"><el-input v-model="form.fixmedinsName" placeholder="医保登记的定点医药机构名称"></el-input></el-form-item>',
       '      <el-form-item label="就医地区划"><el-input v-model="form.mdtrtareaAdmvs" placeholder="mdtrtarea_admvs"></el-input></el-form-item>',
       '      <el-form-item label="参保地区划"><el-input v-model="form.insuplcAdmdvs" placeholder="insuplc_admdvs(存储备用)"></el-input></el-form-item>',
       '      <el-form-item label="医保接口地址"><el-input v-model="form.apiUrl" placeholder="api_url"></el-input></el-form-item>',

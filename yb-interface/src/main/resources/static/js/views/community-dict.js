@@ -67,7 +67,13 @@
   VAL_TYPES.forEach(function (t) { VAL_LABEL[t.v] = t.l; });
   /* 标准字典导入源: 类型 -> 可选字典(诊断类携 diagType=目标字典类别) */
   var IMPORT_DICTS = {
-    drug: [{ key: 'drug', label: '湖北医保药品(西药/中成药)' }],
+    drug: [
+      { key: 'drug', label: '湖北医保药品(西药/中成药)' },
+      { key: 'tcm', label: '湖北医保药品(中药饮片)' },
+      { key: 'tcm_granule', label: '湖北医保药品(中药配方颗粒)' },
+      { key: 'preparation', label: '湖北医保药品(医疗机构制剂)' },
+      { key: 'ivd', label: '湖北医保体外诊断试剂' }
+    ],
     cons: [{ key: 'consumable', label: '湖北医用耗材(20位)' }],
     charge: [
       { key: 'msi_hb', label: '湖北医疗服务价格项目(2023)' },
@@ -117,7 +123,7 @@
           dim: 'cat', treeKw: '', sel: null, folded: {}, counts: null },
         chgDlg: false, chgEditing: false, chgImport: false, chgForm: this.emptyCharge(), chgYb: {},
         /* 药品 */
-        drug: { loading: false, paged: dictPagedDefault('drug'), list: [], total: 0, page: 1, size: 20, keyword: '', mapped: '' },
+        drug: { loading: false, paged: dictPagedDefault('drug'), list: [], total: 0, page: 1, size: 20, keyword: '', mapped: '', majorClass: '' },
         drugDlg: false, drugEditing: false, drugImport: false, drugForm: this.emptyDrug(), drugYb: {},
         /* 耗材 */
         cons: { loading: false, paged: dictPagedDefault('cons'), list: [], total: 0, page: 1, size: 20, keyword: '', mapped: '' },
@@ -138,6 +144,8 @@
         /* 标准字典导入 */
         impType: 'drug', impDictKey: 'drug', impDicts: IMPORT_DICTS.drug,
         std: { loading: false, paged: dictPagedDefault('import'), list: [], total: 0, page: 1, size: 20, keyword: '' },
+        stdSel: [],
+        stdImportFilter: 'all',
         stdBatchLoading: false,
         stdDetailDlg: false, stdDetailTitle: '', stdDetailRows: [], stdDetailLoading: false,
         valDomains: { loading: false, list: [] }, valSel: [],
@@ -148,7 +156,10 @@
         },
         medDlg: false, medEditing: false, medForm: this.emptyMed('usage'),
         medImpDlg: false, medImpType: 'usage', medImpSrcs: MED_IMPORT_SRCS.usage,
-        medImpSrc: 'cv_code:drug_medc_way_code', medImpVals: [], medImpSel: [], medImpLoading: false
+        medImpSrc: 'cv_code:drug_medc_way_code', medImpVals: [], medImpSel: [], medImpLoading: false,
+        /* 门诊班次字典(排班/号源时段受控, 含起止时间) */
+        shift: { loading: false, list: [], total: 0, page: 1, size: 20, keyword: '' },
+        shiftDlg: false, shiftEditing: false, shiftForm: this.emptyShift()
       };
     },
     created: function () {
@@ -299,6 +310,7 @@
         else if (name === 'import') { this.loadStd(); }
         else if (name === 'usage') { this.loadMed('usage'); }
         else if (name === 'freq') { this.loadMed('freq'); }
+        else if (name === 'shift') { this.loadShift(); }
       },
       seq: function (state) { return function (i) { return (state.page - 1) * state.size + i + 1; }; },
       /* ==== 分页/全量双模式(统一字典各列表, 对齐列表统一规范): 全量仅把请求 size 置大, 不改各 load 函数 ==== */
@@ -499,6 +511,7 @@
         var q = '/api/community-dict/drug/page?page=' + vm.drug.page + '&size=' + vm.drug.size;
         if (vm.drug.keyword) { q += '&keyword=' + encodeURIComponent(vm.drug.keyword); }
         if (vm.drug.mapped) { q += '&mapped=' + encodeURIComponent(vm.drug.mapped); }
+        if (vm.drug.majorClass) { q += '&majorClass=' + encodeURIComponent(vm.drug.majorClass); }
         HIS.get(q).then(function (d) { vm.drug.list = (d && d.records) || []; vm.drug.total = (d && d.total) || 0; })
           .catch(HIS.notifyError).finally(function () { vm.drug.loading = false; });
       },
@@ -652,18 +665,33 @@
         this.impDicts = IMPORT_DICTS[this.impType] || [];
         this.impDictKey = this.impDicts.length ? this.impDicts[0].key : '';
         this.std.page = 1; this.std.keyword = '';
+        this.stdImportFilter = 'all';
+        this.clearStdSel();
         if (this.impType === 'val') { this.loadValDomains(); } else { this.loadStd(); }
       },
+      /* 切换导入源字典: 清空跨字典残留勾选(按 id 保留会与另一字典行混淆), 重新检索 */
+      impDictChange: function () { this.clearStdSel(); this.stdSearch(); },
+      /* 已导/未导切换: 清空勾选后回到首页重查(过滤在 SQL 层, total 随之变化) */
+      stdFilterChange: function () { this.clearStdSel(); this.std.page = 1; this.loadStd(); },
+      clearStdSel: function () {
+        this.stdSel = [];
+        if (this.$refs.stdTable) { this.$refs.stdTable.clearSelection(); }
+      },
+      stdSelChange: function (rows) { this.stdSel = rows || []; },
       loadStd: function () {
         var vm = this;
         if (!vm.impDictKey) { return; }
         vm.std.loading = true;
         var q = '/api/community-dict/std/page?dictKey=' + encodeURIComponent(vm.impDictKey)
+          + '&catalog=' + encodeURIComponent(vm.impType)
+          + '&importFilter=' + encodeURIComponent(vm.stdImportFilter || 'all')
           + '&page=' + vm.std.page + '&size=' + vm.std.size;
         if (vm.std.keyword) { q += '&keyword=' + encodeURIComponent(vm.std.keyword); }
         HIS.get(q).then(function (d) { vm.std.list = (d && d.records) || []; vm.std.total = (d && d.total) || 0; })
           .catch(HIS.notifyError).finally(function () { vm.std.loading = false; });
       },
+      /* 已导入本机构目录的标准行不可再勾选(避免重复导入) */
+      stdRowSelectable: function (row) { return !row.imported; },
       stdSearch: function () { if (this.impType === 'val') { this.loadValDomains(); return; } this.std.page = 1; this.loadStd(); },
       stdPage: function (p) { this.std.page = p; this.loadStd(); },
       stdSize: function (s) { this.std.size = s; this.std.page = 1; this.loadStd(); },
@@ -734,6 +762,31 @@
             }).catch(HIS.notifyError).finally(function () { vm.stdBatchLoading = false; });
         }).catch(function () {});
       },
+      /* 批量导入勾选的标准字典行(L1 勾选 -> L2, 按编码幂等): 统一接口按类型分派 */
+      stdImportSelected: function () {
+        var vm = this;
+        if (!vm.stdSel.length) { return; }
+        var ids = vm.stdSel.map(function (r) { return r.id; });
+        var dd = (vm.impDicts || []).filter(function (x) { return x.key === vm.impDictKey; })[0];
+        var payload = { type: vm.impType, dictKey: vm.impDictKey, dictType: (dd && dd.diagType) || '', stdIds: ids };
+        ElementPlus.ElMessageBox.confirm(
+          '将选中 ' + ids.length + ' 行标准字典导入医共体目录(按医保/院内编码幂等: 已存在则更新, 否则新增; 价格等管理字段导入后补录)。继续?',
+          '批量导入选中', { type: 'warning' }
+        ).then(function () {
+          vm.stdBatchLoading = true;
+          HIS.post('/api/community-dict/std/import-selected', payload).then(function (r) {
+            var msg = '导入完成: 新增 ' + ((r && r.inserted) || 0) + ' 条, 更新 ' + ((r && r.updated) || 0) + ' 条';
+            if (r && r.skipped) { msg += ', 跳过 ' + r.skipped + ' 条'; }
+            if (r && r.failed) {
+              msg += ', 失败 ' + r.failed + ' 条';
+              if (r.errors && r.errors.length) { msg += ' (首条: ' + r.errors[0] + ')'; }
+            }
+            HIS.notifySuccess(msg);
+            vm.clearStdSel();
+            vm.loadStd();
+          }).catch(HIS.notifyError).finally(function () { vm.stdBatchLoading = false; });
+        }).catch(function () {});
+      },
       /* 查看标准字典行完整内容(物价等): 拉取带中文列名的字段列表 */
       showStdDetail: function (row) {
         var vm = this;
@@ -800,6 +853,39 @@
         HIS.post('/api/community-dict/med-dict/import-batch', { dictType: vm.medImpType, items: items })
           .then(function (n) { HIS.notifySuccess('已导入 ' + (n || 0) + ' 项'); vm.medImpDlg = false; vm.loadMed(vm.medImpType); })
           .catch(HIS.notifyError);
+      },
+
+      /* ============ 门诊班次字典(排班/号源时段受控, L1 含起止时间) ============ */
+      emptyShift: function () {
+        return { id: null, code: '', name: '', startTime: '', endTime: '', sortNo: 0, status: 1, memo: '', pyCode: '', abbrCode: '' };
+      },
+      loadShift: function () {
+        var vm = this; var st = vm.shift; st.loading = true;
+        var q = '/api/community-dict/shift-dict/page?page=' + st.page + '&size=' + st.size;
+        if (st.keyword) { q += '&keyword=' + encodeURIComponent(st.keyword); }
+        HIS.get(q).then(function (d) { st.list = (d && d.records) || []; st.total = (d && d.total) || 0; })
+          .catch(HIS.notifyError).finally(function () { st.loading = false; });
+      },
+      shiftSearch: function () { this.shift.page = 1; this.loadShift(); },
+      shiftPage: function (p) { this.shift.page = p; this.loadShift(); },
+      shiftSize: function (s) { this.shift.size = s; this.shift.page = 1; this.loadShift(); },
+      shiftAdd: function () { this.shiftEditing = false; this.shiftForm = this.emptyShift(); this.shiftDlg = true; },
+      shiftEdit: function (row) { this.shiftEditing = true; this.shiftForm = clean(Object.assign(this.emptyShift(), row)); this.shiftDlg = true; },
+      shiftSubmit: function () {
+        var vm = this; var f = vm.shiftForm;
+        if (!f.code) { ElementPlus.ElMessage.warning('班次编码必填'); return; }
+        if (!f.name) { ElementPlus.ElMessage.warning('班次名称必填'); return; }
+        if (f.startTime && f.endTime && f.endTime < f.startTime) {
+          ElementPlus.ElMessage.warning('结束时间早于开始时间; 跨天班次请先停用旧班次再分两段定义'); return;
+        }
+        var p = vm.shiftEditing ? HIS.put('/api/community-dict/shift-dict', f) : HIS.post('/api/community-dict/shift-dict', f);
+        p.then(function () { HIS.notifySuccess('保存成功'); vm.shiftDlg = false; HIS.clearShifts(); vm.loadShift(); }).catch(HIS.notifyError);
+      },
+      shiftDel: function (row) {
+        var vm = this;
+        HIS.del('/api/community-dict/shift-dict/' + row.id).then(function () {
+          HIS.notifySuccess('已删除'); HIS.clearShifts(); vm.loadShift();
+        }).catch(HIS.notifyError);
       },
 
       /* ============ 诊断字典(西医/中医/症候/手术/肿瘤) ============ */
@@ -932,7 +1018,7 @@
       pickStd: function (row) {
         var vm = this;
         if (vm.impType === 'drug') {
-          HIS.get('/api/community-dict/std-preview/drug?stdId=' + row.id).then(function (d) {
+          HIS.get('/api/community-dict/std-preview/drug?dictKey=' + encodeURIComponent(vm.impDictKey) + '&stdId=' + row.id).then(function (d) {
             vm.drugEditing = false; vm.drugImport = true; vm.drugForm = Object.assign(vm.emptyDrug(), d || {});
             vm.activeTab = 'drug'; vm.drugDlg = true;
           }).catch(HIS.notifyError);
@@ -1029,6 +1115,7 @@
       '      <div class="toolbar">',
       '        <el-input v-model="drug.keyword" placeholder="通用名/商品名/编码/拼音简码" clearable style="width:240px" @keyup.enter="drugSearch"></el-input>',
       '        <el-select v-model="drug.mapped" placeholder="对照状态" clearable style="width:110px" @change="drugSearch"><el-option v-for="o in mappedOpts" :key="o.v" :label="o.l" :value="o.v"></el-option></el-select>',
+      '        <el-select v-model="drug.majorClass" placeholder="大类" clearable filterable style="width:130px" @change="drugSearch"><el-option v-for="o in majorClassOpts" :key="o.code" :label="o.name" :value="o.name"></el-option></el-select>',
       '        <el-button @click="drugSearch">查询</el-button>',
       '        <el-button type="primary" @click="drugAdd">新增药品</el-button>',
       '        <span style="color:var(--yb-ink-2);font-size:13px;">共 {{ drug.total }} 项</span>',
@@ -1038,6 +1125,7 @@
       '        <el-table-column type="index" label="序号" width="55" :index="seq(drug)"></el-table-column>',
       '        <el-table-column prop="drugCode" label="院内码" width="160" show-overflow-tooltip></el-table-column>',
       '        <el-table-column prop="genericName" label="通用名" min-width="150" show-overflow-tooltip></el-table-column>',
+      '        <el-table-column prop="majorClass" label="大类" width="100" show-overflow-tooltip><template #default="s">{{ s.row.majorClass || "—" }}</template></el-table-column>',
       '        <el-table-column prop="pyCode" label="拼音码" width="90"><template #default="s">{{ s.row.pyCode || \'-\' }}</template></el-table-column>',
       '        <el-table-column prop="abbrCode" label="自定义码" width="90"><template #default="s">{{ s.row.abbrCode || \'-\' }}</template></el-table-column>',
       '        <el-table-column prop="ybDrugCode" label="医保编码" width="150" show-overflow-tooltip><template #default="s">{{ s.row.ybDrugCode || "—" }}</template></el-table-column>',
@@ -1207,9 +1295,11 @@
       '        <el-select v-model="impType" style="width:120px" @change="impTypeChange">',
       '          <el-option label="药品" value="drug"></el-option><el-option label="耗材" value="cons"></el-option><el-option label="收费项目" value="charge"></el-option><el-option label="诊断字典" value="diag"></el-option><el-option label="值域字典" value="val"></el-option>',
       '        </el-select>',
-      '        <el-select v-model="impDictKey" style="width:280px" @change="stdSearch"><el-option v-for="d in impDicts" :key="d.key" :label="d.label" :value="d.key"></el-option></el-select>',
+      '        <el-select v-model="impDictKey" style="width:280px" @change="impDictChange"><el-option v-for="d in impDicts" :key="d.key" :label="d.label" :value="d.key"></el-option></el-select>',
       '        <el-input v-model="std.keyword" placeholder="编码/名称检索" clearable style="width:200px" @keyup.enter="stdSearch"></el-input>',
       '        <el-button @click="stdSearch">查询</el-button>',
+      '        <el-radio-group v-if="impType!==\'val\'" v-model="stdImportFilter" size="small" @change="stdFilterChange"><el-radio-button label="all">全部</el-radio-button><el-radio-button label="notImported">未导入</el-radio-button><el-radio-button label="imported">已导入</el-radio-button></el-radio-group>',
+      '        <el-button v-if="impType!==\'val\'" type="primary" :disabled="!stdSel.length" :loading="stdBatchLoading" @click="stdImportSelected">导入选中({{ stdSel.length }})</el-button>',
       '        <el-button v-if="impType===\'charge\'||impType===\'diag\'" type="warning" :loading="stdBatchLoading" @click="stdBatchImport">批量导入全库</el-button>',
       '        <el-button v-if="impType===\'val\'" type="primary" :disabled="!valSel.length" :loading="stdBatchLoading" @click="valImportSelected">导入选中域({{ valSel.length }})</el-button>',
       '        <span style="color:var(--yb-ink-2);font-size:13px;">共 {{ impType===\'val\' ? valDomains.list.length : std.total }} 条</span>',
@@ -1227,15 +1317,17 @@
       '        </el-table>',
       '      </template>',
       '      <template v-else>',
-      '      <el-table :data="std.list" v-loading="std.loading" border stripe size="small" height="100%">',
+      '      <el-table ref="stdTable" :data="std.list" v-loading="std.loading" border stripe size="small" height="100%" row-key="id" @selection-change="stdSelChange">',
+      '        <el-table-column type="selection" width="45" reserve-selection :selectable="stdRowSelectable"></el-table-column>',
       '        <el-table-column type="index" label="序号" width="55" :index="seq(std)"></el-table-column>',
       '        <el-table-column prop="code" label="编码" width="200" show-overflow-tooltip></el-table-column>',
       '        <el-table-column prop="name" label="名称" min-width="200" show-overflow-tooltip></el-table-column>',
       '        <el-table-column prop="spec" label="规格/单位" min-width="140" show-overflow-tooltip></el-table-column>',
       '        <el-table-column prop="extra" label="附加" min-width="140" show-overflow-tooltip></el-table-column>',
+      '        <el-table-column label="状态" width="80"><template #default="s"><el-tag size="small" :type="s.row.imported?\'success\':\'info\'">{{ s.row.imported?"已导入":"未导入" }}</el-tag></template></el-table-column>',
       '        <el-table-column label="操作" width="130" fixed="right"><template #default="s">',
       '          <el-button link type="info" @click="showStdDetail(s.row)">详情</el-button>',
-      '          <el-button link type="primary" @click="pickStd(s.row)">导入</el-button>',
+      '          <el-button link type="primary" :disabled="s.row.imported" @click="pickStd(s.row)">{{ s.row.imported?"已导入":"导入" }}</el-button>',
       '        </template></el-table-column>',
       '      </el-table>',
       '      <el-pagination v-if="std.paged" style="margin-top:12px;justify-content:flex-end;" background layout="total, sizes, prev, pager, next" :total="std.total" :page-size="std.size" :page-sizes="[10,20,50,100]" :current-page="std.page" @current-change="stdPage" @size-change="stdSize"></el-pagination>',
@@ -1296,6 +1388,32 @@
       '        </template></el-table-column>',
       '      </el-table>',
       '      <el-pagination v-if="med.freq.paged" style="margin-top:12px;justify-content:flex-end;" background layout="total, sizes, prev, pager, next" :total="med.freq.total" :page-size="med.freq.size" :page-sizes="[10,20,50,100]" :current-page="med.freq.page" @current-change="function(p){medPage(\'freq\',p)}" @size-change="function(s){medSize(\'freq\',s)}"></el-pagination>',
+      '    </el-tab-pane>',
+
+      /* ---- 门诊班次字典(排班/号源时段受控, 自定义班次含起止时间) ---- */
+      '    <el-tab-pane label="门诊班次" name="shift">',
+      '      <el-alert type="info" :closable="false" show-icon style="margin-bottom:10px;" title="排班/号源的时段由本字典受控: 牵头机构自定义班次与起止时间, 各机构挂号/排班页实时生效; 停用后不可再排新班, 存量排班仍可编辑其他字段。存量标准码 am/pm/night 建议只改时间不删码。"></el-alert>',
+      '      <div class="toolbar">',
+      '        <el-input v-model="shift.keyword" placeholder="名称/编码/拼音简码" clearable style="width:220px" @keyup.enter="shiftSearch"></el-input>',
+      '        <el-button @click="shiftSearch">查询</el-button>',
+      '        <el-button type="primary" @click="shiftAdd">新增班次</el-button>',
+      '        <span style="color:var(--yb-ink-2);font-size:13px;">共 {{ shift.total }} 项</span>',
+      '      </div>',
+      '      <el-table :data="shift.list" v-loading="shift.loading" border stripe size="small" height="100%">',
+      '        <el-table-column type="index" label="序号" width="55" :index="seq(shift)"></el-table-column>',
+      '        <el-table-column prop="code" label="班次码" width="90"></el-table-column>',
+      '        <el-table-column prop="name" label="班次名称" width="110"></el-table-column>',
+      '        <el-table-column label="起止时间" width="130"><template #default="s">{{ s.row.startTime && s.row.endTime ? s.row.startTime + \'-\' + s.row.endTime : (s.row.startTime || s.row.endTime || \'未定义\') }}</template></el-table-column>',
+      '        <el-table-column prop="pyCode" label="拼音码" width="80"><template #default="s">{{ s.row.pyCode || \'-\' }}</template></el-table-column>',
+      '        <el-table-column prop="sortNo" label="排序" width="60"></el-table-column>',
+      '        <el-table-column label="状态" width="70"><template #default="s"><el-tag size="small" :type="s.row.status===1?\'success\':\'info\'">{{ s.row.status===1?"启用":"停用" }}</el-tag></template></el-table-column>',
+      '        <el-table-column prop="memo" label="备注" min-width="140" show-overflow-tooltip></el-table-column>',
+      '        <el-table-column label="操作" width="130" fixed="right"><template #default="s">',
+      '          <el-button link type="primary" @click="shiftEdit(s.row)">编辑</el-button>',
+      '          <el-popconfirm title="确认删除？已排班次不受影响但不可再排新班" @confirm="shiftDel(s.row)"><template #reference><el-button link type="danger">删除</el-button></template></el-popconfirm>',
+      '        </template></el-table-column>',
+      '      </el-table>',
+      '      <el-pagination style="margin-top:12px;justify-content:flex-end;" background layout="total, sizes, prev, pager, next" :total="shift.total" :page-size="shift.size" :page-sizes="[10,20,50]" :current-page="shift.page" @current-change="shiftPage" @size-change="shiftSize"></el-pagination>',
       '    </el-tab-pane>',
 
       '  </el-tabs>',
@@ -1511,6 +1629,21 @@
       '      <el-alert v-if="valForm.srcType" type="info" :closable="false" show-icon :title="\'来源: \' + valForm.srcType + (valForm.srcDoc ? \' · \' + valForm.srcDoc : \'\')"></el-alert>',
       '    </el-form>',
       '    <template #footer><el-button @click="valDlg=false">取消</el-button><el-button type="primary" @click="valSubmit">确定</el-button></template>',
+      '  </el-dialog>',
+
+      /* ==== 门诊班次编辑弹窗 ==== */
+      '  <el-dialog v-model="shiftDlg" :title="shiftEditing?\'编辑班次\':\'新增班次\'" width="520px">',
+      '    <el-form :model="shiftForm" label-width="90px">',
+      '      <el-form-item label="班次码" required><el-input v-model="shiftForm.code" :disabled="shiftEditing" maxlength="20" placeholder="字母开头, 如 noon(保存后不可改)"></el-input></el-form-item>',
+      '      <el-form-item label="名称" required><el-input v-model="shiftForm.name" maxlength="50" placeholder="如 中午门诊"></el-input></el-form-item>',
+      '      <el-form-item label="开始时间"><el-time-select v-model="shiftForm.startTime" start="00:00" step="00:15" end="23:45" placeholder="选填" style="width:140px"></el-time-select><span style="margin-left:8px;color:var(--yb-ink-2);font-size:12px;">仅供展示与分诊参考, 不参与号源扣减</span></el-form-item>',
+      '      <el-form-item label="结束时间"><el-time-select v-model="shiftForm.endTime" start="00:00" step="00:15" end="23:45" placeholder="选填" style="width:140px"></el-time-select></el-form-item>',
+      '      <el-form-item label="排序"><el-input-number v-model="shiftForm.sortNo" :min="0" :max="9999"></el-input-number><span style="margin-left:8px;color:var(--yb-ink-2);font-size:12px;">号源按钮/周视图列顺序</span></el-form-item>',
+      '      <el-form-item label="状态"><el-select v-model="shiftForm.status" style="width:120px"><el-option label="启用" :value="1"></el-option><el-option label="停用" :value="0"></el-option></el-select></el-form-item>',
+      '      <el-form-item label="自定义码"><el-input v-model="shiftForm.abbrCode" maxlength="20" placeholder="选填"></el-input></el-form-item>',
+      '      <el-form-item label="备注"><el-input v-model="shiftForm.memo" type="textarea" :rows="2" maxlength="200" show-count></el-input></el-form-item>',
+      '    </el-form>',
+      '    <template #footer><el-button @click="shiftDlg=false">取消</el-button><el-button type="primary" @click="shiftSubmit">确定</el-button></template>',
       '  </el-dialog>',
 
       /* ==== 用药字典值域导入弹窗 ==== */

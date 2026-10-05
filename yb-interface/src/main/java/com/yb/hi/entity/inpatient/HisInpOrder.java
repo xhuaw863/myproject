@@ -120,6 +120,14 @@ public class HisInpOrder extends BaseEntity {
     /** 退药申请人(登录用户名) */
     private String returnApplyBy;
 
+    /* ---------- 检查多部位/增强加收扩展列(DictSchemaMigration 幂等补列, 与门诊 his_order_item 同口径) ---------- */
+    /** 检查部位(多选, 逗号分隔; 仅检查类医嘱) */
+    private String examPart;
+    /** 计价部位数(检查多部位加收维度; 仅检查类医嘱) */
+    private Integer siteCount;
+    /** 造影方式(平扫/增强; 驱动住院检查增强扫描加收维度; 仅检查类医嘱) */
+    private String contrastMode;
+
     /* ---------- 手麻P3a执行留痕(按手术列表回显瞬态回填, 不落库; fastjson2 裁剪null, 前端按undefined渲染) ---------- */
     /** 存在已执行记录(exec_status=2): true已执行 */
     @TableField(exist = false)

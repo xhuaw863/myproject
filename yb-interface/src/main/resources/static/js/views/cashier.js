@@ -240,6 +240,11 @@
           vm.chargePatient = (d && d.patient) || {};
           vm.chargeItems = sortByType((d && d.items) || []);
           vm.chargeSummary = (d && d.summary) || {};
+          /* 非医保通道挂号(自费费别)无医保就诊ID: 结算方式自动切自费并预置支付行, 免手工回退撞后端拦截 */
+          if (!vm.chargePatient.mdtrtId) {
+            vm.payType = 'self';
+            if (!vm.payRows.length) { vm.resetPayRows(); }
+          }
         }).catch(HIS.notifyError).finally(function () { vm.chargeLoading = false; });
       },
       /* 明细表分组: 相同项目类型纵向合并"项目类型"列 */
@@ -401,10 +406,11 @@
       '      <div style="display:flex;align-items:center;gap:12px;margin-top:16px;">',
       '        <span style="font-weight:600;color:var(--yb-ink-1);">结算方式：</span>',
       '        <el-radio-group v-model="payType" @change="onPayTypeChange">',
-      '          <el-radio label="yb">医保结算</el-radio>',
+      '          <el-radio label="yb" :disabled="!chargePatient.mdtrtId">医保结算</el-radio>',
       '          <el-radio label="self">自费结算</el-radio>',
       '        </el-radio-group>',
-      '        <span style="color:var(--yb-ink-2);font-size:12px;">医保结算将调用 2206 预结算与 2207 结算; 自费不走医保通道</span>',
+      '        <span v-if="!chargePatient.mdtrtId" style="color:var(--yb-warn, #b45309);font-size:12px;">该号单为非医保通道(自费), 未取医保就诊ID, 已默认自费结算</span>',
+      '        <span v-else style="color:var(--yb-ink-2);font-size:12px;">医保结算将调用 2206 预结算与 2207 结算; 自费不走医保通道</span>',
       '      </div>',
       '      <el-alert v-if="payType===\'yb\'" type="info" :closable="false" show-icon style="margin-top:12px;" title="医保自付部分默认按现金收取, 金额以医保结算结果为准"></el-alert>',
       '      <div v-else style="margin-top:12px;border:1px solid var(--yb-border);border-radius:4px;padding:12px 14px;background:var(--yb-surface-2);">',

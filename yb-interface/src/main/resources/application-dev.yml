@@ -1,0 +1,14 @@
+spring:
+  datasource:
+    username: root
+    password: bsoft
+
+yb:
+  mock-enabled: true
+  sm2-private-key: ""
+
+his:
+  jwt:
+    secret: yb-his-default-secret-key-2026
+  demo-data:
+    enabled: true

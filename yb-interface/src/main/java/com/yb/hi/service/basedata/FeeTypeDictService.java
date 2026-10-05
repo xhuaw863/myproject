@@ -8,6 +8,7 @@ import com.yb.hi.framework.common.BizException;
 import com.yb.hi.framework.util.PinyinUtil;
 import com.yb.hi.mapper.basedata.HisFeeTypeDictMapper;
 import com.yb.hi.platform.service.OrgAccessGuard;
+import com.yb.hi.platform.service.SysOrgService;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -21,7 +22,7 @@ import java.util.Set;
 /**
  * 患者费别字典服务(机构级自定义, 门诊住院统一维护)。
  * 读隔离沿用 MrDictService 范式(guard.scopeOrgId: 牵头可按入参查/全部, 非牵头锁定本机构);
- * 写守卫 requireSelfOrgWrite(本机构管理员自治)。内置项(auto_flag=1)禁删、编码不可改。
+ * 写守卫 requireLeadOrg(仅牵头机构 ADMIN 统一维护全医共体字典), 医疗机构管理员与非牵头机构只读。内置项(auto_flag=1)禁删、编码不可改。
  */
 @Slf4j
 @Service
@@ -32,16 +33,18 @@ public class FeeTypeDictService {
 
     private final HisFeeTypeDictMapper mapper;
     private final OrgAccessGuard guard;
+    private final SysOrgService orgService;
 
-    public FeeTypeDictService(HisFeeTypeDictMapper mapper, OrgAccessGuard guard) {
+    public FeeTypeDictService(HisFeeTypeDictMapper mapper, OrgAccessGuard guard, SysOrgService orgService) {
         this.mapper = mapper;
         this.guard = guard;
+        this.orgService = orgService;
     }
 
-    /** 分页列表(keyword 命中 code/name/py_code; scope 精确过滤; status 过滤)。 */
-    public IPage<HisFeeTypeDict> listPage(long page, long size, String keyword, String scope, Integer status) {
+    /** 分页列表(keyword 命中 code/name/py_code; scope 精确过滤; status 过滤; orgId 按机构过滤-牵头可指定他机构, 非锁定本机构; withSubOrgs 且牵头时级联含下级机构)。 */
+    public IPage<HisFeeTypeDict> listPage(long page, long size, String keyword, String scope, Integer status, Long orgId, boolean withSubOrgs) {
         QueryWrapper<HisFeeTypeDict> qw = new QueryWrapper<>();
-        applyOrgScope(qw);
+        applyOrgScope(qw, orgId, withSubOrgs);
         if (StringUtils.hasText(scope)) {
             qw.eq("scope", scope.trim().toUpperCase());
         }
@@ -56,10 +59,11 @@ public class FeeTypeDictService {
         return mapper.selectPage(new Page<>(Math.max(1, page), size <= 0 ? 20 : Math.min(size, 500)), qw);
     }
 
-    /** 业务下拉取数: 仅启用项, 场景命中(scope=BOTH 或含该场景), 按 sort_no 排序。 */
+    /** 业务下拉取数: 仅启用项, 场景命中(scope=BOTH 或含该场景), 按 sort_no 排序。
+     *  严格锁登录机构一套(含牵头): 若走 scopeOrgId, 牵头登录返回 null 会聚合全部机构×每套费别字典, 下拉同名膨胀(2026-10-03 修)。 */
     public List<HisFeeTypeDict> options(String scene) {
         QueryWrapper<HisFeeTypeDict> qw = new QueryWrapper<>();
-        applyOrgScope(qw);
+        qw.eq("org_id", guard.strictCurrentOrgId());
         qw.eq("status", 1);
         applySceneMatch(qw, scene);
         qw.orderByAsc("sort_no").orderByAsc("id");
@@ -68,7 +72,7 @@ public class FeeTypeDictService {
 
     @Transactional(rollbackFor = Exception.class)
     public HisFeeTypeDict create(HisFeeTypeDict e) {
-        guard.requireSelfOrgWrite();
+        guard.requireLeadOrg("仅牵头机构管理员可维护费别字典");
         requireText(e.getCode(), "费别编码");
         requireText(e.getName(), "费别名称");
         e.setId(null);
@@ -87,7 +91,7 @@ public class FeeTypeDictService {
 
     @Transactional(rollbackFor = Exception.class)
     public HisFeeTypeDict update(Long id, HisFeeTypeDict body) {
-        guard.requireSelfOrgWrite();
+        guard.requireLeadOrg("仅牵头机构管理员可维护费别字典");
         HisFeeTypeDict cur = mapper.selectById(id);
         if (cur == null) {
             throw new BizException(400, "费别字典项不存在");
@@ -130,7 +134,7 @@ public class FeeTypeDictService {
 
     @Transactional(rollbackFor = Exception.class)
     public void delete(Long id) {
-        guard.requireSelfOrgWrite();
+        guard.requireLeadOrg("仅牵头机构管理员可维护费别字典");
         HisFeeTypeDict cur = mapper.selectById(id);
         if (cur == null) {
             throw new BizException(400, "费别字典项不存在");
@@ -153,8 +157,18 @@ public class FeeTypeDictService {
     }
 
     private void applyOrgScope(QueryWrapper<HisFeeTypeDict> qw) {
-        Long scopeOrg = guard.scopeOrgId(null);
-        if (scopeOrg != null) {
+        applyOrgScope(qw, null, false);
+    }
+
+    /** 读隔离: 牵头传 orgId 可锁定到指定机构(null=全部), 非牵头忽略入参恒锁定本机构; withSubOrgs 且牵头时选中机构级联含下级机构(subtreeIds in 过滤)。 */
+    private void applyOrgScope(QueryWrapper<HisFeeTypeDict> qw, Long orgId, boolean withSubOrgs) {
+        Long scopeOrg = guard.scopeOrgId(orgId);
+        if (scopeOrg == null) {
+            return;
+        }
+        if (withSubOrgs && guard.isLead()) {
+            qw.in("org_id", orgService.subtreeIds(scopeOrg));
+        } else {
             qw.eq("org_id", scopeOrg);
         }
     }

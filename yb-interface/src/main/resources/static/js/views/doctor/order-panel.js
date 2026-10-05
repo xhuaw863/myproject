@@ -66,15 +66,22 @@
     { name: '入院常规', items: ['血常规', '尿常规', '肝功能', '肾功能', '血糖', '心电图', '胸部X线'] },
     { name: '术前检查', items: ['血常规', '凝血功能', '肝功能', '肾功能', '血糖', '血型', '传染病筛查', '心电图', '胸片'] },
     { name: '糖尿病随访', items: ['空腹血糖', '糖化血红蛋白', '肝功能', '肾功能', '尿常规', '尿微量白蛋白'] },
-    { name: '高血压随访', items: ['血常规', '肝功能', '肾功能', '血脂', '血糖', '心电图'] }
+    { name: '高血压随访', items: ['血常规', '肝功能', '肾功能', '血脂', '血糖', '心电图'] },
+    { name: '胸部CT(两肺)', items: ['普通CT平扫*'] },
+    { name: '头颅CT', items: ['普通CT平扫*'] },
+    { name: '全腹部CT', items: ['普通CT平扫*'] },
+    { name: '腰椎MR', items: ['磁共振平扫*'] },
+    { name: '头颅MR', items: ['磁共振平扫*'] }
   ];
+  /* 检查计价部位(医保多部位计费粒度): 每个选项=1个计价部位, 单侧上/下肢各计 1 部位; 第2个部位起按主项目加收比例计费 */
+  var EXAM_SITE_OPTIONS = ['头部', '颌面部', '颈部', '胸部', '上腹部', '下腹部/盆腔', '脊柱', '骨盆', '心脏', '左上肢', '右上肢', '左下肢', '右下肢', '左关节', '右关节'];
 
   function raw(v) { return v && Object.prototype.hasOwnProperty.call(v, 'value') ? v.value : v; }
   function money(v) { var n = Number(v); return isFinite(n) ? n.toFixed(2) : '0.00'; }
   function textDate(v) { return v ? String(v).slice(0, 10) : ''; }
   function makeBucket() { return { keyword: '', results: [], loading: false, items: [] }; }
   function labForm() { return { specimenType: '', specimenCondition: '', collectionSite: '', urgency: '常规', medicationInfo: '', inspectionPurpose: '' }; }
-  function examForm() { return { examPart: '', examPurpose: '', briefHistory: '', contrastMode: '', urgency: '常规', examNotes: [], execDept: '' }; }
+  function examForm() { return { examParts: [], examPurpose: '', briefHistory: '', contrastMode: '', urgency: '常规', examNotes: [], execDept: '' }; }
   function treatmentForm() { return { treatmentPart: '', treatmentTimes: 1, execDept: '' }; }
 
   var DwOrderPanel = {
@@ -93,6 +100,10 @@
         urgencyLab: URGENCY_LAB,
         urgencyExam: URGENCY_EXAM,
         examNotes: EXAM_NOTES,
+        examSiteOptions: EXAM_SITE_OPTIONS,
+        /* 医保检查控费加收双开关(后端 outpatient.exam_part_surcharge_enabled / exam_contrast_surcharge_enabled, 默认停用; 未启用时隐藏对应加收预估避免误导) */
+        examPartEnabled: false,
+        examContrastEnabled: false,
         execDepts: EXEC_DEPTS,
         treatDepts: TREAT_DEPTS,
         commonPackages: COMMON_PACKAGES.slice(),
@@ -151,6 +162,32 @@
           return sum + (Number(item.price) || 0) * (Number(item.quantity) || 0);
         }, 0);
       },
+      /* 检查计价部位数: 多选部位去重后的个数(至少 1), 作为医保多部位加收维度 siteCount */
+      examSiteCount: function () {
+        var parts = (this.orderType === '检查' && this.activeForm && this.activeForm.examParts) || [];
+        var uniq = {};
+        parts.forEach(function (p) { if (p) { uniq[p] = 1; } });
+        return Object.keys(uniq).length;
+      },
+      /* 多部位/增强加收预估(仅前端提示): 放射类 CT(2103*)/MR(2102*)/X线(2101*) 及超声(22xx) 第2个部位起每个按主项目50%; CT/MR平扫项目选"增强"再一次性加收50%; 实际以服务端可配置计费规则为准 */
+      examSurchargeEstimate: function () {
+        if (this.orderType !== '检查') { return 0; }
+        var n = this.examSiteCount;
+        var contrast = !!(this.activeForm && this.activeForm.contrastMode === '增强');
+        var partOn = this.examPartEnabled;
+        var contrastOn = this.examContrastEnabled;
+        var sur = 0;
+        this.activeBucket.items.forEach(function (it) {
+          var code = String(it.itemCode || '');
+          var name = String(it.itemName || '');
+          var price = Number(it.price) || 0;
+          var isImg = code.indexOf('2101') === 0 || code.indexOf('2102') === 0 || code.indexOf('2103') === 0 || code.indexOf('22') === 0;
+          if (partOn && isImg && n > 1) { sur += price * 0.5 * (n - 1); }
+          var isCtMrPlain = (code.indexOf('2102') === 0 || code.indexOf('2103') === 0) && name.indexOf('增强') < 0 && name.indexOf('造影') < 0;
+          if (contrastOn && contrast && isCtMrPlain) { sur += price * 0.5; }
+        });
+        return sur;
+      },
       visibleOrders: function () {
         var type = this.orderType;
         return this.orders.filter(function (o) { return o.orderType === type; });
@@ -188,7 +225,18 @@
         }
       }
     },
-    created: function () { this.loadPackages(); },
+    created: function () {
+      this.loadPackages();
+      var vm = this;
+      if (window.HIS && HIS.get) {
+        HIS.get('/api/sys/param/resolve/outpatient.exam_part_surcharge_enabled').then(function (v) {
+          vm.examPartEnabled = String(v).toLowerCase() === 'true';
+        }).catch(function () { /* 拉取失败保持默认停用, 不阻断面板 */ });
+        HIS.get('/api/sys/param/resolve/outpatient.exam_contrast_surcharge_enabled').then(function (v) {
+          vm.examContrastEnabled = String(v).toLowerCase() === 'true';
+        }).catch(function () { /* 拉取失败保持默认停用, 不阻断面板 */ });
+      }
+    },
     mounted: function () { window.addEventListener('keydown', this.onPanelKeydown); },
     beforeUnmount: function () {
       window.removeEventListener('keydown', this.onPanelKeydown);
@@ -490,7 +538,7 @@
         if (!this.activeBucket.items.length) { return '请先添加项目'; }
         var f = this.activeForm;
         if (this.orderType === '检验' && (!f.specimenType || !f.specimenCondition || !f.urgency)) { return '请完整填写标本类型、标本条件和紧急程度'; }
-        if (this.orderType === '检查' && (!f.examPart || !f.examPurpose || !f.briefHistory || !f.contrastMode || !f.urgency || !f.execDept)) { return '请完整填写检查部位、检查目的、简要病史、造影方式、紧急程度和执行科室'; }
+        if (this.orderType === '检查' && (!f.examParts || !f.examParts.length || !f.examPurpose || !f.briefHistory || !f.contrastMode || !f.urgency || !f.execDept)) { return '请完整填写检查部位、检查目的、简要病史、造影方式、紧急程度和执行科室'; }
         if (this.orderType === '治疗' && (!f.treatmentPart || !f.treatmentTimes || !f.execDept)) { return '请完整填写治疗部位、次数和执行科室'; }
         return '';
       },
@@ -508,7 +556,8 @@
             });
           } else if (vm.orderType === '检查') {
             Object.assign(item, {
-              examPart: f.examPart, examPurpose: f.examPurpose, briefHistory: f.briefHistory,
+              examPart: (f.examParts || []).join(','), siteCount: vm.examSiteCount || 1,
+              examPurpose: f.examPurpose, briefHistory: f.briefHistory,
               contrastMode: f.contrastMode, urgency: f.urgency,
               examNotes: (f.examNotes || []).join(','), execDept: f.execDept,
               examMethod: item.spec || item.itemName
@@ -556,8 +605,9 @@
         if (!vm.activeBucket.items.length) { ElementPlus.ElMessage.warning('当前没有可插入的暂存项目'); return; }
         var f = vm.activeForm;
         var names = vm.activeBucket.items.map(function (it) { return it.itemName; }).join('、');
+        var partText = (f.examParts || []).join('、');
         var line = vm.orderType === '检查'
-          ? '检查:' + names + (f.examPart ? '(' + f.examPart + (f.examPurpose ? ' · ' + f.examPurpose : '') + ')' : '')
+          ? '检查:' + names + (partText ? '(' + partText + (f.examPurpose ? ' · ' + f.examPurpose : '') + ')' : '')
           : (vm.orderType === '检验'
             ? '检验:' + names + (f.specimenType ? '(' + f.specimenType + (f.collectionSite ? ' · ' + f.collectionSite : '') + ')' : '')
             : '治疗:' + names + '(' + (f.treatmentTimes || 1) + '次)');
@@ -649,9 +699,10 @@
                   <el-form-item label="用药情况"><el-input v-model="activeForm.medicationInfo" placeholder="选填"></el-input></el-form-item><el-form-item label="送检目的"><el-input v-model="activeForm.inspectionPurpose" placeholder="选填"></el-input></el-form-item>
                 </template>
                 <template v-else-if="orderType==='检查'">
-                  <div class="dw-form-grid"><el-form-item label="检查部位" required><el-input v-model="activeForm.examPart"></el-input></el-form-item><el-form-item label="执行科室" required><el-select v-model="activeForm.execDept" style="width:100%"><el-option v-for="x in execDepts" :key="x" :label="x" :value="x"></el-option></el-select></el-form-item></div>
-                  <el-form-item label="检查目的" required><el-input v-model="activeForm.examPurpose" placeholder="如：排除XX、评估XX"></el-input></el-form-item><el-form-item label="简要病史" required><el-input v-model="activeForm.briefHistory" type="textarea" :rows="3"></el-input></el-form-item>
+                  <div class="dw-form-grid"><el-form-item label="检查部位" required><el-select v-model="activeForm.examParts" multiple collapse-tags collapse-tags-tooltip clearable style="width:100%" placeholder="可多选(医保多部位计费)"><el-option v-for="s in examSiteOptions" :key="s" :label="s" :value="s"></el-option></el-select></el-form-item><el-form-item label="执行科室" required><el-select v-model="activeForm.execDept" style="width:100%"><el-option v-for="x in execDepts" :key="x" :label="x" :value="x"></el-option></el-select></el-form-item></div>
                   <div class="dw-form-grid"><el-form-item label="造影方式" required><el-radio-group v-model="activeForm.contrastMode"><el-radio label="平扫">平扫</el-radio><el-radio label="增强">增强</el-radio></el-radio-group></el-form-item><el-form-item label="紧急程度" required><el-select v-model="activeForm.urgency" style="width:100%"><el-option v-for="x in urgencyExam" :key="x" :label="x" :value="x"></el-option></el-select></el-form-item></div>
+                  <div v-if="activeForm.examParts && activeForm.examParts.length" class="dim" style="padding:0 12px 6px">计价部位 <b>{{ examSiteCount }}</b> 个{{ activeForm.contrastMode==='增强' ? '（增强）' : '' }}{{ examSurchargeEstimate>0 ? (' · 加收预估 ￥' + money(examSurchargeEstimate) + '（多部位第2个起每个50%、增强另按主项目50%，实际以计费规则为准）') : '' }}</div>
+                  <el-form-item label="检查目的" required><el-input v-model="activeForm.examPurpose" placeholder="如：排除XX、评估XX"></el-input></el-form-item><el-form-item label="简要病史" required><el-input v-model="activeForm.briefHistory" type="textarea" :rows="3"></el-input></el-form-item>
                   <el-form-item label="注意事项"><el-checkbox-group v-model="activeForm.examNotes"><el-checkbox v-for="x in examNotes" :key="x" :label="x">{{ x }}</el-checkbox></el-checkbox-group></el-form-item>
                 </template>
                 <template v-else>

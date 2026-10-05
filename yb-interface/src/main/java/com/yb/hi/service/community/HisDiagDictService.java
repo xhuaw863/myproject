@@ -203,6 +203,40 @@ public class HisDiagDictService extends ServiceImpl<HisDiagDictMapper, HisDiagDi
         return ret;
     }
 
+    /** 批量导入选中的诊断标准字典行(按 dict_type+code 幂等 upsert), 返回 total/inserted/updated/skipped/failed */
+    public Map<String, Object> importSelected(String dictType, String dictKey, List<Long> stdIds) {
+        checkedSource(dictType, dictKey);
+        int inserted = 0;
+        int updated = 0;
+        int failed = 0;
+        for (Long id : stdIds) {
+            try {
+                HisDiagDict e = previewFromStd(dictType, dictKey, id);
+                if (e == null || !StringUtils.hasText(e.getCode())) {
+                    failed++;
+                    continue;
+                }
+                boolean exists = lambdaQuery().eq(HisDiagDict::getDictType, dictType)
+                        .eq(HisDiagDict::getCode, e.getCode()).count() > 0;
+                saveOrUpdateByCode(e);
+                if (exists) {
+                    updated++;
+                } else {
+                    inserted++;
+                }
+            } catch (Exception ex) {
+                failed++;
+            }
+        }
+        Map<String, Object> ret = new LinkedHashMap<>();
+        ret.put("total", stdIds.size());
+        ret.put("inserted", inserted);
+        ret.put("updated", updated);
+        ret.put("skipped", 0);
+        ret.put("failed", failed);
+        return ret;
+    }
+
     /** std 行 -> 实体映射: 编码/名称缺一不落条目; 医保版源(非_nat)yb_code=code, 国标版留空待补 */
     private HisDiagDict mapStdRow(String dictType, String dictKey, StdDict d,
                                   String code, String name, String category, String srcDoc) {

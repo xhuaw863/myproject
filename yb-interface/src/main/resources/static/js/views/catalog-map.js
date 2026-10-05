@@ -26,6 +26,8 @@
         summary: {},
         /* 左: 院内工作队列 */
         mappedFilter: '0', keyword: '', itemType: '诊疗',
+        /* 药品大类过滤(仅 drug 目录): 值存文本 name, 与 major_class 一致 */
+        majorClass: '', majorClassOpts: [],
         page: 1, size: 20, total: 0, loading: false, list: [], selection: [],
         cur: null,
         /* 右: 打分候选 */
@@ -46,7 +48,7 @@
         autoSwitched: false
       };
     },
-    created: function () { this.loadSummary(); this.loadItems(); },
+    created: function () { var vm = this; HIS.valByType('药品大类').then(function (l) { vm.majorClassOpts = l || []; }).catch(function () { }); this.loadSummary(); this.loadItems(); },
     computed: {
       cov: function () {
         var s = this.summary[this.catalog] || {};
@@ -72,7 +74,7 @@
         HIS.get('/api/catalog-map/summary').then(function (d) { vm.summary = d || {}; }).catch(function () {});
       },
       onTab: function () {
-        this.page = 1; this.keyword = ''; this.cur = null; this.candList = []; this.candSel = null; this.selection = [];
+        this.page = 1; this.keyword = ''; this.majorClass = ''; this.cur = null; this.candList = []; this.candSel = null; this.selection = [];
         this.autoSwitched = false;
         this.loadItems();
       },
@@ -82,6 +84,7 @@
         if (vm.mappedFilter !== '') { q += '&mapped=' + vm.mappedFilter; }
         if (vm.keyword) { q += '&keyword=' + encodeURIComponent(vm.keyword); }
         if (vm.catalog === 'charge' && vm.itemType) { q += '&itemType=' + encodeURIComponent(vm.itemType); }
+        if (vm.catalog === 'drug' && vm.majorClass) { q += '&majorClass=' + encodeURIComponent(vm.majorClass); }
         HIS.get(q).then(function (d) {
           vm.list = (d && d.records) || []; vm.total = (d && d.total) || 0;
           /* 无未对照数据时自动切"全部", 避免打开页面就是空列表 */
@@ -194,6 +197,7 @@
         if (vm.mappedFilter !== '') { q += '&mapped=' + vm.mappedFilter; }
         if (vm.keyword) { q += '&keyword=' + encodeURIComponent(vm.keyword); }
         if (vm.catalog === 'charge' && vm.itemType) { q += '&itemType=' + encodeURIComponent(vm.itemType); }
+        if (vm.catalog === 'drug' && vm.majorClass) { q += '&majorClass=' + encodeURIComponent(vm.majorClass); }
         vm.exporting = true;
         HIS.download(q).then(function (name) {
           HIS.notifySuccess('已导出 ' + vm.total + ' 条: ' + name);
@@ -340,6 +344,7 @@
       '  <div class="toolbar">',
       '    <el-select v-model="mappedFilter" style="width:120px" @change="search"><el-option v-for="f in mappedFilters" :key="f.v" :label="f.l" :value="f.v"></el-option></el-select>',
       '    <el-select v-if="catalog===\'charge\'" v-model="itemType" style="width:100px" @change="search"><el-option v-for="t in itemTypes" :key="t" :label="t" :value="t"></el-option></el-select>',
+      '    <el-select v-if="catalog===\'drug\'" v-model="majorClass" placeholder="大类" clearable filterable style="width:130px" @change="search"><el-option v-for="o in majorClassOpts" :key="o.code" :label="o.name" :value="o.name"></el-option></el-select>',
       '    <el-input v-model="keyword" placeholder="名称/院内码/拼音简码/医保码" clearable style="width:220px" @keyup.enter="search"></el-input>',
       '    <el-button type="primary" @click="search">查询</el-button>',
       '    <el-button type="warning" @click="openAuto">批量自动对照</el-button>',

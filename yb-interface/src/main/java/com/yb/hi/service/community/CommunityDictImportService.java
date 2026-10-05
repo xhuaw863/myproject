@@ -8,6 +8,8 @@ import com.yb.hi.service.StdDictMaintainService;
 import com.yb.hi.service.StdDictQueryService;
 import com.yb.hi.service.basedata.HisChargeItemService;
 import com.yb.hi.stddict.StdDict;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
 
@@ -34,6 +36,8 @@ import java.util.Set;
 @Service
 public class CommunityDictImportService {
 
+    private static final Logger log = LoggerFactory.getLogger(CommunityDictImportService.class);
+
     private final StdDictMaintainService stdMaintain;
     private final StdDictQueryService stdQuery;
     private final HisDrugCatalogService drugService;
@@ -57,9 +61,68 @@ public class CommunityDictImportService {
 
     /* ================= 药品 ================= */
 
-    /** 从 std_drug 行映射为药品目录预览(未落库), 供前端补录弹窗 */
-    public HisDrugCatalog previewDrug(long stdId) {
-        Map<String, Object> r = stdMaintain.row("drug", stdId);
+    /**
+     * 从标准字典行映射为药品目录预览(未落库), 供前端补录弹窗。
+     * 按 dictKey 路由到对应医保药品字典: drug(西药/中成药) / tcm(中药饮片) / tcm_granule(中药配方颗粒)
+     * / preparation(医疗机构制剂) / ivd(体外诊断试剂), 五类均落入同一张 his_drug_catalog, 用 src_type+major_class 区分。
+     */
+    public HisDrugCatalog previewDrug(String dictKey, long stdId) {
+        String key = StringUtils.hasText(dictKey) ? dictKey : "drug";
+        Map<String, Object> r = stdMaintain.row(key, stdId);
+        HisDrugCatalog d = new HisDrugCatalog();
+        d.setStatus(1);
+        d.setRoundRule(1);
+        d.setZeroMargin(1);
+        d.setSrcType(key);
+        d.setSrcDoc(srcDoc(key));
+        switch (key) {
+            case "tcm":
+                d.setYbDrugCode(str(r, "nat_tcm_code"));
+                d.setGenericName(str(r, "tcm_name"));
+                d.setMajorClass("中药饮片");
+                d.setChrgitmLv(str(r, "chrgitm_lv"));
+                // 医保支付政策(std_tcm.pay_policy VARCHAR(200))属长文本政策说明, 落入"限定支付范围"(limit_scope VARCHAR(500));
+                // 不可写入 pay_std_prep(医保支付标准金额 VARCHAR(30)), 否则源数据超长导致导入 Data too long 失败。
+                d.setLimitScope(str(r, "pay_policy"));
+                d.setSrcCode(str(r, "nat_tcm_code"));
+                return d;
+            case "tcm_granule":
+                d.setYbDrugCode(str(r, "granule_code"));
+                d.setGenericName(str(r, "granule_name"));
+                d.setMajorClass("中药配方颗粒");
+                d.setSpec(str(r, "spec"));
+                d.setManufacturer(str(r, "entp"));
+                d.setChrgitmLv(str(r, "chrgitm_lv"));
+                d.setSrcCode(str(r, "granule_code"));
+                return d;
+            case "preparation":
+                d.setYbDrugCode(str(r, "prep_code"));
+                d.setGenericName(str(r, "prep_name"));
+                d.setMajorClass("医疗机构制剂");
+                d.setSpec(str(r, "spec"));
+                d.setDosform(str(r, "dosform"));
+                d.setManufacturer(str(r, "applicant"));
+                d.setApprovalNo(str(r, "approval_no"));
+                d.setChrgitmLv(str(r, "policy_flag"));
+                d.setSrcCode(str(r, "prep_code"));
+                return d;
+            case "ivd":
+                d.setYbDrugCode(str(r, "ivd_code"));
+                d.setGenericName(str(r, "prod_name"));
+                d.setMajorClass("体外诊断试剂");
+                d.setSpec(str(r, "pack_spec"));
+                d.setManufacturer(str(r, "entp_name"));
+                d.setChrgitmLv(str(r, "policy_flag"));
+                d.setSrcCode(str(r, "ivd_code"));
+                return d;
+            case "drug":
+            default:
+                return mapDrugRow(r);
+        }
+    }
+
+    /** 西药/中成药(std_drug)行 -> 药品目录预览映射(原 previewDrug 逻辑) */
+    private HisDrugCatalog mapDrugRow(Map<String, Object> r) {
         HisDrugCatalog d = new HisDrugCatalog();
         d.setYbDrugCode(str(r, "drug_code"));
         d.setDrugStdCode(str(r, "drug_std_code"));
@@ -308,6 +371,107 @@ public class CommunityDictImportService {
                 throw new BizException(400, "不支持导入为收费项目的字典类型: " + dictKey);
         }
         return it;
+    }
+
+    /* ================= 批量选择导入(L1 勾选行 -> L2, 按编码幂等) ================= */
+
+    /** 批量导入选中的药品标准字典行(dictKey 决定来源医保字典): 逐行 preview+幂等 import, 统计新增/更新/失败。 */
+    public Map<String, Object> importDrugSelected(String dictKey, List<Long> stdIds) {
+        int inserted = 0;
+        int updated = 0;
+        List<String> errors = new ArrayList<>();
+        for (Long id : stdIds) {
+            try {
+                HisDrugCatalog e = previewDrug(dictKey, id);
+                boolean exists = StringUtils.hasText(e.getYbDrugCode())
+                        && drugService.lambdaQuery().eq(HisDrugCatalog::getYbDrugCode, e.getYbDrugCode()).count() > 0;
+                importDrug(e);
+                if (exists) {
+                    updated++;
+                } else {
+                    inserted++;
+                }
+            } catch (Exception ex) {
+                recordImportError(errors, dictKey, id, ex);
+            }
+        }
+        return importResult(stdIds.size(), inserted, updated, 0, errors);
+    }
+
+    /** 批量导入选中的耗材标准字典行(按医保耗材码幂等)。 */
+    public Map<String, Object> importConsSelected(List<Long> stdIds) {
+        int inserted = 0;
+        int updated = 0;
+        List<String> errors = new ArrayList<>();
+        for (Long id : stdIds) {
+            try {
+                HisConsCatalog e = previewCons(id);
+                boolean exists = StringUtils.hasText(e.getYbConsCode())
+                        && consService.lambdaQuery().eq(HisConsCatalog::getYbConsCode, e.getYbConsCode()).count() > 0;
+                importCons(e);
+                if (exists) {
+                    updated++;
+                } else {
+                    inserted++;
+                }
+            } catch (Exception ex) {
+                recordImportError(errors, "consumable", id, ex);
+            }
+        }
+        return importResult(stdIds.size(), inserted, updated, 0, errors);
+    }
+
+    /** 批量导入选中的收费项目标准字典行(按院内编码幂等, 已存在跳过; 导入后回填四分类)。 */
+    public Map<String, Object> importChargeSelected(String dictKey, List<Long> stdIds) {
+        Set<String> exist = new HashSet<>();
+        for (HisChargeItem c : chargeService.lambdaQuery().select(HisChargeItem::getItemCode).list()) {
+            exist.add(c.getItemCode());
+        }
+        int inserted = 0;
+        int skipped = 0;
+        List<String> errors = new ArrayList<>();
+        List<HisChargeItem> batch = new ArrayList<>();
+        for (Long id : stdIds) {
+            try {
+                HisChargeItem it = previewCharge(dictKey, id);
+                String code = it.getItemCode();
+                if (!StringUtils.hasText(code) || !StringUtils.hasText(it.getItemName()) || !exist.add(code)) {
+                    skipped++;
+                    continue;
+                }
+                batch.add(it);
+            } catch (Exception ex) {
+                recordImportError(errors, dictKey, id, ex);
+            }
+        }
+        if (!batch.isEmpty()) {
+            chargeService.saveBatch(batch, 500);
+            inserted = batch.size();
+            backfillChargeClass();
+        }
+        return importResult(stdIds.size(), inserted, 0, skipped, errors);
+    }
+
+    /** 记录单行导入失败: 日志留栈, 返回体收集前若干条原因供前端展示。 */
+    private void recordImportError(List<String> errors, String dictKey, Long id, Exception ex) {
+        String m = ex.getMessage() == null ? ex.getClass().getSimpleName() : ex.getMessage();
+        if (errors.size() < 20) {
+            errors.add("stdId=" + id + ": " + m);
+        }
+        log.warn("批量选择导入失败: dictKey={}, stdId={}", dictKey, id, ex);
+    }
+
+    private Map<String, Object> importResult(int total, int inserted, int updated, int skipped, List<String> errors) {
+        Map<String, Object> res = new LinkedHashMap<>();
+        res.put("total", total);
+        res.put("inserted", inserted);
+        res.put("updated", updated);
+        res.put("skipped", skipped);
+        res.put("failed", errors.size() + Math.max(0, total - inserted - updated - skipped - errors.size()));
+        if (!errors.isEmpty()) {
+            res.put("errors", errors);
+        }
+        return res;
     }
 
     /* ================= 工具 ================= */

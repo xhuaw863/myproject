@@ -44,7 +44,7 @@ public class HisOrder extends BaseEntity {
     private BigDecimal totalAmount;
     /** 状态: 1-已开 2-已执行 3-已退 */
     private Integer status;
-    /** 执行状态: 0-未执行 1-已执行(护士站/治疗/医技执行联动) */
+    /** 执行状态: 0-未执行 1-执行中 2-已完成(护士站/治疗/医技执行联动) */
     private Integer execStatus;
     /** 执行科室ID(his_dept.id) */
     private Long execDeptId;

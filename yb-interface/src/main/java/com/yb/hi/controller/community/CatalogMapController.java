@@ -46,15 +46,16 @@ public class CatalogMapController {
         return R.ok(catalogMapService.summary());
     }
 
-    /** 院内工作队列分页: catalog=drug|cons|charge, mapped=0仅未对照/1仅已对照/空全部 */
+    /** 院内工作队列分页: catalog=drug|cons|charge, mapped=0仅未对照/1仅已对照/空全部; majorClass 仅药品大类过滤 */
     @GetMapping("/items")
     public R<IPage<Map<String, Object>>> items(@RequestParam String catalog,
                                                @RequestParam(defaultValue = "1") long page,
                                                @RequestParam(defaultValue = "20") long size,
                                                @RequestParam(required = false) Integer mapped,
                                                @RequestParam(required = false) String keyword,
-                                               @RequestParam(required = false) String itemType) {
-        return R.ok(catalogMapService.items(catalog, page, size, mapped, keyword, itemType));
+                                               @RequestParam(required = false) String itemType,
+                                               @RequestParam(required = false) String majorClass) {
+        return R.ok(catalogMapService.items(catalog, page, size, mapped, keyword, itemType, majorClass));
     }
 
     /** 导出对照结果(xlsx): 与列表同一筛选条件, 一次性导出全部匹配行(含医保名称/变更前码/生效时间) */
@@ -63,8 +64,9 @@ public class CatalogMapController {
                        @RequestParam(required = false) Integer mapped,
                        @RequestParam(required = false) String keyword,
                        @RequestParam(required = false) String itemType,
+                       @RequestParam(required = false) String majorClass,
                        HttpServletResponse resp) throws IOException {
-        Map<String, Object> data = catalogMapService.exportRows(catalog, mapped, keyword, itemType);
+        Map<String, Object> data = catalogMapService.exportRows(catalog, mapped, keyword, itemType, majorClass);
         String fname = "医保对照结果_" + catalogLabel(catalog) + "_" + LocalDate.now() + ".xlsx";
         String enc = URLEncoder.encode(fname, "UTF-8").replace("+", "%20");
         resp.setContentType("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");

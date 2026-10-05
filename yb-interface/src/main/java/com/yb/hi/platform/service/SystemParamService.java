@@ -230,7 +230,8 @@ public class SystemParamService {
 
     /**
      * 查询指定作用域的参数视图: 每个参数返回 {..., override_value, override_level, effective_value}
-     * (effective_value = 覆盖值优先, 未覆盖回退 default_value)。scopeId 为空时按上下文兜底。
+     * (effective_value = 覆盖值优先, 未覆盖或覆盖为空串时回退 default_value, 与 SystemParamResolver 空白即无效口径一致)。
+     * scopeId 为空时按上下文回退取值。
      */
     public List<Map<String, Object>> listByScope(int scopeLevel, Long scopeId, String groupCode) {
         if (scopeLevel < 0 || scopeLevel > 3) {
@@ -252,8 +253,8 @@ public class SystemParamService {
         StringBuilder sql = new StringBuilder(
                 "SELECT d.param_key, d.param_name, d.group_code, d.data_type, d.default_value,"
                         + " d.enum_options, d.min_value, d.max_value, d.required, d.allow_scope, d.remark,"
-                        + " o.param_value AS override_value, o.scope_level AS override_level,"
-                        + " COALESCE(o.param_value, d.default_value) AS effective_value"
+                        + " NULLIF(TRIM(o.param_value), '') AS override_value, o.scope_level AS override_level,"
+                        + " COALESCE(NULLIF(TRIM(o.param_value), ''), d.default_value) AS effective_value"
                         + " FROM sys_param d"
                         + " LEFT JOIN sys_param o ON o.param_key = d.param_key"
                         + " AND o.scope_level = ? AND o.scope_id = ? AND o.deleted = 0 AND o.tenant_id = ?"

@@ -164,7 +164,13 @@ public class InfusionService {
         if (n == 0) {
             throw new BizException(409, "穿刺记录已被写入(可能他人已操作), 请刷新后重试");
         }
-        return infusionMapper.selectById(infusionId);
+        // 直接回填内存对象返回: 上方 requireInfusion 已将旧值(穿刺字段为空)载入 MyBatis 一级缓存,
+        // 同事务内 jdbcTemplate 更新不会使 MP 缓存失效, 若再 selectById 将返回更新前的陈旧对象(与 addPatrol/recordRemove 一致改为计算返回)
+        LocalDateTime puncturedAt = LocalDateTime.now();
+        rec.setPunctureTime(puncturedAt);
+        rec.setPunctureSite(site.trim());
+        rec.setPunctureNurseId(nurseId);
+        return rec;
     }
 
     /* ================= 巡视 ================= */
@@ -397,7 +403,7 @@ public class InfusionService {
     }
 
     private String baseCols() {
-        return "SELECT ir.id AS infusionId, ir.exec_id AS execId, ir.seat_no AS seatNo, ir.solution, ir.drip_rate AS dripRate,"
+        return "SELECT ir.id AS infusionId, e.id AS execId, ir.seat_no AS seatNo, ir.solution, ir.drip_rate AS dripRate,"
                 + " DATE_FORMAT(ir.puncture_time, '%Y-%m-%d %H:%i:%s') AS punctureTime,"
                 + " ir.puncture_site AS punctureSite, ir.puncture_nurse_id AS punctureNurseId, pn.staff_name AS punctureNurseName,"
                 + " DATE_FORMAT(ir.remove_time, '%Y-%m-%d %H:%i:%s') AS removeTime,"

@@ -21,11 +21,13 @@
         paged: HIS.pagedDefault('orgcatPaged'), _base: 20,
         loading: false, list: [], total: 0, page: 1, size: 20, keyword: '',
         enabledFilter: '', exporting: false,
+        /* 药品大类过滤(仅 drug tab): 值存文本 name, 与 major_class 一致 */
+        majorClass: '', majorClassOpts: [],
         selection: [],
         detDlg: false, detTitle: '', detRows: [], detLoading: false
       };
     },
-    created: function () { this._base = this.size; if (!this.paged) { this.size = 100000; } this.load(); },
+    created: function () { this._base = this.size; if (!this.paged) { this.size = 100000; } var vm = this; HIS.valByType('药品大类').then(function (l) { vm.majorClassOpts = l || []; }).catch(function () { }); this.load(); },
     methods: {
       load: function () {
         var vm = this; vm.loading = true;
@@ -33,6 +35,7 @@
           + '&page=' + vm.page + '&size=' + vm.size;
         if (vm.keyword) { q += '&keyword=' + encodeURIComponent(vm.keyword); }
         if (vm.enabledFilter !== '') { q += '&enabled=' + vm.enabledFilter; }
+        if (vm.activeTab === 'drug' && vm.majorClass) { q += '&majorClass=' + encodeURIComponent(vm.majorClass); }
         HIS.get(q).then(function (d) {
           vm.list = (d && d.records) || [];
           vm.total = Number((d && d.total) || 0);
@@ -40,7 +43,7 @@
           vm.selection = [];
         }).catch(HIS.notifyError).finally(function () { vm.loading = false; });
       },
-      onTab: function () { this.page = 1; this.keyword = ''; this.load(); },
+      onTab: function () { this.page = 1; this.keyword = ''; this.majorClass = ''; this.load(); },
       search: function () { this.page = 1; this.load(); },
       onPage: function (p) { this.page = p; this.load(); },
       onSize: function (s) { this.size = s; this._base = s; this.page = 1; this.load(); },
@@ -90,6 +93,7 @@
         var q = '/api/org-catalog/export?catalogType=' + vm.activeTab;
         if (vm.keyword) { q += '&keyword=' + encodeURIComponent(vm.keyword); }
         if (vm.enabledFilter !== '') { q += '&enabled=' + vm.enabledFilter; }
+        if (vm.activeTab === 'drug' && vm.majorClass) { q += '&majorClass=' + encodeURIComponent(vm.majorClass); }
         vm.exporting = true;
         HIS.download(q).then(function (name) {
           HIS.notifySuccess('已导出: ' + name);
@@ -106,6 +110,7 @@
       '  <div class="toolbar">',
       '    <el-input v-model="keyword" placeholder="名称/编码/拼音简码检索" clearable style="width:230px" @keyup.enter="search"></el-input>',
       '    <el-select v-model="enabledFilter" style="width:120px" @change="search"><el-option label="全部状态" value=""></el-option><el-option label="已开展" value="1"></el-option><el-option label="未开展" value="0"></el-option></el-select>',
+      '    <el-select v-if="activeTab===\'drug\'" v-model="majorClass" placeholder="大类" clearable filterable style="width:130px" @change="search"><el-option v-for="o in majorClassOpts" :key="o.code" :label="o.name" :value="o.name"></el-option></el-select>',
       '    <el-button @click="search">查询</el-button>',
       '    <el-button type="success" @click="batch(1)">批量开展</el-button>',
       '    <el-button type="info" @click="batch(0)">批量停用</el-button>',
@@ -118,6 +123,7 @@
       '    <el-table-column type="index" label="序号" width="55" :index="seqNo"></el-table-column>',
       '    <el-table-column prop="code" label="编码" width="150" show-overflow-tooltip></el-table-column>',
       '    <el-table-column prop="name" label="名称" min-width="200" show-overflow-tooltip></el-table-column>',
+      '    <el-table-column v-if="activeTab===\'drug\'" prop="majorClass" label="大类" width="100" show-overflow-tooltip><template #default="s">{{ s.row.majorClass || "—" }}</template></el-table-column>',
       '    <el-table-column prop="spec" :label="activeTab===\'freq\'?\'每日次数\':\'规格\'" min-width="130" show-overflow-tooltip></el-table-column>',
       '    <el-table-column v-if="activeTab!==\'usage\' && activeTab!==\'freq\'" prop="unit" label="单位" width="70"></el-table-column>',
       '    <el-table-column v-if="activeTab!==\'usage\' && activeTab!==\'freq\'" prop="priceText" label="价格(只读)" width="100"></el-table-column>',

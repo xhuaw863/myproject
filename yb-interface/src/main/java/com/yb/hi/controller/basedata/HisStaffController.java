@@ -41,13 +41,15 @@ public class HisStaffController {
                                   @RequestParam(required = false) String staffType,
                                   @RequestParam(required = false) String keyword,
                                   @RequestParam(required = false) Integer status,
+                                  @RequestParam(required = false) Integer canRegister,
+                                  @RequestParam(required = false) String rxAuth,
                                   @RequestParam(defaultValue = "true") boolean withChildren,
                                   @RequestParam(defaultValue = "true") boolean withSubOrgs) {
         /* 机构级联仅牵头机构生效: 非牵头读隔离锁定本机构, 不得穿透到下级 */
-        return R.ok(service.listByFilter(guard.scopeOrgId(orgId), withSubOrgs && guard.isLead(), deptId, staffType, keyword, withChildren, status));
+        return R.ok(service.listByFilter(guard.scopeOrgId(orgId), withSubOrgs && guard.isLead(), deptId, staffType, keyword, withChildren, status, canRegister, rxAuth));
     }
 
-    /** 导出职工列表(xlsx): 与列表同一筛选(机构/科室/类别/关键字及两个级联开关), 一次性导出全部匹配行 */
+    /** 导出职工列表(xlsx): 与列表同一筛选(机构/科室/类别/关键字/可挂号/处方权限及两个级联开关), 一次性导出全部匹配行 */
     @GetMapping("/export")
     @SuppressWarnings("unchecked")
     public void export(@RequestParam(required = false) Long orgId,
@@ -55,11 +57,13 @@ public class HisStaffController {
                        @RequestParam(required = false) String staffType,
                        @RequestParam(required = false) String keyword,
                        @RequestParam(required = false) Integer status,
+                       @RequestParam(required = false) Integer canRegister,
+                       @RequestParam(required = false) String rxAuth,
                        @RequestParam(defaultValue = "true") boolean withChildren,
                        @RequestParam(defaultValue = "true") boolean withSubOrgs,
                        HttpServletResponse resp) throws IOException {
         Map<String, Object> data = service.exportRows(guard.scopeOrgId(orgId), withSubOrgs && guard.isLead(),
-                deptId, staffType, keyword, withChildren, status);
+                deptId, staffType, keyword, withChildren, status, canRegister, rxAuth);
         String fname = "职工列表_" + LocalDate.now() + ".xlsx";
         String enc = URLEncoder.encode(fname, "UTF-8").replace("+", "%20");
         resp.setContentType("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");

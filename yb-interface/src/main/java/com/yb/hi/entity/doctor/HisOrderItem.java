@@ -42,4 +42,10 @@ public class HisOrderItem extends BaseEntity {
     private String medListCodg;
     /** 执行科室 */
     private String execDept;
+    /** 检查部位(多选, 逗号分隔; 仅检查单) */
+    private String examPart;
+    /** 计价部位数(检查多部位计费维度, 空=1) */
+    private Integer siteCount;
+    /** 造影方式(平扫/增强; 仅检查单, 驱动"增强扫描加收"计费维度) */
+    private String contrastMode;
 }
