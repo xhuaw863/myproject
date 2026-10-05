@@ -445,29 +445,64 @@
       currentPage.appendChild(currentBody); pagesHost.appendChild(currentPage);
     }
     function overflows() { return currentBody.scrollHeight > currentBody.clientHeight + 1; }
-    function appendTable(table) {
+    /* 表格按行分页；容器内表格通过 renewParent 在新页重建章节壳并重复章节标题。 */
+    function appendTable(table, parent, renewParent) {
+      let targetParent = parent || currentBody;
       const rows = Array.prototype.slice.call(table.rows || []);
-      if (!rows.length) { currentBody.appendChild(table); return; }
+      if (!rows.length) { targetParent.appendChild(table); return; }
       const headerRows = rows.filter(function (row) {
         return row.cells && row.cells.length && Array.prototype.every.call(row.cells, function (cell) { return cell.tagName === 'TH'; });
       });
       let target = table.cloneNode(false);
-      currentBody.appendChild(target);
+      targetParent.appendChild(target);
       headerRows.forEach(function (row) { target.appendChild(row.cloneNode(true)); });
       rows.forEach(function (row) {
         if (headerRows.indexOf(row) >= 0) { return; }
         const clone = row.cloneNode(true); target.appendChild(clone);
         if (overflows() && target.rows.length > headerRows.length + 1) {
-          target.removeChild(clone); newPage(); target = table.cloneNode(false); currentBody.appendChild(target);
+          target.removeChild(clone);
+          newPage();
+          targetParent = typeof renewParent === 'function' ? renewParent() : currentBody;
+          target = table.cloneNode(false); targetParent.appendChild(target);
           headerRows.forEach(function (hr) { target.appendChild(hr.cloneNode(true)); });
           target.appendChild(clone);
         }
         if (overflows()) { clone.classList.add('emr-pp-overflow'); diagnostics.push('表格行高度超过单页可打印区域'); }
       });
     }
+    /* 章节不是不可拆分块：逐段落/列表/表格分页，新页重复章节标题，避免长章节整体越界。 */
+    function appendContainer(container) {
+      const children = Array.prototype.slice.call(container.children || []);
+      const title = children.filter(function (child) { return child.classList && child.classList.contains('emr-pp-sec-title'); })[0] || null;
+      let shell = null;
+      function startShell() {
+        shell = container.cloneNode(false);
+        currentBody.appendChild(shell);
+        if (title) { shell.appendChild(title.cloneNode(true)); }
+        return shell;
+      }
+      function nextShell() { return startShell(); }
+      startShell();
+      children.forEach(function (child) {
+        if (child === title) { return; }
+        if (child.classList && child.classList.contains('emr-pp-pagebreak')) { newPage(); startShell(); return; }
+        if (child.tagName === 'TABLE') { appendTable(child.cloneNode(true), shell, nextShell); return; }
+        const clone = child.cloneNode(true);
+        shell.appendChild(clone);
+        if (overflows()) {
+          shell.removeChild(clone);
+          const baseCount = title ? 1 : 0;
+          const hasPriorContent = shell.children.length > baseCount || currentBody.children.length > 1;
+          if (hasPriorContent) { newPage(); startShell(); }
+          shell.appendChild(clone);
+        }
+        if (overflows()) { clone.classList.add('emr-pp-overflow'); diagnostics.push('不可拆分内容超出第 ' + pageNo + ' 页打印区域'); }
+      });
+    }
     newPage();
     Array.prototype.slice.call(source.children || []).forEach(function (node) {
       if (node.classList.contains('emr-pp-pagebreak')) { if (currentBody.children.length) { newPage(); } return; }
+      if (node.classList.contains('emr-pp-section')) { appendContainer(node); return; }
       const clone = node.cloneNode(true);
       if (clone.tagName === 'TABLE') { appendTable(clone); return; }
       currentBody.appendChild(clone);

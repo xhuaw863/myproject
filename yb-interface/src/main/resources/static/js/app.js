@@ -356,8 +356,11 @@
   function normalizeMenu(nodes) {
     var out = [];
     (nodes || []).forEach(function (n) {
+      /* 旧字段画布仅保留源码回退：即使存量库尚未完成启动迁移，也不再暴露菜单入口。 */
+      if (n.menuKey === 'emr-designer') { return; }
       if (n.children && n.children.length) {
-        out.push({ group: n.menuName, children: normalizeMenu(n.children) });
+        var children = normalizeMenu(n.children);
+        if (children.length) { out.push({ group: n.menuName, children: children }); }
       } else {
         out.push({ key: n.menuKey, label: n.menuName, comp: n.comp, phase: n.phase });
       }

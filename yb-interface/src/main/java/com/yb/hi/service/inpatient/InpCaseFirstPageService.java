@@ -582,6 +582,9 @@ public class InpCaseFirstPageService {
         if (intOrNull(fp.get("mainDiagAdmitCond")) == null) {
             miss.add("主要诊断入院病情");
         }
+        if (intVal(fp.get("infectionFlag"), 0) == 1 && !StringUtils.hasText(strVal(fp.get("infectionSite")))) {
+            miss.add("医院感染部位");
+        }
         if (!StringUtils.hasText(strVal(fp.get("dischargeMainDiagCode")))
                 && !StringUtils.hasText(strVal(fp.get("dischargeMainDiagName")))) {
             miss.add("出院主要诊断");
@@ -666,6 +669,8 @@ public class InpCaseFirstPageService {
         result.put("dischargeOtherDiags", parseJsonArray(fp.get("dischargeOtherDiags")));
         result.put("operationRecords", parseJsonArray(fp.get("operationRecords")));
         result.put("costClassDetail", parseJsonArray(fp.get("costClassDetail")));
+        result.put("transferDepts", parseJsonArray(fp.get("transferDepts")));
+        result.put("bloodTransfusion", parseJsonArray(fp.get("bloodTransfusion")));
         Long qcDoctorId = longVal(fp.get("qcDoctorId"));
         if (qcDoctorId != null) {
             Map<String, Object> qc = queryFirst(

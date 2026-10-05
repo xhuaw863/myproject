@@ -61,7 +61,7 @@
   <script src="/js/views/doctor/patient-banner.js?v=20261004b"></script>
   <!-- 门诊病历书写器(P3 Tiptap 三栏工作台; 须在 emr-panel.js 之前加载: 其局部注册直接消费 HIS.components.OutpEmrWriter;
        引擎/离线草稿/SSE 依赖均运行时按需访问, 另有 DOMContentLoaded 全局标签注册双保险) -->
-  <script src="/js/views/doctor/outp-emr-writer.js?v=20261106a"></script>
+  <script src="/js/views/doctor/outp-emr-writer.js?v=20261106b"></script>
   <script src="/js/views/doctor/emr-panel.js?v=20261004b"></script>
   <script src="/js/views/doctor/tooth-chart.js?v=20261004a"></script>
   <script src="/js/views/doctor/diagnosis-panel.js?v=20261105e"></script>
@@ -95,7 +95,7 @@
   <script src="/vendor/tiptap/tiptap-loader.js"></script>
   <script src="/js/lib/emr-extensions.js?v=20261106a"></script>
   <script src="/js/lib/emr-drawing-panel.js?v=20261002a"></script>
-  <script src="/js/lib/emr-editor.js?v=20261106a"></script>
+  <script src="/js/lib/emr-editor.js?v=20261106c"></script>
   <!-- EMR 离线草稿(IndexedDB 自动保存, HIS.EmrOfflineDraft, 运行时接收编辑器 wrapper) -->
   <script src="/js/lib/emr-offline-draft.js?v=20261003a"></script>
   <!-- 病历实时通知 SSE 客户端(HIS.EmrSseClient: Bearer 鉴权走 fetch 流式消费+退避重连+多标签租约; 须在 app.js 之前加载) -->
@@ -167,7 +167,7 @@
   <script src="/js/views/inp-doctor/inp-diag-panel.js?v=20260928b"></script>
   <script src="/js/views/inp-doctor/inp-record-panel.js?v=20261001a"></script>
   <!-- 住院病历书写器(P2-4 Tiptap 三栏工作台, 须在 emr-editor/emr-offline-draft/emr-sse-client/signature-pad/inp-record-panel 之后、inp-doctor.js 之前加载) -->
-  <script src="/js/views/inp-doctor/inp-emr-writer.js?v=20261106a"></script>
+  <script src="/js/views/inp-doctor/inp-emr-writer.js?v=20261106b"></script>
   <!-- 临床路径面板(住院医生站子组件, 须在 inp-doctor.js 之前加载) -->
   <script src="/js/views/inp-doctor/inp-pathway-panel.js?v=20261002d"></script>
   <!-- 会诊/知情同意面板(住院医生站子组件, 须在 inp-doctor.js 之前加载) -->
@@ -185,7 +185,7 @@
   <script src="/js/views/inp-nurse/vital-sign-chart.js?v=20261003a"></script>
   <!-- 护理文书 Tiptap 书写器(P4a-3, HIS.components.InpNursingWriter; P4a-5 由 inp-nurse.js 集成, 故须先于其加载;
        引擎/离线草稿依赖运行时按需访问, 另有 DOMContentLoaded 全局标签注册双保险) -->
-  <script src="/js/views/inp-nurse/nursing-writer.js?v=20261106a"></script>
+  <script src="/js/views/inp-nurse/nursing-writer.js?v=20261106b"></script>
   <!-- 批量体征录入组件(P4b-3, HIS.components.InpNursingBatchInput; P4b-5 由 inp-nurse.js 集成, 故须先于其加载;
        另有 DOMContentLoaded 全局标签注册双保险) -->
   <script src="/js/views/inp-nurse/nursing-batch-input.js?v=20261003a"></script>
@@ -224,6 +224,6 @@
   <script src="/js/views/emr-audit-log.js?v=20261003a"></script>
   <!-- 医保接口日志查询(出站交易日志回溯, 挂 医保字典 目录, 须在 app.js 之前加载) -->
   <script src="/js/views/yb-txn-log.js?v=20261004a"></script>
-  <script src="/js/app.js?v=20261106a"></script>
+  <script src="/js/app.js?v=20261106b"></script>
 </body>
 </html>
