@@ -1,6 +1,6 @@
-/* 病历模板管理: 六页签维护 soap/fragment/rx_set/order_set/diag_personal/diag_dept 医疗模板
- * 权限口径: 后端不判 owner, 前端按 个人级=仅本人staffId、科室级=仅本科室deptId、全院=ADMIN/SUPER_ADMIN 控制编辑删除;
- * create 显式传 staffId/deptId 定作用域(与医生站面板存模板口径一致) */
+/* 医疗模板管理: 六页签维护 soap/fragment/rx_set/order_set/diag_personal/diag_dept 医疗模板
+ * 权限口径: 前后端双重守卫；个人仅本人、科室仅本科室、全院仅 ADMIN/SUPER_ADMIN 可维护。
+ * create 显式传 staffId/deptId 定作用域(与医生站面板存模板口径一致)。 */
 ;(function () {
   var HIS = (window.HIS = window.HIS || {});
   HIS.views = HIS.views || {};
@@ -8,7 +8,7 @@
   var TABS = [
     { key: 'soap', label: '病历模板' },
     { key: 'fragment', label: '病历片段' },
-    { key: 'rx_set', label: '处方套' },
+    { key: 'rx_set', label: '处方组套' },
     { key: 'order_set', label: '医嘱套' },
     { key: 'diag_personal', label: '个人常用诊断' },
     { key: 'diag_dept', label: '科室诊断' }
@@ -29,13 +29,22 @@
     try { return JSON.parse(text(v) || '{}'); } catch (e) { return fallback; }
   }
 
+  function initialTab() {
+    try {
+      var requested = window.sessionStorage.getItem('yb.medical-template.activeTab');
+      window.sessionStorage.removeItem('yb.medical-template.activeTab');
+      return TABS.some(function (t) { return t.key === requested; }) ? requested : 'soap';
+    } catch (e) { return 'soap'; }
+  }
+
   HIS.views.MedicalTemplateManage = {
     name: 'MedicalTemplateManage',
     components: { 'dept-tree-picker': HIS.components.DeptTreePicker },
     data: function () {
       return {
         tabs: TABS,
-        activeTab: 'soap',
+        /* 医生站快捷入口通过 sessionStorage 指定一次性初始页签; 正常菜单进入仍默认病历模板 */
+        activeTab: initialTab(),
         keyword: '',
         loading: false,
         rows: [],
@@ -277,7 +286,8 @@
     template: `
       <div class="medical-template-wrap cd-fill">
         <div class="page-card cd-grow">
-          <div class="page-title">病历模板管理 <span style="font-size:12px;color:var(--yb-ink-2);font-weight:normal;">(个人仅本人、科室仅本科室、全院仅管理员可维护)</span></div>
+          <div class="page-title">医疗模板管理 <span style="font-size:12px;color:var(--yb-ink-2);font-weight:normal;">(病历模板、处方组套、医嘱组套；个人仅本人、科室仅本科室、全院仅管理员可维护)</span></div>
+          <el-alert v-if="!isAdmin" type="info" :closable="false" show-icon style="margin:6px 0;">医生可查看并使用全院模板，但只能维护本人及本科室模板。</el-alert>
           <div class="toolbar">
             <el-radio-group v-model="activeTab" @change="switchTab">
               <el-radio-button v-for="t in tabs" :key="t.key" :label="t.key">{{ t.label }}</el-radio-button>
@@ -306,7 +316,7 @@
             <el-table-column prop="sortOrder" label="排序" width="66" align="center"></el-table-column>
             <el-table-column label="收藏" width="60" align="center">
               <template #default="s">
-                <el-button link :type="Number(s.row.isFav)===1 ? 'warning' : 'info'" size="small" :title="Number(s.row.isFav)===1 ? '取消收藏' : '收藏(置顶显示)'" @click="toggleFavRow(s.row)">{{ Number(s.row.isFav)===1 ? '★' : '☆' }}</el-button>
+                <el-button link :type="Number(s.row.isFav)===1 ? 'warning' : 'info'" size="small" :disabled="!canEditRow(s.row)" :title="canEditRow(s.row) ? (Number(s.row.isFav)===1 ? '取消收藏' : '收藏(置顶显示)') : '无权维护该范围模板'" @click="toggleFavRow(s.row)">{{ Number(s.row.isFav)===1 ? '★' : '☆' }}</el-button>
               </template>
             </el-table-column>
             <el-table-column label="状态" width="70" align="center">
@@ -330,7 +340,7 @@
                 <el-radio-group v-model="form.scope" :disabled="editId !== null">
                   <el-radio label="personal">个人</el-radio>
                   <el-radio label="dept">科室</el-radio>
-                  <el-radio label="global" :disabled="!isAdmin">全院</el-radio>
+                  <el-radio v-if="isAdmin" label="global">全院</el-radio>
                 </el-radio-group>
               </el-form-item>
               <el-form-item label="科室" v-if="form.scope==='dept'">

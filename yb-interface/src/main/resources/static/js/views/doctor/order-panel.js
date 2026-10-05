@@ -110,6 +110,7 @@
         mutualReason: '',
         mutualResolver: null,
         folded: window.localStorage.getItem('dw.order.folded') === '1',
+        maximized: false,
         doneExpanded: false,
         /* 过敏拦截(2026-09 集成: 开单前核对护士站过敏档案, 命中强制确认换药/脱敏) */
         allergyVisible: false,
@@ -188,7 +189,9 @@
       }
     },
     created: function () { this.loadPackages(); },
+    mounted: function () { window.addEventListener('keydown', this.onPanelKeydown); },
     beforeUnmount: function () {
+      window.removeEventListener('keydown', this.onPanelKeydown);
       if (this.mutualResolver) { this.mutualResolver(false); this.mutualResolver = null; }
     },
     methods: {
@@ -196,7 +199,18 @@
       /* ===== U1/U2: 折叠记忆与定位 ===== */
       toggleFold: function () {
         this.folded = !this.folded;
+        if (this.folded) { this.maximized = false; }
         try { window.localStorage.setItem('dw.order.folded', this.folded ? '1' : '0'); } catch (e) { /* 隐私模式忽略 */ }
+      },
+      toggleMaximize: function () {
+        if (this.folded) {
+          this.folded = false;
+          try { window.localStorage.setItem('dw.order.folded', '0'); } catch (e) { /* 隐私模式忽略 */ }
+        }
+        this.maximized = !this.maximized;
+      },
+      onPanelKeydown: function (ev) {
+        if (ev && ev.key === 'Escape' && this.maximized) { this.maximized = false; }
       },
       revealForLocate: function () { this.folded = false; },
       /* 暂存表数量框回车回到检索框(键盘流闭环) */
@@ -600,10 +614,15 @@
       }
     },
     template: `
-      <div class="dw-panel dw-order-panel" :class="{ 'is-folded': folded }">
+      <div class="dw-panel dw-order-panel" :class="{ 'is-folded': folded, 'is-maximized': maximized }">
         <div class="dw-panel-header">
           <span>检查 · 检验 · 治疗申请 <span class="dim" v-if="orders.length">已开 {{ orders.length }} 单</span></span>
-          <button class="dw-collapse-btn" :title="folded ? '展开医嘱面板' : '折叠医嘱面板'" @click="toggleFold">{{ folded ? '▸' : '▾' }}</button>
+          <div style="display:flex;align-items:center;margin-left:auto">
+            <button class="dw-panel-max-btn" :title="maximized ? '退出最大化(Esc)' : '最大化申请面板'" @click="toggleMaximize" :aria-label="maximized ? '退出最大化' : '最大化检查检验治疗申请面板'">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><polyline points="15 3 21 3 21 9"></polyline><polyline points="9 21 3 21 3 15"></polyline><line x1="21" y1="3" x2="14" y2="10"></line><line x1="3" y1="21" x2="10" y2="14"></line></svg>
+            </button>
+            <button class="dw-collapse-btn" :title="folded ? '展开医嘱面板' : '折叠医嘱面板'" @click="toggleFold">{{ folded ? '▸' : '▾' }}</button>
+          </div>
         </div>
         <template v-if="visit && !folded">
           <div class="dw-order-toolbar">

@@ -4,6 +4,7 @@ import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
 import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
 import com.yb.hi.entity.doctor.HisMedicalTemplate;
 import com.yb.hi.framework.common.BizException;
+import com.yb.hi.framework.common.Roles;
 import com.yb.hi.framework.tenant.LoginUser;
 import com.yb.hi.framework.tenant.UserContext;
 import com.yb.hi.mapper.doctor.HisMedicalTemplateMapper;
@@ -54,6 +55,7 @@ public class HisMedicalTemplateService extends ServiceImpl<HisMedicalTemplateMap
     /** OP-D 模板收藏切换: 0↔1(收藏项列表置顶) */
     public HisMedicalTemplate toggleFav(Long id) {
         HisMedicalTemplate template = detail(id);
+        requireMutable(template);
         template.setIsFav(template.getIsFav() != null && template.getIsFav() == 1 ? 0 : 1);
         updateById(template);
         return getById(id);
@@ -61,6 +63,7 @@ public class HisMedicalTemplateService extends ServiceImpl<HisMedicalTemplateMap
 
     public HisMedicalTemplate create(HisMedicalTemplate template) {
         validate(template);
+        requireCreatableScope(template);
         template.setId(null);
         if (template.getSortOrder() == null) {
             template.setSortOrder(0);
@@ -76,11 +79,16 @@ public class HisMedicalTemplateService extends ServiceImpl<HisMedicalTemplateMap
     }
 
     public HisMedicalTemplate update(Long id, HisMedicalTemplate template) {
-        if (id == null || getById(id) == null) {
+        HisMedicalTemplate existing = id == null ? null : getById(id);
+        if (existing == null) {
             throw new BizException(400, "模板不存在");
         }
+        requireMutable(existing);
         validate(template);
+        /* 作用范围创建后不可借更新接口变更，避免医生把个人/科室模板提升为全院模板。 */
         template.setId(id);
+        template.setStaffId(existing.getStaffId());
+        template.setDeptId(existing.getDeptId());
         updateById(template);
         return getById(id);
     }
@@ -94,9 +102,69 @@ public class HisMedicalTemplateService extends ServiceImpl<HisMedicalTemplateMap
     }
 
     public void delete(Long id) {
-        if (id == null || !removeById(id)) {
+        HisMedicalTemplate template = id == null ? null : getById(id);
+        if (template == null) {
             throw new BizException(400, "模板不存在");
         }
+        requireMutable(template);
+        if (!removeById(id)) {
+            throw new BizException(400, "模板不存在");
+        }
+    }
+
+    /** 创建范围守卫：医生只能创建本人或本科室模板，全院模板仅管理员可建。 */
+    private void requireCreatableScope(HisMedicalTemplate template) {
+        LoginUser user = requireLoginUser();
+        if (isAdmin(user)) {
+            return;
+        }
+        if (template.getStaffId() != null) {
+            if (user.getStaffId() == null || !user.getStaffId().equals(template.getStaffId())) {
+                throw new BizException(403, "只能创建本人的个人模板");
+            }
+            template.setDeptId(null);
+            return;
+        }
+        if (template.getDeptId() != null) {
+            if (user.getDeptId() == null || !user.getDeptId().equals(template.getDeptId())) {
+                throw new BizException(403, "只能创建本科室模板");
+            }
+            return;
+        }
+        throw new BizException(403, "全院模板仅管理员可维护");
+    }
+
+    /** 修改、删除及收藏守卫：个人仅本人，科室仅本科室，全院仅管理员。 */
+    private void requireMutable(HisMedicalTemplate template) {
+        LoginUser user = requireLoginUser();
+        if (isAdmin(user)) {
+            return;
+        }
+        if (template.getStaffId() != null) {
+            if (user.getStaffId() != null && user.getStaffId().equals(template.getStaffId())) {
+                return;
+            }
+            throw new BizException(403, "无权维护他人个人模板");
+        }
+        if (template.getDeptId() != null) {
+            if (user.getDeptId() != null && user.getDeptId().equals(template.getDeptId())) {
+                return;
+            }
+            throw new BizException(403, "无权维护其他科室模板");
+        }
+        throw new BizException(403, "全院模板仅管理员可维护");
+    }
+
+    private LoginUser requireLoginUser() {
+        LoginUser user = UserContext.get();
+        if (user == null) {
+            throw new BizException(401, "未登录");
+        }
+        return user;
+    }
+
+    private boolean isAdmin(LoginUser user) {
+        return user.hasAnyRole(Roles.ADMIN, Roles.SUPER_ADMIN);
     }
 
     private void validate(HisMedicalTemplate template) {

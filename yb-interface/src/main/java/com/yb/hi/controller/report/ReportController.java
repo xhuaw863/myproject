@@ -4,9 +4,14 @@ import com.alibaba.excel.EasyExcel;
 import com.alibaba.excel.ExcelWriter;
 import com.alibaba.excel.write.metadata.WriteSheet;
 import com.baomidou.mybatisplus.core.metadata.IPage;
+import com.yb.hi.framework.common.BizException;
 import com.yb.hi.framework.common.R;
+import com.yb.hi.framework.common.Roles;
+import com.yb.hi.framework.tenant.LoginUser;
+import com.yb.hi.framework.tenant.UserContext;
 import com.yb.hi.platform.ExportGuard;
 import com.yb.hi.platform.service.OrgAccessGuard;
+import com.yb.hi.service.report.DoctorVisitHistoryService;
 import com.yb.hi.service.report.ReportService;
 import org.springframework.web.bind.annotation.*;
 
@@ -27,10 +32,13 @@ import java.util.Map;
 public class ReportController {
 
     private final ReportService reportService;
+    private final DoctorVisitHistoryService visitHistoryService;
     private final OrgAccessGuard guard;
 
-    public ReportController(ReportService reportService, OrgAccessGuard guard) {
+    public ReportController(ReportService reportService, DoctorVisitHistoryService visitHistoryService,
+                            OrgAccessGuard guard) {
         this.reportService = reportService;
+        this.visitHistoryService = visitHistoryService;
         this.guard = guard;
     }
 
@@ -104,17 +112,31 @@ public class ReportController {
         return R.ok(reportService.regPaymentPreview(guard.scopeOrgId(orgId), date));
     }
 
-    /** 医生工作量汇总: 按医师聚合接诊/完成/处方/检查单量与金额(含完成率), 接诊数降序 */
+    /** 医生工作量汇总: 普通医生强制本人范围, 管理员可按科室/医生筛选。 */
     @GetMapping("/doctor-worklog")
     public R<List<Map<String, Object>>> doctorWorklog(@RequestParam(required = false) Long orgId,
                                                       @RequestParam(required = false) String startDate,
                                                       @RequestParam(required = false) String endDate,
                                                       @RequestParam(required = false) Long staffId,
                                                       @RequestParam(required = false) Long deptId) {
-        return R.ok(reportService.doctorWorklogSummary(guard.scopeOrgId(orgId), startDate, endDate, staffId, deptId));
+        Long[] scope = doctorReportScope(staffId, deptId);
+        return R.ok(reportService.doctorWorklogSummary(guard.scopeOrgId(orgId), startDate, endDate,
+                scope[0], scope[1]));
     }
 
-    /** 医生工作日志明细分页: keyword匹配患者姓名, 每行带处方/检查单数量与金额 */
+    /** 诊疗统计分析: 总览、趋势、诊断、处方及医技申请构成。 */
+    @GetMapping("/doctor-worklog-analytics")
+    public R<Map<String, Object>> doctorWorklogAnalytics(@RequestParam(required = false) Long orgId,
+                                                         @RequestParam(required = false) String startDate,
+                                                         @RequestParam(required = false) String endDate,
+                                                         @RequestParam(required = false) Long staffId,
+                                                         @RequestParam(required = false) Long deptId) {
+        Long[] scope = doctorReportScope(staffId, deptId);
+        return R.ok(reportService.doctorWorklogAnalytics(guard.scopeOrgId(orgId), startDate, endDate,
+                scope[0], scope[1]));
+    }
+
+    /** 接诊明细分页: 患者姓名或患者号检索, 每行带诊断、耗时、处方及分类医技汇总。 */
     @GetMapping("/doctor-worklog-detail")
     public R<IPage<Map<String, Object>>> doctorWorklogDetail(@RequestParam(required = false) Long orgId,
                                                              @RequestParam(required = false) String startDate,
@@ -124,8 +146,27 @@ public class ReportController {
                                                              @RequestParam(required = false) String keyword,
                                                              @RequestParam(defaultValue = "1") long page,
                                                              @RequestParam(defaultValue = "20") long size) {
+        Long[] scope = doctorReportScope(staffId, deptId);
         return R.ok(reportService.doctorWorklogDetail(guard.scopeOrgId(orgId), startDate, endDate,
-                staffId, deptId, keyword, page, size));
+                scope[0], scope[1], keyword, page, size));
+    }
+
+    /** 接诊明细患者门诊历史索引：只读且不截断历史次数，以当前接诊记录校验访问权限。 */
+    @GetMapping("/doctor-worklog-patient-history")
+    public R<Map<String, Object>> doctorWorklogPatientHistory(@RequestParam(required = false) Long orgId,
+                                                              @RequestParam Long anchorVisitId) {
+        Long[] scope = doctorReportScope(null, null);
+        return R.ok(visitHistoryService.patientHistory(anchorVisitId, guard.scopeOrgId(orgId), scope[0]));
+    }
+
+    /** 历史单次就诊完整详情：门诊病历、诊断、处方明细及检查检验治疗明细，全程只读。 */
+    @GetMapping("/doctor-worklog-visit-detail")
+    public R<Map<String, Object>> doctorWorklogVisitDetail(@RequestParam(required = false) Long orgId,
+                                                           @RequestParam Long anchorVisitId,
+                                                           @RequestParam Long visitId) {
+        Long[] scope = doctorReportScope(null, null);
+        return R.ok(visitHistoryService.visitDetail(anchorVisitId, visitId,
+                guard.scopeOrgId(orgId), scope[0]));
     }
 
     /** 导出结算记录(xlsx): 门诊收费单+住院医保结算, 区间缺省最近30天 */
@@ -149,36 +190,18 @@ public class ReportController {
                 .doWrite((List<List<Object>>) data.get("rows"));
     }
 
-    /** 导出医生工作日志(xlsx, 双Sheet: 工作量汇总+接诊明细), 区间缺省最近30天 */
+    /** 导出诊疗统计查询(xlsx, 六Sheet), 区间缺省最近30天。 */
     @GetMapping("/export/doctor-worklog")
-    @SuppressWarnings("unchecked")
     public void exportDoctorWorklog(@RequestParam(required = false) Long orgId,
                                     @RequestParam(required = false) String startDate,
                                     @RequestParam(required = false) String endDate,
                                     @RequestParam(required = false) Long staffId,
                                     @RequestParam(required = false) Long deptId,
                                     HttpServletResponse resp) throws IOException {
-        Map<String, Object> data = reportService.exportDoctorWorklog(guard.scopeOrgId(orgId), startDate, endDate, staffId, deptId);
-        String fname = "医生工作日志_" + LocalDate.now() + ".xlsx";
-        String enc = URLEncoder.encode(fname, "UTF-8").replace("+", "%20");
-        resp.setContentType("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
-        resp.setCharacterEncoding("UTF-8");
-        resp.setHeader("Content-Disposition", "attachment; filename=\"" + enc + "\"; filename*=UTF-8''" + enc);
-        resp.setHeader("Access-Control-Expose-Headers", "Content-Disposition");
-        // 双Sheet须用 ExcelWriter 模式(链式 doWrite 仅支持单Sheet)
-        ExportGuard.checkRows((java.util.Collection<?>) data.get("summaryRows"), "医生工作日志");
-        ExportGuard.checkRows((java.util.Collection<?>) data.get("detailRows"), "医生工作日志-接诊明细");
-        ExcelWriter writer = EasyExcel.write(resp.getOutputStream()).build();
-        try {
-            WriteSheet sheet1 = EasyExcel.writerSheet(0, "工作量汇总")
-                    .head((List<List<String>>) data.get("summaryHead")).build();
-            writer.write((List<List<Object>>) data.get("summaryRows"), sheet1);
-            WriteSheet sheet2 = EasyExcel.writerSheet(1, "接诊明细")
-                    .head((List<List<String>>) data.get("detailHead")).build();
-            writer.write((List<List<Object>>) data.get("detailRows"), sheet2);
-        } finally {
-            writer.finish();
-        }
+        Long[] scope = doctorReportScope(staffId, deptId);
+        Map<String, Object> data = reportService.exportDoctorWorklog(guard.scopeOrgId(orgId), startDate, endDate,
+                scope[0], scope[1]);
+        writeSheets(data, "诊疗统计查询_" + LocalDate.now() + ".xlsx", resp);
     }
 
     // ============================== 药库/药房/收费统计 ==============================
@@ -273,6 +296,24 @@ public class ReportController {
                                   HttpServletResponse resp) throws IOException {
         Map<String, Object> data = reportService.exportChargeStats(guard.scopeOrgId(orgId), startDate, endDate);
         writeSheets(data, "收费统计_" + LocalDate.now() + ".xlsx", resp);
+    }
+
+    /**
+     * 医生统计数据权限: ADMIN/SUPER_ADMIN 可使用筛选参数; 其他角色强制本人且忽略外部科室参数。
+     * 未绑定职工的普通账号不能退化为全院查询。
+     */
+    private Long[] doctorReportScope(Long requestedStaffId, Long requestedDeptId) {
+        LoginUser user = UserContext.get();
+        if (user == null) {
+            throw new BizException(401, "未登录");
+        }
+        if (user.hasAnyRole(Roles.ADMIN, Roles.SUPER_ADMIN)) {
+            return new Long[]{requestedStaffId, requestedDeptId};
+        }
+        if (user.getStaffId() == null) {
+            throw new BizException(403, "当前账号未绑定医师档案，无法查询诊疗统计");
+        }
+        return new Long[]{user.getStaffId(), null};
     }
 
     /** 多Sheet Excel 导出公用写法: data 为 {sheets:[{sheetName, head, rows}]}, 逐Sheet写入 */

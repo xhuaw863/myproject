@@ -22,9 +22,11 @@ import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.stream.Collectors;
 
 /**
  * 检查/检验报告服务(报告书写工作台: 草稿->提交->审核双签, 发布回写医嘱执行状态)。
@@ -422,6 +424,38 @@ public class ExamReportService {
                 + " DATE_FORMAT(r.revoke_time, '%Y-%m-%d %H:%i:%s') AS revokeTime, r.revoke_reason AS revokeReason";
     }
 
+    /**
+     * 按医嘱集合查询已出具报告，供授权后的单次就诊历史只读展示。
+     * 医嘱ID由就诊聚合服务先行限定，避免患者级查询混入其他就诊或机构的报告。
+     */
+    public List<Map<String, Object>> listReportsByOrders(Collection<Long> orderIds) {
+        if (CollectionUtils.isEmpty(orderIds)) {
+            return new ArrayList<>();
+        }
+        List<Long> ids = orderIds.stream().filter(java.util.Objects::nonNull).distinct().collect(Collectors.toList());
+        if (ids.isEmpty()) {
+            return new ArrayList<>();
+        }
+        StringBuilder sql = new StringBuilder(baseReportCols()
+                + ", r.findings, r.conclusion, r.key_images AS keyImages"
+                + " FROM his_exam_report r"
+                + " LEFT JOIN his_patient p ON p.id = r.patient_id AND p.deleted = 0"
+                + " LEFT JOIN his_staff rd ON rd.id = r.report_doctor_id AND rd.deleted = 0"
+                + " LEFT JOIN his_staff rv ON rv.id = r.review_doctor_id AND rv.deleted = 0"
+                + " LEFT JOIN his_order o ON o.id = r.order_id AND o.deleted = 0"
+                + " WHERE r.deleted = 0 AND r.tenant_id = ? AND r.status IN (1, 2, 3) AND r.order_id IN (");
+        List<Object> args = new ArrayList<>();
+        args.add(tenantId());
+        for (int i = 0; i < ids.size(); i++) {
+            sql.append(i == 0 ? "?" : ",?");
+            args.add(ids.get(i));
+        }
+        sql.append(") ORDER BY IFNULL(r.report_time, r.create_time) DESC, r.id DESC");
+        List<Map<String, Object>> reports = jdbcTemplate.queryForList(sql.toString(), args.toArray());
+        attachResultItems(reports);
+        return reports;
+    }
+
     /** 按患者查询历史报告(含已撤回/作废 status=3, 附 revoked 标识供医生站"看见被撤回"; 每条附结果明细子项) */
     public List<Map<String, Object>> listReportsByPatient(Long patientId, String reportType) {
         if (patientId == null) {
@@ -443,14 +477,18 @@ public class ExamReportService {
         }
         sql.append(" ORDER BY r.id DESC LIMIT 200");
         List<Map<String, Object>> reports = jdbcTemplate.queryForList(sql.toString(), args.toArray());
-        for (Map<String, Object> r : reports) {
-            Object st = r.get("status");
-            r.put("revoked", st instanceof Number && ((Number) st).intValue() == 3);
-            r.put("resultItems", resultItemMapper.selectList(Wrappers.<HisExamResultItem>lambdaQuery()
-                    .eq(HisExamResultItem::getReportId, toLong(r.get("id")))
+        attachResultItems(reports);
+        return reports;
+    }
+
+    private void attachResultItems(List<Map<String, Object>> reports) {
+        for (Map<String, Object> report : reports) {
+            Object status = report.get("status");
+            report.put("revoked", status instanceof Number && ((Number) status).intValue() == 3);
+            report.put("resultItems", resultItemMapper.selectList(Wrappers.<HisExamResultItem>lambdaQuery()
+                    .eq(HisExamResultItem::getReportId, toLong(report.get("id")))
                     .orderByAsc(HisExamResultItem::getId)));
         }
-        return reports;
     }
 
     /**

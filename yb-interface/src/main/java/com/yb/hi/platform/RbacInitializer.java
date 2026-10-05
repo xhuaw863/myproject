@@ -138,7 +138,7 @@ public class RbacInitializer implements ApplicationRunner {
             ensureMedicalTemplateMenu(menuIds);
             ensureEmrDesignerMenu(menuIds);
             ensureEmrQualityMenus(menuIds);
-            moveEmrTemplateMenusToQuality();
+            moveMedicalTemplateToDoctorAndDesignerToQuality();
             ensureNurseStationMenus(menuIds);
             ensureTreatmentMenus(menuIds);
             ensureMedtechMenus(menuIds);
@@ -225,14 +225,14 @@ public class RbacInitializer implements ApplicationRunner {
         // 医生站(候诊列表+接诊工作台合并为单一门诊医生站)
         long g6 = dir("doctor", "门诊医生站", 0L, ++sort[0]);
         ids.put("doctor-ws", menuK("doctor-ws", "门诊医生工作站", "DoctorWorkstation", null, g6, ++sort[0]));
-        ids.put("doctor-worklog", menuK("doctor-worklog", "医生工作日志", "DoctorWorklog", null, g6, ++sort[0]));
-        // 病历模板管理/字段画布设计器(2026-10 按业务域归组): 住院+门诊共用的模板维护职能, 挂病历质控目录而非门诊医生站
+        ids.put("doctor-worklog", menuK("doctor-worklog", "诊疗统计查询", "DoctorWorklog", null, g6, ++sort[0]));
+        ids.put("medical-template", menuK("medical-template", "医疗模板管理", "MedicalTemplateManage", null, g6, ++sort[0]));
+        // 字段画布设计器归病历质控目录，医疗模板管理归门诊医生站便于医生维护处方组套
         // 病历质控与数据元(Phase C 2026-10: 质控规则维护/病历检索上报/质控评分看板, 跨scope结构化病历二次利用与质控闭环;
         // P1a 2026-10 病历管理前置两菜单: 数据集管理/结构化模板设计器, comp 与 HIS.views 注册键同值(小写短横线特例))
         long gEmrQ = dir("emr-quality", "病历质控与数据元", 0L, ++sort[0]);
         ids.put("emr-dataset", menuK("emr-dataset", "数据集管理", "emr-dataset", null, gEmrQ, ++sort[0]));
         ids.put("emr-template-designer", menuK("emr-template-designer", "模板设计器(结构化)", "emr-template-designer", null, gEmrQ, ++sort[0]));
-        ids.put("medical-template", menuK("medical-template", "病历模板管理", "MedicalTemplateManage", null, gEmrQ, ++sort[0]));
         ids.put("emr-designer", menuK("emr-designer", "病历模板设计器(字段画布)", "EmrTemplateDesigner", null, gEmrQ, ++sort[0]));
         // P1c(2026-10) 患者全景时间线: 门诊+住院就诊事件统一时间轴, comp 与 HIS.views 注册键同值
         ids.put("emr-patient-timeline", menuK("emr-patient-timeline", "患者全景时间线", "emr-patient-timeline", null, gEmrQ, ++sort[0]));
@@ -1461,9 +1461,8 @@ public class RbacInitializer implements ApplicationRunner {
     }
 
     /**
-     * 幂等确保“医生工作日志”菜单存在(医生站工作量查询页, 排在门诊医生站之后): 挂 doctor 目录,
-     * sort_no 续接目录现有子项最大值。既有库 seedMenus 表非空即跳过, 故在此按 menu_key 判存补种,
-     * 并将 id 回填 menuIds 供角色补授权(ensureBizRoleGrants 给医生/护士)。
+     * 幂等确保“诊疗统计查询”菜单存在并更新存量名称: 挂 doctor 目录，保持 doctor-worklog key 不变，
+     * 以延续既有角色授权；新菜单 sort_no 续接目录现有子项最大值。
      */
     private void ensureDoctorWorklogMenu(Map<String, Long> menuIds) {
         SysMenu m = menuMapper.selectOne(new QueryWrapper<SysMenu>().eq("menu_key", "doctor-worklog").last("LIMIT 1"));
@@ -1479,14 +1478,18 @@ public class RbacInitializer implements ApplicationRunner {
             m = new SysMenu();
             m.setParentId(doctorDir.getId());
             m.setMenuKey("doctor-worklog");
-            m.setMenuName("医生工作日志");
+            m.setMenuName("诊疗统计查询");
             m.setMenuType(2);
             m.setComp("DoctorWorklog");
             m.setSortNo(maxSort + 1);
             m.setVisible(1);
             m.setStatus(1);
             menuMapper.insert(m);
-            log.info("医生工作日志菜单已补充(doctor-worklog/DoctorWorklog)");
+            log.info("诊疗统计查询菜单已补充(doctor-worklog/DoctorWorklog)");
+        } else if (!"诊疗统计查询".equals(m.getMenuName())) {
+            m.setMenuName("诊疗统计查询");
+            menuMapper.updateById(m);
+            log.info("医生工作日志菜单已更名为诊疗统计查询");
         }
         menuIds.put("doctor-worklog", m.getId());
     }
@@ -1510,7 +1513,7 @@ public class RbacInitializer implements ApplicationRunner {
             m = new SysMenu();
             m.setParentId(doctorDir.getId());
             m.setMenuKey("medical-template");
-            m.setMenuName("病历模板管理");
+            m.setMenuName("医疗模板管理");
             m.setMenuType(2);
             m.setComp("MedicalTemplateManage");
             m.setSortNo(maxSort + 1);
@@ -1553,29 +1556,38 @@ public class RbacInitializer implements ApplicationRunner {
     }
 
     /**
-     * 幂等迁移(2026-10): "病历模板管理/病历模板设计器"由门诊医生站目录移至"病历质控与数据元"业务分组
-     * (两页维护住院+门诊共用模板, 属病历管理职能而非门诊医生站专属), 并把旧设计器更名
-     * "病历模板设计器(字段画布)"以区别于新一代 Tiptap "模板设计器(结构化)"。
-     * 菜单 key/id 不变, sys_role_menu 按 id 授权自动保持; 顶级目录免显式授权(treeByIds 自动补祖先)。
+     * 幂等归组(2026-10): 医疗模板管理放入门诊医生站，方便医生维护处方组套；
+     * 字段画布设计器保留在病历质控与数据元，并与结构化设计器通过名称区分。
+     * 菜单 key/id 不变，sys_role_menu 按 id 授权自动保持。
      */
-    private void moveEmrTemplateMenusToQuality() {
+    private void moveMedicalTemplateToDoctorAndDesignerToQuality() {
+        renameMenuIfOldName("medical-template", "病历模板管理", "医疗模板管理");
         renameMenuIfOldName("emr-designer", "病历模板设计器", "病历模板设计器(字段画布)");
-        SysMenu qDir = menuMapper.selectOne(new QueryWrapper<SysMenu>().eq("menu_key", "emr-quality").last("LIMIT 1"));
-        if (qDir == null) {
-            return;
-        }
-        int maxSort = 0;
-        for (SysMenu c : menuMapper.selectList(new QueryWrapper<SysMenu>().eq("parent_id", qDir.getId()))) {
-            maxSort = Math.max(maxSort, c.getSortNo() == null ? 0 : c.getSortNo());
-        }
-        for (String key : new String[]{"medical-template", "emr-designer"}) {
-            SysMenu m = menuMapper.selectOne(new QueryWrapper<SysMenu>().eq("menu_key", key).last("LIMIT 1"));
-            if (m != null && !qDir.getId().equals(m.getParentId())) {
-                m.setParentId(qDir.getId());
-                m.setSortNo(++maxSort);
-                menuMapper.updateById(m);
-                log.info("病历模板菜单已移入病历质控与数据元分组({})", key);
+        SysMenu doctorDir = menuMapper.selectOne(new QueryWrapper<SysMenu>().eq("menu_key", "doctor").last("LIMIT 1"));
+        SysMenu qualityDir = menuMapper.selectOne(new QueryWrapper<SysMenu>().eq("menu_key", "emr-quality").last("LIMIT 1"));
+
+        SysMenu medicalTemplate = menuMapper.selectOne(new QueryWrapper<SysMenu>().eq("menu_key", "medical-template").last("LIMIT 1"));
+        if (doctorDir != null && medicalTemplate != null && !doctorDir.getId().equals(medicalTemplate.getParentId())) {
+            int maxSort = 0;
+            for (SysMenu c : menuMapper.selectList(new QueryWrapper<SysMenu>().eq("parent_id", doctorDir.getId()))) {
+                maxSort = Math.max(maxSort, c.getSortNo() == null ? 0 : c.getSortNo());
             }
+            medicalTemplate.setParentId(doctorDir.getId());
+            medicalTemplate.setSortNo(maxSort + 1);
+            menuMapper.updateById(medicalTemplate);
+            log.info("医疗模板管理菜单已移入门诊医生站分组");
+        }
+
+        SysMenu emrDesigner = menuMapper.selectOne(new QueryWrapper<SysMenu>().eq("menu_key", "emr-designer").last("LIMIT 1"));
+        if (qualityDir != null && emrDesigner != null && !qualityDir.getId().equals(emrDesigner.getParentId())) {
+            int maxSort = 0;
+            for (SysMenu c : menuMapper.selectList(new QueryWrapper<SysMenu>().eq("parent_id", qualityDir.getId()))) {
+                maxSort = Math.max(maxSort, c.getSortNo() == null ? 0 : c.getSortNo());
+            }
+            emrDesigner.setParentId(qualityDir.getId());
+            emrDesigner.setSortNo(maxSort + 1);
+            menuMapper.updateById(emrDesigner);
+            log.info("病历模板设计器菜单已移入病历质控与数据元分组");
         }
     }
 

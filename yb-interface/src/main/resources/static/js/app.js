@@ -74,7 +74,8 @@
     {
       group: '门诊医生站', children: [
         { key: 'doctor-ws', label: '门诊医生工作站', comp: 'DoctorWorkstation' },
-        { key: 'doctor-worklog', label: '医生工作日志', comp: 'DoctorWorklog' }
+        { key: 'doctor-worklog', label: '诊疗统计查询', comp: 'DoctorWorklog' },
+        { key: 'medical-template', label: '医疗模板管理', comp: 'MedicalTemplateManage' }
       ]
     },
     /* 病历数据集管理(P1a-2, 注册键 emr-dataset 与 comp 同值): 章节/小节/数据元三级结构维护;
@@ -88,9 +89,7 @@
         /* 结构化模板设计器(P1a-3, 注册键 emr-template-designer 与 comp 同值): 数据集驱动 Tiptap 三栏式模板设计;
          * RbacInitializer 已补种(ensureEmrQualityMenus 挂 emr-quality 目录, DOCTOR 角色已补授) */
         { key: 'emr-template-designer', label: '模板设计器(结构化)', comp: 'emr-template-designer' },
-        /* 病历模板管理/字段画布设计器(2026-10 按业务域自门诊医生站移入): 住院+门诊共用模板维护职能;
-         * 旧设计器更名(字段画布)以区别于上方 Tiptap 结构化设计器; 后端 RbacInitializer.moveEmrTemplateMenusToQuality 幂等迁移 */
-        { key: 'medical-template', label: '病历模板管理', comp: 'MedicalTemplateManage' },
+        /* 字段画布设计器保留在病历业务域；医疗模板管理已归入门诊医生站，便于维护处方组套。 */
         { key: 'emr-designer', label: '病历模板设计器(字段画布)', comp: 'EmrTemplateDesigner' },
         { key: 'emr-quality-rule', label: '质控规则维护', comp: 'EmrQualityRuleManage' },
         { key: 'emr-element-search', label: '病历检索上报', comp: 'EmrElementSearch' },

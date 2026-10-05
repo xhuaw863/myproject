@@ -72,7 +72,7 @@
     inject: ['currentVisit', 'currentPatient', 'diagnoses'],
     emits: ['rx-saved', 'count-update', 'print-rx', 'insert-to-record'],
     template: `
-      <section class="dw-panel dw-prescription-panel" :class="[rxTypeConfig.cssClass, { 'is-folded': folded }]">
+      <section class="dw-panel dw-prescription-panel" :class="[rxTypeConfig.cssClass, { 'is-folded': folded, 'is-maximized': maximized }]">
         <header class="dw-panel-header">
           <div class="dw-rx-hd-left">
             <strong>处方</strong>
@@ -86,10 +86,14 @@
             <el-select v-model="selectedPharmacyId" size="small" clearable filterable placeholder="发药药房" style="width:118px" @change="onPharmacyChange">
               <el-option v-for="ph in pharmacies" :key="ph.id" :label="ph.name" :value="ph.id"></el-option>
             </el-select>
-            <el-select v-model="selectedTemplateId" size="small" clearable filterable placeholder="常用处方" style="width:124px" @change="applyTemplate">
+            <el-select v-model="selectedTemplateId" size="small" clearable filterable placeholder="选择处方组套" style="width:124px" @change="applyTemplate">
               <el-option v-for="tpl in templates" :key="tpl.id" :label="tpl.name" :value="tpl.id"></el-option>
             </el-select>
-            <el-button link size="small" :disabled="!rxItems.length" @click="saveAsTemplate">存为常用</el-button>
+            <el-button link size="small" :disabled="!rxItems.length" @click="saveAsTemplate">存为组套</el-button>
+            <el-button link type="primary" size="small" title="维护个人/科室处方组套" @click="openRxSetManage">组套管理</el-button>
+            <button class="dw-panel-max-btn" :title="maximized ? '退出最大化(Esc)' : '最大化处方面板'" @click="toggleMaximize" :aria-label="maximized ? '退出最大化' : '最大化处方面板'">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><polyline points="15 3 21 3 21 9"></polyline><polyline points="9 21 3 21 3 15"></polyline><line x1="21" y1="3" x2="14" y2="10"></line><line x1="3" y1="21" x2="10" y2="14"></line></svg>
+            </button>
             <button class="dw-collapse-btn" :title="folded ? '展开处方面板' : '折叠处方面板'" @click="toggleFold">{{ folded ? '▸' : '▾' }}</button>
           </div>
         </header>
@@ -172,6 +176,7 @@
         itemSequence: 0,
         loadedVisitId: null,
         folded: window.localStorage.getItem('dw.rx.folded') === '1',
+        maximized: false,
         doneExpanded: false,
         assistant: { personalFrequent: [], deptFrequent: [] },
         chronicList: [],
@@ -265,6 +270,8 @@
       }
     },
     created: function () { this.loadTemplates(); },
+    mounted: function () { window.addEventListener('keydown', this.onPanelKeydown); },
+    beforeUnmount: function () { window.removeEventListener('keydown', this.onPanelKeydown); },
     methods: {
       money: money,
       suggestedRxType: function () {
@@ -528,7 +535,18 @@
       /* ===== U1/U2: 折叠记忆与定位 / 键盘流焦点 ===== */
       toggleFold: function () {
         this.folded = !this.folded;
+        if (this.folded) { this.maximized = false; }
         try { window.localStorage.setItem('dw.rx.folded', this.folded ? '1' : '0'); } catch (e) { /* 隐私模式忽略 */ }
+      },
+      toggleMaximize: function () {
+        if (this.folded) {
+          this.folded = false;
+          try { window.localStorage.setItem('dw.rx.folded', '0'); } catch (e) { /* 隐私模式忽略 */ }
+        }
+        this.maximized = !this.maximized;
+      },
+      onPanelKeydown: function (ev) {
+        if (ev && ev.key === 'Escape' && this.maximized) { this.maximized = false; }
       },
       /* F4 预检定位时由父页调用: 确保面板展开 */
       revealForLocate: function () { this.folded = false; },
@@ -837,6 +855,11 @@
         }).catch(function (error) { if (error !== 'cancel' && error !== 'close' && error && error.message) { window.HIS.notifyError(error); } });
       },
       printPrescription: function (row) { this.$emit('print-rx', row.id); },
+      openRxSetManage: function () {
+        try { window.sessionStorage.setItem('yb.medical-template.activeTab', 'rx_set'); } catch (e) { /* 隐私模式仍可跳转, 但使用默认页签 */ }
+        if (window.HIS && typeof window.HIS.go === 'function') { window.HIS.go('medical-template'); }
+        else { ElementPlus.ElMessage.warning('医疗模板管理入口暂不可用'); }
+      },
       loadTemplates: function () {
         var vm = this;
         window.HIS.get('/api/his/template/list?type=rx_set').then(function (rows) { vm.templates = rows || []; }).catch(function () { vm.templates = []; });
@@ -907,7 +930,7 @@
       saveAsTemplate: function () {
         var vm = this;
         if (!vm.rxItems.length) { ElementPlus.ElMessage.warning('当前没有可保存的处方草稿'); return; }
-        ElementPlus.ElMessageBox.prompt('请输入常用处方名称', '存为常用处方', {
+        ElementPlus.ElMessageBox.prompt('请输入处方组套名称', '存为处方组套', {
           inputPlaceholder: '例如：上呼吸道感染常用方',
           inputValidator: function (value) { return text(value).trim() ? true : '请输入模板名称'; }
         }).then(function (result) {
@@ -919,7 +942,7 @@
             sortOrder: 0, status: 1
           });
         }).then(function () {
-          ElementPlus.ElMessage.success('已保存为常用处方');
+          ElementPlus.ElMessage.success('已保存为处方组套');
           vm.loadTemplates();
         }).catch(function (error) { if (error && error.message) { window.HIS.notifyError(error); } });
       }

@@ -4,6 +4,7 @@ import com.baomidou.mybatisplus.core.metadata.IPage;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.yb.hi.framework.common.BizException;
 import com.yb.hi.framework.tenant.TenantContext;
+import com.yb.hi.platform.ExportGuard;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
@@ -381,7 +382,7 @@ public class ReportService {
     public List<Map<String, Object>> doctorWorklogSummary(Long orgId, String startDate, String endDate,
                                                           Long staffId, Long deptId) {
         Long tid = TenantContext.require();
-        String[] range = normRange(startDate, endDate);
+        String[] range = normDoctorRange(startDate, endDate);
         // 步骤1: 就诊汇总(按医师分组, 完成数=visit_status=3)
         StringBuilder vs = new StringBuilder("SELECT v.staff_id AS staffId, v.dr_name AS drName, v.dept_name AS deptName,")
                 .append(" COUNT(*) AS visitCount, SUM(CASE WHEN v.visit_status=3 THEN 1 ELSE 0 END) AS finishCount")
@@ -433,6 +434,271 @@ public class ReportService {
         return rows;
     }
 
+    /** 诊疗统计总览、趋势及构成分析。orgId 保留统一签名，相关诊疗表均为租户级表。 */
+    public Map<String, Object> doctorWorklogAnalytics(Long orgId, String startDate, String endDate,
+                                                       Long staffId, Long deptId) {
+        Long tid = TenantContext.require();
+        String[] range = normDoctorRange(startDate, endDate);
+        Map<String, Object> out = new LinkedHashMap<>();
+        out.put("overview", doctorOverview(tid, range, staffId, deptId));
+        out.put("trend", doctorTrend(tid, range, staffId, deptId));
+        List<Map<String, Object>> diagnosisTop = doctorDiagnosisGroup(tid, range, staffId, deptId, false);
+        List<Map<String, Object>> diagnosisClass = doctorDiagnosisGroup(tid, range, staffId, deptId, true);
+        out.put("diagnosisTop", diagnosisTop);
+        out.put("diagnosisClass", diagnosisClass);
+        out.put("prescriptionType", doctorItemGroup("his_prescription", "p", "rx_type", "p.status>0",
+                tid, range, staffId, deptId, "rxType"));
+        out.put("prescriptionAudit", doctorItemGroup("his_prescription", "p", "audit_status", "p.status>0",
+                tid, range, staffId, deptId, "rxAudit"));
+        out.put("prescriptionDispense", doctorItemGroup("his_prescription", "p", "dispense_status", "p.status>0",
+                tid, range, staffId, deptId, "rxDispense"));
+        out.put("orderType", doctorItemGroup("his_order", "o", "order_type", "o.status IN (1,2)",
+                tid, range, staffId, deptId, "orderType"));
+        out.put("orderExec", doctorItemGroup("his_order", "o", "exec_status", "o.status IN (1,2)",
+                tid, range, staffId, deptId, "orderExec"));
+        out.put("orderPaid", doctorItemGroup("his_order", "o", "paid_flag", "o.status IN (1,2)",
+                tid, range, staffId, deptId, "orderPaid"));
+        out.put("startDate", range[0]);
+        out.put("endDate", range[1]);
+        return out;
+    }
+
+    /** 核心KPI：完成耗时只取有效完成记录，金额与数量按有效单据统计。 */
+    private Map<String, Object> doctorOverview(Long tid, String[] range, Long staffId, Long deptId) {
+        StringBuilder sql = new StringBuilder("SELECT COUNT(*) AS visitCount,")
+                .append(" SUM(CASE WHEN v.visit_status=3 THEN 1 ELSE 0 END) AS finishCount,")
+                .append(" IFNULL(AVG(CASE WHEN v.visit_status=3 AND v.visit_time IS NOT NULL AND v.finish_time>=v.visit_time")
+                .append(" THEN TIMESTAMPDIFF(MINUTE,v.visit_time,v.finish_time) END),0) AS avgVisitMinutes")
+                .append(" FROM his_visit v WHERE v.tenant_id=? AND v.deleted=0 AND v.visit_status<>4")
+                .append(" AND v.work_date>=? AND v.work_date<=?");
+        List<Object> args = new ArrayList<>(Arrays.asList(tid, range[0], range[1]));
+        appendDoctorScope(sql, args, "v.staff_id", "v.dept_id", staffId, deptId);
+        Map<String, Object> out = new LinkedHashMap<>(jdbc.queryForMap(sql.toString(), args.toArray()));
+        normalizeNumber(out, "visitCount", 0L);
+        normalizeNumber(out, "finishCount", 0L);
+        normalizeNumber(out, "avgVisitMinutes", BigDecimal.ZERO);
+        long visits = ((Number) out.get("visitCount")).longValue();
+        long finishes = ((Number) out.get("finishCount")).longValue();
+        out.put("finishRate", percent(finishes, visits));
+        Map<String, Object> rx = doctorItemOverview("his_prescription", "p", "p.status>0",
+                tid, range, staffId, deptId);
+        Map<String, Object> od = doctorItemOverview("his_order", "o", "o.status IN (1,2)",
+                tid, range, staffId, deptId);
+        out.put("rxCount", rx.get("itemCount"));
+        out.put("rxAmount", rx.get("itemAmount"));
+        long rxCount = ((Number) rx.get("itemCount")).longValue();
+        out.put("avgRxAmount", rxCount == 0 ? BigDecimal.ZERO
+                : decimal(rx.get("itemAmount")).divide(BigDecimal.valueOf(rxCount), 2, RoundingMode.HALF_UP));
+        out.put("orderCount", od.get("itemCount"));
+        out.put("orderAmount", od.get("itemAmount"));
+        return out;
+    }
+
+    private Map<String, Object> doctorItemOverview(String table, String alias, String statusCondition,
+                                                    Long tid, String[] range, Long staffId, Long deptId) {
+        Object[] w = doctorItemWhere(table, alias, statusCondition, tid, range, staffId, deptId);
+        Map<String, Object> row = jdbc.queryForMap("SELECT COUNT(*) AS itemCount, IFNULL(SUM(" + alias
+                + ".total_amount),0) AS itemAmount" + w[0], (Object[]) w[1]);
+        normalizeNumber(row, "itemCount", 0L);
+        normalizeNumber(row, "itemAmount", BigDecimal.ZERO);
+        return row;
+    }
+
+    /** 每日趋势在 Java 侧按完整自然日补零，避免图表折线断点。 */
+    private List<Map<String, Object>> doctorTrend(Long tid, String[] range, Long staffId, Long deptId) {
+        Map<String, Map<String, Object>> byDate = new LinkedHashMap<>();
+        LocalDate cursor = LocalDate.parse(range[0]);
+        LocalDate end = LocalDate.parse(range[1]);
+        while (!cursor.isAfter(end)) {
+            Map<String, Object> row = new LinkedHashMap<>();
+            row.put("workDate", cursor.toString());
+            row.put("visitCount", 0L);
+            row.put("finishCount", 0L);
+            row.put("rxCount", 0L);
+            row.put("rxAmount", BigDecimal.ZERO);
+            row.put("orderCount", 0L);
+            row.put("orderAmount", BigDecimal.ZERO);
+            byDate.put(cursor.toString(), row);
+            cursor = cursor.plusDays(1);
+        }
+        StringBuilder visits = new StringBuilder("SELECT DATE_FORMAT(v.work_date,'%Y-%m-%d') AS workDate,")
+                .append(" COUNT(*) AS visitCount, SUM(CASE WHEN v.visit_status=3 THEN 1 ELSE 0 END) AS finishCount")
+                .append(" FROM his_visit v WHERE v.tenant_id=? AND v.deleted=0 AND v.visit_status<>4")
+                .append(" AND v.work_date>=? AND v.work_date<=?");
+        List<Object> va = new ArrayList<>(Arrays.asList(tid, range[0], range[1]));
+        appendDoctorScope(visits, va, "v.staff_id", "v.dept_id", staffId, deptId);
+        visits.append(" GROUP BY v.work_date ORDER BY v.work_date");
+        for (Map<String, Object> row : jdbc.queryForList(visits.toString(), va.toArray())) {
+            Map<String, Object> target = byDate.get(text(row.get("workDate")));
+            if (target != null) {
+                target.put("visitCount", row.get("visitCount"));
+                target.put("finishCount", row.get("finishCount"));
+            }
+        }
+        mergeItemTrend(byDate, "his_prescription", "p", "p.status>0", "rx", tid, range, staffId, deptId);
+        mergeItemTrend(byDate, "his_order", "o", "o.status IN (1,2)", "order", tid, range, staffId, deptId);
+        return new ArrayList<>(byDate.values());
+    }
+
+    private void mergeItemTrend(Map<String, Map<String, Object>> byDate, String table, String alias,
+                                String statusCondition, String prefix, Long tid, String[] range,
+                                Long staffId, Long deptId) {
+        Object[] w = doctorItemWhere(table, alias, statusCondition, tid, range, staffId, deptId);
+        String sql = "SELECT DATE_FORMAT(v.work_date,'%Y-%m-%d') AS workDate, COUNT(*) AS itemCount,"
+                + " IFNULL(SUM(" + alias + ".total_amount),0) AS itemAmount" + w[0]
+                + " GROUP BY v.work_date ORDER BY v.work_date";
+        for (Map<String, Object> row : jdbc.queryForList(sql, (Object[]) w[1])) {
+            Map<String, Object> target = byDate.get(text(row.get("workDate")));
+            if (target != null) {
+                target.put(prefix + "Count", row.get("itemCount"));
+                target.put(prefix + "Amount", row.get("itemAmount"));
+            }
+        }
+    }
+
+    /** 主诊断TOP或类别构成，count 为含该主诊断的去重就诊人次。 */
+    private List<Map<String, Object>> doctorDiagnosisGroup(Long tid, String[] range, Long staffId,
+                                                            Long deptId, boolean byClass) {
+        String groupExpr = byClass ? "COALESCE(NULLIF(d.diag_class,''),'unknown')" : "COALESCE(NULLIF(d.diag_code,''),'unknown')";
+        String nameExpr = byClass ? groupExpr : "COALESCE(NULLIF(d.diag_name,''),'未命名诊断')";
+        StringBuilder from = new StringBuilder(" FROM his_diagnosis d JOIN his_visit v ON v.id=d.visit_id")
+                .append(" AND v.tenant_id=d.tenant_id AND v.deleted=0")
+                .append(" WHERE d.tenant_id=? AND d.deleted=0 AND d.maindiag_flag='1'")
+                .append(" AND (d.vali_flag IS NULL OR d.vali_flag='1') AND v.visit_status<>4")
+                .append(" AND v.work_date>=? AND v.work_date<=?");
+        List<Object> args = new ArrayList<>(Arrays.asList(tid, range[0], range[1]));
+        appendDoctorScope(from, args, "v.staff_id", "v.dept_id", staffId, deptId);
+        Long total = jdbc.queryForObject("SELECT COUNT(DISTINCT v.id)" + from, Long.class, args.toArray());
+        String sql = "SELECT " + groupExpr + " AS code," + nameExpr
+                + " AS label, COUNT(DISTINCT v.id) AS itemCount" + from
+                + " GROUP BY " + groupExpr + "," + nameExpr + " ORDER BY itemCount DESC" + (byClass ? "" : " LIMIT 10");
+        List<Map<String, Object>> rows = jdbc.queryForList(sql, args.toArray());
+        for (Map<String, Object> row : rows) {
+            row.put("label", diagnosisLabel(text(row.get("code")), text(row.get("label")), byClass));
+            row.put("percent", percent(((Number) row.get("itemCount")).longValue(), total == null ? 0L : total));
+        }
+        return rows;
+    }
+
+    /** 处方/医技按指定字段构成；字段及条件均由服务内部常量传入。 */
+    private List<Map<String, Object>> doctorItemGroup(String table, String alias, String groupColumn,
+                                                       String statusCondition, Long tid, String[] range,
+                                                       Long staffId, Long deptId, String labelKind) {
+        Object[] w = doctorItemWhere(table, alias, statusCondition, tid, range, staffId, deptId);
+        String expr = "COALESCE(CAST(" + alias + "." + groupColumn + " AS CHAR),'unknown')";
+        String sql = "SELECT " + expr + " AS code, COUNT(*) AS itemCount, IFNULL(SUM(" + alias
+                + ".total_amount),0) AS itemAmount" + w[0] + " GROUP BY " + expr + " ORDER BY itemCount DESC";
+        List<Map<String, Object>> rawRows = jdbc.queryForList(sql, (Object[]) w[1]);
+        Map<String, Map<String, Object>> merged = new LinkedHashMap<>();
+        long total = 0L;
+        for (Map<String, Object> row : rawRows) {
+            long count = ((Number) row.get("itemCount")).longValue();
+            BigDecimal amount = decimal(row.get("itemAmount"));
+            total += count;
+            String label = itemLabel(labelKind, text(row.get("code")));
+            Map<String, Object> target = merged.get(label);
+            if (target == null) {
+                target = new LinkedHashMap<>();
+                target.put("code", row.get("code"));
+                target.put("label", label);
+                target.put("itemCount", count);
+                target.put("itemAmount", amount);
+                merged.put(label, target);
+            } else {
+                target.put("itemCount", ((Number) target.get("itemCount")).longValue() + count);
+                target.put("itemAmount", decimal(target.get("itemAmount")).add(amount));
+            }
+        }
+        List<Map<String, Object>> rows = new ArrayList<>(merged.values());
+        for (Map<String, Object> row : rows) {
+            long count = ((Number) row.get("itemCount")).longValue();
+            row.put("percent", percent(count, total));
+            row.put("avgAmount", count == 0 ? BigDecimal.ZERO
+                    : decimal(row.get("itemAmount")).divide(BigDecimal.valueOf(count), 2, RoundingMode.HALF_UP));
+        }
+        return rows;
+    }
+
+    private Object[] doctorItemWhere(String table, String alias, String statusCondition, Long tid,
+                                     String[] range, Long staffId, Long deptId) {
+        StringBuilder where = new StringBuilder(" FROM ").append(table).append(" ").append(alias)
+                .append(" JOIN his_visit v ON v.id=").append(alias).append(".visit_id AND v.tenant_id=")
+                .append(alias).append(".tenant_id AND v.deleted=0")
+                .append(" WHERE ").append(alias).append(".tenant_id=? AND ").append(alias).append(".deleted=0 AND ")
+                .append(statusCondition).append(" AND v.visit_status<>4 AND v.work_date>=? AND v.work_date<=?");
+        List<Object> args = new ArrayList<>(Arrays.asList(tid, range[0], range[1]));
+        appendDoctorScope(where, args, alias + ".dr_id", alias + ".dept_id", staffId, deptId);
+        return new Object[]{where.toString(), args.toArray()};
+    }
+
+    private static void appendDoctorScope(StringBuilder sql, List<Object> args, String staffColumn,
+                                          String deptColumn, Long staffId, Long deptId) {
+        if (staffId != null) {
+            sql.append(" AND ").append(staffColumn).append("=?");
+            args.add(staffId);
+        }
+        if (deptId != null) {
+            sql.append(" AND ").append(deptColumn).append("=?");
+            args.add(deptId);
+        }
+    }
+
+    private static void normalizeNumber(Map<String, Object> row, String key, Number fallback) {
+        if (row.get(key) == null) {
+            row.put(key, fallback);
+        }
+    }
+
+    private static BigDecimal decimal(Object value) {
+        return value == null ? BigDecimal.ZERO : new BigDecimal(String.valueOf(value));
+    }
+
+    private static BigDecimal percent(long part, long total) {
+        return total == 0 ? BigDecimal.ZERO.setScale(1) : BigDecimal.valueOf(part)
+                .multiply(BigDecimal.valueOf(100)).divide(BigDecimal.valueOf(total), 1, RoundingMode.HALF_UP);
+    }
+
+    private static String diagnosisLabel(String code, String name, boolean byClass) {
+        if (!byClass) {
+            return name;
+        }
+        if ("west".equals(code)) return "西医诊断";
+        if ("tcm".equals(code)) return "中医疾病";
+        if ("symp".equals(code)) return "中医证候";
+        if ("oper".equals(code)) return "手术操作";
+        if ("tumor".equals(code)) return "肿瘤形态学";
+        return "未分类";
+    }
+
+    private static String itemLabel(String kind, String code) {
+        if ("rxType".equals(kind)) {
+            if ("普通处方".equals(code) || "西药".equals(code) || "中药".equals(code)) return code;
+            if ("NORMAL".equalsIgnoreCase(code)) return "普通处方";
+        } else if ("rxAudit".equals(kind)) {
+            if ("0".equals(code)) return "无需审核";
+            if ("1".equals(code)) return "待审核";
+            if ("2".equals(code)) return "审核通过";
+            if ("3".equals(code)) return "审核驳回";
+        } else if ("rxDispense".equals(kind)) {
+            if ("0".equals(code)) return "未发药";
+            if ("1".equals(code)) return "已发药";
+            if ("2".equals(code)) return "已退药";
+        } else if ("orderType".equals(kind)) {
+            if ("检查".equals(code) || "检验".equals(code) || "治疗".equals(code)) return code;
+            if ("exam".equalsIgnoreCase(code)) return "检查";
+            if ("lab".equalsIgnoreCase(code)) return "检验";
+            if ("treatment".equalsIgnoreCase(code)) return "治疗";
+        } else if ("orderExec".equals(kind)) {
+            if ("0".equals(code)) return "未执行";
+            if ("1".equals(code)) return "执行中";
+            if ("2".equals(code)) return "已完成";
+        } else if ("orderPaid".equals(kind)) {
+            if ("0".equals(code)) return "未收费";
+            if ("1".equals(code)) return "已收费";
+        }
+        return "其他/未知";
+    }
+
     /** 处方/检查单按开单医生聚合(JOIN his_visit 限定区间且排除已取消就诊, 有效单 status>0): 返回 staffId → {countCol, amountCol} */
     private Map<Long, Map<String, Object>> worklogItemAgg(String table, String alias, String countCol, String amountCol,
                                                           Long tid, String[] range, Long staffId, Long deptId) {
@@ -443,7 +709,7 @@ public class ReportService {
                 .append(" JOIN his_visit v ON v.id=").append(alias).append(".visit_id AND v.tenant_id=")
                 .append(alias).append(".tenant_id AND v.deleted=0")
                 .append(" WHERE ").append(alias).append(".tenant_id=? AND ").append(alias).append(".deleted=0 AND ")
-                .append(alias).append(".status>0")
+                .append("his_order".equals(table) ? alias + ".status IN (1,2)" : alias + ".status>0")
                 .append(" AND v.work_date>=? AND v.work_date<=? AND v.visit_status<>4");
         List<Object> args = new ArrayList<>(Arrays.asList(tid, range[0], range[1]));
         if (staffId != null) {
@@ -475,33 +741,48 @@ public class ReportService {
                                                           Long staffId, Long deptId, String keyword,
                                                           long page, long size) {
         Long tid = TenantContext.require();
-        String[] range = normRange(startDate, endDate);
+        String[] range = normDoctorRange(startDate, endDate);
         Object[] w = worklogDetailWhere(tid, range, staffId, deptId, keyword);
         String where = (String) w[0];
         Object[] args = (Object[]) w[1];
         long total = jdbc.queryForObject("SELECT COUNT(*)" + where, Long.class, args);
-        long[] ps = normPage(page, size);
+        long[] ps = normDoctorPage(page, size);
         List<Map<String, Object>> rows = jdbc.queryForList(
                 worklogDetailCols() + where + " ORDER BY v.work_date DESC, v.id DESC LIMIT ?, ?",
                 appendArgs(Arrays.asList(args), (ps[0] - 1) * ps[1], ps[1]));
         return pageOf(rows, total, ps[0], ps[1]);
     }
 
-    /** 医生日志明细 SELECT 列(处方/检查单以相关子查询带出有效单 status>0 的数量与金额) */
+    /** 接诊明细列：诊断和各类单据用相关子查询带出，确保一行对应一次就诊。 */
     private static String worklogDetailCols() {
         return "SELECT v.id AS visitId, DATE_FORMAT(v.work_date, '%Y-%m-%d') AS workDate,"
-                + " v.patient_name AS patientName, v.gender, v.age,"
+                + " v.patient_no AS patientNo, v.patient_name AS patientName, v.gender, v.age,"
                 + " v.dr_name AS drName, v.dept_name AS deptName, v.chief_complaint AS chiefComplaint,"
                 + " v.visit_status AS visitStatus,"
                 + " DATE_FORMAT(v.visit_time, '%H:%i') AS visitTime, DATE_FORMAT(v.finish_time, '%H:%i') AS finishTime,"
+                + " CASE WHEN v.visit_status=3 AND v.visit_time IS NOT NULL AND v.finish_time>=v.visit_time"
+                + " THEN TIMESTAMPDIFF(MINUTE,v.visit_time,v.finish_time) ELSE NULL END AS durationMinutes,"
+                + " (SELECT d.diag_name FROM his_diagnosis d WHERE d.visit_id=v.id AND d.tenant_id=v.tenant_id"
+                + " AND d.deleted=0 AND d.maindiag_flag='1' AND (d.vali_flag IS NULL OR d.vali_flag='1')"
+                + " ORDER BY d.diag_srt_no,d.id LIMIT 1) AS mainDiagnosis,"
                 + " (SELECT COUNT(*) FROM his_prescription p WHERE p.visit_id=v.id AND p.tenant_id=v.tenant_id"
                 + " AND p.deleted=0 AND p.status>0) AS rxCount,"
-                + " (SELECT IFNULL(SUM(p2.total_amount),0) FROM his_prescription p2 WHERE p2.visit_id=v.id"
-                + " AND p2.tenant_id=v.tenant_id AND p2.deleted=0 AND p2.status>0) AS rxAmount,"
+                + " (SELECT IFNULL(SUM(p.total_amount),0) FROM his_prescription p WHERE p.visit_id=v.id"
+                + " AND p.tenant_id=v.tenant_id AND p.deleted=0 AND p.status>0) AS rxAmount,"
+                + orderDetailExpr("检查", "check") + "," + orderDetailExpr("检验", "lab") + ","
+                + orderDetailExpr("治疗", "treat") + ","
                 + " (SELECT COUNT(*) FROM his_order o WHERE o.visit_id=v.id AND o.tenant_id=v.tenant_id"
-                + " AND o.deleted=0 AND o.status>0) AS orderCount,"
-                + " (SELECT IFNULL(SUM(o2.total_amount),0) FROM his_order o2 WHERE o2.visit_id=v.id"
-                + " AND o2.tenant_id=v.tenant_id AND o2.deleted=0 AND o2.status>0) AS orderAmount";
+                + " AND o.deleted=0 AND o.status IN (1,2)) AS orderCount,"
+                + " (SELECT IFNULL(SUM(o.total_amount),0) FROM his_order o WHERE o.visit_id=v.id"
+                + " AND o.tenant_id=v.tenant_id AND o.deleted=0 AND o.status IN (1,2)) AS orderAmount";
+    }
+
+    private static String orderDetailExpr(String orderType, String prefix) {
+        return " (SELECT COUNT(*) FROM his_order o WHERE o.visit_id=v.id AND o.tenant_id=v.tenant_id"
+                + " AND o.deleted=0 AND o.status IN (1,2) AND o.order_type='" + orderType + "') AS " + prefix + "Count,"
+                + " (SELECT IFNULL(SUM(o.total_amount),0) FROM his_order o WHERE o.visit_id=v.id"
+                + " AND o.tenant_id=v.tenant_id AND o.deleted=0 AND o.status IN (1,2) AND o.order_type='"
+                + orderType + "') AS " + prefix + "Amount";
     }
 
     /** 医生日志明细共用条件构造(不含 SELECT 前缀): 返回 [whereSql, Object[] args] */
@@ -519,57 +800,111 @@ public class ReportService {
             args.add(deptId);
         }
         if (StringUtils.hasText(keyword)) {
-            where.append(" AND v.patient_name LIKE ?");
-            args.add("%" + keyword.trim() + "%");
+            where.append(" AND (v.patient_name LIKE ? OR v.patient_no LIKE ?)");
+            String kw = "%" + keyword.trim() + "%";
+            args.add(kw);
+            args.add(kw);
         }
         return new Object[]{where.toString(), args.toArray()};
     }
 
-    /**
-     * 医生工作日志导出(双Sheet): Sheet1 工作量汇总(复用 doctorWorklogSummary, 完成率"XX.X%"),
-     * Sheet2 接诊明细(不分页, 上限10000行, 复用明细查询)。返回 summaryHead/summaryRows/detailHead/detailRows。
-     */
+    /** 诊疗统计六Sheet导出，所有分析与页面复用同一聚合口径。 */
+    @SuppressWarnings("unchecked")
     public Map<String, Object> exportDoctorWorklog(Long orgId, String startDate, String endDate,
                                                    Long staffId, Long deptId) {
-        // Sheet1: 工作量汇总
-        List<Map<String, Object>> summary = doctorWorklogSummary(orgId, startDate, endDate, staffId, deptId);
-        List<List<String>> summaryHead = new ArrayList<>();
-        for (String h : new String[]{"医生姓名", "科室", "接诊数", "完成数", "完成率",
-                "处方数", "处方金额", "检查单数", "检查金额"}) {
-            summaryHead.add(Collections.singletonList(h));
-        }
-        List<List<Object>> summaryRows = new ArrayList<>();
-        for (Map<String, Object> s : summary) {
-            summaryRows.add(Arrays.asList(
-                    text(s.get("drName")), text(s.get("deptName")),
-                    s.get("visitCount"), s.get("finishCount"), text(s.get("finishRate")),
-                    s.get("rxCount"), s.get("rxAmount"), s.get("orderCount"), s.get("orderAmount")));
-        }
-        // Sheet2: 接诊明细(无keyword全量口径, LIMIT 10000)
         Long tid = TenantContext.require();
-        String[] range = normRange(startDate, endDate);
-        Object[] w = worklogDetailWhere(tid, range, staffId, deptId, null);
+        String[] range = normDoctorRange(startDate, endDate);
+        Map<String, Object> analytics = doctorWorklogAnalytics(orgId, range[0], range[1], staffId, deptId);
+        Map<String, Object> overview = (Map<String, Object>) analytics.get("overview");
+        List<Map<String, Object>> trend = (List<Map<String, Object>>) analytics.get("trend");
+
+        Object[] where = worklogDetailWhere(tid, range, staffId, deptId, null);
+        Long detailCount = jdbc.queryForObject("SELECT COUNT(*)" + where[0], Long.class, (Object[]) where[1]);
+        int guardedCount = detailCount != null && detailCount > Integer.MAX_VALUE ? Integer.MAX_VALUE
+                : (detailCount == null ? 0 : detailCount.intValue());
+        ExportGuard.checkRows(guardedCount, "诊疗统计查询-接诊明细");
         List<Map<String, Object>> details = jdbc.queryForList(
-                worklogDetailCols() + w[0] + " ORDER BY v.work_date DESC, v.id DESC LIMIT 10000", (Object[]) w[1]);
-        List<List<String>> detailHead = new ArrayList<>();
-        for (String h : new String[]{"就诊日期", "患者姓名", "性别", "年龄", "主诉", "医生", "科室", "状态",
-                "接诊时间", "完成时间", "处方数", "处方金额", "检查单数", "检查金额"}) {
-            detailHead.add(Collections.singletonList(h));
+                worklogDetailCols() + where[0] + " ORDER BY v.work_date DESC, v.id DESC", (Object[]) where[1]);
+
+        List<Map<String, Object>> sheets = new ArrayList<>();
+        List<List<Object>> overviewRows = new ArrayList<>();
+        overviewRows.add(Arrays.asList(range[0], range[1], doctorScopeText(staffId, deptId),
+                overview.get("visitCount"), overview.get("finishCount"), overview.get("finishRate"),
+                overview.get("avgVisitMinutes"), overview.get("rxCount"), overview.get("rxAmount"),
+                overview.get("avgRxAmount"), overview.get("orderCount"), overview.get("orderAmount")));
+        sheets.add(exportSheet("统计总览", new String[]{"开始日期", "结束日期", "数据范围", "接诊数", "完成数",
+                "完成率(%)", "平均接诊时长(分钟)", "处方数", "处方金额", "均次处方金额", "医技申请数", "医技申请金额"}, overviewRows));
+
+        List<List<Object>> trendRows = new ArrayList<>();
+        for (Map<String, Object> r : trend) {
+            trendRows.add(Arrays.asList(r.get("workDate"), r.get("visitCount"), r.get("finishCount"),
+                    r.get("rxCount"), r.get("rxAmount"), r.get("orderCount"), r.get("orderAmount")));
         }
+        sheets.add(exportSheet("每日趋势", new String[]{"日期", "接诊数", "完成数", "处方数", "处方金额",
+                "医技申请数", "医技申请金额"}, trendRows));
+
+        List<List<Object>> diagnosisRows = new ArrayList<>();
+        appendAnalysisRows(diagnosisRows, "主诊断TOP", (List<Map<String, Object>>) analytics.get("diagnosisTop"), false);
+        appendAnalysisRows(diagnosisRows, "诊断类别", (List<Map<String, Object>>) analytics.get("diagnosisClass"), false);
+        sheets.add(exportSheet("诊断构成", new String[]{"分析维度", "编码", "名称", "就诊人次", "占比(%)", "金额", "均次金额"}, diagnosisRows));
+
+        List<List<Object>> prescriptionRows = new ArrayList<>();
+        appendAnalysisRows(prescriptionRows, "处方类型", (List<Map<String, Object>>) analytics.get("prescriptionType"), true);
+        appendAnalysisRows(prescriptionRows, "审核状态", (List<Map<String, Object>>) analytics.get("prescriptionAudit"), true);
+        appendAnalysisRows(prescriptionRows, "发药状态", (List<Map<String, Object>>) analytics.get("prescriptionDispense"), true);
+        sheets.add(exportSheet("处方分析", new String[]{"分析维度", "编码", "名称", "处方数", "占比(%)", "金额", "均次金额"}, prescriptionRows));
+
+        List<List<Object>> orderRows = new ArrayList<>();
+        appendAnalysisRows(orderRows, "申请类型", (List<Map<String, Object>>) analytics.get("orderType"), true);
+        appendAnalysisRows(orderRows, "执行状态", (List<Map<String, Object>>) analytics.get("orderExec"), true);
+        appendAnalysisRows(orderRows, "收费状态", (List<Map<String, Object>>) analytics.get("orderPaid"), true);
+        sheets.add(exportSheet("医技分析", new String[]{"分析维度", "编码", "名称", "申请数", "占比(%)", "金额", "均次金额"}, orderRows));
+
         List<List<Object>> detailRows = new ArrayList<>();
         for (Map<String, Object> d : details) {
-            detailRows.add(Arrays.asList(
-                    text(d.get("workDate")), text(d.get("patientName")), text(d.get("gender")), d.get("age"),
-                    text(d.get("chiefComplaint")), text(d.get("drName")), text(d.get("deptName")),
-                    visitStatusText(d.get("visitStatus")), text(d.get("visitTime")), text(d.get("finishTime")),
-                    d.get("rxCount"), d.get("rxAmount"), d.get("orderCount"), d.get("orderAmount")));
+            detailRows.add(Arrays.asList(text(d.get("workDate")), text(d.get("patientNo")), text(d.get("patientName")),
+                    text(d.get("gender")), d.get("age"), text(d.get("mainDiagnosis")), text(d.get("chiefComplaint")),
+                    text(d.get("drName")), text(d.get("deptName")), visitStatusText(d.get("visitStatus")),
+                    text(d.get("visitTime")), text(d.get("finishTime")), d.get("durationMinutes"),
+                    d.get("rxCount"), d.get("rxAmount"), d.get("checkCount"), d.get("checkAmount"),
+                    d.get("labCount"), d.get("labAmount"), d.get("treatCount"), d.get("treatAmount"),
+                    d.get("orderCount"), d.get("orderAmount")));
         }
+        sheets.add(exportSheet("接诊明细", new String[]{"就诊日期", "患者号", "患者姓名", "性别", "年龄", "主诊断",
+                "主诉", "医生", "科室", "状态", "接诊时间", "完成时间", "完成耗时(分钟)", "处方数", "处方金额",
+                "检查数", "检查金额", "检验数", "检验金额", "治疗数", "治疗金额", "医技合计", "医技金额"}, detailRows));
+
         Map<String, Object> out = new LinkedHashMap<>();
-        out.put("summaryHead", summaryHead);
-        out.put("summaryRows", summaryRows);
-        out.put("detailHead", detailHead);
-        out.put("detailRows", detailRows);
+        out.put("sheets", sheets);
         return out;
+    }
+
+    private static Map<String, Object> exportSheet(String name, String[] headers, List<List<Object>> rows) {
+        Map<String, Object> sheet = new LinkedHashMap<>();
+        List<List<String>> head = new ArrayList<>();
+        for (String header : headers) {
+            head.add(Collections.singletonList(header));
+        }
+        sheet.put("sheetName", name);
+        sheet.put("head", head);
+        sheet.put("rows", rows);
+        return sheet;
+    }
+
+    private static void appendAnalysisRows(List<List<Object>> target, String dimension,
+                                           List<Map<String, Object>> rows, boolean withAmount) {
+        for (Map<String, Object> row : rows) {
+            target.add(Arrays.asList(dimension, text(row.get("code")), text(row.get("label")), row.get("itemCount"),
+                    row.get("percent"), withAmount ? row.get("itemAmount") : "",
+                    withAmount ? row.get("avgAmount") : ""));
+        }
+    }
+
+    private static String doctorScopeText(Long staffId, Long deptId) {
+        if (staffId != null) {
+            return "医生ID:" + staffId;
+        }
+        return deptId == null ? "全部医生" : "科室ID:" + deptId;
     }
 
     // ============================== 药库统计 ==============================
@@ -1133,6 +1468,17 @@ public class ReportService {
 
     // ============================== 辅助方法 ==============================
 
+    /** 医生统计区间最多366个自然日，防止按日补零和多维聚合被无界调用。 */
+    private static String[] normDoctorRange(String startDate, String endDate) {
+        String[] range = normRange(startDate, endDate);
+        LocalDate start = LocalDate.parse(range[0]);
+        LocalDate end = LocalDate.parse(range[1]);
+        if (end.toEpochDay() - start.toEpochDay() + 1 > 366) {
+            throw new BizException(400, "诊疗统计查询区间不能超过366天");
+        }
+        return range;
+    }
+
     /** 规范日期区间: end缺省今天, start缺省end-29天(最近30天); 格式非法抛400; 返回 [start, end](yyyy-MM-dd闭区间) */
     static String[] normRange(String startDate, String endDate) {
         LocalDate end = parseDate(endDate);
@@ -1163,6 +1509,13 @@ public class ReportService {
     /** 次日(yyyy-MM-dd), 作为左闭右开区间的右端点 */
     private static String nextDay(String date) {
         return LocalDate.parse(date).plusDays(1).toString();
+    }
+
+    /** 诊疗明细只允许前端约定的 20/50/100 三档，非法值回落20。 */
+    private static long[] normDoctorPage(long page, long size) {
+        long p = page < 1 ? 1 : page;
+        long sz = size == 50 || size == 100 ? size : 20;
+        return new long[]{p, sz};
     }
 
     /** 规范分页参数: page<1→1, size<1→20, size上限500; 返回 [page, size] */
