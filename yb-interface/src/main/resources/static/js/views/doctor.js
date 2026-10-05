@@ -59,7 +59,10 @@
         critAlertedIds: [],
         /* U2 诊疗进度与脏标记: emrSaved=病历已保存(完成/暂存成功), dirtyEmr=本次会话有未保存修改 */
         emrSaved: false,
-        dirtyEmr: false
+        dirtyEmr: false,
+        /* OP-B 法定报卡主动弹出: 保存诊断(完成接诊)后按触发字典命中的应报卡清单, 非阻断提醒 */
+        reportTips: [],
+        reportTipVisible: false
       };
     },
     provide: function () {
@@ -387,9 +390,50 @@
           vm.loadPatientDetail(vm.currentVisit);
           vm.loadFeeSummary(vm.currentVisit);
           vm.refreshQueue();
+          /* OP-B 法定报卡主动弹出: 诊断已落库, 按触发字典检查应报卡(非阻断) */
+          vm.checkReportTrigger(visitIdOf(vm.currentVisit));
         }).catch(function (error) {
           if (error && error.message) { HIS.notifyError(error); }
         }).finally(function () { vm.submitting = false; });
+      },
+      /* OP-B 保存诊断后触发判定: 命中法定应报卡则弹非阻断提醒条, 已报/已暂不报的后端自动过滤 */
+      checkReportTrigger: function (visitId) {
+        var vm = this;
+        if (!visitId) { return; }
+        HIS.get('/api/his/disease-report/check-trigger?visitId=' + encodeURIComponent(visitId)).then(function (list) {
+          var hits = Array.isArray(list) ? list : [];
+          if (!hits.length) { return; }
+          vm.reportTips = hits;
+          vm.reportTipVisible = true;
+        }).catch(function () { /* 触发判定为辅助提醒, 失败静默不打断接诊 */ });
+      },
+      /* 立即报卡: 委托诊断面板按类别开卡(预填患者区+诊断) */
+      reportNow: function (tip) {
+        var vm = this;
+        var panel = vm.$refs.diagPanel;
+        if (!panel || typeof panel.openReport !== 'function') {
+          HIS.notifyError && HIS.notifyError('报卡面板未就绪');
+          return;
+        }
+        panel.openReport({ diagCode: tip.diagCode, diagName: tip.diagName }, tip.reportCategory);
+        vm.reportTipVisible = false;
+      },
+      /* 暂不报卡: 落 skip 留痕(计入漏报监控), 该卡从提醒清单移除 */
+      skipReport: function (tip) {
+        var vm = this;
+        ElementPlus.ElMessageBox.prompt('请填写暂不报卡原因(将计入漏报监控)', '暂不报卡', {
+          inputValue: '信息待核实', confirmButtonText: '确定', cancelButtonText: '取消'
+        }).then(function (r) {
+          return HIS.post('/api/his/disease-report/skip', {
+            visitId: visitIdOf(vm.currentVisit), patientId: patientIdOf(vm.currentVisit),
+            diagCode: tip.diagCode, diagName: tip.diagName,
+            reportCategory: tip.reportCategory, skipReason: (r && r.value) || '暂不报卡'
+          });
+        }).then(function () {
+          vm.reportTips = vm.reportTips.filter(function (t) { return !(t.diagCode === tip.diagCode && t.reportCategory === tip.reportCategory); });
+          if (!vm.reportTips.length) { vm.reportTipVisible = false; }
+          HIS.notifySuccess && HIS.notifySuccess('已留痕(暂不报卡)');
+        }).catch(function () {});
       },
       onUpdateDiagnoses: function (diagList) {
         this.diagnoses = Array.isArray(diagList) ? diagList : [];
@@ -705,6 +749,26 @@
           <template #footer>
             <el-button size="small" @click="dispositionVisible=false">取消</el-button>
             <el-button size="small" type="primary" :loading="submitting" @click="doSubmitFinish">确认完成</el-button>
+          </template>
+        </el-dialog>
+
+        <!-- OP-B 法定报卡主动弹出提醒(非阻断): 列出应报卡, 立即报卡开对应卡 / 暂不报卡留痕 -->
+        <el-dialog v-model="reportTipVisible" title="法定报告卡提醒" width="560px" append-to-body>
+          <div class="dim" style="margin-bottom:10px">本次接诊的诊断命中国家法定应报病种, 依据《传染病防治法》等需填报报告卡。可立即报卡, 或暂不报卡(将留痕计入漏报监控)。</div>
+          <el-table :data="reportTips" size="small" border max-height="320px">
+            <el-table-column type="index" label="#" width="48"></el-table-column>
+            <el-table-column prop="diagCode" label="诊断编码" width="120"></el-table-column>
+            <el-table-column prop="diagName" label="诊断名称" min-width="140"></el-table-column>
+            <el-table-column prop="cardLabel" label="应报卡" min-width="150"></el-table-column>
+            <el-table-column label="操作" width="180">
+              <template #default="s">
+                <el-button size="small" type="primary" @click="reportNow(s.row)">立即报卡</el-button>
+                <el-button size="small" @click="skipReport(s.row)">暂不报卡</el-button>
+              </template>
+            </el-table-column>
+          </el-table>
+          <template #footer>
+            <el-button size="small" @click="reportTipVisible=false">稍后处理</el-button>
           </template>
         </el-dialog>
       </div>

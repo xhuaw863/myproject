@@ -95,6 +95,7 @@ public class RbacInitializer implements ApplicationRunner {
             Map<String, Long> menuIds = seedMenus();
             ensureHospitalManageMenu();
             ensureStdDictMaintainMenu();
+            ensurePublicHealthMenus();
             ensureSupplierDictMenu();
             moveAreaCodeMenuToStdDict();
             mergeBasedataIntoPlatform();
@@ -705,6 +706,51 @@ public class RbacInitializer implements ApplicationRunner {
         m.setStatus(1);
         menuMapper.insert(m);
         log.info("字典维护菜单已补充(平台超级管理员专属)");
+    }
+
+    /**
+     * 幂等确保"公共卫生管理"顶级目录 + 两个报卡审核菜单存在(传染病报卡审核/慢病报卡审核)。
+     * 独立于 seedMenus(表非空即跳过), 保证存量库也能补上; ADMIN/SUPER_ADMIN 走 all_menus 自动可见, 无需显式授权。
+     */
+    private void ensurePublicHealthMenus() {
+        long dirId;
+        SysMenu dir = menuMapper.selectOne(new QueryWrapper<SysMenu>().eq("menu_key", "public-health").last("LIMIT 1"));
+        if (dir == null) {
+            SysMenu d = new SysMenu();
+            d.setParentId(0L);
+            d.setMenuKey("public-health");
+            d.setMenuName("公共卫生管理");
+            d.setMenuType(1);
+            d.setSortNo(8);
+            d.setVisible(1);
+            d.setStatus(1);
+            menuMapper.insert(d);
+            dirId = d.getId();
+            log.info("公共卫生管理目录已补充(报卡集中审核)");
+        } else {
+            dirId = dir.getId();
+        }
+        ensureAuditLeafMenu(dirId, "report-audit-inf", "传染病报卡审核", "ReportAuditInf", 1);
+        ensureAuditLeafMenu(dirId, "report-audit-chronic", "慢病报卡审核", "ReportAuditChronic", 2);
+    }
+
+    /** 幂等补种报卡审核叶子菜单(挂 public-health 目录下, menu_key 判存) */
+    private void ensureAuditLeafMenu(long parentId, String key, String name, String comp, int sortNo) {
+        Long cnt = menuMapper.selectCount(new QueryWrapper<SysMenu>().eq("menu_key", key));
+        if (cnt != null && cnt > 0) {
+            return;
+        }
+        SysMenu m = new SysMenu();
+        m.setParentId(parentId);
+        m.setMenuKey(key);
+        m.setMenuName(name);
+        m.setMenuType(2);
+        m.setComp(comp);
+        m.setSortNo(sortNo);
+        m.setVisible(1);
+        m.setStatus(1);
+        menuMapper.insert(m);
+        log.info("报卡审核菜单已补充: {}", name);
     }
 
     /**

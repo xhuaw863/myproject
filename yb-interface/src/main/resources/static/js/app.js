@@ -292,6 +292,15 @@
       group: '会诊管理', children: [
         { key: 'consultation-manage', label: '会诊管理', comp: 'ConsultationManage' }
       ]
+    },
+    /* 公共卫生管理(报卡集中审核, 与 RbacInitializer 动态菜单 public-health 同 key 同名):
+     * 传染病报卡审核(report-audit-inf.js ReportAuditInf, cats=[1])/慢病报卡审核(report-audit-chronic.js ReportAuditChronic, cats=[2,3,4,5]);
+     * ADMIN/SUPER_ADMIN 走 all_menus 可见, 后端 page/stats/export 有 requireAdminOrSuper 守卫 */
+    {
+      group: '公共卫生管理', children: [
+        { key: 'report-audit-inf', label: '传染病报卡审核', comp: 'ReportAuditInf' },
+        { key: 'report-audit-chronic', label: '慢病报卡审核', comp: 'ReportAuditChronic' }
+      ]
     }
   ];
 

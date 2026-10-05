@@ -344,6 +344,19 @@ public class DictSchemaMigration implements ApplicationRunner {
                 {"std_supplier", "platform_code", "VARCHAR(64) NULL COMMENT '招采/挂网平台编码'"},
                 {"std_supplier", "delivery_area", "VARCHAR(200) NULL COMMENT '配送区域'"},
                 {"std_supplier", "blacklist_flag", "VARCHAR(2) NULL COMMENT '失信/黑名单标志:1是 0否'"},
+                /* ---------- 慢性病报告卡(设计方案P1): his_disease_report 通用头扩列, 存量库补列; 新库由 ensureOutpWsDiagnosisTables 建列 ---------- */
+                {"his_disease_report", "report_category", "TINYINT DEFAULT NULL COMMENT '报卡大类:1传染病 2严重精神障碍 3恶性肿瘤 4高血压 5糖尿病 9其他(NULL回退report_type语义)'"},
+                {"his_disease_report", "card_no", "VARCHAR(50) DEFAULT NULL COMMENT '卡片编号(国标口径: 类型码+机构码+yyyyMM+流水)'"},
+                {"his_disease_report", "report_form", "TINYINT DEFAULT 1 COMMENT '报卡类别:1初次报告 2订正报告'"},
+                {"his_disease_report", "correct_prev_no", "VARCHAR(50) DEFAULT NULL COMMENT '订正报告指向被订正原卡card_no'"},
+                {"his_disease_report", "return_reason", "VARCHAR(500) DEFAULT NULL COMMENT '退卡原因(状态退回时填写)'"},
+                {"his_disease_report", "onset_date", "DATETIME DEFAULT NULL COMMENT '发病/首次症状时间'"},
+                {"his_disease_report", "diag_time", "DATETIME DEFAULT NULL COMMENT '诊断时间(肿瘤/精障须到小时)'"},
+                {"his_disease_report", "death_date", "DATE DEFAULT NULL COMMENT '死亡日期(如适用)'"},
+                {"his_disease_report", "auto_filled", "TINYINT DEFAULT 1 COMMENT '患者区是否由his_patient自动带出:1是 0否(留痕)'"},
+                /* ---------- 报卡全流程(传染病+主动弹出+集中审核): 审核列表检索/展示用冗余患者区列 + 漏报留痕表 ---------- */
+                {"his_disease_report", "patient_name", "VARCHAR(100) DEFAULT NULL COMMENT '患者姓名(create从自动带出冗余落列, 供审核列表检索展示)'"},
+                {"his_disease_report", "patient_idcard", "VARCHAR(50) DEFAULT NULL COMMENT '患者有效证件号(create从自动带出冗余落列, 供审核列表检索展示)'"},
         };
         int added = 0;
         try (Connection conn = dataSource.getConnection()) {
@@ -5884,6 +5897,47 @@ public class DictSchemaMigration implements ApplicationRunner {
                     + "PRIMARY KEY (id),"
                     + "KEY idx_visit (tenant_id, visit_id)"
                     + ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='疾病报卡(与诊断关联留痕)'"
+            );
+            // 慢性病报告卡明细(P1): 类型专有异构字段以 form_data JSON 承载, 冗余少量需检索/上报的 typed 列并建索引
+            st.executeUpdate("CREATE TABLE IF NOT EXISTS his_disease_report_detail ("
+                    + "id BIGINT NOT NULL AUTO_INCREMENT COMMENT '主键',"
+                    + "tenant_id BIGINT NOT NULL COMMENT '租户ID',"
+                    + "org_id BIGINT DEFAULT NULL COMMENT '机构ID',"
+                    + "report_id BIGINT NOT NULL COMMENT '报卡主表ID(his_disease_report.id)',"
+                    + "form_data JSON DEFAULT NULL COMMENT '该卡型完整键值表单(异构字段统一承载)',"
+                    + "disease_code VARCHAR(50) DEFAULT NULL COMMENT '病种编码(精障6病/ICD-O-3部位/ICD-10锚点)',"
+                    + "disease_name VARCHAR(200) DEFAULT NULL COMMENT '病种名称',"
+                    + "icd_code VARCHAR(50) DEFAULT NULL COMMENT 'ICD编码(肿瘤ICD-O-3 / 精障F码)',"
+                    + "risk_level TINYINT DEFAULT NULL COMMENT '严重精神障碍危险等级:0-5',"
+                    + "stage VARCHAR(50) DEFAULT NULL COMMENT '肿瘤临床分期(TNM/分期)',"
+                    + "tumor_site VARCHAR(100) DEFAULT NULL COMMENT '肿瘤部位(ICD-O-3解剖学部位名)',"
+                    + "create_by VARCHAR(50) DEFAULT NULL, create_time DATETIME DEFAULT NULL,"
+                    + "update_by VARCHAR(50) DEFAULT NULL, update_time DATETIME DEFAULT NULL, deleted TINYINT DEFAULT 0,"
+                    + "PRIMARY KEY (id),"
+                    + "UNIQUE KEY uk_report (tenant_id, report_id),"
+                    + "KEY idx_disease (tenant_id, disease_code),"
+                    + "KEY idx_icd (tenant_id, icd_code)"
+                    + ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='疾病报卡明细(类型专有字段JSON+检索typed列)'"
+            );
+            // 报卡漏报留痕(主动弹出时医生选"暂不报卡"): 记录应报未报, 供集中审核页漏报监控统计
+            st.executeUpdate("CREATE TABLE IF NOT EXISTS his_disease_report_skip ("
+                    + "id BIGINT NOT NULL AUTO_INCREMENT COMMENT '主键',"
+                    + "tenant_id BIGINT NOT NULL COMMENT '租户ID',"
+                    + "org_id BIGINT DEFAULT NULL COMMENT '机构ID',"
+                    + "visit_id BIGINT DEFAULT NULL COMMENT '就诊ID(his_visit.id)',"
+                    + "patient_id BIGINT DEFAULT NULL COMMENT '患者ID',"
+                    + "diag_code VARCHAR(50) DEFAULT NULL COMMENT '触发诊断代码',"
+                    + "diag_name VARCHAR(200) DEFAULT NULL COMMENT '触发诊断名称',"
+                    + "report_category TINYINT DEFAULT NULL COMMENT '应报卡大类:1传染病 2精障 3肿瘤 4高血压 5糖尿病 9其他',"
+                    + "skip_reason VARCHAR(500) DEFAULT NULL COMMENT '暂不报卡原因',"
+                    + "skip_by VARCHAR(50) DEFAULT NULL COMMENT '操作人(医生)姓名',"
+                    + "skip_time DATETIME DEFAULT NULL COMMENT '暂不报卡时间',"
+                    + "create_by VARCHAR(50) DEFAULT NULL, create_time DATETIME DEFAULT NULL,"
+                    + "update_by VARCHAR(50) DEFAULT NULL, update_time DATETIME DEFAULT NULL, deleted TINYINT DEFAULT 0,"
+                    + "PRIMARY KEY (id),"
+                    + "KEY idx_visit (tenant_id, visit_id),"
+                    + "KEY idx_cat_time (tenant_id, report_category, skip_time)"
+                    + ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='疾病报卡漏报留痕(暂不报卡)'"
             );
             st.executeUpdate("CREATE TABLE IF NOT EXISTS his_diag_template_link ("
                     + "id BIGINT NOT NULL AUTO_INCREMENT COMMENT '主键',"

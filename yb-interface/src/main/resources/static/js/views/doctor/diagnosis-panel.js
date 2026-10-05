@@ -157,17 +157,102 @@
           </template>
         </el-dialog>
 
-        <!-- 疾病报卡对话框: 与诊断关联留痕, 落 his_disease_report -->
-        <el-dialog v-model="reportVisible" title="疾病报卡" width="460px" append-to-body>
-          <el-form :model="reportForm" label-width="88px" size="small">
-            <el-form-item label="诊断"><el-input :value="reportForm.diagName" disabled/></el-form-item>
-            <el-form-item label="报卡类型">
-              <el-select v-model="reportForm.reportType" style="width:100%">
-                <el-option v-for="t in reportTypes" :key="t.v" :label="t.l" :value="t.v"></el-option>
-              </el-select>
-            </el-form-item>
-            <el-form-item label="报卡内容"><el-input v-model="reportForm.reportContent" type="textarea" :rows="3" placeholder="发病时间/接触史/初步处置等(选填)"/></el-form-item>
-            <div class="dim">提交后生成待报记录并留痕, 上报通道对接由后续批次承接。</div>
+        <!-- 疾病报告卡对话框: 国家法定卡格式(P1 慢性病: 严重精神障碍/恶性肿瘤), 患者区自动带出, 落 his_disease_report + detail -->
+        <el-dialog v-model="reportVisible" title="疾病报告卡" width="760px" top="6vh" append-to-body>
+          <el-form :model="reportForm" label-width="96px" size="small" v-loading="reportBusy">
+            <el-row :gutter="12">
+              <el-col :span="12"><el-form-item label="诊断"><el-input :value="reportForm.diagName" disabled/></el-form-item></el-col>
+              <el-col :span="12"><el-form-item label="报卡类别">
+                <el-select v-model="reportForm.reportCategory" style="width:100%" @change="onReportCatChange">
+                  <el-option v-for="c in (dicts?dicts.reportCategory:[])" :key="c.code" :label="c.name" :value="Number(c.code)"></el-option>
+                </el-select>
+              </el-form-item></el-col>
+            </el-row>
+            <el-row :gutter="12">
+              <el-col :span="12"><el-form-item label="报卡性质">
+                <el-radio-group v-model="reportForm.reportForm">
+                  <el-radio :label="1">初次报告</el-radio><el-radio :label="2">订正报告</el-radio>
+                </el-radio-group>
+              </el-form-item></el-col>
+              <el-col :span="12" v-if="reportForm.reportForm===2"><el-form-item label="订正原卡号"><el-input v-model="reportForm.correctPrevNo" placeholder="被订正卡片编号"/></el-form-item></el-col>
+            </el-row>
+
+            <el-divider content-position="left">患者基本信息(自动带出, 可修正)</el-divider>
+            <el-row :gutter="12">
+              <el-col :span="12"><el-form-item label="姓名"><el-input v-model="reportForm.name"/></el-form-item></el-col>
+              <el-col :span="12"><el-form-item label="性别"><el-input :value="reportForm.genderName||reportForm.gender" disabled/></el-form-item></el-col>
+              <el-col :span="12"><el-form-item label="出生日期"><el-input v-model="reportForm.birthDate" placeholder="yyyy-MM-dd"/></el-form-item></el-col>
+              <el-col :span="12"><el-form-item label="证件号"><el-input v-model="reportForm.idCard"/></el-form-item></el-col>
+              <el-col :span="12"><el-form-item label="联系电话"><el-input v-model="reportForm.phone"/></el-form-item></el-col>
+              <el-col :span="12"><el-form-item label="职业"><el-input v-model="reportForm.occupationName"/></el-form-item></el-col>
+              <el-col :span="24"><el-form-item label="现住址详址"><el-input v-model="reportForm.presentDetail" placeholder="省市区县乡镇 + 村/街/门牌"/></el-form-item></el-col>
+            </el-row>
+
+            <template v-if="dicts && Number(reportForm.reportCategory)===1">
+              <el-divider content-position="left">法定传染病发病信息</el-divider>
+              <el-row :gutter="12">
+                <el-col :span="12"><el-form-item label="疾病名称">
+                  <el-select v-model="reportForm.diseaseCode" filterable style="width:100%" @change="onInfectiousDisease">
+                    <el-option v-for="d in dicts.infectiousDisease" :key="d.code" :label="d.cls+'类 '+d.name+' ('+d.code+')'" :value="d.code"></el-option>
+                  </el-select>
+                </el-form-item></el-col>
+                <el-col :span="12"><el-form-item label="病例分类">
+                  <el-select v-model="reportForm.caseType" style="width:100%">
+                    <el-option v-for="t in dicts.infectiousCaseType" :key="t.code" :label="t.name" :value="t.code"></el-option>
+                  </el-select>
+                </el-form-item></el-col>
+                <el-col :span="12"><el-form-item label="发病日期"><el-date-picker v-model="reportForm.onsetDate" type="datetime" value-format="YYYY-MM-DD HH:mm:ss" style="width:100%"/></el-form-item></el-col>
+                <el-col :span="12"><el-form-item label="诊断时间"><el-date-picker v-model="reportForm.diagTime" type="datetime" value-format="YYYY-MM-DD HH:mm:ss" style="width:100%"/></el-form-item></el-col>
+              </el-row>
+            </template>
+
+            <template v-if="dicts && Number(reportForm.reportCategory)===2">
+              <el-divider content-position="left">严重精神障碍发病信息</el-divider>
+              <el-row :gutter="12">
+                <el-col :span="12"><el-form-item label="疾病名称">
+                  <el-select v-model="reportForm.diseaseCode" style="width:100%" @change="onSmiDisease">
+                    <el-option v-for="d in dicts.smiDisease" :key="d.code" :label="d.name" :value="d.code"></el-option>
+                  </el-select>
+                </el-form-item></el-col>
+                <el-col :span="12"><el-form-item label="危险等级">
+                  <el-select v-model="reportForm.riskLevel" style="width:100%">
+                    <el-option v-for="r in dicts.riskLevel" :key="r.code" :label="r.name" :value="r.code"></el-option>
+                  </el-select>
+                </el-form-item></el-col>
+                <el-col :span="12"><el-form-item label="发病时间"><el-date-picker v-model="reportForm.onsetDate" type="datetime" value-format="YYYY-MM-DD HH:mm:ss" style="width:100%"/></el-form-item></el-col>
+                <el-col :span="12"><el-form-item label="诊断时间"><el-date-picker v-model="reportForm.diagTime" type="datetime" value-format="YYYY-MM-DD HH:mm:ss" style="width:100%"/></el-form-item></el-col>
+                <el-col :span="8"><el-form-item label="监护人"><el-input v-model="reportForm.guardianName" placeholder="未成年或危险≥3级必填"/></el-form-item></el-col>
+                <el-col :span="8"><el-form-item label="监护电话"><el-input v-model="reportForm.guardianPhone"/></el-form-item></el-col>
+                <el-col :span="8"><el-form-item label="监护关系"><el-select v-model="reportForm.guardianRelation" style="width:100%"><el-option v-for="g in dicts.guardianRelation" :key="g.code" :label="g.name" :value="g.code"></el-option></el-select></el-form-item></el-col>
+              </el-row>
+            </template>
+
+            <template v-if="dicts && Number(reportForm.reportCategory)===3">
+              <el-divider content-position="left">恶性肿瘤病例信息</el-divider>
+              <el-row :gutter="12">
+                <el-col :span="12"><el-form-item label="肿瘤部位">
+                  <el-select v-model="reportForm.tumorTopo" filterable style="width:100%" @change="onTopo">
+                    <el-option v-for="t in dicts.tumorTopo" :key="t.code" :label="t.code+' '+t.name" :value="t.code"></el-option>
+                  </el-select>
+                </el-form-item></el-col>
+                <el-col :span="12"><el-form-item label="形态学">
+                  <el-select v-model="reportForm.tumorMorph" filterable style="width:100%">
+                    <el-option v-for="m in dicts.tumorMorph" :key="m.code" :label="m.code+' '+m.name" :value="m.code"></el-option>
+                  </el-select>
+                </el-form-item></el-col>
+                <el-col :span="8"><el-form-item label="行为分类"><el-select v-model="reportForm.behavior" style="width:100%"><el-option v-for="b in dicts.behavior" :key="b.code" :label="b.name" :value="b.code"></el-option></el-select></el-form-item></el-col>
+                <el-col :span="8"><el-form-item label="侧别"><el-select v-model="reportForm.laterality" style="width:100%"><el-option v-for="b in dicts.laterality" :key="b.code" :label="b.name" :value="b.code"></el-option></el-select></el-form-item></el-col>
+                <el-col :span="8"><el-form-item label="分化"><el-select v-model="reportForm.differentiation" style="width:100%"><el-option v-for="b in dicts.differentiation" :key="b.code" :label="b.name" :value="b.code"></el-option></el-select></el-form-item></el-col>
+                <el-col :span="12"><el-form-item label="诊断依据"><el-select v-model="reportForm.dxBasis" style="width:100%"><el-option v-for="b in dicts.dxBasis" :key="b.code" :label="b.name" :value="b.code"></el-option></el-select></el-form-item></el-col>
+                <el-col :span="12"><el-form-item label="临床分期"><el-input v-model="reportForm.stage" placeholder="如 T2N1M0 / IV期"/></el-form-item></el-col>
+                <el-col :span="12"><el-form-item label="发病时间"><el-date-picker v-model="reportForm.onsetDate" type="datetime" value-format="YYYY-MM-DD HH:mm:ss" style="width:100%"/></el-form-item></el-col>
+                <el-col :span="12"><el-form-item label="诊断时间"><el-date-picker v-model="reportForm.diagTime" type="datetime" value-format="YYYY-MM-DD HH:mm:ss" style="width:100%"/></el-form-item></el-col>
+              </el-row>
+            </template>
+
+            <el-divider content-position="left">报告信息</el-divider>
+            <el-form-item label="备注"><el-input v-model="reportForm.reportContent" type="textarea" :rows="2" placeholder="处置/既往史等(选填)"/></el-form-item>
+            <div class="dim">提交后按国家法定卡格式落库并留痕; 上报通道(国家严重精神障碍系统/肿瘤登记/大疫情网)对接由后续批次承接。校验未通过将列出缺失必填项。</div>
           </el-form>
           <template #footer>
             <el-button size="small" @click="reportVisible=false">取消</el-button>
@@ -203,7 +288,9 @@
         /* OP-B 疾病报卡 */
         reportVisible: false,
         reportSaving: false,
-        reportForm: { diagCode: '', diagName: '', reportType: 1, reportContent: '' },
+        reportBusy: false,
+        dicts: null,
+        reportForm: { diagCode: '', diagName: '', reportCategory: 2, reportType: 2, reportForm: 1, correctPrevNo: '', onsetDate: '', diagTime: '', deathDate: '', reportContent: '', name: '', gender: '', genderName: '', birthDate: '', age: '', idCard: '', phone: '', occupation: '', occupationName: '', presentDetail: '', diseaseCode: '', diseaseName: '', icdCode: '', riskLevel: '', guardianName: '', guardianPhone: '', guardianRelation: '', tumorTopo: '', tumorTopoName: '', tumorMorph: '', behavior: '', laterality: '', differentiation: '', dxBasis: '', stage: '' },
         /* U1: 折叠记忆(localStorage) */
         folded: window.localStorage.getItem('dw.diag.folded') === '1'
       };
@@ -448,26 +535,78 @@
         if (diag) { diag.toothPosition = this.toothTemp || null; this.notifyChange(); }
         this.toothVisible = false;
       },
-      /* OP-B 疾病报卡 */
-      openReport: function (diag) {
+      /* OP-B 疾病报卡: 打开时拉取值域字典(一次) + 患者区自动带出, 再展卡; presetCategory 供法定报卡自动弹出预选类型 */
+      openReport: function (diag, presetCategory) {
+        var vm = this;
         if (!diag) { return; }
-        this.reportForm = { diagCode: diag.diagCode, diagName: diag.diagName, reportType: 1, reportContent: '' };
-        this.reportVisible = true;
+        var cat = presetCategory ? Number(presetCategory) : 2;
+        vm.reportForm = {
+          diagCode: diag.diagCode, diagName: diag.diagName, reportCategory: cat, reportType: cat === 1 ? 1 : 2, reportForm: 1,
+          correctPrevNo: '', onsetDate: '', diagTime: '', deathDate: '', reportContent: '',
+          name: '', gender: '', genderName: '', birthDate: '', age: '', idCard: '', phone: '', occupation: '', occupationName: '', presentDetail: '',
+          diseaseCode: '', diseaseName: '', icdCode: '', caseType: '', riskLevel: '', guardianName: '', guardianPhone: '', guardianRelation: '',
+          tumorTopo: '', tumorTopoName: '', tumorMorph: '', behavior: '', laterality: '', differentiation: '', dxBasis: '', stage: ''
+        };
+        vm.reportVisible = true;
+        vm.reportBusy = true;
+        var p1 = vm.dicts ? Promise.resolve() : vm.loadReportDicts();
+        var p2 = vm.loadPatientFill();
+        Promise.all([p1, p2]).catch(function () {}).finally(function () { vm.reportBusy = false; });
+      },
+      loadReportDicts: function () {
+        var vm = this;
+        return window.HIS.get('/api/his/disease-report/dicts').then(function (d) { vm.dicts = d || null; });
+      },
+      /* 患者区自动带出: 拉档案非空字段合并进 reportForm 顶层(医生可改) */
+      loadPatientFill: function () {
+        var vm = this;
+        if (!vm.patientId) { return Promise.resolve(); }
+        return window.HIS.get('/api/his/disease-report/patient-fill?patientId=' + encodeURIComponent(vm.patientId)).then(function (d) {
+          d = d || {};
+          ['name','gender','genderName','birthDate','age','idCard','phone','nation','nationName','occupation','occupationName','presentDetail','employer']
+            .forEach(function (k) { if (d[k] != null && d[k] !== '') { vm.reportForm[k] = d[k]; } });
+        });
+      },
+      onReportCatChange: function () { /* 切换报卡类别仅影响分区渲染, 字段保留 */ },
+      onSmiDisease: function (code) {
+        var vm = this;
+        var hit = (vm.dicts && vm.dicts.smiDisease || []).find(function (d) { return d.code === code; });
+        if (hit) { vm.reportForm.diseaseName = hit.name; vm.reportForm.icdCode = hit.icd || ''; }
+      },
+      onTopo: function (code) {
+        var vm = this;
+        var hit = (vm.dicts && vm.dicts.tumorTopo || []).find(function (t) { return t.code === code; });
+        if (hit) { vm.reportForm.tumorTopoName = hit.name; }
+      },
+      onInfectiousDisease: function (code) {
+        var vm = this;
+        var hit = (vm.dicts && vm.dicts.infectiousDisease || []).find(function (d) { return d.code === code; });
+        if (hit) { vm.reportForm.diseaseName = hit.name; vm.reportForm.icdCode = hit.code; }
       },
       submitReport: function () {
         var vm = this;
         var visit = vm.currentVisit || {};
+        var f = vm.reportForm;
         if (!visit.id) { ElementPlus.ElMessage.warning('请先选择患者'); return; }
+        var form = {
+          name: f.name, gender: f.gender, genderName: f.genderName, birthDate: f.birthDate, age: f.age,
+          idCard: f.idCard, phone: f.phone, nation: f.nation, nationName: f.nationName,
+          occupation: f.occupation, occupationName: f.occupationName, presentDetail: f.presentDetail, employer: f.employer,
+          diseaseCode: f.diseaseCode, diseaseName: f.diseaseName, icdCode: f.icdCode, riskLevel: f.riskLevel, caseType: f.caseType,
+          guardianName: f.guardianName, guardianPhone: f.guardianPhone, guardianRelation: f.guardianRelation,
+          tumorTopo: f.tumorTopo, tumorTopoName: f.tumorTopoName, tumorMorph: f.tumorMorph, behavior: f.behavior,
+          laterality: f.laterality, differentiation: f.differentiation, dxBasis: f.dxBasis, stage: f.stage,
+          onsetDate: f.onsetDate, diagTime: f.diagTime
+        };
         vm.reportSaving = true;
         window.HIS.post('/api/his/disease-report', {
-          visitId: visit.id,
-          patientId: vm.patientId,
-          diagCode: vm.reportForm.diagCode,
-          diagName: vm.reportForm.diagName,
-          reportType: vm.reportForm.reportType,
-          reportContent: vm.reportForm.reportContent
-        }).then(function () {
-          ElementPlus.ElMessage.success('报卡已登记(待报)');
+          visitId: visit.id, patientId: vm.patientId,
+          diagCode: f.diagCode, diagName: f.diagName,
+          reportCategory: f.reportCategory, reportType: f.reportType, reportForm: f.reportForm, correctPrevNo: f.correctPrevNo,
+          onsetDate: f.onsetDate || null, diagTime: f.diagTime || null, deathDate: f.deathDate || null,
+          reportContent: f.reportContent, form: form
+        }).then(function (r) {
+          ElementPlus.ElMessage.success('报卡已登记(待报), 卡片编号: ' + (r && r.cardNo || ''));
           vm.reportVisible = false;
         }).catch(function (e) { if (window.HIS.notifyError) { window.HIS.notifyError(e); } }).finally(function () { vm.reportSaving = false; });
       },
