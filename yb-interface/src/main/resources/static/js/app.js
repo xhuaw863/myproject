@@ -97,7 +97,12 @@
         { key: 'emr-archive', label: '归档工作台', comp: 'EmrArchive' },
         /* P7b-3 等级自评(comp=EmrLevelAssess): 等级徽章+八维度SVG雷达+维度明细卡;
          * 动态菜单需 RbacInitializer 补种 emr-level-assess, 此静态项为 /api/auth/menus 失败时兜底 */
-        { key: 'emr-level-assess', label: '等级自评', comp: 'EmrLevelAssess' }
+        { key: 'emr-level-assess', label: '等级自评', comp: 'EmrLevelAssess' },
+                /* 高级版: 模板审批工作台(comp=EmrTemplateApproval): 待审列表+两版对比+通过/驳回;
+                 * 审批权限后端强制(ADMIN/SUPER_ADMIN), 此静态项为 /api/auth/menus 失败时兵底 */
+                { key: 'emr-template-approval', label: '模板审批', comp: 'EmrTemplateApproval' },
+                /* 高级版: 组件与模板市场(comp=EmrTemplateMarket): 分类浏览/上架/克隆副本/引用分析; 后端按租户隔离 */
+                { key: 'emr-template-market', label: '组件市场', comp: 'EmrTemplateMarket' }
       ]
     },
     {
@@ -743,6 +748,8 @@
   app.mixin({ created: function () { var i = this.$; while (i && i.parent) { i = i.parent; } if (i && !HIS.rootInstance) { HIS.rootInstance = i; } } });
   app.use(ElementPlus, { locale: window.ElementPlusLocaleZhCn });
   app.component('menu-nav', MenuNav);
+  /* 统一库房上下文条(scope.js 定义, 早于 app.js 加载): 药库/药房 8 业务视图共用 */
+  if (HIS.components && HIS.components.ScopeBar) { app.component('scope-bar', HIS.components.ScopeBar); }
   app.mount('#app');
 
   /* 全局快捷键系统(js/lib/his-interaction.js): 安装监听并注册默认快捷键

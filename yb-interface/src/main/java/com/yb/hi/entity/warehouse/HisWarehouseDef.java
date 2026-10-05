@@ -1,6 +1,7 @@
 package com.yb.hi.entity.warehouse;
 
 import com.baomidou.mybatisplus.annotation.IdType;
+import com.baomidou.mybatisplus.annotation.TableField;
 import com.baomidou.mybatisplus.annotation.TableId;
 import com.baomidou.mybatisplus.annotation.TableName;
 import com.yb.hi.framework.entity.BaseEntity;
@@ -41,4 +42,7 @@ public class HisWarehouseDef extends BaseEntity {
     private Integer sortNo;
     /** 归属科室(his_dept.id): 仅 kind=WAREHOUSE 药库使用, 与科室一一对应; PHARMACY 库存位随药房继承不单独绑定; 空=历史未绑定 */
     private Long deptId;
+    /** 归属科室名称(服务端按 deptId 运行时回填, 不落库): 供前端"当前药库"上下文条展示所属科室 */
+    @TableField(exist = false)
+    private String deptName;
 }

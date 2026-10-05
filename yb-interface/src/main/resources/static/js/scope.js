@@ -8,7 +8,8 @@
   var HIS = (window.HIS = window.HIS || {});
   var LS_WH = 'his.whScope.whId';
   var LS_PH = 'his.whScope.phId';
-  var WH_TYPE_TEXT = { WESTERN: '西药', TCM: '中药', MIXED: '综合' };
+  var WH_TYPE_TEXT = { WESTERN: '西药库', TCM: '中药库', MIXED: '综合库' };
+  var PHARM_TYPE_TEXT = { OUTPATIENT: '门诊药房', INPATIENT: '住院药房', TCM: '中药房' };
 
   /* 共享响应式上下文(单例) */
   HIS.scope = Vue.reactive({
@@ -110,5 +111,93 @@
       loadPharmacyOpts: function () { return HIS.loadPharmacies(); },
       onPhSwitch: function (id) { HIS.setPh(id); }
     }
+  };
+
+  /* ================= 统一"库房上下文条"组件(全局注册 <scope-bar>) =================
+   * mode='warehouse' 读 HIS.scope.warehouses/whId; mode='pharmacy' 读 pharmacies/phId。
+   * 目标: 一眼看清"当前哪个库 + 归属哪个科室 + 类型"(左色条按类型区分), 切换走显式确认弹窗防误操作。
+   * 切换后 emit('switched', id) 由宿主视图重查当前页数据。 */
+  HIS.components = HIS.components || {};
+  HIS.components.ScopeBar = {
+    props: { mode: { type: String, default: 'warehouse' } },
+    data: function () {
+      return { scope: HIS.scope, switchDlg: false, tempId: null };
+    },
+    computed: {
+      isWh: function () { return this.mode !== 'pharmacy'; },
+      kindLabel: function () { return this.isWh ? '药库' : '药房'; },
+      list: function () { return this.isWh ? this.scope.warehouses : this.scope.pharmacies; },
+      curId: function () { return this.isWh ? this.scope.whId : this.scope.phId; },
+      cur: function () { return findIn(this.list, this.curId); },
+      single: function () { return this.list.length <= 1; },
+      empty: function () { return this.list.length === 0; },
+      hasCur: function () { return !!this.cur; },
+      canSwitch: function () { return !this.single && !!this.cur; },
+      showLock: function () { return this.single && !!this.cur; },
+      /* 根容器色条修饰类: 按当前库类型着色, 无库时空态 */
+      rootClass: function () { return this.cur ? this.typeClass(this.cur) : 'is-empty'; }
+    },
+    methods: {
+      typeLabel: function (it) {
+        if (!it) { return ''; }
+        if (this.isWh) { return WH_TYPE_TEXT[it.warehouseType] || '综合库'; }
+        return PHARM_TYPE_TEXT[it.pharmacyType] || '药房';
+      },
+      typeClass: function (it) {
+        if (!it) { return 'is-mixed'; }
+        if (this.isWh) {
+          if (it.warehouseType === 'WESTERN') { return 'is-western'; }
+          if (it.warehouseType === 'TCM') { return 'is-tcm'; }
+          return 'is-mixed';
+        }
+        return it.pharmacyType === 'TCM' ? 'is-tcm' : 'is-pharmacy';
+      },
+      deptText: function (it) { return (it && it.deptName) ? it.deptName : '未绑定科室'; },
+      openSwitch: function () { this.tempId = this.curId; this.switchDlg = true; },
+      confirmSwitch: function () {
+        if (this.tempId === null || this.tempId === this.curId) { this.switchDlg = false; return; }
+        var it = findIn(this.list, this.tempId);
+        var nm = it ? it.name : '';
+        var dp = it && it.deptName ? '（科室 ' + it.deptName + '）' : '';
+        if (this.isWh) { HIS.setWh(this.tempId); } else { HIS.setPh(this.tempId); }
+        this.switchDlg = false;
+        ElementPlus.ElMessage.success('已切换到 ' + nm + dp);
+        this.$emit('switched', this.tempId);
+      }
+    },
+    template: [
+      '<div class="scope-bar" :class="rootClass">',
+      '  <div class="scope-bar__main">',
+      '    <span class="scope-bar__kind">当前{{ kindLabel }}</span>',
+      '    <span class="scope-bar__name" v-if="hasCur">{{ cur.name }}</span>',
+      '    <span class="scope-bar__name is-empty-text" v-else>无可操作{{ kindLabel }}</span>',
+      '    <span class="scope-bar__badge" v-if="hasCur">{{ typeLabel(cur) }}</span>',
+      '    <span class="scope-bar__dept" v-if="hasCur">归属科室：<b>{{ deptText(cur) }}</b></span>',
+      '  </div>',
+      '  <div class="scope-bar__act">',
+      '    <el-button v-if="canSwitch" size="small" @click="openSwitch">⇄ 切换{{ kindLabel }}</el-button>',
+      '    <el-tag v-if="showLock" size="small" type="info">唯一授权{{ kindLabel }}</el-tag>',
+      '    <span class="scope-bar__hint" v-if="hasCur">本页所有操作仅作用于当前{{ kindLabel }}</span>',
+      '  </div>',
+      '  <div class="scope-bar__empty" v-if="empty">当前账号无可操作的{{ kindLabel }}：请先在「{{ isWh ? \'药库管理\' : \'药房管理\' }}」为库房绑定归属科室，并在「职工管理」维护本人任职/授权科室。</div>',
+      '  <el-dialog v-model="switchDlg" :title="\'切换\' + kindLabel" width="460px" append-to-body>',
+      '    <div class="scope-switch__tip">切换会同步改变所有{{ kindLabel }}页面的当前上下文，请选中后点“确认切换”。</div>',
+      '    <el-radio-group v-model="tempId" class="scope-switch__list">',
+      '      <label class="scope-switch__item" :class="{\'is-cur\': it.id===curId}" v-for="it in list" :key="it.id">',
+      '        <el-radio :label="it.id">',
+      '          <span class="scope-switch__dot" :class="typeClass(it)"></span>',
+      '          <span class="scope-switch__nm">{{ it.name }}</span>',
+      '          <span class="scope-switch__meta">{{ typeLabel(it) }} · {{ deptText(it) }}</span>',
+      '          <el-tag v-if="it.id===curId" size="mini" type="success">当前</el-tag>',
+      '        </el-radio>',
+      '      </label>',
+      '    </el-radio-group>',
+      '    <template #footer>',
+      '      <el-button @click="switchDlg=false">取消</el-button>',
+      '      <el-button type="primary" :disabled="tempId===null || tempId===curId" @click="confirmSwitch">确认切换</el-button>',
+      '    </template>',
+      '  </el-dialog>',
+      '</div>'
+    ].join('\n')
   };
 })();

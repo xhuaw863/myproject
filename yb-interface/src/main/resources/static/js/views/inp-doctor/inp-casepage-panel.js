@@ -4,8 +4,9 @@
  *       PUT  /api/his/inp/case-page/{visitId} (保存草稿, 白名单字段)
  *       POST /{visitId}/submit {doctorSignImg} (草稿→已提交)
  *       POST /{visitId}/audit  {score, qcSignImg} (已提交→已审核)
+ *       POST /{visitId}/sync-diag (定向刷新: 按病历出院诊断现行覆盖首页诊断区, 仅草稿; 保存时诊断区同事务回写病历)
  *       GET  /{visitId}/print (打印数据, 前端组装 HTML)
- * 状态机: 1草稿(可编辑) → 2已提交(质控可操作) → 3已审核(全部只读)
+ * 状态机: 1草稿(可编辑) → 2已提交(质控可操作) → 3已审核(全部只读); 在院即可填写保存草稿, 提交与打印以"已出院(visit_status=4)"为闸门
  * 布局按《住院病案首页》国标分区: 患者信息/入院信息/出院信息/手术操作/离院与转归/费用汇总(含费用分项)/签名与质控
  * 签名: HIS.SignaturePad.open({actionType, refType:'case_front_page', refId}) 返回签名图URL
  * 注册: HIS.components.InpCasePagePanel (须在 inp-doctor.js 之前加载) */
@@ -85,6 +86,9 @@
 .cp-diag-line .code { flex:none; width:72px; font-family:var(--yb-font-mono); font-size:var(--yb-fs-sm); color:var(--yb-ink-3); }
 .cp-diag-line .name { color:var(--yb-ink-1); }
 .cp-edit-line { display:flex; align-items:center; gap:6px; padding:2px 0; }
+.cp-diag-edit { display:flex; align-items:center; gap:4px; flex-wrap:wrap; }
+.cp-diag-pick { width:118px; flex:none; }
+.cp-diag-warn { display:flex; flex-wrap:wrap; align-items:center; gap:2px 8px; padding:0 0 2px; }
 .cp-op-wrap { border:1px solid var(--yb-border-strong); border-top:none; }
 .cp-op-actions { padding:6px 0 0; }
 .cp-sign-row { display:grid; grid-template-columns:repeat(3, 1fr); gap:12px; margin-top:12px; }
@@ -104,17 +108,29 @@
 `;
 
   function ensureStyle() {
-    if (document.getElementById('inp-casepage-css')) { return; }
-    const st = document.createElement('style');
-    st.id = 'inp-casepage-css';
-    st.textContent = CSS;
-    document.head.appendChild(st);
+    if (!document.getElementById('inp-casepage-css')) {
+      const st = document.createElement('style');
+      st.id = 'inp-casepage-css';
+      st.textContent = CSS;
+      document.head.appendChild(st);
+    }
+    /* ICD校验提示样式: 与 inp-diag-panel 同 id 守卫同定义, 先加载诊断页签时不重复注入 */
+    if (!document.getElementById('inp-diag-icd-style')) {
+      const st2 = document.createElement('style');
+      st2.id = 'inp-diag-icd-style';
+      st2.textContent = [
+        '.iw-icd-warn { color:var(--yb-warning); font-size:12px; line-height:1.6; }',
+        '.iw-icd-sugs { display:flex; flex-wrap:wrap; align-items:center; gap:2px 10px; margin-top:2px; }',
+        '.iw-icd-sugs .el-button { height:auto; padding:0; font-size:12px; }'
+      ].join('\n');
+      document.head.appendChild(st2);
+    }
   }
 
   function emptyForm() {
     return {
       admissionDiagCode: '', admissionDiagName: '',
-      dischargeMainDiagCode: '', dischargeMainDiagName: '',
+      dischargeMainDiagCode: '', dischargeMainDiagName: '', mainDiagId: '',
       pathologyDiag: '', injuryPoisonCode: '', bloodType: '', rh: '',
       totalCost: 0, drugCost: 0, examCost: 0, treatmentCost: 0, bedCost: 0,
       nursingCost: 0, materialCost: 0, otherCost: 0, selfPay: 0, insurancePay: 0,
@@ -142,6 +158,7 @@
       return {
         loading: false,
         generating: false,
+        syncingDiag: false,
         saving: false,
         submitting: false,
         auditing: false,
@@ -164,14 +181,21 @@
         mrGrades: MR_GRADES,
         yesNo: YES_NO,
         surgeryLevels: SURGERY_LEVELS,
-        diagFits: DIAG_FITS
+        diagFits: DIAG_FITS,
+        /* 诊断区 ICD 检索/校验状态: 主诊断/病理/损伤中毒按目标位独立, 其他诊断行临时键挂行对象 */
+        pickMainCode: '', mainDiagOpts: [], mainDiagSearching: false,
+        pickPathCode: '', pathDiagOpts: [], pathDiagSearching: false,
+        pickInjCode: '', injDiagOpts: [], injDiagSearching: false,
+        icdHints: { main: { warn: '', sugs: [] }, path: { warn: '', sugs: [] }, inj: { warn: '', sugs: [] } }
       };
     },
     computed: {
       statusText() { return this.status == null ? '—' : (STATUS_TEXT[this.status] || '—'); },
       statusTag() { return STATUS_TAG[this.status] || 'info'; },
+      /* 出院闸门: 提交/打印要求已出院(4); 在院(1/2/3)仅可填写保存草稿 */
+      discharged() { return Number(this.visitStatus) === 4; },
       canEdit() { return this.exists && this.status === 1; },
-      canSubmit() { return this.exists && this.status === 1; },
+      canSubmit() { return this.exists && this.status === 1 && this.discharged; },
       canAudit() { return this.exists && this.status === 2; },
       ageText() {
         const vm = this;
@@ -218,6 +242,7 @@
         vm.transferDepts = [];
         vm.bloodTransfusion = [];
         vm.score = null;
+        vm.resetIcdHints();
         vm.form = emptyForm();
         if (!vm.visitId) {
           vm.exists = false;
@@ -246,6 +271,7 @@
           admissionDiagName: nz(d.admissionDiagName),
           dischargeMainDiagCode: nz(d.dischargeMainDiagCode),
           dischargeMainDiagName: nz(d.dischargeMainDiagName),
+          mainDiagId: d.mainDiagId == null ? '' : String(d.mainDiagId),
           pathologyDiag: nz(d.pathologyDiag),
           injuryPoisonCode: nz(d.injuryPoisonCode),
           bloodType: nz(d.bloodType),
@@ -272,7 +298,9 @@
         };
         vm.otherDiags = Array.isArray(d.dischargeOtherDiags)
           ? d.dischargeOtherDiags.map(function (x) {
-              return { code: nz(x && x.code), name: nz(x && x.name), admitCond: cd(x && x.admitCond) };
+              return { diagId: x && x.diagId != null ? String(x.diagId) : '',
+                       code: nz(x && x.code), name: nz(x && x.name), admitCond: cd(x && x.admitCond),
+                       pick: '', opts: [], searching: false, warn: '', sugs: [] };
             })
           : [];
         vm.opRecords = Array.isArray(d.operationRecords)
@@ -331,6 +359,9 @@
         return Object.assign({}, vm.form, {
           dischargeOtherDiags: vm.otherDiags.filter(function (d) {
             return (d.code && String(d.code).trim()) || (d.name && String(d.name).trim());
+          }).map(function (d) {
+            /* 只提交业务键, 检索/警告临时键(opts/searching/warn/sugs/pick)不下发 */
+            return { diagId: d.diagId || '', code: d.code, name: d.name, admitCond: d.admitCond };
           }),
           operationRecords: vm.opRecords.filter(function (r) {
             return r.name && String(r.name).trim();
@@ -350,7 +381,7 @@
         vm.saving = true;
         HIS.put('/api/his/inp/case-page/' + encodeURIComponent(vm.visitId), vm.buildPayload())
           .then(function () {
-            HIS.notifySuccess('病案首页已保存');
+            HIS.notifySuccess('病案首页已保存, 出院诊断已同步更新');
             return vm.load();
           })
           .catch(HIS.notifyError)
@@ -360,6 +391,7 @@
         const vm = this;
         if (!vm.exists) { ElementPlus.ElMessage.warning('请先生成病案首页'); return; }
         if (vm.status !== 1) { ElementPlus.ElMessage.warning('仅草稿状态可提交'); return; }
+        if (!vm.discharged) { ElementPlus.ElMessage.warning('患者尚未出院, 出院后方可提交病案首页'); return; }
         if (!HIS.SignaturePad) { ElementPlus.ElMessage.warning('签名组件未加载'); return; }
         if (vm.submitting) { return; }
         vm.submitting = true;
@@ -420,6 +452,7 @@
       print() {
         const vm = this;
         if (!vm.exists) { ElementPlus.ElMessage.warning('请先生成病案首页'); return; }
+        if (!vm.discharged) { ElementPlus.ElMessage.warning('患者尚未出院, 出院后方可打印病案首页'); return; }
         if (vm.printing) { return; }
         vm.printing = true;
         HIS.get('/api/his/inp/case-page/' + encodeURIComponent(vm.visitId) + '/print')
@@ -431,12 +464,156 @@
           .catch(HIS.notifyError)
           .finally(function () { vm.printing = false; });
       },
-      addOtherDiag() { this.otherDiags.push({ code: '', name: '', admitCond: '' }); },
+      addOtherDiag() { this.otherDiags.push({ diagId: '', code: '', name: '', admitCond: '', pick: '', opts: [], searching: false, warn: '', sugs: [] }); },
       addOpRecord() {
         this.opRecords.push({ name: '', code: '', date: '', surgeon: '', anesthesia: '', anesthesiaDoctor: '', firstAssistant: '', surgeryLevel: '', asaGrade: '', incisionType: '', healLevel: '' });
       },
       addTransferDept() { this.transferDepts.push({ dept: '', date: '' }); },
       addTransfusion() { this.bloodTransfusion.push({ kind: '', volume: 0, unit: 'ml', donateInst: '', transDate: '' }); },
+      /* ---------- 诊断区 ICD 检索/校验: 复用医生站诊断端点(检索 diag-dict + 校验 validate-icd), 仅提醒不阻断 ---------- */
+      diagDictSearch(kw) {
+        return HIS.get('/api/community-dict/diag-dict/page?dictType=west&status=1&page=1&size=30&keyword=' + encodeURIComponent(kw))
+          .then(function (data) { return (data && data.records) || []; })
+          .catch(function () { return []; });
+      },
+      resetIcdHints() {
+        const h = this.icdHints;
+        ['main', 'path', 'inj'].forEach(function (k) { h[k].warn = ''; h[k].sugs = []; });
+      },
+      setIcdHint(target, warn, sugs) {
+        const h = this.icdHints[target];
+        if (h) { h.warn = warn || ''; h.sugs = sugs || []; }
+      },
+      searchMainDiag(q) {
+        const vm = this;
+        const kw = String(q || '').trim();
+        if (!kw) { vm.mainDiagOpts = []; return; }
+        vm.mainDiagSearching = true;
+        vm.diagDictSearch(kw).then(function (r) { vm.mainDiagOpts = r; }).finally(function () { vm.mainDiagSearching = false; });
+      },
+      pickMainDiag(code) {
+        const d = (this.mainDiagOpts || []).find(function (x) { return String(x.code) === String(code); });
+        if (!d) { return; }
+        this.form.dischargeMainDiagCode = d.code || '';
+        this.form.dischargeMainDiagName = d.name || '';
+        this.setIcdHint('main', '', '');
+      },
+      searchPathDiag(q) {
+        const vm = this;
+        const kw = String(q || '').trim();
+        if (!kw) { vm.pathDiagOpts = []; return; }
+        vm.pathDiagSearching = true;
+        vm.diagDictSearch(kw).then(function (r) { vm.pathDiagOpts = r; }).finally(function () { vm.pathDiagSearching = false; });
+      },
+      pickPathDiag(code) {
+        const d = (this.pathDiagOpts || []).find(function (x) { return String(x.code) === String(code); });
+        if (!d) { return; }
+        this.form.pathologyCode = d.code || '';
+        this.form.pathologyDiag = d.name || '';
+        this.setIcdHint('path', '', '');
+      },
+      searchInjDiag(q) {
+        const vm = this;
+        const kw = String(q || '').trim();
+        if (!kw) { vm.injDiagOpts = []; return; }
+        vm.injDiagSearching = true;
+        vm.diagDictSearch(kw).then(function (r) { vm.injDiagOpts = r; }).finally(function () { vm.injDiagSearching = false; });
+      },
+      pickInjDiag(code) {
+        const d = (this.injDiagOpts || []).find(function (x) { return String(x.code) === String(code); });
+        if (!d) { return; }
+        this.form.injuryPoisonCode = d.code || '';
+        this.form.injuryPoisonName = d.name || '';
+        this.setIcdHint('inj', '', '');
+      },
+      /* 编码框失焦校验(不阻断保存): 未过时橙色警告 + 相近标准码建议 */
+      validateDiagIcd(target, code) {
+        const vm = this;
+        const c = String(code || '').trim();
+        vm.setIcdHint(target, '', '');
+        if (!c) { return; }
+        HIS.get('/api/his/inp/diagnosis/validate-icd?code=' + encodeURIComponent(c))
+          .then(function (d) {
+            d = d || {};
+            if (!d.valid) { vm.setIcdHint(target, d.warning || '编码校验未通过, 建议从检索结果选择', d.suggestions || []); }
+          })
+          .catch(function () { /* 静默: 不打扰录入(后端保存本身不阻断) */ });
+      },
+      /* 点击建议: 回填对应行编码与名称并清除警告(仍可人工修改) */
+      applyHintSuggestion(target, s) {
+        const vm = this;
+        if (!s) { return; }
+        if (target === 'main') {
+          vm.form.dischargeMainDiagCode = s.code || '';
+          vm.pickMainCode = s.code || '';
+          if (s.name) { vm.form.dischargeMainDiagName = s.name; }
+        } else if (target === 'path') {
+          vm.form.pathologyCode = s.code || '';
+          vm.pickPathCode = s.code || '';
+          if (s.name) { vm.form.pathologyDiag = s.name; }
+        } else if (target === 'inj') {
+          vm.form.injuryPoisonCode = s.code || '';
+          vm.pickInjCode = s.code || '';
+          if (s.name) { vm.form.injuryPoisonName = s.name; }
+        }
+        vm.setIcdHint(target, '', '');
+      },
+      /* 其他诊断: 行级检索/校验临时键挂行对象, buildPayload 提交前剔除 */
+      searchOtherDiag(q, d) {
+        const kw = String(q || '').trim();
+        if (!kw) { d.opts = []; return; }
+        d.searching = true;
+        this.diagDictSearch(kw).then(function (r) { d.opts = r; }).finally(function () { d.searching = false; });
+      },
+      pickOtherDiag(d, code) {
+        const s = (d.opts || []).find(function (x) { return String(x.code) === String(code); });
+        if (!s) { return; }
+        d.code = s.code || '';
+        d.name = s.name || '';
+        d.warn = '';
+        d.sugs = [];
+      },
+      checkOtherDiagIcd(d) {
+        const c = String(d.code || '').trim();
+        d.warn = '';
+        d.sugs = [];
+        if (!c) { return; }
+        HIS.get('/api/his/inp/diagnosis/validate-icd?code=' + encodeURIComponent(c))
+          .then(function (r) {
+            r = r || {};
+            if (!r.valid) { d.warn = r.warning || '编码校验未通过, 建议从检索结果选择'; d.sugs = r.suggestions || []; }
+          })
+          .catch(function () { /* 静默 */ });
+      },
+      applyOtherSuggestion(d, s) {
+        if (!s) { return; }
+        d.code = s.code || '';
+        if (s.name) { d.name = s.name; }
+        d.pick = s.code || '';
+        d.warn = '';
+        d.sugs = [];
+      },
+      /* 定向刷新: 按病历现行出院诊断覆盖首页诊断区(仅草稿, 不动手术/费用); 与生成的区别: 生成=全量重聚合, 同步=仅诊断域 */
+      syncDiag() {
+        const vm = this;
+        if (!vm.canEdit) { ElementPlus.ElMessage.warning('仅草稿状态可同步出院诊断'); return; }
+        if (vm.syncingDiag) { return; }
+        ElementPlus.ElMessageBox.confirm('按病历出院诊断现行内容覆盖首页诊断区(手术/费用不受影响), 首页诊断区的手工修订将丢失, 确认继续？',
+          '同步出院诊断', { type: 'warning', confirmButtonText: '同步', cancelButtonText: '取消' })
+          .then(function () {
+            vm.syncingDiag = true;
+            return HIS.post('/api/his/inp/case-page/' + encodeURIComponent(vm.visitId) + '/sync-diag');
+          })
+          .then(function (d) {
+            vm.applyData(d || {});
+            HIS.notifySuccess('首页诊断已按病历出院诊断同步');
+          })
+          .catch(function (e) {
+            if (e === 'cancel' || e === 'close') { return; }
+            HIS.notifyError(e);
+          })
+          .finally(function () { vm.syncingDiag = false; });
+      },
       /* 打印 HTML: 纸质病案首页样式(宋体/黑边框/签名区), 签名图转绝对路径供 iframe 加载 */
       buildPrintHtml(d) {
         const vm = this;
@@ -599,15 +776,19 @@
           <span class="iw-toolbar-right">
             <el-button size="small" :loading="loading" @click="load">刷新</el-button>
             <el-button size="small" type="primary" plain :loading="generating" :disabled="!visitId" @click="generate">生成</el-button>
+            <el-button size="small" :loading="syncingDiag" :disabled="!canEdit" @click="syncDiag">同步出院诊断</el-button>
             <el-button size="small" :loading="saving" :disabled="!canEdit" @click="save">保存</el-button>
             <el-button size="small" type="primary" :loading="submitting" :disabled="!canSubmit" @click="submit">提交</el-button>
-            <el-button size="small" :loading="printing" :disabled="!exists" @click="print">打印</el-button>
+            <el-button size="small" :loading="printing" :disabled="!exists || !discharged" @click="print">打印</el-button>
           </span>
         </div>
 
+        <el-alert v-if="visitId && !discharged" type="info" :closable="false" show-icon
+                  title="患者尚未出院: 病案首页可提前填写并保存草稿, 出院后方可提交与打印" style="margin:6px 12px 0"></el-alert>
+
         <div v-if="!visitId" class="iw-placeholder" style="flex:1">
           <span>请从左侧选择患者</span>
-          <span class="iw-dim">病案首页在患者出院办理中或已出院后可生成</span>
+          <span class="iw-dim">病案首页在院期间即可预填草稿, 出院后完成提交与打印</span>
         </div>
 
         <div v-else-if="!exists" class="cp-empty">
@@ -760,7 +941,27 @@
                   <td class="lb">出院主诊断</td>
                   <td class="lb2">编码</td>
                   <td class="in" colspan="2">
-                    <el-input v-if="canEdit" v-model="form.dischargeMainDiagCode" size="small" placeholder="ICD编码"></el-input>
+                    <template v-if="canEdit">
+                      <div class="cp-diag-edit">
+                        <el-select v-model="pickMainCode" class="cp-diag-pick" size="small" filterable remote reserve-keyword clearable
+                                   :remote-method="searchMainDiag" :loading="mainDiagSearching" placeholder="ICD检索"
+                                   @change="pickMainDiag">
+                          <el-option v-for="o in mainDiagOpts" :key="o.id || o.code" :label="(o.code || '') + ' ' + (o.name || '')" :value="o.code"></el-option>
+                        </el-select>
+                        <el-input v-model="form.dischargeMainDiagCode" size="small" style="width:118px" placeholder="ICD编码"
+                                  @blur="validateDiagIcd('main', form.dischargeMainDiagCode)"></el-input>
+                      </div>
+                      <div class="cp-diag-warn" v-if="icdHints.main.warn">
+                        <span class="iw-icd-warn">{{ icdHints.main.warn }}</span>
+                        <span class="iw-icd-sugs" v-if="icdHints.main.sugs.length">
+                          <span class="iw-dim">相近标准码:</span>
+                          <el-button v-for="s in icdHints.main.sugs" :key="'mn-' + s.code" link type="primary" size="small"
+                                     :title="'点击回填 ' + s.code + ' ' + (s.name || '')" @click="applyHintSuggestion('main', s)">
+                            {{ s.code }}{{ s.name ? ' ' + s.name : '' }}
+                          </el-button>
+                        </span>
+                      </div>
+                    </template>
                     <span v-else>{{ disp(form.dischargeMainDiagCode) }}</span>
                   </td>
                   <td class="lb2">名称</td>
@@ -782,14 +983,31 @@
                   <td class="lb">其他诊断</td>
                   <td colspan="7">
                     <template v-if="canEdit">
-                      <div class="cp-edit-line" v-for="(d, i) in otherDiags" :key="'od-' + i">
-                        <el-input v-model="d.code" size="small" style="width:120px" placeholder="编码"></el-input>
-                        <el-input v-model="d.name" size="small" class="iw-grow" placeholder="诊断名称"></el-input>
-                        <el-select v-model="d.admitCond" size="small" clearable placeholder="入院病情" style="width:150px">
-                          <el-option v-for="(l, k) in admitConds" :key="'odac-'+i+'-'+k" :label="k+' '+l" :value="Number(k)"></el-option>
-                        </el-select>
-                        <el-button link type="danger" size="small" @click="otherDiags.splice(i, 1)">删除</el-button>
-                      </div>
+                      <template v-for="(d, i) in otherDiags" :key="'od-' + i">
+                        <div class="cp-edit-line">
+                          <el-select v-model="d.pick" class="cp-diag-pick" size="small" filterable remote reserve-keyword clearable
+                                     :remote-method="(q) => searchOtherDiag(q, d)" :loading="d.searching" placeholder="ICD检索"
+                                     @change="(c) => pickOtherDiag(d, c)">
+                            <el-option v-for="o in d.opts" :key="o.id || o.code" :label="(o.code || '') + ' ' + (o.name || '')" :value="o.code"></el-option>
+                          </el-select>
+                          <el-input v-model="d.code" size="small" style="width:120px" placeholder="编码" @blur="checkOtherDiagIcd(d)"></el-input>
+                          <el-input v-model="d.name" size="small" class="iw-grow" placeholder="诊断名称"></el-input>
+                          <el-select v-model="d.admitCond" size="small" clearable placeholder="入院病情" style="width:150px">
+                            <el-option v-for="(l, k) in admitConds" :key="'odac-'+i+'-'+k" :label="k+' '+l" :value="Number(k)"></el-option>
+                          </el-select>
+                          <el-button link type="danger" size="small" @click="otherDiags.splice(i, 1)">删除</el-button>
+                        </div>
+                        <div class="cp-diag-warn" v-if="d.warn" style="padding-left:6px">
+                          <span class="iw-icd-warn">{{ d.warn }}</span>
+                          <span class="iw-icd-sugs" v-if="d.sugs && d.sugs.length">
+                            <span class="iw-dim">相近标准码:</span>
+                            <el-button v-for="s in d.sugs" :key="'od-' + i + '-' + s.code" link type="primary" size="small"
+                                       :title="'点击回填 ' + s.code + ' ' + (s.name || '')" @click="applyOtherSuggestion(d, s)">
+                              {{ s.code }}{{ s.name ? ' ' + s.name : '' }}
+                            </el-button>
+                          </span>
+                        </div>
+                      </template>
                       <el-button link type="primary" size="small" @click="addOtherDiag">+ 添加其他诊断</el-button>
                     </template>
                     <template v-else>
@@ -809,7 +1027,27 @@
                   </td>
                   <td class="lb2">编码</td>
                   <td class="in" colspan="3">
-                    <el-input v-if="canEdit" v-model="form.pathologyCode" size="small" placeholder="病理编码"></el-input>
+                    <template v-if="canEdit">
+                      <div class="cp-diag-edit">
+                        <el-select v-model="pickPathCode" class="cp-diag-pick" size="small" filterable remote reserve-keyword clearable
+                                   :remote-method="searchPathDiag" :loading="pathDiagSearching" placeholder="ICD检索"
+                                   @change="pickPathDiag">
+                          <el-option v-for="o in pathDiagOpts" :key="o.id || o.code" :label="(o.code || '') + ' ' + (o.name || '')" :value="o.code"></el-option>
+                        </el-select>
+                        <el-input v-model="form.pathologyCode" size="small" style="width:118px" placeholder="病理编码"
+                                  @blur="validateDiagIcd('path', form.pathologyCode)"></el-input>
+                      </div>
+                      <div class="cp-diag-warn" v-if="icdHints.path.warn">
+                        <span class="iw-icd-warn">{{ icdHints.path.warn }}</span>
+                        <span class="iw-icd-sugs" v-if="icdHints.path.sugs.length">
+                          <span class="iw-dim">相近标准码:</span>
+                          <el-button v-for="s in icdHints.path.sugs" :key="'pl-' + s.code" link type="primary" size="small"
+                                     :title="'点击回填 ' + s.code + ' ' + (s.name || '')" @click="applyHintSuggestion('path', s)">
+                            {{ s.code }}{{ s.name ? ' ' + s.name : '' }}
+                          </el-button>
+                        </span>
+                      </div>
+                    </template>
                     <span v-else>{{ disp(form.pathologyCode) }}</span>
                   </td>
                 </tr>
@@ -824,7 +1062,27 @@
                   <td class="lb">损伤/中毒</td>
                   <td class="lb2">编码</td>
                   <td class="in" colspan="2">
-                    <el-input v-if="canEdit" v-model="form.injuryPoisonCode" size="small" placeholder="外部原因编码"></el-input>
+                    <template v-if="canEdit">
+                      <div class="cp-diag-edit">
+                        <el-select v-model="pickInjCode" class="cp-diag-pick" size="small" filterable remote reserve-keyword clearable
+                                   :remote-method="searchInjDiag" :loading="injDiagSearching" placeholder="ICD检索"
+                                   @change="pickInjDiag">
+                          <el-option v-for="o in injDiagOpts" :key="o.id || o.code" :label="(o.code || '') + ' ' + (o.name || '')" :value="o.code"></el-option>
+                        </el-select>
+                        <el-input v-model="form.injuryPoisonCode" size="small" style="width:118px" placeholder="外部原因编码"
+                                  @blur="validateDiagIcd('inj', form.injuryPoisonCode)"></el-input>
+                      </div>
+                      <div class="cp-diag-warn" v-if="icdHints.inj.warn">
+                        <span class="iw-icd-warn">{{ icdHints.inj.warn }}</span>
+                        <span class="iw-icd-sugs" v-if="icdHints.inj.sugs.length">
+                          <span class="iw-dim">相近标准码:</span>
+                          <el-button v-for="s in icdHints.inj.sugs" :key="'ij-' + s.code" link type="primary" size="small"
+                                     :title="'点击回填 ' + s.code + ' ' + (s.name || '')" @click="applyHintSuggestion('inj', s)">
+                            {{ s.code }}{{ s.name ? ' ' + s.name : '' }}
+                          </el-button>
+                        </span>
+                      </div>
+                    </template>
                     <span v-else>{{ disp(form.injuryPoisonCode) }}</span>
                   </td>
                   <td class="lb2">名称</td>

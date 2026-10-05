@@ -4,8 +4,12 @@ import com.yb.hi.dto.inpatient.EmrTemplateBatchDTO;
 import com.yb.hi.dto.inpatient.EmrTemplateDTO;
 import com.yb.hi.dto.inpatient.EmrTemplateFromDatasetDTO;
 import com.yb.hi.entity.inpatient.HisEmrTemplate;
+import com.yb.hi.entity.inpatient.HisEmrTemplateApproval;
+import com.yb.hi.entity.inpatient.HisEmrTemplateVersion;
 import com.yb.hi.framework.common.R;
 import com.yb.hi.platform.service.OrgAccessGuard;
+import com.yb.hi.service.emr.EmrTemplateApprovalService;
+import com.yb.hi.service.emr.EmrTemplateVersionService;
 import com.yb.hi.service.inpatient.EmrTemplateService;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -29,10 +33,15 @@ import java.util.Map;
 public class EmrTemplateController {
 
     private final EmrTemplateService templateService;
+    private final EmrTemplateVersionService versionService;
+    private final EmrTemplateApprovalService approvalService;
     private final OrgAccessGuard guard;
 
-    public EmrTemplateController(EmrTemplateService templateService, OrgAccessGuard guard) {
+    public EmrTemplateController(EmrTemplateService templateService, EmrTemplateVersionService versionService,
+                                 EmrTemplateApprovalService approvalService, OrgAccessGuard guard) {
         this.templateService = templateService;
+        this.versionService = versionService;
+        this.approvalService = approvalService;
         this.guard = guard;
     }
 
@@ -108,6 +117,68 @@ public class EmrTemplateController {
     @PostMapping("/createFromDataset")
     public R<HisEmrTemplate> createFromDataset(@RequestBody EmrTemplateFromDatasetDTO dto) {
         return templateService.createFromDataset(dto.getDatasetId(), dto.getName(), dto.getScopeLevel());
+    }
+
+    /* ================= 高级版: 模板版本管理 ================= */
+
+    /** 模板版本列表(轻量元数据, 不回大字段) */
+    @GetMapping("/{id}/versions")
+    public R<List<HisEmrTemplateVersion>> versions(@PathVariable Long id) {
+        return versionService.list(id);
+    }
+
+    /** 单版本详情(含 document/fields 四载荷, 供两版对比与回滚取数) */
+    @GetMapping("/version/{vid}")
+    public R<HisEmrTemplateVersion> versionDetail(@PathVariable Long vid) {
+        return versionService.getVersion(vid);
+    }
+
+    /** 回滚到指定历史版本(生成新版本, 不覆盖历史) */
+    @PostMapping("/{id}/rollback")
+    public R<Void> rollback(@PathVariable Long id,
+                            @RequestParam Integer versionNo,
+                            @RequestParam(required = false) String summary) {
+        return templateService.rollbackVersion(id, versionNo, summary);
+    }
+
+    /* ================= 高级版: 发布审批工作流 ================= */
+
+    /** 提交审核(草稿/已发布/已驳回 → 待审) */
+    @PostMapping("/{id}/submit")
+    public R<Void> submit(@PathVariable Long id) {
+        return templateService.submitForReview(id);
+    }
+
+    /** 撤回草稿(待审 → 草稿; 提交人/归属维护者) */
+    @PostMapping("/{id}/retract")
+    public R<Void> retract(@PathVariable Long id) {
+        return templateService.retractReview(id);
+    }
+
+    /** 审核通过(待审 → 已发布并启用; 全院模板需牵头机构管理员) */
+    @PostMapping("/{id}/approve")
+    public R<Void> approve(@PathVariable Long id,
+                           @RequestParam(required = false) String opinion) {
+        return templateService.approveReview(id, opinion);
+    }
+
+    /** 审核驳回(待审 → 已驳回, 意见必填) */
+    @PostMapping("/{id}/reject")
+    public R<Void> reject(@PathVariable Long id,
+                          @RequestParam String opinion) {
+        return templateService.rejectReview(id, opinion);
+    }
+
+    /** 待审模板列表(审批工作台数据源; 管理员) */
+    @GetMapping("/pendingReviews")
+    public R<List<HisEmrTemplate>> pendingReviews() {
+        return templateService.listPendingReviews();
+    }
+
+    /** 某模板的审批流水(提交/审核留痕) */
+    @GetMapping("/{id}/approvalHistory")
+    public R<List<HisEmrTemplateApproval>> approvalHistory(@PathVariable Long id) {
+        return approvalService.history(id);
     }
 
     /** 批量更新数据元属性(attrs 逐键覆盖; Tiptap 文档与 fields 定义双写) */

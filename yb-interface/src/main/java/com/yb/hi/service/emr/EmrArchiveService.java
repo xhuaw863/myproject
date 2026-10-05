@@ -37,6 +37,7 @@ import java.math.BigDecimal;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.security.MessageDigest;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Timestamp;
@@ -753,18 +754,19 @@ public class EmrArchiveService {
                 log.warn("归档PDF生成跳过: 病历不存在 recordId={}", recordId);
                 return;
             }
-            String title = "住院病历-" + recordTypeLabel(record.getRecordType());
-            byte[] pdf = pdfExportService.generatePdf(buildArchiveHtml(record), title);
+            // 归档主链走高保真 PDF(Tiptap JSON 直读 + 签名水印/签名图/CA行/归档章/骑缝章), 非 <pre> 兜底
+            byte[] pdf = pdfExportService.generateArchivePdf(recordId);
             if (pdf == null || pdf.length == 0) {
                 log.warn("归档PDF生成结果为空, 跳过回填: recordId={}", recordId);
                 return;
             }
             String url = writePdfFile(pdf, recordId);
+            String sha256 = sha256Hex(pdf);
             jdbcTemplate.update(
-                    "UPDATE his_inp_medical_record SET pdf_path = ?, pdf_generated_time = NOW() "
+                    "UPDATE his_inp_medical_record SET pdf_path = ?, pdf_generated_time = NOW(), pdf_sha256 = ? "
                             + "WHERE id = ? AND tenant_id = ? AND deleted = 0",
-                    url, recordId, tenantId);
-            log.info("归档PDF生成完成: recordId={}, url={}, size={}B", recordId, url, pdf.length);
+                    url, sha256, recordId, tenantId);
+            log.info("归档PDF生成完成: recordId={}, url={}, size={}B, sha256={}", recordId, url, pdf.length, sha256);
         } catch (Exception e) {
             log.warn("归档PDF生成失败(best-effort, 不影响归档): recordId={}, err={}", recordId, e.getMessage());
         } finally {
@@ -819,6 +821,82 @@ public class EmrArchiveService {
         Files.write(dir.resolve(filename), pdf);
         String prefix = urlPrefix.endsWith("/") ? urlPrefix : urlPrefix + "/";
         return uploadUrlSigner.appendToken(prefix + "emr-archive/" + ym + "/" + filename);
+    }
+
+    /** SHA-256 十六进制摘要(小写; 与 CaSignatureService 同口径)。 */
+    private static String sha256Hex(byte[] bytes) {
+        try {
+            MessageDigest md = MessageDigest.getInstance("SHA-256");
+            byte[] digest = md.digest(bytes);
+            StringBuilder sb = new StringBuilder(digest.length * 2);
+            for (byte b : digest) {
+                sb.append(Character.forDigit((b >> 4) & 0xF, 16)).append(Character.forDigit(b & 0xF, 16));
+            }
+            return sb.toString();
+        } catch (Exception e) {
+            throw new BizException(500, "SHA-256 哈希计算失败: " + e.getMessage());
+        }
+    }
+
+    /**
+     * 归档 PDF 防篡改回查: 读取 pdf_path 落盘文件重算 SHA-256, 与归档时持久化的 pdf_sha256 比对。
+     * 返回 {valid, expected, actual, generatedTime}(可选 message): valid=两者一致即文件未被替换/截断。
+     */
+    public Map<String, Object> verifyArchivePdf(Long recordId) {
+        if (recordId == null) {
+            throw new BizException(400, "病历ID不能为空");
+        }
+        Long tenantId = TenantContext.get();
+        Map<String, Object> row;
+        try {
+            row = jdbcTemplate.queryForMap(
+                    "SELECT pdf_path, pdf_sha256, pdf_generated_time FROM his_inp_medical_record "
+                            + "WHERE id = ? AND tenant_id = ? AND deleted = 0",
+                    recordId, tenantId);
+        } catch (Exception e) {
+            throw new BizException(404, "病历不存在: recordId=" + recordId);
+        }
+        Map<String, Object> result = new LinkedHashMap<>();
+        String expected = row.get("pdf_sha256") == null ? null : String.valueOf(row.get("pdf_sha256")).trim();
+        String pdfPath = row.get("pdf_path") == null ? null : String.valueOf(row.get("pdf_path")).trim();
+        result.put("expected", expected);
+        result.put("generatedTime", row.get("pdf_generated_time"));
+        if (!StringUtils.hasText(pdfPath) || !StringUtils.hasText(expected)) {
+            result.put("valid", false);
+            result.put("actual", null);
+            result.put("message", "该病历尚无归档PDF或防篡改指纹, 请先归档生成");
+            return result;
+        }
+        String actual;
+        try {
+            Path file = resolvePdfFilePath(pdfPath);
+            if (file == null || !Files.exists(file)) {
+                result.put("valid", false);
+                result.put("actual", null);
+                result.put("message", "归档PDF文件不存在或已被移动: " + pdfPath);
+                return result;
+            }
+            actual = sha256Hex(Files.readAllBytes(file));
+        } catch (Exception e) {
+            result.put("valid", false);
+            result.put("actual", null);
+            result.put("message", "归档PDF文件读取失败: " + e.getMessage());
+            return result;
+        }
+        result.put("actual", actual);
+        result.put("valid", expected.equalsIgnoreCase(actual));
+        return result;
+    }
+
+    /** 由 pdf_path(带签名 token 的访问 URL) 反解出磁盘绝对路径。 */
+    private Path resolvePdfFilePath(String pdfPath) {
+        String path = uploadUrlSigner.pathOnly(pdfPath);
+        String prefix = urlPrefix.endsWith("/") ? urlPrefix : urlPrefix + "/";
+        if (!path.startsWith(prefix)) {
+            return null;
+        }
+        String relative = path.substring(prefix.length());
+        return Paths.get(uploadPath).toAbsolutePath().normalize().resolve(relative);
     }
 
     /* ==================== 副作用助手(best-effort) ==================== */

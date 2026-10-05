@@ -7,6 +7,7 @@ import com.yb.hi.dto.inpatient.PrintTemplateDTO;
 import com.yb.hi.entity.inpatient.HisPrintTemplate;
 import com.yb.hi.framework.common.BizException;
 import com.yb.hi.framework.common.R;
+import com.yb.hi.service.emr.EmrArchiveService;
 import com.yb.hi.service.inpatient.InpPrintService;
 import com.yb.hi.service.inpatient.PdfExportService;
 import org.springframework.format.annotation.DateTimeFormat;
@@ -23,6 +24,7 @@ import java.io.IOException;
 import java.net.URLEncoder;
 import java.time.LocalDate;
 import java.util.List;
+import java.util.Map;
 
 /**
  * 住院打印接口: 打印模板管理(列表/详情/保存) + 六类单据HTML渲染(日清单/结算单/医嘱单/护理记录/病历/腕带)
@@ -35,10 +37,13 @@ public class InpPrintController {
 
     private final InpPrintService inpPrintService;
     private final PdfExportService pdfExportService;
+    private final EmrArchiveService emrArchiveService;
 
-    public InpPrintController(InpPrintService inpPrintService, PdfExportService pdfExportService) {
+    public InpPrintController(InpPrintService inpPrintService, PdfExportService pdfExportService,
+                              EmrArchiveService emrArchiveService) {
         this.inpPrintService = inpPrintService;
         this.pdfExportService = pdfExportService;
+        this.emrArchiveService = emrArchiveService;
     }
 
     /** 模板列表(按类型筛选, type 缺省查全部启用模板) */
@@ -227,6 +232,15 @@ public class InpPrintController {
         byte[] pdf = pdfExportService.selectivePages(recordId, startPage, endPage);
         writePdfResponse(response, pdf,
                 "病历选页_" + recordId + "_" + startPage + "-" + endPage + ".pdf", true);
+    }
+
+    /**
+     * 归档PDF防篡改回查: 重读 pdf_path 落盘文件重算 SHA-256, 与归档时持久化的 pdf_sha256 比对。
+     * 返回 {valid, expected, actual, generatedTime}(可选 message), 供归档/病案借阅页展示"防篡改校验"。
+     */
+    @GetMapping("/emr-pdf/{recordId}/verify")
+    public R<Map<String, Object>> verifyEmrPdf(@PathVariable Long recordId) {
+        return R.ok(emrArchiveService.verifyArchivePdf(recordId));
     }
 
     /** PDF 响应统一写流: attachment(下载)/inline(预览) + UTF-8 文件名 + 跨域暴露头。 */

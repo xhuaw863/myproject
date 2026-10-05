@@ -136,12 +136,21 @@ public class EmrTemplateService implements ApplicationRunner {
     private final JdbcTemplate jdbcTemplate;
     private final EmrDatasetMapper datasetMapper;
     private final EmrDatasetElementMapper datasetElementMapper;
+    /** 模板版本快照服务(高级版): 保存/发布/回滚留存版本 */
+    private final com.yb.hi.service.emr.EmrTemplateVersionService versionService;
+    /** 模板引用反查索引服务(高级版): 保存时重算引用 */
+    private final com.yb.hi.service.emr.EmrRefIndexService refIndexService;
+    /** 模板发布审批流水服务(高级版): 提交/通过/驳回留痕 */
+    private final com.yb.hi.service.emr.EmrTemplateApprovalService approvalService;
     /** 自注入代理: @Async 传播方法须经代理调用才异步(同类内直调不走代理) */
     private final ObjectProvider<EmrTemplateService> selfProvider;
 
     public EmrTemplateService(HisEmrTemplateMapper templateMapper, OrgAccessGuard guard,
                               SysTenantService tenantService, JdbcTemplate jdbcTemplate,
                               EmrDatasetMapper datasetMapper, EmrDatasetElementMapper datasetElementMapper,
+                              com.yb.hi.service.emr.EmrTemplateVersionService versionService,
+                              com.yb.hi.service.emr.EmrRefIndexService refIndexService,
+                              com.yb.hi.service.emr.EmrTemplateApprovalService approvalService,
                               ObjectProvider<EmrTemplateService> selfProvider) {
         this.templateMapper = templateMapper;
         this.guard = guard;
@@ -149,6 +158,9 @@ public class EmrTemplateService implements ApplicationRunner {
         this.jdbcTemplate = jdbcTemplate;
         this.datasetMapper = datasetMapper;
         this.datasetElementMapper = datasetElementMapper;
+        this.versionService = versionService;
+        this.refIndexService = refIndexService;
+        this.approvalService = approvalService;
         this.selfProvider = selfProvider;
     }
 
@@ -413,11 +425,14 @@ public class EmrTemplateService implements ApplicationRunner {
         t.setDeptId(deptId);
         t.setVersion(dto.getVersion() != null ? dto.getVersion() : 1);
         t.setStatus(dto.getStatus() != null ? dto.getStatus() : 1);
+        t.setPublishStatus(dto.getPublishStatus() != null ? dto.getPublishStatus() : 3);
         try {
             templateMapper.insert(t);
         } catch (DuplicateKeyException e) {
             throw new BizException(400, "模板编码已存在: " + code);
         }
+        // 高级版: 新建即落初始版本快照 + 重算引用索引(失败不阻断新建, 仅告警)
+        safeSnapshotAndReindex(t, dto.getChangeSummary() != null ? dto.getChangeSummary() : "初始创建", "save");
         log.info("新建病历模板: id={}, code={}, name={}, owner={}", t.getId(), code, t.getTemplateName(), ownerScope);
         return R.ok(templateMapper.selectById(t.getId()));
     }
@@ -494,8 +509,155 @@ public class EmrTemplateService implements ApplicationRunner {
         } catch (DuplicateKeyException e) {
             throw new BizException(400, "模板编码已存在: " + exist.getTemplateCode());
         }
+        // 高级版: 更新后落版本快照 + 重算引用索引(失败不阻断更新, 仅告警)
+        safeSnapshotAndReindex(exist, dto.getChangeSummary(), "save");
         log.info("更新病历模板: id={}, code={}, version={}", id, exist.getTemplateCode(), exist.getVersion());
         return R.ok();
+    }
+
+    /**
+     * 回滚到指定历史版本(高级版): 取目标版本四载荷写回模板并再自增 version,
+     * 同时落一条 operate_type=rollback 的新快照(追加式, 不覆盖历史)。守卫同 updateTemplate。
+     */
+    public R<Void> rollbackVersion(Long templateId, Integer versionNo, String summary) {
+        HisEmrTemplate exist = templateId == null ? null : templateMapper.selectById(templateId);
+        if (exist == null) {
+            throw new BizException(400, "病历模板不存在");
+        }
+        guardEditable(exist);
+        com.yb.hi.entity.inpatient.HisEmrTemplateVersion target = versionService.getVersionByNo(templateId, versionNo);
+        exist.setDocument(target.getDocument());
+        exist.setFields(target.getFields());
+        exist.setPrintConfig(target.getPrintConfig());
+        exist.setLockedSections(target.getLockedSections());
+        exist.setVersion((exist.getVersion() == null ? 1 : exist.getVersion()) + 1);
+        templateMapper.updateById(exist);
+        String note = summary != null ? summary : ("回滚自版本 " + versionNo);
+        safeSnapshotAndReindex(exist, note, "rollback");
+        log.info("回滚病历模板: id={}, fromVersion={}, toVersion={}", templateId, versionNo, exist.getVersion());
+        return R.ok();
+    }
+
+    /** 保存类操作后置钩子: 落版本快照 + 重算引用索引; 任一失败仅告警, 不回滚主事务外的核心保存。 */
+    private void safeSnapshotAndReindex(HisEmrTemplate state, String summary, String operateType) {
+        try {
+            versionService.snapshot(state, summary, operateType);
+        } catch (Exception e) {
+            log.warn("模板[{}]版本快照失败(不阻断保存): {}", state.getId(), e.getMessage());
+        }
+        try {
+            refIndexService.rebuild(state.getId(), state.getOrgId(), state.getDocument());
+        } catch (Exception e) {
+            log.warn("模板[{}]引用索引失败(不阻断保存): {}", state.getId(), e.getMessage());
+        }
+    }
+
+    /* ================= 高级版: 模板发布审批 ================= */
+
+    /** 提交待审(0草稿/2驳回 → 1待审); 归属层级鉴权同 updateTemplate。 */
+    public R<Void> submitForReview(Long templateId) {
+        HisEmrTemplate exist = templateId == null ? null : templateMapper.selectById(templateId);
+        if (exist == null) {
+            throw new BizException(400, "病历模板不存在");
+        }
+        guardEditable(exist);
+        int from = exist.getPublishStatus() == null ? 3 : exist.getPublishStatus();
+        if (from == 1) {
+            throw new BizException(400, "模板已在待审中");
+        }
+        exist.setPublishStatus(1);
+        templateMapper.updateById(exist);
+        approvalService.recordSubmit(templateId, from);
+        log.info("提交模板审核: id={}, from={}", templateId, from);
+        return R.ok();
+    }
+
+    /** 撤回草稿(1待审 → 0草稿): 提交人本人/归属层级维护者可撤回, 流水行同步回填为驳回动作留痕。 */
+    public R<Void> retractReview(Long templateId) {
+        HisEmrTemplate exist = templateId == null ? null : templateMapper.selectById(templateId);
+        if (exist == null) {
+            throw new BizException(400, "病历模板不存在");
+        }
+        guardEditable(exist);
+        int from = exist.getPublishStatus() == null ? 3 : exist.getPublishStatus();
+        if (from != 1) {
+            throw new BizException(400, "仅待审模板可撤回草稿");
+        }
+        exist.setPublishStatus(0);
+        templateMapper.updateById(exist);
+        approvalService.recordReview(templateId, 1, 0, "retract", "提交人撤回草稿");
+        log.info("撤回模板审核: id={}", templateId);
+        return R.ok();
+    }
+
+    /** 审核通过(1待审 → 3已发布, 并置 status=1 启用); 审核人权限见 requireApproveReviewer。 */
+    public R<Void> approveReview(Long templateId, String opinion) {
+        HisEmrTemplate exist = templateId == null ? null : templateMapper.selectById(templateId);
+        if (exist == null) {
+            throw new BizException(400, "病历模板不存在");
+        }
+        requireApproveReviewer(exist);
+        int from = exist.getPublishStatus() == null ? 3 : exist.getPublishStatus();
+        if (from != 1) {
+            throw new BizException(400, "仅待审状态可审核通过");
+        }
+        exist.setPublishStatus(3);
+        exist.setStatus(1);
+        templateMapper.updateById(exist);
+        approvalService.recordReview(templateId, from, 3, "pass", opinion);
+        versionService.snapshot(exist, "审核发布", "publish");
+        log.info("模板审核通过: id={}", templateId);
+        return R.ok();
+    }
+
+    /** 审核驳回(1待审 → 2已驳回, 保留原启用态不影响已发布使用); 审核人权限同 approve。 */
+    public R<Void> rejectReview(Long templateId, String opinion) {
+        HisEmrTemplate exist = templateId == null ? null : templateMapper.selectById(templateId);
+        if (exist == null) {
+            throw new BizException(400, "病历模板不存在");
+        }
+        requireApproveReviewer(exist);
+        int from = exist.getPublishStatus() == null ? 3 : exist.getPublishStatus();
+        if (from != 1) {
+            throw new BizException(400, "仅待审状态可驳回");
+        }
+        exist.setPublishStatus(2);
+        templateMapper.updateById(exist);
+        approvalService.recordReview(templateId, from, 2, "reject", opinion);
+        log.info("模板审核驳回: id={}", templateId);
+        return R.ok();
+    }
+
+    /** 待审列表(全局+科室级 scope_level<=1): 仅管理员/审核人可见。 */
+    public R<List<HisEmrTemplate>> listPendingReviews() {
+        LoginUser lu = UserContext.get();
+        if (!isAdmin(lu)) {
+            throw new BizException(403, "仅管理员可查看待审列表");
+        }
+        List<HisEmrTemplate> rows = templateMapper.selectList(Wrappers.<HisEmrTemplate>lambdaQuery()
+                .eq(HisEmrTemplate::getPublishStatus, 1)
+                .le(HisEmrTemplate::getScopeLevel, 1)
+                .orderByDesc(HisEmrTemplate::getUpdateTime)
+                .orderByDesc(HisEmrTemplate::getId));
+        return R.ok(rows);
+    }
+
+    /**
+     * 审核人守卫: 必须是 ADMIN/SUPER_ADMIN; 全院模板(scope_level=0)额外要求牵头机构;
+     * 非牵头管理员不得跨机构穿透审科(由 scopeOrgId 天然隔离, 此处不放宽)。
+     */
+    private void requireApproveReviewer(HisEmrTemplate t) {
+        LoginUser lu = UserContext.get();
+        if (lu == null) {
+            throw new BizException(401, "未登录");
+        }
+        if (!isAdmin(lu)) {
+            throw new BizException(403, "仅管理员可审核模板");
+        }
+        boolean global = t.getScopeLevel() == null || t.getScopeLevel() == 0;
+        if (global) {
+            guard.requireLeadOrg("仅牵头机构管理员可审核发布全院模板");
+        }
     }
 
     /** 删除模板(逻辑删除; 按归属层级鉴权) */
@@ -743,6 +905,7 @@ public class EmrTemplateService implements ApplicationRunner {
         Map<String, List<HisEmrTemplate>> merged = new LinkedHashMap<>();
         merged.putAll(groupByOverrideKey(templateMapper.selectList(Wrappers.<HisEmrTemplate>lambdaQuery()
                 .eq(HisEmrTemplate::getStatus, 1)
+                .eq(HisEmrTemplate::getPublishStatus, 3)
                 .isNull(HisEmrTemplate::getStaffId)
                 .and(w -> w.eq(HisEmrTemplate::getDeptId, 0L).or().isNull(HisEmrTemplate::getDeptId))
                 .orderByAsc(HisEmrTemplate::getRecordType)
@@ -751,6 +914,7 @@ public class EmrTemplateService implements ApplicationRunner {
         if (maxLevel >= 1 && effDept != null && effDept != 0L) {
             merged.putAll(groupByOverrideKey(templateMapper.selectList(Wrappers.<HisEmrTemplate>lambdaQuery()
                     .eq(HisEmrTemplate::getStatus, 1)
+                    .eq(HisEmrTemplate::getPublishStatus, 3)
                     .isNull(HisEmrTemplate::getStaffId)
                     .eq(HisEmrTemplate::getDeptId, effDept)
                     .orderByAsc(HisEmrTemplate::getRecordType)

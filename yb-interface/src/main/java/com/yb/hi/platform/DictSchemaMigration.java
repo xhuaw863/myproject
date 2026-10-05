@@ -505,6 +505,8 @@ public class DictSchemaMigration implements ApplicationRunner {
             ensureNursingEmrTables(conn);
             // P7a 病历归档/封存/召回: his_inp_medical_record 归档/封存/召回/PDF 12 列 + Webhook 订阅表(幂等, 新模块非启动关键路径)
             ensureEmrArchiveTables(conn);
+            // 病历模板设计器高级版: 模板版本快照/发布审批流水/批注与修订/组件市场/引用反查 5 表 + his_emr_template.publish_status 补列(幂等)
+            ensureEmrDesignerAdvTables(conn);
             // 存量表补列: 药库/药房归属 + 混合支付/发票号/退费关联/部分退费已退数量(幂等, 列已存在则跳过)
             alterExistingTables(conn);
             // 检查多部位医保计费: his_order_item 补 检查部位/计价部位数 两列 + his_charge_addon_rule 补 加收比例 列(幂等)
@@ -5729,6 +5731,8 @@ public class DictSchemaMigration implements ApplicationRunner {
         addColumnIfNotExists(conn, "his_case_front_page", "unplanned_reop", "TINYINT DEFAULT NULL COMMENT '非计划再手术:0无 1有'");
         addColumnIfNotExists(conn, "his_case_front_page", "newborn_apgar", "TINYINT DEFAULT NULL COMMENT '新生儿Apgar评分(0-10)'");
         addColumnIfNotExists(conn, "his_case_front_page", "blood_transfusion", "TEXT DEFAULT NULL COMMENT '输血记录JSON(数组: [{kind,volume,unit,donateInst,transDate}] 对齐国标首页输血段)'");
+        /* 首页诊断与出院诊断双向联动(2026-10): 主要诊断对应病历诊断行ID, 其他诊断行 diagId 随 JSON 携带 */
+        addColumnIfNotExists(conn, "his_case_front_page", "main_diag_id", "BIGINT DEFAULT NULL COMMENT '出院主要诊断对应病历诊断ID(his_inp_diagnosis.id, 双向同步关联键)'");
         // 播种常见危急值规则(tenant_id=1 默认租户; INSERT IGNORE 幂等, 已有规则不覆盖)
         seedCriticalValueRules(conn);
     }
@@ -6935,6 +6939,117 @@ public class DictSchemaMigration implements ApplicationRunner {
     }
 
     /**
+     * 病历模板设计器高级版基座(幂等, 新模块非启动关键路径):
+     * 1) his_emr_template_version 模板版本快照(每次保存/发布/回滚落一行, document/fields/print_config/locked_sections 四载荷, 区别于病历实例版本 his_emr_version);
+     * 2) his_emr_template_approval 模板发布审批流水(提交/通过/驳回 + 意见留痕);
+     * 3) his_emr_annotation 批注与修订线程(target_type=template/record, 锚点存 ProseMirror 定位 JSON);
+     * 4) his_emr_component_share 组件与模板市场登记(片段/图示/整模板跨机构共享 + 下载次数);
+     * 5) his_emr_ref_index 模板引用反查(按 ref_type/ref_key 反查引用它的模板, 影响分析);
+     * 6) his_emr_template 补 publish_status 列(0草稿/1待审/2驳回/3已发布, 与既有 status 启停分离; 存量回填 3 保历史默认已发布)。
+     * 全程幂等: CREATE TABLE IF NOT EXISTS + addColumnIfNotExists + UPDATE 回填, 重复启动无副作用。
+     */
+    private void ensureEmrDesignerAdvTables(Connection conn) throws Exception {
+        try (Statement st = conn.createStatement()) {
+            st.executeUpdate("CREATE TABLE IF NOT EXISTS his_emr_template_version ("
+                    + "id BIGINT NOT NULL AUTO_INCREMENT COMMENT '主键',"
+                    + "template_id BIGINT NOT NULL COMMENT '模板ID(his_emr_template.id)',"
+                    + "version_no INT NOT NULL COMMENT '版本号(与模板 version 对应)',"
+                    + "document TEXT NULL COMMENT 'Tiptap 文档快照',"
+                    + "fields TEXT NULL COMMENT '字段定义JSON快照',"
+                    + "print_config TEXT NULL COMMENT '打印配置JSON快照',"
+                    + "locked_sections TEXT NULL COMMENT '锁定章节JSON快照',"
+                    + "change_summary VARCHAR(500) DEFAULT NULL COMMENT '变更说明',"
+                    + "operator_id BIGINT DEFAULT NULL COMMENT '操作人ID(sys_user.id)',"
+                    + "operator_name VARCHAR(50) DEFAULT NULL COMMENT '操作人姓名',"
+                    + "operate_type VARCHAR(20) NOT NULL COMMENT '操作:save/publish/rollback',"
+                    + "tenant_id BIGINT NOT NULL COMMENT '租户ID',"
+                    + "org_id BIGINT DEFAULT NULL COMMENT '机构ID',"
+                    + "create_by VARCHAR(50) DEFAULT NULL, create_time DATETIME DEFAULT NULL,"
+                    + "update_by VARCHAR(50) DEFAULT NULL, update_time DATETIME DEFAULT NULL, deleted TINYINT DEFAULT 0,"
+                    + "PRIMARY KEY (id),"
+                    + "KEY idx_tpl_ver (template_id, version_no))"
+                    + " ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='病历模板版本快照'");
+            st.executeUpdate("CREATE TABLE IF NOT EXISTS his_emr_template_approval ("
+                    + "id BIGINT NOT NULL AUTO_INCREMENT COMMENT '主键',"
+                    + "template_id BIGINT NOT NULL COMMENT '模板ID',"
+                    + "from_status TINYINT DEFAULT NULL COMMENT '变更前发布态',"
+                    + "to_status TINYINT DEFAULT NULL COMMENT '变更后发布态',"
+                    + "submit_user_id BIGINT DEFAULT NULL COMMENT '提交人ID',"
+                    + "submit_user_name VARCHAR(50) DEFAULT NULL COMMENT '提交人姓名',"
+                    + "submit_time DATETIME DEFAULT NULL COMMENT '提交时间',"
+                    + "review_user_id BIGINT DEFAULT NULL COMMENT '审核人ID',"
+                    + "review_user_name VARCHAR(50) DEFAULT NULL COMMENT '审核人姓名',"
+                    + "review_time DATETIME DEFAULT NULL COMMENT '审核时间',"
+                    + "review_action VARCHAR(20) DEFAULT NULL COMMENT '审核动作:pass/reject',"
+                    + "review_opinion VARCHAR(500) DEFAULT NULL COMMENT '审核意见',"
+                    + "tenant_id BIGINT NOT NULL COMMENT '租户ID',"
+                    + "org_id BIGINT DEFAULT NULL COMMENT '机构ID',"
+                    + "create_by VARCHAR(50) DEFAULT NULL, create_time DATETIME DEFAULT NULL,"
+                    + "update_by VARCHAR(50) DEFAULT NULL, update_time DATETIME DEFAULT NULL, deleted TINYINT DEFAULT 0,"
+                    + "PRIMARY KEY (id),"
+                    + "KEY idx_appr_tpl (template_id, deleted))"
+                    + " ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='病历模板发布审批流水'");
+            st.executeUpdate("CREATE TABLE IF NOT EXISTS his_emr_annotation ("
+                    + "id BIGINT NOT NULL AUTO_INCREMENT COMMENT '主键',"
+                    + "target_type VARCHAR(20) NOT NULL COMMENT '目标类型:template/record',"
+                    + "target_id BIGINT NOT NULL COMMENT '目标ID(模板id或病历/就诊id)',"
+                    + "anno_type VARCHAR(20) NOT NULL COMMENT '类型:comment/insert/delete/format',"
+                    + "anchor TEXT NULL COMMENT 'ProseMirror 定位JSON({sectionKey,fieldKey?,from,to})',"
+                    + "content TEXT NULL COMMENT '批注/修订内容',"
+                    + "status VARCHAR(20) DEFAULT 'open' COMMENT '状态:open/resolved',"
+                    + "parent_id BIGINT DEFAULT NULL COMMENT '父批注ID(回复线程)',"
+                    + "author_id BIGINT DEFAULT NULL COMMENT '作者ID(sys_user.id)',"
+                    + "author_name VARCHAR(50) DEFAULT NULL COMMENT '作者姓名',"
+                    + "tenant_id BIGINT NOT NULL COMMENT '租户ID',"
+                    + "org_id BIGINT DEFAULT NULL COMMENT '机构ID',"
+                    + "create_by VARCHAR(50) DEFAULT NULL, create_time DATETIME DEFAULT NULL,"
+                    + "update_by VARCHAR(50) DEFAULT NULL, update_time DATETIME DEFAULT NULL, deleted TINYINT DEFAULT 0,"
+                    + "PRIMARY KEY (id),"
+                    + "KEY idx_anno_target (target_type, target_id, status))"
+                    + " ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='病历批注与修订线程'");
+            st.executeUpdate("CREATE TABLE IF NOT EXISTS his_emr_component_share ("
+                    + "id BIGINT NOT NULL AUTO_INCREMENT COMMENT '主键',"
+                    + "comp_type VARCHAR(20) NOT NULL COMMENT '组件类型:fragment/drawing/template/elementSet',"
+                    + "ref_id BIGINT NOT NULL COMMENT '引用物ID',"
+                    + "title VARCHAR(200) DEFAULT NULL COMMENT '组件标题(冗余便于列表)',"
+                    + "category VARCHAR(50) DEFAULT NULL COMMENT '分类',"
+                    + "scope_level INT DEFAULT 0 COMMENT '来源作用域:0全院 1科室 2个人',"
+                    + "dept_id BIGINT DEFAULT NULL COMMENT '归属科室ID',"
+                    + "share_scope INT DEFAULT 0 COMMENT '共享范围:0全院 1医共体跨机构',"
+                    + "summary TEXT NULL COMMENT '简介',"
+                    + "download_count INT DEFAULT 0 COMMENT '克隆/下载次数',"
+                    + "source_org_id BIGINT DEFAULT NULL COMMENT '来源机构ID',"
+                    + "status INT DEFAULT 1 COMMENT '状态:1上架 0下架',"
+                    + "tenant_id BIGINT NOT NULL COMMENT '租户ID',"
+                    + "org_id BIGINT DEFAULT NULL COMMENT '机构ID',"
+                    + "create_by VARCHAR(50) DEFAULT NULL, create_time DATETIME DEFAULT NULL,"
+                    + "update_by VARCHAR(50) DEFAULT NULL, update_time DATETIME DEFAULT NULL, deleted TINYINT DEFAULT 0,"
+                    + "PRIMARY KEY (id),"
+                    + "KEY idx_share_type (comp_type, status),"
+                    + "KEY idx_share_ref (comp_type, ref_id))"
+                    + " ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='病历组件与模板市场'");
+            st.executeUpdate("CREATE TABLE IF NOT EXISTS his_emr_ref_index ("
+                    + "id BIGINT NOT NULL AUTO_INCREMENT COMMENT '主键',"
+                    + "source_template_id BIGINT NOT NULL COMMENT '引用源模板ID',"
+                    + "ref_type VARCHAR(20) NOT NULL COMMENT '引用物类型:fragment/drawing/element/macro',"
+                    + "ref_key VARCHAR(120) NOT NULL COMMENT '引用键(fragmentId/drawingCode/fieldKey/macroCode)',"
+                    + "tenant_id BIGINT NOT NULL COMMENT '租户ID',"
+                    + "org_id BIGINT DEFAULT NULL COMMENT '机构ID',"
+                    + "create_by VARCHAR(50) DEFAULT NULL, create_time DATETIME DEFAULT NULL,"
+                    + "update_by VARCHAR(50) DEFAULT NULL, update_time DATETIME DEFAULT NULL, deleted TINYINT DEFAULT 0,"
+                    + "PRIMARY KEY (id),"
+                    + "KEY idx_ref_lookup (ref_type, ref_key),"
+                    + "KEY idx_ref_source (source_template_id))"
+                    + " ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='病历模板引用反查索引'");
+        }
+        /* his_emr_template 补 publish_status: 存量回填 3(已发布), 保证历史模板默认可见不回归 */
+        addColumnIfNotExists(conn, "his_emr_template", "publish_status", "TINYINT DEFAULT 3 COMMENT '发布态:0草稿 1待审 2已驳回 3已发布'");
+        try (Statement st = conn.createStatement()) {
+            st.executeUpdate("UPDATE his_emr_template SET publish_status = 3 WHERE publish_status IS NULL AND deleted = 0");
+        }
+    }
+
+    /**
      * P7a 病历归档/封存/召回与 Webhook 订阅基座(幂等):
      * 1) his_inp_medical_record 扩展 12 列: 归档(时间/操作人/PDF路径/生成时间) + 封存(时间/操作人/原因)
      *     + 召回(时间/操作人/原因/审批状态/审批人), 支撑归档态病历全生命周期管控;
@@ -6946,7 +7061,7 @@ public class DictSchemaMigration implements ApplicationRunner {
      * 全程幂等, 新模块非启动关键路径(建表/补列失败仅告警不阻断启动)。
      */
     private void ensureEmrArchiveTables(Connection conn) throws Exception {
-        /* ---------- his_inp_medical_record +12: 归档/封存/召回/PDF(P7a-1) ---------- */
+        /* ---------- his_inp_medical_record +13: 归档/封存/召回/PDF/防篡改(P7a-1 + 二期) ---------- */
         addColumnIfNotExists(conn, "his_inp_medical_record", "archive_time", "DATETIME DEFAULT NULL COMMENT '归档时间'");
         addColumnIfNotExists(conn, "his_inp_medical_record", "archive_by", "VARCHAR(50) DEFAULT NULL COMMENT '归档操作人'");
         addColumnIfNotExists(conn, "his_inp_medical_record", "seal_time", "DATETIME DEFAULT NULL COMMENT '封存时间'");
@@ -6959,6 +7074,7 @@ public class DictSchemaMigration implements ApplicationRunner {
         addColumnIfNotExists(conn, "his_inp_medical_record", "recall_approver", "VARCHAR(50) DEFAULT NULL COMMENT '召回审批人'");
         addColumnIfNotExists(conn, "his_inp_medical_record", "pdf_path", "VARCHAR(500) DEFAULT NULL COMMENT '归档PDF路径'");
         addColumnIfNotExists(conn, "his_inp_medical_record", "pdf_generated_time", "DATETIME DEFAULT NULL COMMENT '归档PDF生成时间'");
+        addColumnIfNotExists(conn, "his_inp_medical_record", "pdf_sha256", "VARCHAR(64) DEFAULT NULL COMMENT '归档PDF的SHA-256防篡改指纹'");
         try (Statement st = conn.createStatement()) {
             /* Webhook 订阅: 事件类型逗号分隔(对应 EmrEventType 枚举名), fail_count 连续失败计数供熔断降频 */
             st.executeUpdate("CREATE TABLE IF NOT EXISTS his_emr_webhook_subscription ("

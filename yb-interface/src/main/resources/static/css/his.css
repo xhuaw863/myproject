@@ -614,7 +614,33 @@ body { font-family: var(--yb-font-sans); background: var(--yb-canvas); }
 .dw-rx-nm .spec { color: var(--dw-text-hint); font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 110px; }
 .dw-rx-nm .dw-tag.self { color: var(--dw-text-hint); }
 /* P1 医保目录富展示: 检索下拉分区富行(主行/副行/编码带) + 甲乙丙/自费徽标(与明细列共用) */
-.dw-rx-pick-popper .el-select-dropdown__item { height: auto; padding: 6px 12px; line-height: 1.45; }
+/* 处方检索候选单行化(2026-10-05): 每药一行紧凑栅格, 一屏候选翻倍; 下拉可视区加高 */
+.dw-rx-pick-popper .el-select-dropdown__item { height: 32px; line-height: 32px; padding: 0 12px; }
+.dw-rx-pick-popper .el-select-dropdown__wrap, .dw-rx-pick-popper .el-scrollbar__wrap { max-height: 460px; }
+.dw-rx-opt1 { display: grid; grid-template-columns: 34px minmax(0,1fr) 132px 44px 74px 78px 82px; align-items: center; gap: 10px; height: 32px; font-size: 13px; }
+.dw-rx-opt1 .c-nm { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dw-rx-opt1 .c-nm b { font-weight: 600; color: var(--dw-text); }
+.dw-rx-opt1 .c-nm .trade { margin-left: 4px; color: var(--dw-text-secondary); font-size: 12px; }
+.dw-rx-opt1 .c-spec { color: var(--dw-text-hint); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dw-rx-opt1 .c-lv { text-align: center; }
+.dw-rx-opt1 .c-sp { color: var(--dw-text-hint); font-size: 12px; text-align: right; white-space: nowrap; }
+.dw-rx-opt1 .c-price { color: var(--dw-fee); font-variant-numeric: tabular-nums; text-align: right; white-space: nowrap; }
+.dw-rx-opt1 .c-stock { color: var(--dw-text-secondary); font-size: 12px; text-align: right; white-space: nowrap; }
+.dw-rx-opt1 .c-idx { text-align: center; color: var(--dw-text-hint); font-size: 12px; font-variant-numeric: tabular-nums; }
+/* 检索候选固定表头: 与 .dw-rx-opt1 同栅格逐列对齐, sticky 于下拉滚动容器顶部, 实底+下边框遮住下方滚动行 */
+.dw-rx-pick-popper .el-select-dropdown__list { padding-top: 0; }
+.dw-rx-head { position: sticky; top: 0; z-index: 2; display: grid; grid-template-columns: 34px minmax(0,1fr) 132px 44px 74px 78px 82px; align-items: center; gap: 10px; height: 30px; padding: 0 12px; box-sizing: border-box; font-size: 12px; font-weight: 600; color: var(--dw-text-secondary); background: var(--dw-card); border-bottom: 1px solid var(--dw-border); }
+.dw-rx-head .h-idx, .dw-rx-head .h-lv { text-align: center; }
+.dw-rx-head .h-sp, .dw-rx-head .h-price, .dw-rx-head .h-stock { text-align: right; }
+.dw-rx-head .h-nm, .dw-rx-head .h-spec { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* 候选下拉分页条(末尾 disabled 选项): 重置禁用置灰, 高度自适应, 内嵌翻页按钮 */
+.dw-rx-pick-popper .el-select-dropdown__item.dw-rx-pager { height: auto; line-height: normal; padding: 0; cursor: default; color: inherit; }
+.dw-rx-pick-popper .el-select-dropdown__item.dw-rx-pager.is-disabled { color: inherit; cursor: default; opacity: 1; }
+.dw-rx-pager-bar { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 6px 6px; }
+.dw-rx-pager-info { color: var(--dw-text-secondary); font-size: 12px; font-variant-numeric: tabular-nums; }
+.dw-rx-pager-btn { padding: 2px 10px; font-size: 12px; color: var(--dw-primary); background: var(--dw-card); border: 1px solid var(--dw-border); border-radius: 4px; cursor: pointer; line-height: 20px; }
+.dw-rx-pager-btn:hover:not(:disabled) { background: var(--dw-primary-light); }
+.dw-rx-pager-btn:disabled { color: var(--dw-text-hint); cursor: not-allowed; background: var(--dw-card-muted); }
 .dw-rx-opt2 { display: flex; flex-direction: column; gap: 2px; padding: 2px 0; }
 .dw-rx-opt2 .r1 { display: flex; align-items: center; gap: 8px; }
 .dw-rx-opt2 .r1 .nm { font-weight: 600; color: var(--dw-text); }
@@ -1224,4 +1250,38 @@ body { font-family: var(--yb-font-sans); background: var(--yb-canvas); }
 /* 诊断面板页签行常驻"维护模板"链接(与空态"去维护"同逻辑, 打开嵌入弹窗) */
 .dw-diag-tab-manage { font-size: 12px; color: var(--el-color-primary, #409eff); margin-left: 10px; align-self: center; }
 .dw-diag-tab-manage:hover { text-decoration: underline; }
+
+/* ===== 统一"库房上下文条" scope-bar (药库/药房业务页, 2026-10-05) =====
+ * 目标: 一眼看清当前库+归属科室+类型, 左色条按类型区分(西药蓝/中药棕/综合灰/药房绿), 空态红 */
+.scope-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; position: relative;
+  padding: 10px 14px 10px 16px; margin: 0 0 10px 0; background: #f5f7fa;
+  border: 1px solid var(--yb-border-light); border-left: 4px solid var(--yb-ink-2); border-radius: 6px; }
+.scope-bar.is-western { border-left-color: #2f6fd0; }
+.scope-bar.is-tcm { border-left-color: #6D4C41; }
+.scope-bar.is-mixed { border-left-color: #909399; }
+.scope-bar.is-pharmacy { border-left-color: #2e9e5b; }
+.scope-bar.is-empty { border-left-color: var(--yb-danger); background: #fdf0f0; }
+.scope-bar__main { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.scope-bar__kind { font-size: 12px; color: var(--yb-ink-2); font-weight: 600; letter-spacing: .5px; }
+.scope-bar__name { font-size: 17px; font-weight: 700; color: var(--yb-ink-1); }
+.scope-bar__name.is-empty-text { color: var(--yb-danger); font-size: 15px; }
+.scope-bar__badge { font-size: 12px; padding: 1px 9px; border-radius: 10px; background: rgba(28,36,48,.07); color: var(--yb-ink-2); }
+.scope-bar__dept { font-size: 13px; color: var(--yb-ink-2); }
+.scope-bar__dept b { color: var(--yb-ink-1); }
+.scope-bar__act { display: flex; align-items: center; gap: 10px; margin-left: auto; }
+.scope-bar__hint { font-size: 12px; color: var(--yb-ink-2); opacity: .75; }
+.scope-bar__empty { flex-basis: 100%; font-size: 12px; color: var(--yb-danger); }
+/* 切换确认弹窗: 卡片单选列表, 每项带类型色点/名称/科室/当前标记 */
+.scope-switch__tip { font-size: 12px; color: var(--yb-warning); margin-bottom: 10px; line-height: 1.5; }
+.scope-switch__list { display: flex; flex-direction: column; gap: 8px; width: 100%; }
+.scope-switch__item { display: block; width: 100%; margin: 0; padding: 8px 12px; border: 1px solid var(--yb-border-light); border-radius: 6px; cursor: pointer; }
+.scope-switch__item.is-cur { border-color: var(--yb-link); background: #f5f7fa; }
+.scope-switch__item .el-radio { width: 100%; height: auto; display: flex; align-items: center; margin-right: 0; }
+.scope-switch__item .el-radio__label { display: inline-flex; align-items: center; gap: 8px; white-space: normal; flex-wrap: wrap; }
+.scope-switch__dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; background: #909399; flex: none; }
+.scope-switch__dot.is-western { background: #2f6fd0; }
+.scope-switch__dot.is-tcm { background: #6D4C41; }
+.scope-switch__dot.is-pharmacy { background: #2e9e5b; }
+.scope-switch__nm { font-weight: 600; color: var(--yb-ink-1); }
+.scope-switch__meta { font-size: 12px; color: var(--yb-ink-2); }
 

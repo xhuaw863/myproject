@@ -559,12 +559,7 @@
         });
       },
       drugDel: function (row) { var vm = this; HIS.del('/api/community-dict/drug/' + row.id).then(function () { HIS.notifySuccess('已删除'); vm.loadDrug(); }).catch(HIS.notifyError); },
-      drugAdjust: function (row, field) {
-        this.adjForm = this.emptyAdjust();
-        this.adjForm.catalogType = 'drug'; this.adjForm.catalogId = row.id; this.adjForm.catalogName = row.genericName;
-        this.adjForm.priceField = field; this.adjForm.orgLevel = null;
-        this.adjDlg = true;
-      },
+      /* 药品调价已收归药库「药品调价单」(price-adjust 菜单, 草稿→预览→生效·分域留痕); 本页不再提供目录直改价入口, 基准价可在“编辑”表单维护 */
 
       /* ============ 耗材 ============ */
       emptyCons: function () {
@@ -1135,10 +1130,8 @@
       '        <el-table-column prop="retailPrice" label="零售价/最小" width="100"></el-table-column>',
       '        <el-table-column prop="packPrice" label="大包装参考" width="100"></el-table-column>',
       '        <el-table-column label="状态" width="70"><template #default="s"><el-tag size="small" :type="s.row.status===1?\'success\':\'info\'">{{ s.row.status===1?"启用":"停用" }}</el-tag></template></el-table-column>',
-      '        <el-table-column label="操作" width="230" fixed="right"><template #default="s">',
+      '        <el-table-column label="操作" width="120" fixed="right"><template #default="s">',
       '          <el-button link type="primary" @click="drugEdit(s.row)">编辑</el-button>',
-      '          <el-button link type="warning" @click="drugAdjust(s.row,\'retail_price\')">调零售价</el-button>',
-      '          <el-button link type="warning" @click="drugAdjust(s.row,\'purchase_price\')">调进货价</el-button>',
       '          <el-popconfirm title="确认删除？" @confirm="drugDel(s.row)"><template #reference><el-button link type="danger">删</el-button></template></el-popconfirm>',
       '        </template></el-table-column>',
       '      </el-table>',
@@ -1518,7 +1511,7 @@
       '        <el-col :span="8"><el-form-item label="状态"><el-switch v-model="drugForm.status" :active-value="1" :inactive-value="0" active-text="启用" inactive-text="停用"></el-switch></el-form-item></el-col>',
       '        <el-col :span="24"><el-form-item label="备注"><el-input v-model="drugForm.memo"></el-input></el-form-item></el-col>',
       '      </el-row>',
-      '      <el-alert v-if="drugEditing" type="warning" :closable="false" show-icon title="价格已锁定, 修改请用列表「调零售价/调进货价」(需录调价文号+生效日期)。"></el-alert>',
+      '      <el-alert v-if="drugEditing" type="warning" :closable="false" show-icon title="价格已锁定：新增时可直接录入基准价，但已建药品的改价请前往「药库 · 药品调价」用调价单维护（草稿→预览影响→生效，含分域与调价留痕）。"></el-alert>',
       '    </div></el-form>',
       '    <template #footer><el-button @click="drugDlg=false">取消</el-button><el-button type="primary" @click="drugSubmit">确定</el-button></template>',
       '  </el-dialog>',

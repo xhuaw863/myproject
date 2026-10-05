@@ -835,11 +835,11 @@
         const y = Math.min(this.ctx.y, Math.max(window.innerHeight - 268, 0));
         return { left: x + 'px', top: y + 'px' };
       },
-      /* 病案首页页签可见性: 仅出院办理中(3)/已出院(4)显示 */
+      /* 病案首页页签可见性: 在院期间即可预填(1~4均显示), 已取消(5)不显示; 提交/打印由面板按"已出院"另行闸门 */
       showCasePage() {
         const v = this.currentVisit;
         const vs = v && v.visitStatus != null ? Number(v.visitStatus) : NaN;
-        return !isNaN(vs) && vs >= 3 && vs !== 5;
+        return !isNaN(vs) && vs >= 1 && vs <= 4;
       },
       /* 批次A: 前端筛选(科室/诊疗组)在当前结果集上收窄; 关键字交服务端, 床号命中亦在此补过 */
       viewPatients() {

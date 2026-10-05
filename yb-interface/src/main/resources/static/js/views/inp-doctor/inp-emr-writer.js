@@ -246,16 +246,20 @@
   })();
 
   /* ================= 常量 ================= */
-  /* 记录类型(1-15, 与后端 RECORD_TYPE_LABELS/签名规则 record_type 同口径) */
+  /* 记录类型(1-15, 与后端 RECORD_TYPE_LABELS/签名规则 record_type 同口径)
+   * 注: 10 病案首页仅作存量文书标签——结构化首页以「病案首页」页签(InpCasePagePanel)为唯一真源,
+   * 书写器新建选项与列表均不再出现 type=10, 避免与自由文本文书混淆 */
   var RECORD_TYPES = {
     1: '入院记录', 2: '首次病程记录', 3: '日常病程记录', 4: '查房记录',
     5: '术前小结', 6: '手术记录', 7: '术后病程记录', 8: '出院小结',
     9: '死亡记录', 10: '病案首页', 11: '交接班记录', 12: '转科记录',
     13: '知情同意书', 14: '讨论记录', 15: '会诊记录'
   };
-  /* 新建对话框的 15 张类型卡(按 4 组陈列) */
+  /* 书写器隐藏的类型(病案首页走结构化页签) */
+  var HIDDEN_RECORD_TYPES = [10];
+  /* 新建对话框的类型卡(按 4 组陈列, 不含 10 病案首页) */
   var TYPE_GROUPS = [
-    { label: '入院出院类', items: [1, 8, 9, 10] },
+    { label: '入院出院类', items: [1, 8, 9] },
     { label: '病程类', items: [2, 3, 4, 7] },
     { label: '手术类', items: [5, 6] },
     { label: '其他文书', items: [11, 12, 13, 14, 15] }
@@ -742,16 +746,22 @@
           .then(function (data) {
             var d = data || {};
             var groups = Array.isArray(d.groups) ? d.groups : [];
-            /* 归一化: key/name 兜底 + 记录字段字符串化 */
+            /* 归一化: 剔除病案首页文书(走结构化页签) + key/name 兜底 + 记录字段字符串化 */
+            var hidden = 0;
             groups.forEach(function (g) {
               g.name = g.name || GROUP_NAMES[g.key] || '其他';
+              if (Array.isArray(g.records)) {
+                var before = g.records.length;
+                g.records = g.records.filter(function (r) { return HIDDEN_RECORD_TYPES.indexOf(Number(r.recordType)) < 0; });
+                hidden += before - g.records.length;
+              }
               (g.records || []).forEach(function (r) {
                 r.id = HIS.id(r.id);
                 r.doctorId = HIS.id(r.doctorId);
               });
             });
             vm.groups = groups;
-            vm.totalRecords = Number(d.total) || 0;
+            vm.totalRecords = Math.max(0, (Number(d.total) || 0) - hidden);
             if (autoSelect) { vm.autoSelectRecord(); }
           })
           .catch(function (e) {

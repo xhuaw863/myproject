@@ -1033,6 +1033,164 @@
     });
   }
 
+  /* ================= EmrTrack Mark(修订留痕: insert/delete, 随文档持久化) =================
+   * 打印/预览介质: insert 视为正文(无装饰), delete 不输出; 见 injectCss 的 @media print 与 emr-editor PP_CSS。 */
+  function extTrackMark(t) {
+    const T = needTiptap(t);
+    return T.Mark.create({
+      name: 'emrTrack',
+      inclusive: false,
+      exclusive: false,
+
+      addAttributes() {
+        return {
+          op: { default: 'insert', parseHTML: function (el) { return el.getAttribute('data-emr-track-op') || 'insert'; }, renderHTML: function (a) { return a.op ? { 'data-emr-track-op': a.op } : {}; } },
+          authorId: { default: null, parseHTML: function (el) { return el.getAttribute('data-emr-track-by-id') || null; }, renderHTML: function (a) { return a.authorId ? { 'data-emr-track-by-id': String(a.authorId) } : {}; } },
+          authorName: { default: '', parseHTML: function (el) { return el.getAttribute('data-emr-track-by') || ''; }, renderHTML: function (a) { return a.authorName ? { 'data-emr-track-by': a.authorName } : {}; } },
+          ts: { default: null, parseHTML: function (el) { return el.getAttribute('data-emr-track-ts') || null; }, renderHTML: function (a) { return a.ts ? { 'data-emr-track-ts': String(a.ts) } : {}; } }
+        };
+      },
+
+      parseHTML() {
+        return [{ tag: 'span[data-emr-track]' }];
+      },
+
+      renderHTML(context) {
+        const attrs = (context && context.mark && context.mark.attrs) || {};
+        const op = attrs.op || 'insert';
+        return ['span', T.mergeAttributes(context.HTMLAttributes, { 'class': 'emr-track emr-track--' + op, 'data-emr-track': '1' })];
+      }
+    });
+  }
+
+  /* ================= EmrComment Mark(批注高亮锚点: 挂 annoId, 点击唤起批注面板) ================= */
+  function extCommentMark(t) {
+    const T = needTiptap(t);
+    return T.Mark.create({
+      name: 'emrComment',
+      inclusive: false,
+      exclusive: false,
+
+      addAttributes() {
+        return {
+          annoId: { default: null, parseHTML: function (el) { return el.getAttribute('data-emr-comment'); }, renderHTML: function (a) { return a.annoId != null ? { 'data-emr-comment': String(a.annoId) } : { 'data-emr-comment': '1' }; } }
+        };
+      },
+
+      parseHTML() {
+        return [{ tag: 'span[data-emr-comment]' }];
+      },
+
+      renderHTML({ HTMLAttributes }) {
+        return ['span', T.mergeAttributes(HTMLAttributes, { 'class': 'emr-comment' })];
+      },
+
+      addCommands() {
+        return {
+          setEmrComment: function (attrs) { return function (ctx) { return ctx.commands.setMark(this.type, attrs); }; },
+          unsetEmrComment: function () { return function (ctx) { return ctx.commands.unsetMark(this.type); }; }
+        };
+      }
+    });
+  }
+
+  /* ================= EmrTrackMode(修订模式开关 + 事务拦截打 mark + 接受/拒绝) =================
+   * 非节点/标记, 纯行为扩展: track 开启时把单步纯插入/删除打上 emrTrack; 复杂替换(多步/跨块/粘贴带格式)不拦截(优雅降级)。 */
+  function extTrackMode(t) {
+    const T = needTiptap(t);
+    let self = null;
+    return T.Extension.create({
+      name: 'emrTrackMode',
+
+      addProseMirrorPlugins() {
+        self = new T.Plugin({
+          state: {
+            init: function () { return { on: false, name: '', id: null }; },
+            apply: function (tr, value) {
+              const m = tr.getMeta('emrTrackMode');
+              if (m == null) { return value; }
+              return { on: !!m.on, name: m.name || '', id: m.id == null ? null : m.id };
+            }
+          },
+          appendTransaction: function (trs, oldState, newState) {
+            try {
+              const st = newState.getState(self);
+              if (!st || !st.on) { return null; }
+              for (let i = 0; i < trs.length; i++) { if (trs[i].getMeta('emrTrackInternal')) { return null; } }
+              const changed = trs.filter(function (tr) { return tr.docChanged; });
+              if (changed.length !== 1) { return null; }
+              const tr = changed[0];
+              if (tr.steps.length !== 1) { return null; }
+              const step = tr.steps[0];
+              if (typeof step.from !== 'number' || typeof step.to !== 'number' || !step.slice) { return null; }
+              const trackMark = newState.schema.marks.emrTrack;
+              if (!trackMark) { return null; }
+              const map = step.getMap();
+              const mark = function (op) { return trackMark.create('emrTrack', { op: op, authorId: st.id, authorName: st.name, ts: Date.now() }); };
+              const out = newState.tr.setMeta('emrTrackInternal', true);
+              const sliceSize = step.slice.content ? step.slice.content.size : 0;
+              if (step.from === step.to && sliceSize > 0) {                 /* 纯插入: 给新内容打 insert */
+                const a = map.map(step.from);
+                const b = a + sliceSize;
+                if (b > newState.doc.content.size) { return null; }
+                out.addMark(a, b, mark('insert'));
+              } else if (step.from !== step.to && sliceSize === 0) {        /* 纯删除: 还原内容并打 delete(Word 式保留删除内容) */
+                const $f = oldState.doc.resolve(step.from);
+                const $t = oldState.doc.resolve(step.to);
+                if (!($f.parent && $f.parent === $t.parent) || $f.parent.type.name !== 'paragraph') { return null; } /* 仅段内文本 */
+                const frag = oldState.doc.slice(step.from, step.to, true).content;
+                if (!frag || frag.size === 0) { return null; }
+                const pos = map.map(step.from);
+                out.insert(pos, frag);
+                out.addMark(pos, pos + frag.size, mark('delete'));
+              } else {
+                return null;                                                  /* 带格式替换/粘贴: 不追踪 */
+              }
+              return out.steps.length ? out : null;
+            } catch (e) { return null; }
+          }
+        });
+        return [self];
+      },
+
+      addCommands() {
+        return {
+          setEmrTrackMode: function (on, author) { return function (ref) { ref.tr.setMeta('emrTrackMode', { on: !!on, name: author && author.name, id: author && author.id }); return true; }; },
+          acceptAllEmrTrack: function () { return function (ref) { return applyTrack(ref, 'accept'); }; },
+          rejectAllEmrTrack: function () { return function (ref) { return applyTrack(ref, 'reject'); }; },
+          hasUnresolvedEmrTrack: function () { return function (ref) { return collectTrack(ref.state.doc).length > 0; }; }
+        };
+      }
+    });
+  }
+
+  /* 收集 emrTrack 命中的文本区间(绝对位置); mark 覆盖 text node, 逐节点定位 */
+  function collectTrack(doc) {
+    const ranges = [];
+    doc.descendants(function (node, pos) {
+      if (node.type.name !== 'text') { return; }
+      const m = node.marks.find(function (x) { return x.type.name === 'emrTrack'; });
+      if (m) { ranges.push({ from: pos, to: pos + node.nodeSize, op: m.attrs.op || 'insert' }); }
+    });
+    return ranges;
+  }
+  /* accept: insert 去 mark(留正文), delete 删除内容; reject: insert 删除内容, delete 去 mark(还原) */
+  function applyTrack(ref, mode) {
+    const ranges = collectTrack(ref.state.doc);
+    if (!ranges.length) { return false; }
+    const tr = ref.tr;
+    ranges.sort(function (a, b) { return b.from - a.from; });
+    ranges.forEach(function (r) {
+      if (mode === 'accept') {
+        if (r.op === 'delete') { tr.delete(r.from, r.to); } else { tr.removeMark(r.from, r.to, ref.state.schema.marks.emrTrack); }
+      } else {
+        if (r.op === 'insert') { tr.delete(r.from, r.to); } else { tr.removeMark(r.from, r.to, ref.state.schema.marks.emrTrack); }
+      }
+    });
+    ref.dispatch(tr);
+    return true;
+  }
+
   /* ================= 汇总构建 ================= */
   function buildAll(t) {
     const T = needTiptap(t);
@@ -1045,7 +1203,10 @@
       EmrFragment: extFragment(T),
       EmrConditionalBlock: extConditionalBlock(T),
       EmrPageBreak: extPageBreak(T),
-      EmrDrawing: extDrawing(T)
+      EmrDrawing: extDrawing(T),
+      EmrTrackMark: extTrackMark(T),
+      EmrCommentMark: extCommentMark(T),
+      EmrTrackMode: extTrackMode(T)
     };
   }
 
@@ -1108,6 +1269,11 @@
       '.emr-doc .emr-cond-tag { font-size:11px; color:var(--yb-ink-3,#5a6a7e); border:1px solid var(--yb-border,#dfe4eb); border-radius:3px; padding:0 4px; } .emr-doc .emr-cond-expr { font-variant-numeric:tabular-nums; }',
       '.emr-doc .emr-cond-body { padding:6px 12px; } .emr-doc .emr-cond--hidden > .emr-cond-body { display:none; }',
       '.emr-doc .emr-cond--hidden > .emr-cond-head { color:var(--yb-ink-4,#8994a5); background:var(--yb-canvas,#f2f4f8); border-bottom:none; }',
+      /* ---- 修订留痕与批注(高级版): 编辑态可视化, 打印介质 insert 计正文/delete 不输出/批注不高亮 ---- */
+      '.emr-doc .emr-track--insert { text-decoration:underline; text-decoration-color:#67c23a; color:#3c862d; background:rgba(103,194,58,.08); }',
+      '.emr-doc .emr-track--del { text-decoration:line-through; color:#909399; background:rgba(144,147,153,.10); }',
+      '.emr-doc .emr-comment { background:#fff3a3; border-bottom:1px solid #e6c84a; cursor:pointer; }',
+      '@media print { .emr-track--del { display:none !important; } .emr-track--insert { text-decoration:none; color:inherit; background:none; } .emr-comment { background:none; border-bottom:none; } }',
       /* ---- 医学图示 ---- */
       '.emr-doc .emr-drawing { border:1px dashed var(--yb-border-strong,#ccd4de); border-radius:6px; margin:8px 0; padding:10px; text-align:center; color:var(--yb-ink-3,#5a6a7e); font-size:12px; }',
       '.emr-doc .emr-drawing svg, .emr-doc .emr-drawing-svg svg { max-width:100%; height:auto; } .emr-doc .emr-drawing-cap { margin-top:6px; color:var(--yb-ink-2,#3d4a5c); }',
@@ -1152,6 +1318,9 @@
     EmrConditionalBlock: extConditionalBlock,
     EmrPageBreak: extPageBreak,
     EmrDrawing: extDrawing,
+    EmrTrackMark: extTrackMark,
+    EmrCommentMark: extCommentMark,
+    EmrTrackMode: extTrackMode,
     /* 一次构建全部(编辑器 createEditor 使用) */
     buildAll: buildAll,
     /* 工具(打印预览/检索/宿主 UI 复用) */

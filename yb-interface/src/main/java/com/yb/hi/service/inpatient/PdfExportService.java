@@ -7,6 +7,7 @@ import com.lowagie.text.Document;
 import com.lowagie.text.DocumentException;
 import com.lowagie.text.Element;
 import com.lowagie.text.Font;
+import com.lowagie.text.Image;
 import com.lowagie.text.PageSize;
 import com.lowagie.text.Paragraph;
 import com.lowagie.text.Phrase;
@@ -25,6 +26,7 @@ import com.lowagie.text.pdf.PdfReader;
 import com.lowagie.text.pdf.PdfStamper;
 import com.lowagie.text.pdf.PdfWriter;
 import com.yb.hi.framework.common.BizException;
+import com.yb.hi.framework.common.R;
 import com.yb.hi.framework.tenant.TenantContext;
 import com.yb.hi.service.emr.EmrDocumentService;
 import lombok.extern.slf4j.Slf4j;
@@ -39,9 +41,12 @@ import java.time.LocalDateTime;
 import java.time.LocalTime;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
+import java.util.Base64;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -142,10 +147,13 @@ public class PdfExportService {
 
     private final JdbcTemplate jdbcTemplate;
     private final EmrDocumentService emrDocumentService;
+    private final EmrMacroService macroService;
 
-    public PdfExportService(JdbcTemplate jdbcTemplate, EmrDocumentService emrDocumentService) {
+    public PdfExportService(JdbcTemplate jdbcTemplate, EmrDocumentService emrDocumentService,
+                            EmrMacroService macroService) {
         this.jdbcTemplate = jdbcTemplate;
         this.emrDocumentService = emrDocumentService;
+        this.macroService = macroService;
     }
 
     /* ==================== 对外入口 ==================== */
@@ -937,7 +945,7 @@ public class PdfExportService {
         Map<String, Object> visit = requireVisit(toLong(rec.get("inp_visit_id")));
         String body = tiptapContentToHtml(
                 str(emrDocumentService.loadDocument(1, recordId, str(rec.get("content")))),
-                str(rec.get("structure_data")));
+                str(rec.get("structure_data")), toLong(rec.get("inp_visit_id")));
         if (!StringUtils.hasText(body)) {
             throw new BizException(400, "病历内容为空, 无法生成PDF");
         }
@@ -977,6 +985,8 @@ public class PdfExportService {
         byte[] base = generateFromTiptap(recordId);
         Map<String, Object> rec = requireRecord(recordId);
         final List<String> marks = archiveMarkLines(rec);
+        marks.addAll(caSignLines(recordId));
+        final List<String> signImages = loadSignImages(recordId);
         String stampDate = fmtTime(rec.get("archive_time"));
         if (!StringUtils.hasText(stampDate)) {
             stampDate = LocalDate.now().toString();
@@ -993,7 +1003,11 @@ public class PdfExportService {
                 Rectangle size = reader.getPageSize(i);
                 PdfContentByte over = stamper.getOverContent(i);
                 drawSignatureWatermark(over, size, marks);
+                drawSignatureImages(over, size, signImages);
                 drawArchiveStamp(over, size, stampLine);
+                if (pages > 1) {
+                    drawSealMark(over, size, i, pages);
+                }
             }
             stamper.close();
             return baos.toByteArray();
@@ -1478,6 +1492,166 @@ public class PdfExportService {
         }
     }
 
+    /* ==================== P7a-3 签章可视化叠加(签名图/CA/骑缝章) ==================== */
+
+    /**
+     * 加载病历有效签名图(base64): his_emr_signature(scope=1, valid=1) 的
+     * sign_image(手写)/patient_sign_image(患者)/family_sign_image(家属), 非空按签署时序收集。
+     * 迁移未执行或查询失败返回空列表(best-effort)。
+     */
+    private List<String> loadSignImages(Long recordId) {
+        List<String> out = new ArrayList<>();
+        if (recordId == null) {
+            return out;
+        }
+        try {
+            List<Map<String, Object>> rows = jdbcTemplate.queryForList(
+                    "SELECT sign_image AS a, patient_sign_image AS b, family_sign_image AS c"
+                            + " FROM his_emr_signature WHERE scope = 1 AND record_id = ? AND valid = 1"
+                            + " AND tenant_id = ? AND deleted = 0 ORDER BY sign_time ASC, id ASC",
+                    recordId, tenantId());
+            for (Map<String, Object> r : rows) {
+                addBase64(out, r.get("a"));
+                addBase64(out, r.get("b"));
+                addBase64(out, r.get("c"));
+            }
+        } catch (Exception e) {
+            log.warn("签名图加载失败(跳过叠加): recordId={}, {}", recordId, e.getMessage());
+        }
+        return out;
+    }
+
+    private static void addBase64(List<String> out, Object v) {
+        if (v == null) {
+            return;
+        }
+        String s = String.valueOf(v).trim();
+        if (s.length() > 32) {
+            out.add(s);
+        }
+    }
+
+    /** CA 数字签名水印行: sign_mode=3 或 provider=ca 的签名追加 证书SN + 时间戳(纯可视化, 不做密码学验签)。 */
+    private List<String> caSignLines(Long recordId) {
+        List<String> lines = new ArrayList<>();
+        if (recordId == null) {
+            return lines;
+        }
+        try {
+            List<Map<String, Object>> rows = jdbcTemplate.queryForList(
+                    "SELECT signer_name AS nm, ca_cert_sn AS sn, ca_timestamp AS ts"
+                            + " FROM his_emr_signature WHERE record_id = ? AND tenant_id = ? AND deleted = 0"
+                            + " AND (sign_mode = 3 OR provider = 'ca') AND valid = 1 ORDER BY sign_time ASC, id ASC",
+                    recordId, tenantId());
+            for (Map<String, Object> r : rows) {
+                String nm = str(r.get("nm"));
+                String sn = str(r.get("sn"));
+                String ts = fmtTime(r.get("ts"));
+                if (!StringUtils.hasText(sn) && !StringUtils.hasText(ts)) {
+                    continue;
+                }
+                StringBuilder sb = new StringBuilder("CA签名");
+                if (StringUtils.hasText(nm)) {
+                    sb.append("·").append(nm);
+                }
+                if (StringUtils.hasText(sn)) {
+                    sb.append(" 证书:").append(sn);
+                }
+                if (StringUtils.hasText(ts)) {
+                    sb.append(" ").append(ts);
+                }
+                lines.add(sb.toString());
+            }
+        } catch (Exception e) {
+            log.warn("CA签名行加载失败(跳过): recordId={}, {}", recordId, e.getMessage());
+        }
+        return lines;
+    }
+
+    /** 底部落款区横向盖手写/患者/家属签名图(最高46pt, 避开右下角归档章); 解码失败或超宽的图跳过。 */
+    private void drawSignatureImages(PdfContentByte over, Rectangle size, List<String> base64List) {
+        if (base64List == null || base64List.isEmpty()) {
+            return;
+        }
+        float maxH = 46f;
+        float maxW = 96f;
+        float x = size.getLeft() + 48f;
+        float baseY = size.getBottom() + 40f;
+        for (String b64 : base64List) {
+            byte[] bytes = decodeBase64Image(b64);
+            if (bytes == null) {
+                continue;
+            }
+            try {
+                Image img = Image.getInstance(bytes);
+                float w = img.getWidth();
+                float h = img.getHeight();
+                if (w <= 0 || h <= 0) {
+                    continue;
+                }
+                float scale = Math.min(maxW / w, maxH / h);
+                if (scale <= 0f || Float.isNaN(scale)) {
+                    scale = 0.5f;
+                }
+                if (scale > 1f) {
+                    scale = 1f;
+                }
+                float dw = w * scale;
+                float dh = h * scale;
+                if (x + dw > size.getRight() - 20f) {
+                    break;
+                }
+                img.scaleAbsolute(dw, dh);
+                img.setAbsolutePosition(x, baseY);
+                over.addImage(img);
+                x += dw + 10f;
+            } catch (Exception e) {
+                log.warn("签名图叠加失败(跳过一张): {}", e.getMessage());
+            }
+        }
+    }
+
+    /** data URL 前缀剥离 + Base64 解码; 非法返回 null。 */
+    private static byte[] decodeBase64Image(String raw) {
+        if (raw == null) {
+            return null;
+        }
+        String s = raw.trim();
+        int comma = s.indexOf(',');
+        if (s.startsWith("data:") && comma > 0) {
+            s = s.substring(comma + 1);
+        }
+        try {
+            return Base64.getMimeDecoder().decode(s);
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    /** 骑缝章: 页面右缘中线盖半圆红章(逐页拼合形成整章), 仅多页时绘制。 */
+    private void drawSealMark(PdfContentByte over, Rectangle size, int page, int total) {
+        try {
+            over.saveState();
+            over.setColorStroke(ARCHIVE_RED);
+            over.setColorFill(ARCHIVE_RED);
+            float r = 26f;
+            float cx = size.getRight() - 2f;
+            float cy = (size.getTop() + size.getBottom()) / 2;
+            over.setLineWidth(1.4f);
+            over.circle(cx, cy, r);
+            over.stroke();
+            ColumnText.showTextAligned(over, Element.ALIGN_CENTER,
+                    new Phrase("骑缝", font(7f, Font.BOLD, ARCHIVE_RED)),
+                    cx - r / 2, cy + 3f, 0);
+            ColumnText.showTextAligned(over, Element.ALIGN_CENTER,
+                    new Phrase(page + "/" + total, font(6.5f, Font.NORMAL, ARCHIVE_RED)),
+                    cx - r / 2, cy - 6f, 0);
+            over.restoreState();
+        } catch (Exception e) {
+            log.warn("骑缝章绘制失败(跳过): {}", e.getMessage());
+        }
+    }
+
     /* ==================== P7a-3 Tiptap JSON → 语义HTML ==================== */
 
     /**
@@ -1485,10 +1659,10 @@ public class PdfExportService {
      * 富文书HTML('<'开头, 含 div/table 时原样透传) / Tiptap JSON('{'/'['开头, 片段展开后转换) /
      * 其余(解密失败透传的密文或纯文本)优先取 structureData, 最终纯文本逐行。
      */
-    private String tiptapContentToHtml(String content, String structure) {
+    private String tiptapContentToHtml(String content, String structure, Long visitId) {
         String c = content == null ? "" : content.trim();
         if (c.isEmpty()) {
-            return isJsonDoc(structure) ? tiptapJsonToHtml(structure) : plaintextToHtml(structure);
+            return isJsonDoc(structure) ? tiptapJsonToHtml(structure, visitId) : plaintextToHtml(structure);
         }
         char first = c.charAt(0);
         if (first == '<') {
@@ -1500,27 +1674,105 @@ public class PdfExportService {
             return plaintextToHtml(textOf(body));
         }
         if (first == '{' || first == '[') {
-            return tiptapJsonToHtml(c);
+            return tiptapJsonToHtml(c, visitId);
         }
         /* 密文不可解时透传原文: 回退结构化数据, 避免把 Base64 噪音铺进 PDF */
         if (isJsonDoc(structure)) {
-            return tiptapJsonToHtml(structure);
+            return tiptapJsonToHtml(structure, visitId);
         }
         return looksLikeCipher(c) ? plaintextToHtml(structure) : plaintextToHtml(c);
     }
 
-    /** Tiptap JSON 串 → HTML(doc 解析失败回退纯文本)。 */
-    private String tiptapJsonToHtml(String json) {
+    /** Tiptap JSON 串 → HTML(doc 解析失败回退纯文本); visitId 非空时尽力解析宏填 resolvedValue。 */
+    private String tiptapJsonToHtml(String json, Long visitId) {
         try {
             String resolved = emrDocumentService.resolveFragmentsInDocument(json);
             JSONObject doc = JSON.parseObject(resolved);
             if (doc == null) {
                 return plaintextToHtml(json);
             }
+            injectMacroValues(doc, visitId);
             return tiptapToHtml(doc);
         } catch (Exception e) {
             log.warn("Tiptap 解析失败, 按纯文本渲染: {}", e.getMessage());
             return plaintextToHtml(json);
+        }
+    }
+
+    /**
+     * 宏解析注入(尽力而为): 收集文档 emrMacro 节点 macroCode → EmrMacroService.resolveMacros 批量取值 →
+     * 回填各节点 attrs.resolvedValue。无 visitId / 无宏 / 解析抛异常(如异步归档线程无机构上下文)
+     * 均原样返回, 保持占位【macroCode】不回归。
+     */
+    private void injectMacroValues(JSONObject doc, Long visitId) {
+        if (doc == null || visitId == null || macroService == null) {
+            return;
+        }
+        Set<String> codes = new LinkedHashSet<>();
+        collectMacroCodes(doc, codes);
+        if (codes.isEmpty()) {
+            return;
+        }
+        Map<String, String> values;
+        try {
+            R<Map<String, String>> r = macroService.resolveMacros(visitId, new ArrayList<>(codes));
+            if (r == null || r.getData() == null || r.getData().isEmpty()) {
+                return;
+            }
+            values = r.getData();
+        } catch (Exception e) {
+            log.warn("病历PDF宏解析跳过(无上下文/失败, 保持占位): visitId={}, {}", visitId, e.getMessage());
+            return;
+        }
+        applyMacroValues(doc, values);
+    }
+
+    /** 递归收集 emrMacro 节点 attrs.macroCode。 */
+    private static void collectMacroCodes(JSONObject node, Set<String> out) {
+        if (node == null) {
+            return;
+        }
+        if ("emrMacro".equals(node.getString("type"))) {
+            JSONObject a = node.getJSONObject("attrs");
+            String code = a == null ? "" : firstNonEmptyStr(a, "macroCode");
+            if (StringUtils.hasText(code)) {
+                out.add(code);
+            }
+        }
+        JSONArray content = node.getJSONArray("content");
+        if (content != null) {
+            for (int i = 0; i < content.size(); i++) {
+                Object child = content.get(i);
+                if (child instanceof JSONObject) {
+                    collectMacroCodes((JSONObject) child, out);
+                }
+            }
+        }
+    }
+
+    /** 回填 emrMacro 节点 attrs.resolvedValue(已有值不覆盖; 无对应解析值保持占位)。 */
+    private static void applyMacroValues(JSONObject node, Map<String, String> values) {
+        if (node == null) {
+            return;
+        }
+        if ("emrMacro".equals(node.getString("type"))) {
+            JSONObject a = node.getJSONObject("attrs");
+            if (a != null) {
+                String code = firstNonEmptyStr(a, "macroCode");
+                if (StringUtils.hasText(code) && values.containsKey(code)
+                        && !StringUtils.hasText(firstNonEmptyStr(a, "resolvedValue"))) {
+                    a.put("resolvedValue", values.get(code));
+                }
+            }
+        }
+        JSONArray content = node.getJSONArray("content");
+        if (content != null) {
+            for (int i = 0; i < content.size(); i++) {
+                Object child = content.get(i);
+                if (child instanceof JSONObject) {
+                    applyMacroValues((JSONObject) child, values);
+                }
+            }
         }
     }
 
@@ -1663,6 +1915,9 @@ public class PdfExportService {
         }
         String type = node.getString("type");
         if ("text".equals(type)) {
+            if (trackDeleted(node.getJSONArray("marks"))) {
+                return;
+            }
             sb.append(escapeHtml(node.getString("text")));
             return;
         }
@@ -1699,6 +1954,27 @@ public class PdfExportService {
         if ("paragraph".equals(type) || "heading".equals(type) || "blockquote".equals(type)) {
             sb.append("<br>");
         }
+    }
+
+    /**
+     * 文本节点打印介质判定(一期约定): marks 含 emrTrack(op=delete) 则正式件丢弃该文本;
+     * emrTrack(op=insert) 视为正文正常输出, emrComment 仅去高亮保留文本(此处本无样式, 直接保留)。
+     */
+    private static boolean trackDeleted(JSONArray marks) {
+        if (marks == null || marks.isEmpty()) {
+            return false;
+        }
+        for (int i = 0; i < marks.size(); i++) {
+            JSONObject mk = marks.getJSONObject(i);
+            if (mk == null || !"emrTrack".equals(mk.getString("type"))) {
+                continue;
+            }
+            JSONObject a = mk.getJSONObject("attrs");
+            if (a != null && "delete".equals(a.getString("op"))) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /** 行内序列包成块级 div(空内容跳过); prefix 为行前缀(引用缩进等)。 */
@@ -1891,6 +2167,9 @@ public class PdfExportService {
         }
         String type = node.getString("type");
         if ("text".equals(type)) {
+            if (trackDeleted(node.getJSONArray("marks"))) {
+                return;
+            }
             sb.append(str(node.getString("text")));
             return;
         }

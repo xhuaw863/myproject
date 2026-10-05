@@ -264,7 +264,12 @@
       '.etd-script textarea { font-family:Consolas,monospace; font-size:12px; }',
       '.etd-draw-preview { border:1px solid var(--yb-border-light,#ebeff4); border-radius:6px; background:var(--yb-surface-2,#f7f9fc); padding:6px; max-height:150px; overflow:hidden; text-align:center; }',
       '.etd-draw-preview svg { max-width:100%; max-height:136px; height:auto; }',
-      '.etd-act-row { display:flex; gap:6px; width:100%; } .etd-act-row .el-button { flex:1; margin-left:0; } .etd-frag-search { display:flex; align-items:center; gap:8px; margin-bottom:8px; }'
+      '.etd-act-row { display:flex; gap:6px; width:100%; } .etd-act-row .el-button { flex:1; margin-left:0; } .etd-frag-search { display:flex; align-items:center; gap:8px; margin-bottom:8px; }',
+      /* 高级版: 版本抽屉 / 批注栏 */
+      '.etd-ver-pick { display:flex; align-items:center; margin-bottom:10px; }',
+      '.etd-ver-diff { margin-bottom:12px; }',
+      '.etd-ver-list-hd { font-size:13px; font-weight:600; color:var(--yb-ink-1,#1c2430); border-top:1px solid var(--yb-border-light,#ebeff4); padding-top:8px; }',
+      '.etd-anno-card { flex:1; display:flex; flex-direction:column; min-height:0; } .etd-anno-host { flex:1; min-height:120px; overflow:hidden; }'
     ].join('\n');
   })();
 
@@ -303,7 +308,11 @@
         /* 弹窗 */
         newDlg: false, newSaving: false, newForm: { templateCode: '', templateName: '', scopeLevel: 2, parentTemplateId: '', datasetId: '' },
         dsDlg: false, dsSaving: false, dsForm: { name: '', scopeLevel: 2 },
-        copyDlg: false, copySaving: false, copyForm: { templateCode: '', templateName: '', scopeLevel: 2 }
+        copyDlg: false, copySaving: false, copyForm: { templateCode: '', templateName: '', scopeLevel: 2 },
+        /* 高级版: 版本抽屉 / 发布审批 / 修订与批注 */
+        rightTab: 'props', verDrawer: false, verList: [], verLoading: false, verSelA: '', verSelB: '', verSummary: '', verDiffOk: false,
+        pubStatus: 3, approvalBusy: false, changeSummary: '',
+        trackOn: false, annoCount: 0
       };
     },
     computed: {
@@ -372,6 +381,10 @@
       parentCandidates: function () {
         var lv = Number(this.newForm.scopeLevel);
         return (this.tplOptions || []).filter(function (o) { return o.level < lv; });
+      },
+      /* 审核权口径与后端 requireApproveReviewer 对齐: ADMIN/SUPER_ADMIN(后端兜底 403) */
+      canReview: function () {
+        return !!(HIS.hasRole && (HIS.hasRole('ADMIN') || HIS.hasRole('SUPER_ADMIN')));
       }
     },
     watch: {
@@ -391,6 +404,8 @@
     mounted: function () { this.initEditor(); },
     beforeUnmount: function () {
       this._destroyed = true;
+      this.unmountAnno();
+      this.unmountVerDiff();
       var w = this._editor;
       this._editor = null;
       if (w) { try { w.destroy(); } catch (e) { /* noop */ } }
@@ -480,15 +495,18 @@
         if (!id) {
           vm.current = null; vm.tplFormName = '';
           vm.printScript = ''; vm.printConfig = defaultPrintConfig(); vm.legacyFields = []; vm.legacyConverted = false;
-          vm.lockedKeys = []; vm.lockedDirty = false;
+          vm.lockedKeys = []; vm.lockedDirty = false; vm.pubStatus = 3;
           if (vm._editor) { vm._editor.fromJSON(null); }
           vm.clearSel();
+          vm.unmountAnno();
           return;
         }
         HIS.get('/api/his/emr/template/' + HIS.idParam(id)).then(function (tpl) {
           if (!tpl) { return; }
           vm.current = tpl;
           vm.tplFormName = text(tpl.templateName);
+          vm.pubStatus = tpl.publishStatus == null ? 3 : Number(tpl.publishStatus);
+          vm.unmountAnno();                       /* 换模板后批注面板目标失效: 卸载待重挂 */
           vm.printScript = text(tpl.printScript);
           vm.printConfig = normalizePrintConfig(tpl.printConfig);
           vm.legacyFields = parseFieldDefs(tpl.fields);
@@ -514,12 +532,175 @@
         vm.fetchTemplates();
       },
 
+      /* ===== 高级版: 发布审批 ===== */
+      pubLabel: function (v) { return { 0: '草稿', 1: '待审', 2: '已驳回', 3: '已发布' }[Number(v)] || '草稿'; },
+      pubTag: function (v) { return { 0: 'info', 1: 'warning', 2: 'danger', 3: 'success' }[Number(v)] || 'info'; },
+      reloadCurrent: function (sid) { var vm = this; return HIS.get('/api/his/emr/template/' + HIS.idParam(sid)).then(function (d) { if (d) { vm.current = d; vm.pubStatus = d.publishStatus == null ? 3 : Number(d.publishStatus); vm.tplFormName = text(d.templateName); } }); },
+      submitReview: function () {
+        var vm = this, tpl = vm.current;
+        if (!tpl) { ElementPlus.ElMessage.warning('请先选择模板'); return; }
+        ElementPlus.ElMessageBox.confirm('确认提交模板「' + text(tpl.templateName) + '」进入审核流程? 提交后待管理员审核发布。', '提交审核', { type: 'info' })
+          .then(function () { vm.approvalBusy = true; return HIS.post('/api/his/emr/template/' + HIS.idParam(tpl.id) + '/submit', {}); })
+          .then(function () { ElementPlus.ElMessage.success('已提交审核'); return vm.reloadCurrent(tpl.id); })
+          .catch(HIS.notifyError).finally(function () { vm.approvalBusy = false; });
+      },
+      retractReview: function () {
+        var vm = this, tpl = vm.current;
+        if (!tpl) { return; }
+        HIS.post('/api/his/emr/template/' + HIS.idParam(tpl.id) + '/retract', {})
+          .then(function () { ElementPlus.ElMessage.success('已撤回草稿'); return vm.reloadCurrent(tpl.id); })
+          .catch(HIS.notifyError);
+      },
+      approveReview: function () {
+        var vm = this, tpl = vm.current;
+        if (!tpl) { return; }
+        ElementPlus.ElMessageBox.prompt('审核意见(可选)', '审核通过并发布', { inputValue: '' })
+          .then(function (ref) { vm.approvalBusy = true; return HIS.post('/api/his/emr/template/' + HIS.idParam(tpl.id) + '/approve?opinion=' + encodeURIComponent(ref.value || '')); })
+          .then(function () { ElementPlus.ElMessage.success('已审核通过并发布'); return vm.reloadCurrent(tpl.id); })
+          .catch(function (e) { if (e !== 'cancel' && e !== 'close') { HIS.notifyError(e); } })
+          .finally(function () { vm.approvalBusy = false; });
+      },
+      rejectReview: function () {
+        var vm = this, tpl = vm.current;
+        if (!tpl) { return; }
+        ElementPlus.ElMessageBox.prompt('驳回意见(必填)', '审核驳回', { inputValidator: function (v) { return (v && v.trim()) ? true : '驳回必须填写意见'; } })
+          .then(function (ref) { vm.approvalBusy = true; return HIS.post('/api/his/emr/template/' + HIS.idParam(tpl.id) + '/reject?opinion=' + encodeURIComponent(ref.value.trim())); })
+          .then(function () { ElementPlus.ElMessage.success('已驳回'); return vm.reloadCurrent(tpl.id); })
+          .catch(function (e) { if (e !== 'cancel' && e !== 'close') { HIS.notifyError(e); } })
+          .finally(function () { vm.approvalBusy = false; });
+      },
+
+      /* ===== 高级版: 版本历史抽屉 ===== */
+      openVerDrawer: function () {
+        if (!this.current) { ElementPlus.ElMessage.warning('请先选择模板'); return; }
+        this.verDrawer = true; this.fetchVersions();
+      },
+      fetchVersions: function () {
+        var vm = this, tpl = vm.current;
+        if (!tpl) { return; }
+        vm.verLoading = true; vm.unmountVerDiff(); vm.verDiffOk = false;
+        HIS.get('/api/his/emr/template/' + HIS.idParam(tpl.id) + '/versions').then(function (d) {
+          vm.verList = Array.isArray(d) ? d : ((d && d.records) || []);
+          if (vm.verList.length >= 2) { vm.verSelA = HIS.id(vm.verList[1].id); vm.verSelB = HIS.id(vm.verList[0].id); }
+          else if (vm.verList.length === 1) { vm.verSelA = ''; vm.verSelB = HIS.id(vm.verList[0].id); }
+        }).catch(HIS.notifyError).finally(function () { vm.verLoading = false; });
+      },
+      verLabel: function (v) {
+        var op = { save: '保存', publish: '发布', rollback: '回滚' }[v.operateType] || v.operateType || '操作';
+        return 'v' + v.versionNo + ' · ' + op + ' · ' + text(v.operatorName) + ' · ' + text(v.changeSummary);
+      },
+      verById: function (vid) { return (this.verList || []).filter(function (v) { return HIS.sameId(v.id, vid); })[0]; },
+      verIdStr: function (v) { return HIS.id(v.id); },
+      compareVersions: function () {
+        var vm = this, tpl = vm.current;
+        if (!tpl || !vm.verSelA || !vm.verSelB) { ElementPlus.ElMessage.warning('请选择要对比的两个版本'); return; }
+        var va = vm.verById(vm.verSelA), vb = vm.verById(vm.verSelB);
+        Promise.all([
+          HIS.get('/api/his/emr/template/version/' + HIS.idParam(vm.verSelA)),
+          HIS.get('/api/his/emr/template/version/' + HIS.idParam(vm.verSelB))
+        ]).then(function (arr) {
+          var da = safeParse(arr[0] && arr[0].document), db = safeParse(arr[1] && arr[1].document);
+          vm._diffProps = {
+            oldDoc: da, newDoc: db,
+            oldLabel: 'v' + (va ? va.versionNo : '?'), newLabel: 'v' + (vb ? vb.versionNo : '?'),
+            oldMeta: va ? text(va.changeSummary) : '', newMeta: vb ? text(vb.changeSummary) : '',
+            canRollback: true,
+            onRollback: function () { vm.rollbackTo(va ? va.versionNo : null); }
+          };
+          vm.verDiffOk = true;
+          vm.$nextTick(function () { vm.mountVerDiff(); });
+        }).catch(HIS.notifyError);
+      },
+      mountVerDiff: function () {
+        this.unmountVerDiff();
+        var host = this.$refs.verDiffHost;
+        if (!host || !this._diffProps || !HIS.EmrEditor || !HIS.EmrEditor.EmrDiffViewer) { return; }
+        host.innerHTML = '';
+        this._verDiff = HIS.EmrEditor.EmrDiffViewer.mount(host, this._diffProps);
+      },
+      unmountVerDiff: function () {
+        var m = this._verDiff;
+        this._verDiff = null;
+        if (m) { try { m.app.unmount(); } catch (e) { /* noop */ } }
+      },
+      rollbackTo: function (versionNo) {
+        var vm = this, tpl = vm.current;
+        if (!tpl || versionNo == null) { return; }
+        ElementPlus.ElMessageBox.confirm('确认回滚到 v' + versionNo + '? 将写回该版本文档并生成新版本(不覆盖历史)。', '回滚确认', { type: 'warning' })
+          .then(function () {
+            return HIS.post('/api/his/emr/template/' + HIS.idParam(tpl.id) + '/rollback?versionNo=' + versionNo + '&summary=' + encodeURIComponent('回滚自 v' + versionNo));
+          })
+          .then(function () {
+            ElementPlus.ElMessage.success('已回滚, 正在重载模板…');
+            vm.verDrawer = false;
+            return HIS.get('/api/his/emr/template/' + HIS.idParam(tpl.id));
+          })
+          .then(function (d) { if (d) { vm.current = d; vm.pubStatus = d.publishStatus == null ? 3 : Number(d.publishStatus); var doc = safeParse(d.document); if (vm._editor) { vm._editor.fromJSON(doc || null); } } vm.fetchTemplates(); })
+          .catch(HIS.notifyError);
+      },
+
+      /* ===== 高级版: 修订模式与批注 ===== */
+      toggleTrack: function (on) {
+        if (!this._editor) { ElementPlus.ElMessage.warning('编辑器尚未就绪'); this.trackOn = false; return; }
+        var u = (HIS.getUser && HIS.getUser()) || {};
+        this._editor.toggleTrack(!!on, { name: u.realName || u.username, id: u.userId });
+        this.trackOn = !!on;
+        ElementPlus.ElMessage[on ? 'success' : 'info'](on ? '已开启修订模式, 后续插入/删除将留痕' : '已关闭修订模式');
+      },
+      acceptAllTrack: function () {
+        if (!this._editor) { return; }
+        var vm = this;
+        ElementPlus.ElMessageBox.confirm('接受全部修订? 删除线内容将被移除, 下划线内容并入正文。', '接受修订', { type: 'success' })
+          .then(function () { vm._editor.acceptAllTrack(); vm.docTick++; ElementPlus.ElMessage.success('已接受全部修订'); })
+          .catch(function () { /* noop */ });
+      },
+      rejectAllTrack: function () {
+        if (!this._editor) { return; }
+        var vm = this;
+        ElementPlus.ElMessageBox.confirm('拒绝全部修订? 新增内容将被移除, 删除内容恢复为正文。', '拒绝修订', { type: 'warning' })
+          .then(function () { vm._editor.rejectAllTrack(); vm.docTick++; ElementPlus.ElMessage.success('已拒绝全部修订'); })
+          .catch(function () { /* noop */ });
+      },
+      mountAnno: function () {
+        var vm = this;
+        if (!vm.current) { ElementPlus.ElMessage.warning('请先选择模板'); return; }
+        if (!HIS.EmrEditor || !HIS.EmrEditor.EmrAnnotationPanel) { ElementPlus.ElMessage.error('批注面板未就绪'); return; }
+        vm.$nextTick(function () {
+          vm.unmountAnno();
+          var host = vm.$refs.annoHost;
+          if (!host) { return; }
+          host.innerHTML = '';
+          vm._annoM = HIS.EmrEditor.EmrAnnotationPanel.mount(host, {
+            wrapper: vm._editor, targetType: 'template', targetId: HIS.id(vm.current.id),
+            onCount: function (n) { vm.annoCount = n; }
+          });
+          vm._editor.on('commentClick', function (evt) { vm.rightTab = 'anno'; });
+        });
+      },
+      unmountAnno: function () {
+        var m = this._annoM;
+        this._annoM = null;
+        if (m) { try { m.app.unmount(); } catch (e) { /* noop */ } }
+      },
+
       /* ===== 保存 ===== */
       save: function () {
         var vm = this;
+        if (!vm.current) { ElementPlus.ElMessage.warning('请先选择或新建模板'); return; }
+        if (!vm._editor) { ElementPlus.ElMessage.warning('编辑器尚未就绪'); return; }
+        /* 高级版: 存在未处理修订留痕时先提醒(保存不会自动接受/拒绝) */
+        if (vm._editor.hasUnresolvedTrack()) {
+          ElementPlus.ElMessageBox.confirm('文档存在未处理的修订留痕, 保存后将随模板持久化。可先在顶栏「接受/拒绝」处理。', '未处理修订', { type: 'warning', confirmButtonText: '仍然保存', cancelButtonText: '去处理' })
+            .then(function () { vm.doSave(); })
+            .catch(function () { /* 用户取消 */ });
+          return;
+        }
+        vm.doSave();
+      },
+      doSave: function () {
+        var vm = this;
         var tpl = vm.current;
         if (!tpl) { ElementPlus.ElMessage.warning('请先选择或新建模板'); return; }
-        if (!vm._editor) { ElementPlus.ElMessage.warning('编辑器尚未就绪'); return; }
         var normalizedDoc = normalizeDocOut(vm._editor.toJSON());
         var body = {
           templateName: text(vm.tplFormName).trim() || text(tpl.templateName),
@@ -528,14 +709,16 @@
           printScript: text(vm.printScript),
           printConfig: JSON.stringify(normalizePrintConfig(vm.printConfig))
         };
+        if (text(vm.changeSummary).trim()) { body.changeSummary = text(vm.changeSummary).trim(); }
         if (vm.lockedDirty) { body.lockedSections = JSON.stringify(vm.lockedKeys); }
         vm.saving = true;
         HIS.put('/api/his/emr/template/' + HIS.idParam(tpl.id), body).then(function () {
           vm.lockedDirty = false;
+          vm.changeSummary = '';
           HIS.notifySuccess('模板已保存(版本自增)');
           return HIS.get('/api/his/emr/template/' + HIS.idParam(tpl.id));
         }).then(function (d) {
-          if (d) { vm.current = d; vm.tplFormName = text(d.templateName); vm.legacyFields = parseFieldDefs(d.fields); vm.legacyConverted = false; }
+          if (d) { vm.current = d; vm.tplFormName = text(d.templateName); vm.legacyFields = parseFieldDefs(d.fields); vm.legacyConverted = false; vm.pubStatus = d.publishStatus == null ? 3 : Number(d.publishStatus); }
           vm.fetchTemplates();
         }).catch(HIS.notifyError).finally(function () { vm.saving = false; });
       },
@@ -991,6 +1174,20 @@
       '    <el-button size="small" type="danger" plain :disabled="!current" @click="removeTpl">删除</el-button>',
       '    <el-button size="small" type="warning" plain :disabled="!current || Number(current.scopeLevel)===2" @click="propagate">传播更新</el-button>',
       '    <el-button size="small" @click="doPrint">打印预览</el-button>',
+      /* ---- 高级版: 版本 / 审批 / 修订 / 批注 ---- */
+      '    <el-divider direction="vertical"></el-divider>',
+      '    <el-button size="small" :disabled="!current" @click="openVerDrawer">版本历史</el-button>',
+      '    <el-tag v-if="current" size="small" :type="pubTag(pubStatus)" effect="plain">{{ pubLabel(pubStatus) }}</el-tag>',
+      '    <el-button v-if="current && pubStatus!==1" size="small" type="primary" plain :loading="approvalBusy" @click="submitReview">提交审核</el-button>',
+      '    <template v-if="current && pubStatus===1">',
+      '      <el-button v-if="canReview" size="small" type="success" plain :loading="approvalBusy" @click="approveReview">审核发布</el-button>',
+      '      <el-button v-if="canReview" size="small" type="danger" plain :loading="approvalBusy" @click="rejectReview">驳回</el-button>',
+      '      <el-button size="small" plain :loading="approvalBusy" @click="retractReview">撤回草稿</el-button>',
+      '    </template>',
+      '    <el-switch v-model="trackOn" active-text="修订" size="small" style="margin:0 6px" @change="toggleTrack" :disabled="!current"></el-switch>',
+      '    <template v-if="trackOn"><el-button size="small" type="success" plain @click="acceptAllTrack">接受全部</el-button><el-button size="small" plain @click="rejectAllTrack">拒绝全部</el-button></template>',
+      '    <el-badge :value="annoCount" :hidden="!annoCount" style="margin-left:6px"><el-button size="small" :disabled="!current" @click="rightTab===\'anno\' ? (rightTab=\'props\', unmountAnno()) : mountAnno()">批注</el-button></el-badge>',
+      '    <el-input v-model="changeSummary" size="small" placeholder="变更说明(记入版本历史)" style="width:180px;margin-left:6px;"></el-input>',
       '  </div>',
       '  <el-alert v-if="legacyConverted" class="etd-legacy-alert" type="warning" :closable="false" show-icon title="已将历史字段画布模板转换为类 Word 文档；保存后将持久化新文档，字段标识和原始属性会完整保留。"></el-alert>',
       /* ===== 三栏主体 ===== */
@@ -1031,8 +1228,13 @@
       '      <div class="etd-canvasbar"><b>A4 {{ printConfig.orientation===\'landscape\' ? \'横向\' : \'纵向\' }}</b><el-button-group><el-button size="small" @click="setZoom(.75)">75%</el-button><el-button size="small" @click="setZoom(.9)">90%</el-button><el-button size="small" @click="setZoom(1)">100%</el-button><el-button size="small" @click="setZoom(1.25)">125%</el-button></el-button-group><el-button size="small" @click="fitWidth">适合宽度</el-button><span class="etd-spacer"></span><span class="etd-page-state">缩放 {{ Math.round(zoom*100) }}% · {{ pageCount }} 页</span><el-tag v-if="paginationDiagnostics.length" size="small" type="danger">{{ paginationDiagnostics.length }} 项越界</el-tag></div>',
       '      <div class="etd-editor-host" ref="editorHost" v-loading="editorLoading" :class="{ \'etd-drag-over\': dragOver }" @click="onEditorClick" @dragover.prevent.capture="onDragOver" @dragleave="onDragLeave" @drop.capture="onDropCapture"></div>',
       '    </div>',
-      /* ---- 右栏: 属性面板 ---- */
+      /* ---- 右栏: 属性面板 / 批注面板(高级版标签页) ---- */
       '    <div class="etd-right">',
+      '      <el-radio-group v-model="rightTab" size="small" style="width:100%;margin-bottom:6px;display:flex;">',
+      '        <el-radio-button label="props" style="flex:1;">属性</el-radio-button>',
+      '        <el-radio-button label="anno" style="flex:1;">批注{{ annoCount ? \' (\' + annoCount + \')\' : \'\' }}</el-radio-button>',
+      '      </el-radio-group>',
+      '      <template v-if="rightTab===\'props\'">',
       /* 模板信息 */
       '      <div class="etd-card">',
       '        <div class="etd-card-hd">模板信息</div>',
@@ -1045,6 +1247,7 @@
       '            <div>层级: <el-tag size="small" effect="plain" :type="levelTag(current.scopeLevel)">{{ levelLabel(current.scopeLevel) }}</el-tag>',
       '              <span v-if="current.version != null"> 版本 v{{ current.version }}</span>',
       '              <el-tag size="small" style="margin-left:6px;" :type="Number(current.status)===1?\'success\':\'info\'">{{ Number(current.status)===1?\'启用\':\'停用\' }}</el-tag>',
+      '              <el-tag size="small" style="margin-left:4px;" :type="pubTag(pubStatus)">{{ pubLabel(pubStatus) }}</el-tag>',
       '            </div>',
       '            <div v-if="current.parentTemplateId">继承自: <b>{{ parentName }}</b></div>',
       '            <div v-if="current.datasetId">数据集ID: {{ current.datasetId }}</div>',
@@ -1133,6 +1336,8 @@
       '        <el-collapse v-if="printScript" style="margin-top:8px"><el-collapse-item title="历史打印脚本（兼容保留）" name="legacy"><el-input v-model="printScript" type="textarea" :rows="4" class="etd-script"></el-input></el-collapse-item></el-collapse>',
       '        <div style="margin-top:8px;display:flex;align-items:center;gap:8px;"><el-button size="small" type="primary" plain @click="doPrint">逐页预览</el-button><span class="etd-hint">正式打印不输出诊断层。</span></div>',
       '      </div>',
+      '      </template>',
+      '      <div v-else class="etd-card etd-anno-card"><div class="etd-card-hd">批注与协作审阅</div><div ref="annoHost" class="etd-anno-host"></div></div>',
       '    </div>',
       '  </div>',
       /* ===== 新建模板 ===== */
@@ -1207,6 +1412,28 @@
       '    <div v-if="!fragLoading && !fragList.length" class="etd-hint">未找到可用片段, 可调整关键词后重新搜索</div>',
       '    <template #footer><el-button size="small" @click="fragDlg=false">取消</el-button><el-button size="small" type="primary" :disabled="!fragPick" @click="confirmFragReplace">更换</el-button></template>',
       '  </el-dialog>',
+      /* ===== 版本历史抽屉(高级版): 列表 + 两版对比 + 回滚 ===== */
+      '  <el-drawer v-model="verDrawer" title="版本历史" size="64%" :destroy-on-close="true">',
+      '    <div class="etd-ver-pick">',
+      '      <el-select v-model="verSelA" size="small" placeholder="旧版本…" style="width:280px" filterable>',
+      '        <el-option v-for="v in verList" :key="\'a\'+v.id" :label="verLabel(v)" :value="verIdStr(v)"></el-option>',
+      '      </el-select>',
+      '      <span style="margin:0 6px">→</span>',
+      '      <el-select v-model="verSelB" size="small" placeholder="新版本…" style="width:280px" filterable>',
+      '        <el-option v-for="v in verList" :key="\'b\'+v.id" :label="verLabel(v)" :value="verIdStr(v)"></el-option>',
+      '      </el-select>',
+      '      <el-button size="small" type="primary" style="margin-left:8px" :disabled="!verSelA || !verSelB || verSelA===verSelB" @click="compareVersions">对比</el-button>',
+      '    </div>',
+      '    <div ref="verDiffHost" class="etd-ver-diff" v-if="verDiffOk"></div>',
+      '    <div class="etd-ver-list-hd">版本时间线</div>',
+      '    <el-timeline v-loading="verLoading" style="padding-left:4px;margin-top:8px;">',
+      '      <el-timeline-item v-for="v in verList" :key="v.id" :timestamp="v.createTime || \'-\'" :type="v.operateType===\'rollback\' ? \"warning\" : (v.operateType===\'publish\' ? \'success\' : \'primary\')" placement="top">',
+      '        <b>v{{ v.versionNo }}</b> · {{ { save: \'保存\', publish: \'发布\', rollback: \'回滚\' }[v.operateType] || v.operateType }} · {{ v.operatorName || \'-\' }}',
+      '        <div style="color:#8994a5;font-size:12px;">{{ v.changeSummary || \'(无变更说明)\' }}</div>',
+      '      </el-timeline-item>',
+      '      <el-timeline-item v-if="!verLoading && !verList.length" timestamp="-" type="info">暂无历史版本 — 保存/发布/回滚后自动留存</el-timeline-item>',
+      '    </el-timeline>',
+      '  </el-drawer>',
       '</div>'
     ].join('\n')
   };

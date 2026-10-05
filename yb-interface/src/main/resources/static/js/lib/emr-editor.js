@@ -345,6 +345,8 @@
         case 'code': html = '<code>' + html + '</code>'; break;
         case 'color': { const c = safeColor(m.attrs && m.attrs.color); html = c ? '<span style="color:' + c + '">' + html + '</span>' : html; break; }
         case 'textStyle': { const s = textStyleCss(m.attrs); html = s ? '<span style="' + s + '">' + html + '</span>' : html; break; }
+        case 'emrTrack': html = (m.attrs && m.attrs.op === 'delete') ? '' : html; break;   /* 修订: delete 不输出, insert 计正文 */
+        case 'emrComment': break;                                                          /* 批注高亮不进正式打印 */
       }
     });
     return html;
@@ -676,7 +678,12 @@
       oldDoc: { type: Object, default: null },
       newDoc: { type: Object, default: null },
       oldLabel: { type: String, default: '旧版本' },
-      newLabel: { type: String, default: '新版本' }
+      newLabel: { type: String, default: '新版本' },
+      /* 高级版: 版本元信息展示与回滚上抛(端点由宿主设计器执行) */
+      oldMeta: { type: String, default: '' },
+      newMeta: { type: String, default: '' },
+      canRollback: { type: Boolean, default: false },
+      onRollback: { type: Function, default: null }
     },
     data: function () { return { ops: [], oversized: false }; },
     watch: {
@@ -703,12 +710,15 @@
         const ops = diffLines(flattenDoc(this.oldDoc), flattenDoc(this.newDoc));
         this.oversized = ops === null;
         this.ops = ops || [];
-      }
+      },
+      rollback: function () { if (typeof this.onRollback === 'function') { this.onRollback(); } }
     },
     template: [
       '<div class="emr-diff">',
       '  <div class="emr-diff-bar">',
       '    <span>差异: 删除 <b class="emr-diff-del-text">{{ stat.del }}</b> 行 / 新增 <b class="emr-diff-add-text">{{ stat.add }}</b> 行</span>',
+      '    <span v-if="oldMeta || newMeta" style="margin-left:12px">{{ oldMeta }}<template v-if="oldMeta && newMeta"> → </template>{{ newMeta }}</span>',
+      '    <el-button v-if="canRollback" size="small" type="warning" plain style="float:right" @click="rollback">回滚到左侧版本</el-button>',
       '  </div>',
       '  <div v-if="oversized" class="emr-diff-warn">文档行数过大（超过 600 行），已停用逐行对比。</div>',
       '  <table v-else class="emr-diff-table">',
@@ -722,6 +732,141 @@
   };
   EmrDiffViewer.mount = function (el, props) {
     const app = Vue.createApp(EmrDiffViewer, props || {});
+    app.use(ElementPlus, { locale: window.ElementPlusLocaleZhCn });
+    return { app: app, vm: app.mount(typeof el === 'string' ? document.querySelector(el) : el) };
+  };
+
+  /* ================= 批注面板(高级版): 线程列表/新增/回复/解决, 锚点定位到 emrComment 高亮 ================= */
+  const ANNO_URL = '/api/his/emr/annotation';
+  const EmrAnnotationPanel = {
+    name: 'EmrAnnotationPanel',
+    props: {
+      wrapper: { type: Object, required: true },              /* EmrEditor wrapper(选区/高亮/定位) */
+      targetType: { type: String, default: 'template' },
+      targetId: { type: [Number, String], default: null }
+    },
+    emits: ['count'],
+    data: function () {
+      return { threads: [], loading: false, filter: 'open', draft: '', replyTo: null, replyText: '' };
+    },
+    computed: {
+      roots: function () {
+        const self = this;
+        const map = {};
+        this.threads.forEach(function (t) { map[t.id] = t; });
+        const tops = this.threads.filter(function (t) { return !t.parentId; });
+        tops.forEach(function (t) { t.replies = self.threads.filter(function (r) { return String(r.parentId) === String(t.id); }); });
+        return this.filter === 'open' ? tops.filter(function (t) { return t.status !== 'resolved'; }) : tops;
+      },
+      openCount: function () {
+        return this.threads.filter(function (t) { return !t.parentId && t.status !== 'resolved'; }).length;
+      }
+    },
+    watch: {
+      targetId: { immediate: true, handler: function (v) { if (v) { this.reload(); } } }
+    },
+    methods: {
+      reload: function () {
+        const self = this;
+        if (!this.targetId || typeof HIS.get !== 'function') { return Promise.resolve(); }
+        this.loading = true;
+        return HIS.get(ANNO_URL + '/list?targetType=' + encodeURIComponent(this.targetType) + '&targetId=' + this.targetId)
+          .then(function (rows) { self.threads = rows || []; self.$emit('count', self.openCount); })
+          .catch(function (e) { self.msg((e && e.message) || '批注加载失败', 'error'); })
+          .finally(function () { self.loading = false; });
+      },
+      msg: function (m, type) {
+        if (window.ElementPlus && ElementPlus.ElMessage) { ElementPlus.ElMessage({ message: m, type: type || 'success' }); }
+      },
+      addRoot: function () {
+        const self = this;
+        const text = (this.draft || '').trim();
+        if (!text) { this.msg('请输入批注内容', 'warning'); return; }
+        const sel = this.wrapper.editor.state.selection;
+        const anchor = { from: sel.from, to: sel.to };
+        let extra = {};
+        try {
+          /* 定位坐标: 记录所在章节/数据元(供跨会话粗定位) */
+          const $from = this.wrapper.editor.state.doc.resolve(sel.from);
+          for (let d = $from.depth; d > 0; d--) {
+            const n = $from.node(d);
+            if (n.type.name === 'emrSection') { extra.sectionKey = n.attrs.sectionKey || n.attrs.title || ''; break; }
+          }
+        } catch (e) { /* 锚点降级为纯 from/to */ }
+        HIS.post(ANNO_URL, {
+          targetType: this.targetType, targetId: this.targetId, annoType: 'comment',
+          anchor: JSON.stringify(Object.assign(anchor, extra)), content: text
+        }).then(function (row) {
+          self.draft = '';
+          self.reload().then(function () {
+            if (row && row.id) { self.wrapper.markSelectionAsComment(row.id); self.wrapper.scrollToAnnotation(row.id); }
+          });
+        }).catch(function (e) { self.msg((e && e.message) || '批注保存失败', 'error'); });
+      },
+      startReply: function (t) { this.replyTo = t.id; this.replyText = ''; },
+      sendReply: function () {
+        const self = this;
+        const text = (this.replyText || '').trim();
+        if (!text) { return; }
+        HIS.post(ANNO_URL, { targetType: this.targetType, targetId: this.targetId, annoType: 'comment', parentId: this.replyTo, content: text })
+          .then(function () { self.replyTo = null; self.reload(); })
+          .catch(function (e) { self.msg((e && e.message) || '回复失败', 'error'); });
+      },
+      setStatus: function (t, status) {
+        const self = this;
+        HIS.put(ANNO_URL + '/' + t.id + '/status?status=' + status).then(function () { self.reload(); })
+          .catch(function (e) { self.msg((e && e.message) || '状态更新失败', 'error'); });
+      },
+      remove: function (t) {
+        const self = this;
+        HIS.del(ANNO_URL + '/' + t.id).then(function () { self.reload(); })
+          .catch(function (e) { self.msg((e && e.message) || '删除失败', 'error'); });
+      },
+      locate: function (t) { this.wrapper.scrollToAnnotation(t.id); },
+      fmtTime: function (ts) {
+        if (!ts) { return ''; }
+        const d = new Date(ts);
+        return isNaN(d.getTime()) ? String(ts) : fmtDate(d, true);
+      }
+    },
+    template: [
+      '<div class="emr-anno-panel" v-loading="loading">',
+      '  <div class="emr-anno-bar">',
+      '    <el-radio-group v-model="filter" size="small">',
+      '      <el-radio-button label="open">待处理 {{ openCount }}</el-radio-button>',
+      '      <el-radio-button label="all">全部</el-radio-button>',
+      '    </el-radio-group>',
+      '    <el-button size="small" text @click="reload">刷新</el-button>',
+      '  </div>',
+      '  <div class="emr-anno-list">',
+      '    <div v-if="!roots.length" class="emr-anno-empty">暂无批注。选中正文后在下方输入批注内容。</div>',
+      '    <div v-for="t in roots" :key="t.id" class="emr-anno-item" :class="{\'emr-anno-item--resolved\': t.status===\'resolved\'}">',
+      '      <div class="emr-anno-head"><span class="emr-anno-author" v-text="t.authorName || \'匿名\'"></span>',
+      '        <span class="emr-anno-time" v-text="fmtTime(t.createTime)"></span>',
+      '        <el-tag v-if="t.status===\'resolved\'" size="small" type="success" effect="plain">已解决</el-tag></div>',
+      '      <div class="emr-anno-text" v-text="t.content" @click="locate(t)"></div>',
+      '      <div class="emr-anno-reply" v-for="r in t.replies" :key="r.id"><b v-text="r.authorName"></b> <span v-text="fmtTime(r.createTime)"></span><br><span v-text="r.content"></span></div>',
+      '      <div class="emr-anno-acts">',
+      '        <el-button size="small" text type="primary" @click="startReply(t)">回复</el-button>',
+      '        <el-button v-if="t.status!==\'resolved\'" size="small" text type="success" @click="setStatus(t, \'resolved\')">解决</el-button>',
+      '        <el-button v-else size="small" text @click="setStatus(t, \'open\')">重新打开</el-button>',
+      '        <el-button size="small" text type="danger" @click="remove(t)">删除</el-button>',
+      '      </div>',
+      '      <div v-if="replyTo===t.id" class="emr-anno-replybox">',
+      '        <el-input v-model="replyText" size="small" placeholder="回复…" @keyup.enter="sendReply"/>',
+      '        <el-button size="small" type="primary" @click="sendReply">发送</el-button>',
+      '      </div>',
+      '    </div>',
+      '  </div>',
+      '  <div class="emr-anno-add">',
+      '    <el-input v-model="draft" type="textarea" :rows="2" size="small" placeholder="选中正文后新建批注…"/>',
+      '    <el-button size="small" type="primary" style="margin-top:4px" @click="addRoot">新建批注</el-button>',
+      '  </div>',
+      '</div>'
+    ].join('\n')
+  };
+  EmrAnnotationPanel.mount = function (el, props) {
+    const app = Vue.createApp(EmrAnnotationPanel, props || {});
     app.use(ElementPlus, { locale: window.ElementPlusLocaleZhCn });
     return { app: app, vm: app.mount(typeof el === 'string' ? document.querySelector(el) : el) };
   };
@@ -1592,6 +1737,32 @@
       refreshPagination: function () { if (pageCanvas) { pageCanvas.refresh(); } return wrapper; },
       getPaginationDiagnostics: function () { return pageCanvas ? pageCanvas.getDiagnostics() : []; },
       focus: function () { editor.commands.focus(); return wrapper; },
+      /* --- 高级版: 修订留痕与批注 API(设计器/审阅面板使用) --- */
+      trackOn: false,
+      toggleTrack: function (on, author) {
+        wrapper.trackOn = !!on;
+        editor.commands.setEmrTrackMode(wrapper.trackOn, author || {});
+        emit('track', wrapper.trackOn);
+        return wrapper;
+      },
+      acceptAllTrack: function () { editor.commands.acceptAllEmrTrack(); emit('update', wrapper); return wrapper; },
+      rejectAllTrack: function () { editor.commands.rejectAllEmrTrack(); emit('update', wrapper); return wrapper; },
+      hasUnresolvedTrack: function () {
+        let found = false;
+        editor.state.doc.descendants(function (n) {
+          if (!found && n.type.name === 'text') { found = n.marks.some(function (m) { return m.type.name === 'emrTrack'; }); }
+        });
+        return found;
+      },
+      markSelectionAsComment: function (annoId) {
+        if (!editor.state.selection.empty) { editor.commands.setEmrComment({ annoId: String(annoId) }); emit('update', wrapper); }
+        return wrapper;
+      },
+      scrollToAnnotation: function (annoId) {
+        const el = editor.view.dom.querySelector('[data-emr-comment="' + annoId + '"]');
+        if (el) { el.scrollIntoView({ block: 'center', behavior: 'smooth' }); el.classList.add('emr-comment--pulse'); setTimeout(function () { el.classList.remove('emr-comment--pulse'); }, 1200); }
+        return !!el;
+      },
       /* setMode('edit'|'design'|'preview') — design 强化结构描边, preview 只读 */
       setMode: function (m) {
         if (['edit', 'design', 'preview'].indexOf(m) < 0) { m = 'edit'; }
@@ -1648,6 +1819,12 @@
     });
     editor.on('transaction', function () { emit('toolbar', wrapper.getToolbarState()); });
     on('save', function () { if (typeof opts.onSave === 'function') { opts.onSave(wrapper); } });
+
+    /* --- 批注高亮点击代理: 点击 emrComment 文本上抛 commentClick 供宿主定位线程 --- */
+    editor.view.dom.addEventListener('click', function (e) {
+      const el = e.target && e.target.closest ? e.target.closest('[data-emr-comment]') : null;
+      if (el) { emit('commentClick', { annoId: el.getAttribute('data-emr-comment') }); }
+    });
 
     applyMode();
     return wrapper;
@@ -1713,7 +1890,9 @@
       T.Placeholder.configure({ placeholder: opts.placeholder }),
       ext.EmrTable.configure({ resizable: true }), T.TableRow, T.TableCell, T.TableHeader,
       ext.EmrField, ext.EmrSection, ext.EmrMacro, ext.EmrPrintControl,
-      ext.EmrFragment, ext.EmrConditionalBlock, ext.EmrPageBreak, ext.EmrDrawing
+      ext.EmrFragment, ext.EmrConditionalBlock, ext.EmrPageBreak, ext.EmrDrawing,
+      /* 高级版: 修订留痕/批注 mark 与修订模式插件(常驻, track 关闭时无行为) */
+      ext.EmrTrackMark, ext.EmrCommentMark, ext.EmrTrackMode
     ];
 
     let hostEl = resolveContainer(opts.container);
@@ -1829,6 +2008,24 @@
       '.emr-diff-del { background:var(--yb-danger-bg,#fdf0f0); color:var(--yb-danger,#c74f4f); text-decoration:line-through; }',
       '.emr-diff-add { background:var(--yb-success-bg,#eef6ec); color:var(--yb-success,#3c862d); }',
       '.emr-diff-empty { background:var(--yb-canvas,#f2f4f8); }',
+      /* ---- 批注面板(高级版) ---- */
+      '.emr-anno-panel { display:flex; flex-direction:column; gap:6px; padding:8px; font-size:12px; }',
+      '.emr-anno-bar { display:flex; align-items:center; justify-content:space-between; }',
+      '.emr-anno-list { flex:1; overflow-y:auto; min-height:60px; display:flex; flex-direction:column; gap:6px; }',
+      '.emr-anno-empty { color:var(--yb-ink-4,#8994a5); padding:12px 4px; line-height:1.6; }',
+      '.emr-anno-item { border:1px solid var(--yb-border-light,#ebeff4); border-radius:6px; padding:6px 8px; background:var(--yb-surface,#fff); }',
+      '.emr-anno-item--resolved { opacity:.6; }',
+      '.emr-anno-head { display:flex; align-items:center; gap:6px; margin-bottom:2px; }',
+      '.emr-anno-author { font-weight:600; color:var(--yb-ink-1,#1c2430); }',
+      '.emr-anno-time { color:var(--yb-ink-4,#8994a5); font-variant-numeric:tabular-nums; margin-right:auto; }',
+      '.emr-anno-text { line-height:1.6; color:var(--yb-ink-2,#3d4a5c); cursor:pointer; word-break:break-all; }',
+      '.emr-anno-text:hover { color:var(--yb-brand,#1a5c9e); }',
+      '.emr-anno-reply { margin-top:4px; padding:4px 6px; background:var(--yb-surface-2,#f7f9fc); border-radius:4px; line-height:1.6; color:var(--yb-ink-3,#5a6a7e); word-break:break-all; }',
+      '.emr-anno-acts { display:flex; gap:2px; margin-top:2px; }',
+      '.emr-anno-replybox { display:flex; gap:4px; margin-top:4px; align-items:center; }',
+      '.emr-anno-add { border-top:1px dashed var(--yb-border,#dfe4eb); padding-top:6px; }',
+      '.emr-comment--pulse { animation:emr-anno-pulse 1.2s ease; }',
+      '@keyframes emr-anno-pulse { 0%,100% { box-shadow:none; } 40% { box-shadow:0 0 0 4px rgba(230,200,74,.55); } }',
       /* ---- 插入对话框辅助(对话框 append-to-body, 须全局作用域) ---- */
       '.emr-ins-note { font-size:12px; color:var(--yb-ink-4,#8994a5); line-height:1.6; }',
       '.emr-frag-search { display:flex; align-items:center; gap:8px; margin-bottom:8px; }',
@@ -1886,6 +2083,7 @@
     EmrPrintPreview: EmrPrintPreview,
     PageCanvas: { create: createPageCanvas, normalizeConfig: normalizePrintConfig, metrics: printMetrics },
     EmrDiffViewer: EmrDiffViewer,
+    EmrAnnotationPanel: EmrAnnotationPanel,
     EmrNlgPanel: EmrNlgPanel,
     EmrCdssPanel: EmrCdssPanel
   };

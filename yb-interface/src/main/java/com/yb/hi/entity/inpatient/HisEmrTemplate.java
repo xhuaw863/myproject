@@ -56,4 +56,6 @@ public class HisEmrTemplate extends BaseEntity {
     private Integer version;
     /** 状态: 1启用 0停用 */
     private Integer status;
+    /** 发布态: 0草稿 1待审 2已驳回 3已发布(与 status 启停分离; 仅 publish_status=3 且 status=1 进入书写器可选集) */
+    private Integer publishStatus;
 }

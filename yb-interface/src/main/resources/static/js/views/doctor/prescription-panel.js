@@ -133,15 +133,37 @@
         <div v-else-if="!folded" class="dw-rx-editor dw-panel-body">
           <div class="dw-rx-pickrow">
             <el-select class="dw-rx-pick" ref="rxPick" v-model="pickDrugId" size="small" filterable remote reserve-keyword clearable popper-class="dw-rx-pick-popper" :remote-method="remoteSearchDrug" :loading="searching" :disabled="!canEdit" placeholder="检索药品：通用名 / 编码 / 拼音简码；空输入即出精选候选" @change="onPickDrug" @visible-change="onPickVisible">
+              <!-- 固定表头: sticky 于下拉滚动容器顶部, 列宽与 .dw-rx-opt1 同栅格保证逐列对齐; 仅有候选时显示 -->
+              <div class="dw-rx-head" v-if="displayResults.length">
+                <span class="h-idx">#</span>
+                <span class="h-nm">药品名称</span>
+                <span class="h-spec">规格</span>
+                <span class="h-lv">医保</span>
+                <span class="h-sp">自付</span>
+                <span class="h-price">价格</span>
+                <span class="h-stock">可用量</span>
+              </div>
               <el-option-group v-for="g in renderGroups" :key="g.label" :label="g.label">
                 <el-option v-for="d in g.items" :key="d.id" :label="d.genericName || d.itemName" :value="d.id">
-                  <div class="dw-rx-opt2">
-                    <div class="r1"><span class="nm">{{ d.genericName || d.itemName }}</span><span v-if="d.tradeName" class="trade">· {{ d.tradeName }}</span><span class="dw-rx-lv" :class="lvClass(d)">{{ lvText(d) }}</span><span v-if="selfpayText(d)" class="sp" title="医保自付比例">自付 {{ selfpayText(d) }}</span><span class="price">¥{{ unitPriceOf(d) }}</span><span class="stock">可用 {{ availText(d) }}</span></div>
-                    <div class="r2">{{ subLine(d) }}</div>
-                    <div class="r3"><span class="code">院内码 {{ d.drugCode || '—' }}</span><span class="code yb" :class="{ unmapped: !d.ybDrugCode }">医保码 {{ d.ybDrugCode || '未对照' }}</span><span v-if="d.ybName" class="ybname">{{ d.ybName }}</span></div>
+                  <div class="dw-rx-opt1" :title="pickTitle(d)">
+                    <span class="c-idx">{{ seqOf(d) }}</span>
+                    <span class="c-nm"><b>{{ d.genericName || d.itemName }}</b><span v-if="d.tradeName" class="trade">· {{ d.tradeName }}</span></span>
+                    <span class="c-spec">{{ d.spec || '—' }}</span>
+                    <span class="c-lv"><span class="dw-rx-lv" :class="lvClass(d)">{{ lvText(d) }}</span></span>
+                    <span class="c-sp">{{ selfpayText(d) ? '自付' + selfpayText(d) : '' }}</span>
+                    <span class="c-price">¥{{ unitPriceOf(d) }}</span>
+                    <span class="c-stock">可用 {{ availText(d) }}</span>
                   </div>
                 </el-option>
               </el-option-group>
+              <!-- 分页条: 末尾一个 disabled 选项(点击不选中也不关闭下拉), 内嵌真实翻页按钮 + mousedown.prevent 保持面板开启 -->
+              <el-option v-if="pickTotalPages > 1" :value="'__pager__'" :disabled="true" class="dw-rx-pager">
+                <div class="dw-rx-pager-bar" @mousedown.prevent>
+                  <button type="button" class="dw-rx-pager-btn" :disabled="effPage <= 1" @click.stop.prevent="prevPage">‹ 上一页</button>
+                  <span class="dw-rx-pager-info">第 {{ effPage }} / {{ pickTotalPages }} 页 · 共 {{ displayResults.length }} 条</span>
+                  <button type="button" class="dw-rx-pager-btn" :disabled="effPage >= pickTotalPages" @click.stop.prevent="nextPage">下一页 ›</button>
+                </div>
+              </el-option>
             </el-select>
             <span class="dw-rx-curgrp" title="当前活跃分组，新选药品将并入此组">Rp.{{ currentGroupNo }}</span>
             <el-button size="small" plain :disabled="!canEdit" @click="newGroup">＋新组</el-button>
@@ -294,6 +316,9 @@
         pharmacyAutoResolved: false,
         /* P2 智能选药: 候选来源模式 + 检索过滤 chip */
         searchMode: 'keyword',
+        /* 候选下拉客户端分页(跨页连续序号) */
+        pickPage: 1,
+        pickPageSize: 12,
         fStock: false,
         fYb: false,
         fInpharmacy: false
@@ -373,12 +398,27 @@
           return true;
         });
       },
-      /* P2 候选分区呈现: 关键词模式单组“匹配结果”, 精选模式按药品大类分组 */
+      /* 候选下拉客户端分页: 总页数 / 有效页(过滤致页数变小时自动钳制) / 当前页切片 */
+      pickTotalPages: function () {
+        var size = this.pickPageSize || 12;
+        return Math.max(1, Math.ceil((this.displayResults || []).length / size));
+      },
+      effPage: function () {
+        return Math.min(Math.max(1, this.pickPage), this.pickTotalPages);
+      },
+      pagedResults: function () {
+        var list = this.displayResults || [];
+        var size = this.pickPageSize || 12;
+        var start = (this.effPage - 1) * size;
+        return list.slice(start, start + size);
+      },
+      /* P2 候选分区呈现: 关键词模式单组“匹配结果”, 精选模式按药品大类分组(均基于当前页) */
       renderGroups: function () {
-        var items = this.displayResults || [];
+        var items = this.pagedResults || [];
         if (!items.length) { return []; }
+        var total = (this.displayResults || []).length;
         if (this.searchMode !== 'curated') {
-          return [{ label: '匹配结果（' + items.length + '）', items: items }];
+          return [{ label: '匹配结果（共 ' + total + '）· 第 ' + this.effPage + '/' + this.pickTotalPages + ' 页', items: items }];
         }
         var map = {};
         var order = [];
@@ -391,6 +431,8 @@
       }
     },
     watch: {
+      /* 候选结果集变化(新检索/切药房/精选)即回到第 1 页 */
+      searchResults: function () { this.pickPage = 1; },
       visitId: {
         immediate: true,
         handler: function (id) {
@@ -981,6 +1023,21 @@
         else { t += '｜未对照医保（自费）'; }
         return t;
       },
+      /* 检索候选单行化: 规格/剂型/厂家 + 院内码/医保码/医保名 收进 hover 提示, 保持行内简洁 */
+      pickTitle: function (d) {
+        var parts = [this.subLine(d)];
+        parts.push('院内码 ' + (text(d.drugCode) || '—'));
+        parts.push('医保码 ' + (text(d.ybDrugCode || d.medListCodg) || '未对照'));
+        if (text(d.ybName)) { parts.push(d.ybName); }
+        return parts.filter(function (x) { return x; }).join('　|　');
+      },
+      /* 候选行全局序号(跨页连续): 按过滤后完整列表 displayResults 定位 */
+      seqOf: function (d) {
+        var idx = (this.displayResults || []).indexOf(d);
+        return idx >= 0 ? idx + 1 : '';
+      },
+      prevPage: function () { this.pickPage = Math.max(1, this.effPage - 1); },
+      nextPage: function () { this.pickPage = Math.min(this.pickTotalPages, this.effPage + 1); },
       validateItems: function () {
         if (!this.rxItems.length) { ElementPlus.ElMessage.warning('请添加处方明细'); return false; }
         for (var i = 0; i < this.rxItems.length; i++) {

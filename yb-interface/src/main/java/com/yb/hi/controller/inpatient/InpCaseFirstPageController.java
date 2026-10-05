@@ -33,6 +33,12 @@ public class InpCaseFirstPageController {
         return R.ok(caseFirstPageService.generateFirstPage(visitId));
     }
 
+    /** 定向同步出院诊断(仅草稿): 按病历出院诊断覆盖首页诊断区, 不动手术/费用 */
+    @PostMapping("/{visitId}/sync-diag")
+    public R<Map<String, Object>> syncDiag(@PathVariable Long visitId) {
+        return R.ok(caseFirstPageService.syncDiagFromRecord(visitId));
+    }
+
     /** 查询病案首页(含患者/科室/医师名称, exists=false 表示尚未生成) */
     @GetMapping("/{visitId}")
     public R<Map<String, Object>> get(@PathVariable Long visitId) {

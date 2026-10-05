@@ -7,6 +7,7 @@
  *        /seal/{recordId}?reason= · /unseal/{recordId} · /urge/{recordId}(归档催促, SSE走QC_REMINDER通道)
  *   PUT  /recall/{recordId}/approve?approved=true|false
  * PDF: GET /api/his/inp/print/emr-pdf/{recordId}(InpPrint P7a-3 Tiptap→PDF 流, download=true 附件)
+ *   防篡改回查: GET /api/his/inp/print/emr-pdf/{recordId}/verify → {valid,expected,actual,generatedTime,message?}
  * 兼容性兜底: ①API前缀双探(/api/emr/archive → /api/his/emr/archive, GET 端点缺失自动切换并缓存);
  *   ②列表响应 records/rows/list 与 total/count 多键名归一; ③/list 不可用回退 /overdue 全量+前端过滤分页;
  *   ④逾期档位筛选走全量拉取+前端过滤分页(半开区间 3-7=[3,7) 7-14=[7,14) >14=[14,∞));
@@ -269,6 +270,7 @@
         urgingId: null,
         auditBusyId: null,
         sealingId: null,
+        verifyBusyId: null,
         batchSubmitting: false,
         /* Tab5 Webhook 订阅(P7b-1 互操作; 本地分页) */
         wk: {
@@ -1042,6 +1044,30 @@
           HIS.notifyError(e);
         });
       },
+      verifyPdfIntegrity: function (row) {
+        /* 归档PDF防篡改回查: 调 InpPrint /emr-pdf/{id}/verify 重算 SHA-256 与落库 pdf_sha256 比对 */
+        var vm = this;
+        var id = recId(row);
+        vm.verifyBusyId = id;
+        HIS.get('/api/his/inp/print/emr-pdf/' + HIS.idParam(id) + '/verify').then(function (d) {
+          d = d || {};
+          var ok = d.valid === true;
+          function esc(v) {
+            return String(v == null ? '—' : v).replace(/[&<>]/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]; });
+          }
+          var html = '<div style="line-height:1.9;">'
+            + '<div>校验结果: <b style="color:' + (ok ? '#67c23a' : '#f56c6c') + ';">'
+            + (ok ? '通过 · 文件未被篡改' : '不通过 · 文件可能已被替换/截断') + '</b></div>'
+            + '<div>生成时间: ' + esc(fmtDT(d.generatedTime)) + '</div>'
+            + '<div style="word-break:break-all;">期望指纹: ' + esc(d.expected) + '</div>'
+            + '<div style="word-break:break-all;">实际指纹: ' + esc(d.actual) + '</div>'
+            + (d.message ? '<div>提示: ' + esc(d.message) + '</div>' : '')
+            + '</div>';
+          ElementPlus.ElMessageBox.alert(html, ok ? '防篡改校验通过' : '防篡改校验未通过',
+            { type: ok ? 'success' : 'error', dangerouslyUseHTMLString: true });
+        }).catch(function (e) { HIS.notifyError(e); })
+          .finally(function () { vm.verifyBusyId = null; });
+      },
 
       /* ================= 刷新 / SSE ================= */
       refreshCurrent: function () {
@@ -1197,10 +1223,11 @@
       '            <el-table-column label="PDF状态" width="88" align="center">',
       '              <template #default="s"><el-tag size="small" :type="pdfTag(s.row)">{{ pdfText(s.row) }}</el-tag></template>',
       '            </el-table-column>',
-      '            <el-table-column label="操作" width="260" fixed="right" align="center">',
+      '            <el-table-column label="操作" width="340" fixed="right" align="center">',
       '              <template #default="s">',
       '                <el-button link type="primary" size="small" :disabled="!hasPdf(s.row)" @click="viewPdf(s.row)">查看PDF</el-button>',
       '                <el-button link type="primary" size="small" :disabled="!hasPdf(s.row)" @click="downloadPdf(s.row)">下载PDF</el-button>',
+      '                <el-button link type="success" size="small" :disabled="!hasPdf(s.row)" :loading="verifyBusyId === recIdOf(s.row)" @click="verifyPdfIntegrity(s.row)">防篡改校验</el-button>',
       '                <el-button link type="warning" size="small" @click="openRecall(s.row)">召回申请</el-button>',
       '                <el-button link type="danger" size="small" @click="openSeal(s.row)">封存</el-button>',
       '              </template>',

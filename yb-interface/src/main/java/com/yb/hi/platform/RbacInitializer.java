@@ -247,6 +247,10 @@ public class RbacInitializer implements ApplicationRunner {
         ids.put("emr-archive", menuK("emr-archive", "归档工作台", "EmrArchive", null, gEmrQ, ++sort[0]));
         // P7b-3(2026-10 病历等级自评): 等级徽章+八维度SVG雷达+维度明细卡(comp=EmrLevelAssess, DOCTOR可查看)
         ids.put("emr-level-assess", menuK("emr-level-assess", "等级自评", "EmrLevelAssess", null, gEmrQ, ++sort[0]));
+        // 高级版: 模板审批工作台(待审列表+两版对比+通过/驳回, 仅 ADMIN/SUPER_ADMIN 走 all_menus 免配置可见)
+        ids.put("emr-template-approval", menuK("emr-template-approval", "模板审批", "EmrTemplateApproval", null, gEmrQ, ++sort[0]));
+        // 高级版: 组件与模板市场(分类浏览/上架/克隆副本/引用分析, DOCTOR/科室可见)
+        ids.put("emr-template-market", menuK("emr-template-market", "组件市场", "EmrTemplateMarket", null, gEmrQ, ++sort[0]));
         // 药房(2026-09 P1d 交付: 待发药/调剂发药/退药前端已上线; P2 药房管理/药房统计上线)
         long g7 = dir("pharmacy", "药房系统", 0L, ++sort[0]);
         // 药房系统按业务域分组(2026-11 整合: 门诊发药/住院发药/药房运营与追溯/统计查询; 对齐药库五域做法;
@@ -525,7 +529,7 @@ public class RbacInitializer implements ApplicationRunner {
         // ADMIN/SUPER_ADMIN 走 all_menus 免配置; 其余角色给"工作台+本职能相关菜单"最小子集
         Map<String, String[]> grants = new HashMap<>();
         grants.put(Roles.REGISTRAR, new String[]{"dashboard", "patient", "register", "unregister", "reg_stats", "reg_detail"});
-        grants.put(Roles.DOCTOR, new String[]{"dashboard", "doctor-ws", "patient", "doctor-worklog", "medical-template", "emr-template-designer", "emr-patient-timeline", "emr-element-search", "emr-quality-board", "emr-quality-console", "emr-audit-log", "emr-archive", "emr-level-assess", "nurse-allergy", "medtech-report-query",
+        grants.put(Roles.DOCTOR, new String[]{"dashboard", "doctor-ws", "patient", "doctor-worklog", "medical-template", "emr-template-designer", "emr-patient-timeline", "emr-element-search", "emr-quality-board", "emr-quality-console", "emr-audit-log", "emr-archive", "emr-level-assess", "emr-template-market", "nurse-allergy", "medtech-report-query",
                 // 住院医生站(2026-09 住院模块): 医嘱/诊断/病历/患者概览入口共用工作站组件
                 "inp-doctor-ws", "inp-order-manage", "inp-order-template", "inp-diagnosis", "inp-med-record", "inp-patient-overview",
                 // 临床路径/手术麻醉(2026-09 集成): 路径模板管理 + 手术管理 + 麻醉记录; 手麻P0: 手术申请管理
@@ -608,7 +612,7 @@ public class RbacInitializer implements ApplicationRunner {
                 // 住院报表(2026-09 报表/打印模块): 打印管理(日清单/结算单打印)
                 "inp-print"});
         grants.put(Roles.REGISTRAR, new String[]{"reg_stats", "reg_detail"});
-        grants.put(Roles.DOCTOR, new String[]{"doctor-ws", "doctor-worklog", "medical-template", "emr-template-designer", "emr-patient-timeline", "emr-element-search", "emr-quality-board", "emr-quality-console", "emr-audit-log", "emr-archive", "emr-level-assess", "nurse-allergy", "medtech-report-query",
+        grants.put(Roles.DOCTOR, new String[]{"doctor-ws", "doctor-worklog", "medical-template", "emr-template-designer", "emr-patient-timeline", "emr-element-search", "emr-quality-board", "emr-quality-console", "emr-audit-log", "emr-archive", "emr-level-assess", "emr-template-market", "nurse-allergy", "medtech-report-query",
                 // 住院医生站(2026-09 住院模块)
                 "inp-doctor-ws", "inp-order-manage", "inp-order-template", "inp-diagnosis", "inp-med-record", "inp-patient-overview",
                 // 临床路径/手术麻醉(2026-09 集成): 路径模板管理 + 手术管理 + 麻醉记录; 手麻P0: 手术申请管理
@@ -1629,6 +1633,9 @@ public class RbacInitializer implements ApplicationRunner {
         ensureChildMenu(menuIds, "emr-quality", "emr-archive", "归档工作台", "EmrArchive");
         // P7b-3(2026-10 病历等级自评): 八维度自评雷达+维度明细卡(存量库补种, DOCTOR可查看)
         ensureChildMenu(menuIds, "emr-quality", "emr-level-assess", "等级自评", "EmrLevelAssess");
+        // 高级版: 模板审批工作台 + 组件与模板市场(存量库幂等补种并回填 menuIds 供角色补授权)
+        ensureChildMenu(menuIds, "emr-quality", "emr-template-approval", "模板审批", "EmrTemplateApproval");
+        ensureChildMenu(menuIds, "emr-quality", "emr-template-market", "组件市场", "EmrTemplateMarket");
     }
 
     /**

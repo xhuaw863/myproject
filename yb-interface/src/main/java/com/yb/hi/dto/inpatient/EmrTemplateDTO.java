@@ -49,4 +49,8 @@ public class EmrTemplateDTO {
     private Integer version;
     /** 状态: 1启用 0停用 */
     private Integer status;
+    /** 发布态: 0草稿 1待审 2已驳回 3已发布(仅展示/审批使用, 普通保存不改此字段) */
+    private Integer publishStatus;
+    /** 本次保存的变更说明(写入版本快照, 可空) */
+    private String changeSummary;
 }

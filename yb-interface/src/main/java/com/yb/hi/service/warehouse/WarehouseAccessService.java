@@ -1,8 +1,10 @@
 package com.yb.hi.service.warehouse;
 
+import com.yb.hi.entity.basedata.HisDept;
 import com.yb.hi.entity.pharmacy.HisPharmacyDef;
 import com.yb.hi.entity.warehouse.HisWarehouseDef;
 import com.yb.hi.framework.common.BizException;
+import com.yb.hi.mapper.basedata.HisDeptMapper;
 import com.yb.hi.mapper.pharmacy.HisPharmacyDefMapper;
 import com.yb.hi.mapper.warehouse.HisWarehouseDefMapper;
 import com.yb.hi.platform.service.DeptScopeResolver;
@@ -11,7 +13,10 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
 
 import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 
 /**
@@ -31,15 +36,18 @@ public class WarehouseAccessService {
     private final WarehouseDefService warehouseDefService;
     private final HisPharmacyDefMapper pharmacyDefMapper;
     private final HisWarehouseDefMapper warehouseDefMapper;
+    private final HisDeptMapper deptMapper;
 
     public WarehouseAccessService(DeptScopeResolver deptScopeResolver,
                                   PharmacyDefService pharmacyDefService, WarehouseDefService warehouseDefService,
-                                  HisPharmacyDefMapper pharmacyDefMapper, HisWarehouseDefMapper warehouseDefMapper) {
+                                  HisPharmacyDefMapper pharmacyDefMapper, HisWarehouseDefMapper warehouseDefMapper,
+                                  HisDeptMapper deptMapper) {
         this.deptScopeResolver = deptScopeResolver;
         this.pharmacyDefService = pharmacyDefService;
         this.warehouseDefService = warehouseDefService;
         this.pharmacyDefMapper = pharmacyDefMapper;
         this.warehouseDefMapper = warehouseDefMapper;
+        this.deptMapper = deptMapper;
     }
 
     /** 当前用户是否不受科室授权限制(管理员角色或牵头机构用户) */
@@ -55,33 +63,86 @@ public class WarehouseAccessService {
     /** 当前用户可操作的药房列表(在机构启用药房基础上按授权科室过滤; 管理员/牵头/历史未绑定不受限) */
     public List<HisPharmacyDef> accessiblePharmacies(Long orgId) {
         List<HisPharmacyDef> all = pharmacyDefService.list(orgId);
+        List<HisPharmacyDef> out;
         if (unrestricted()) {
-            return all;
-        }
-        Set<Long> depts = authDeptIds();
-        List<HisPharmacyDef> out = new ArrayList<>();
-        for (HisPharmacyDef d : all) {
-            if (d.getDeptId() == null || depts.contains(d.getDeptId())) {
-                out.add(d);
+            out = all;
+        } else {
+            Set<Long> depts = authDeptIds();
+            out = new ArrayList<>();
+            for (HisPharmacyDef d : all) {
+                if (d.getDeptId() == null || depts.contains(d.getDeptId())) {
+                    out.add(d);
+                }
             }
         }
+        fillPharmacyDeptName(out);
         return out;
     }
 
     /** 当前用户可操作的药库列表(在机构启用 WAREHOUSE 型药库基础上按授权科室过滤) */
     public List<HisWarehouseDef> accessibleWarehouses(Long orgId) {
         List<HisWarehouseDef> all = warehouseDefService.list(orgId);
+        List<HisWarehouseDef> out;
         if (unrestricted()) {
-            return all;
-        }
-        Set<Long> depts = authDeptIds();
-        List<HisWarehouseDef> out = new ArrayList<>();
-        for (HisWarehouseDef d : all) {
-            if (d.getDeptId() == null || depts.contains(d.getDeptId())) {
-                out.add(d);
+            out = all;
+        } else {
+            Set<Long> depts = authDeptIds();
+            out = new ArrayList<>();
+            for (HisWarehouseDef d : all) {
+                if (d.getDeptId() == null || depts.contains(d.getDeptId())) {
+                    out.add(d);
+                }
             }
         }
+        fillWarehouseDeptName(out);
         return out;
+    }
+
+    /** 批量回填药房归属科室名(单次 IN 查询, 避免逐行 N+1) */
+    private void fillPharmacyDeptName(List<HisPharmacyDef> list) {
+        Set<Long> ids = new HashSet<>();
+        for (HisPharmacyDef d : list) {
+            if (d.getDeptId() != null) {
+                ids.add(d.getDeptId());
+            }
+        }
+        if (ids.isEmpty()) {
+            return;
+        }
+        Map<Long, String> nameMap = deptNameMap(ids);
+        for (HisPharmacyDef d : list) {
+            if (d.getDeptId() != null) {
+                d.setDeptName(nameMap.get(d.getDeptId()));
+            }
+        }
+    }
+
+    /** 批量回填药库归属科室名(单次 IN 查询, 避免逐行 N+1) */
+    private void fillWarehouseDeptName(List<HisWarehouseDef> list) {
+        Set<Long> ids = new HashSet<>();
+        for (HisWarehouseDef d : list) {
+            if (d.getDeptId() != null) {
+                ids.add(d.getDeptId());
+            }
+        }
+        if (ids.isEmpty()) {
+            return;
+        }
+        Map<Long, String> nameMap = deptNameMap(ids);
+        for (HisWarehouseDef d : list) {
+            if (d.getDeptId() != null) {
+                d.setDeptName(nameMap.get(d.getDeptId()));
+            }
+        }
+    }
+
+    /** deptId -> 科室名称(仅命中传入集合, 租户插件自动过滤 tenant_id) */
+    private Map<Long, String> deptNameMap(Set<Long> ids) {
+        Map<Long, String> m = new HashMap<>();
+        for (HisDept d : deptMapper.selectBatchIds(ids)) {
+            m.put(d.getId(), d.getDeptName());
+        }
+        return m;
     }
 
     /** 药房操作越权守卫: 管理员/牵头或历史未绑定(dept_id 空)放行; 否则要求归属科室在授权范围内 */

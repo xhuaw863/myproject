@@ -10,19 +10,25 @@ import com.yb.hi.framework.tenant.UserContext;
 import com.yb.hi.platform.service.OrgAccessGuard;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.jdbc.support.GeneratedKeyHolder;
+import org.springframework.jdbc.support.KeyHolder;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.StringUtils;
 
 import java.math.BigDecimal;
+import java.sql.PreparedStatement;
+import java.sql.Statement;
 import java.sql.Timestamp;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 /**
  * 住院病案首页服务(T38/T34基座): 按就诊聚合生成首页(患者/入院/出院/诊断/手术/费用分项/过敏),
@@ -82,7 +88,7 @@ public class InpCaseFirstPageService {
                     + " admission_dept_id AS admissionDeptId, discharge_dept_id AS dischargeDeptId,"
                     + " admission_diag_code AS admissionDiagCode, admission_diag_name AS admissionDiagName,"
                     + " discharge_main_diag_code AS dischargeMainDiagCode,"
-                    + " discharge_main_diag_name AS dischargeMainDiagName,"
+                    + " discharge_main_diag_name AS dischargeMainDiagName, main_diag_id AS mainDiagId,"
                     + " discharge_other_diags AS dischargeOtherDiags, pathology_diag AS pathologyDiag,"
                     + " injury_poison_code AS injuryPoisonCode, operation_records AS operationRecords,"
                     + " blood_type AS bloodType, rh, allergy_drugs AS allergyDrugs, autopsy,"
@@ -122,6 +128,7 @@ public class InpCaseFirstPageService {
 
     /**
      * 聚合生成病案首页: 患者/入院/出院/诊断/手术/费用分项/过敏史一次聚合落库;
+     * 在院期间即可预填草稿(1~4 均可生成, 出院相关字段暂空由医生补录); 已取消(5)拒绝;
      * 已提交/已审核的首页拒绝重新生成; 草稿重复生成按唯一键幂等覆盖(签名与质控字段保留)。
      */
     @Transactional(rollbackFor = Exception.class)
@@ -129,8 +136,8 @@ public class InpCaseFirstPageService {
         Long tid = TenantContext.require();
         Map<String, Object> ctx = loadVisitContext(visitId, tid);
         int vs = intVal(ctx.get("visitStatus"), 0);
-        if (vs != 3 && vs != 4) {
-            throw new BizException(400, "仅出院办理中或已出院的患者可生成病案首页");
+        if (vs < 1 || vs > 4) {
+            throw new BizException(400, "该就诊已取消或状态异常, 不可生成病案首页");
         }
         Map<String, Object> exist = loadFrontPage(visitId, tid);
         if (exist != null && intVal(exist.get("status"), 1) >= 2) {
@@ -145,20 +152,10 @@ public class InpCaseFirstPageService {
                         + " WHERE inp_visit_id = ? AND diag_type = 1 AND tenant_id = ? AND deleted = 0"
                         + " ORDER BY is_main DESC, sort_no ASC, id ASC LIMIT 1",
                 visitId, tid);
-        // 2) 出院诊断(diag_type=4): 主诊断取第一条, 其余组装 JSON 数组
-        List<Map<String, Object>> disDiags = jdbcTemplate.queryForList(
-                "SELECT diag_code AS code, diag_name AS name FROM his_inp_diagnosis"
-                        + " WHERE inp_visit_id = ? AND diag_type = 4 AND tenant_id = ? AND deleted = 0"
-                        + " ORDER BY is_main DESC, sort_no ASC, id ASC",
-                visitId, tid);
+        // 2) 出院诊断(diag_type=4): 主诊断取第一条, 其余组装 JSON 数组(含 diagId 双向同步关联键)
+        List<Map<String, Object>> disDiags = queryDischargeDiags(visitId, tid);
         Map<String, Object> mainDiag = disDiags.isEmpty() ? null : disDiags.get(0);
-        JSONArray otherDiags = new JSONArray();
-        for (int i = 1; i < disDiags.size(); i++) {
-            JSONObject o = new JSONObject();
-            o.put("code", strVal(disDiags.get(i).get("code")));
-            o.put("name", strVal(disDiags.get(i).get("name")));
-            otherDiags.add(o);
-        }
+        JSONArray otherDiags = buildOtherDiags(disDiags);
 
         // 3) 手术记录: [{name, code, date, surgeon, surgeonId, anesthesia, anesthesiaDoctor, firstAssistant, surgeryLevel, asaGrade, incisionType, healLevel}]
         JSONArray operationRecords = new JSONArray();
@@ -306,6 +303,7 @@ public class InpCaseFirstPageService {
         String admDiagName = admDiag == null ? null : strVal(admDiag.get("name"));
         String mainDiagCode = mainDiag == null ? null : strVal(mainDiag.get("code"));
         String mainDiagName = mainDiag == null ? null : strVal(mainDiag.get("name"));
+        Long mainDiagId = mainDiag == null ? null : longVal(mainDiag.get("id"));
         String otherDiagsJson = otherDiags.isEmpty() ? null : JSON.toJSONString(otherDiags);
         String operationsJson = operationRecords.isEmpty() ? null : JSON.toJSONString(operationRecords);
         String bloodType = strVal(ctx.get("visitBloodType"));
@@ -316,19 +314,19 @@ public class InpCaseFirstPageService {
             jdbcTemplate.update("INSERT INTO his_case_front_page"
                             + " (visit_id, patient_id, admission_date, discharge_date, los_days,"
                             + " admission_dept_id, discharge_dept_id, admission_diag_code, admission_diag_name,"
-                            + " discharge_main_diag_code, discharge_main_diag_name, discharge_other_diags,"
+                            + " discharge_main_diag_code, discharge_main_diag_name, main_diag_id, discharge_other_diags,"
                             + " operation_records, blood_type, allergy_drugs, autopsy,"
                             + " total_cost, drug_cost, exam_cost, treatment_cost, bed_cost, nursing_cost,"
                             + " material_cost, other_cost, self_pay, insurance_pay, cost_class_detail,"
                             + " bed_no, admission_ward, discharge_ward,"
                             + " status, tenant_id, deleted, update_time)"
-                            + " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, 0, NOW())"
+                            + " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, 0, NOW())"
                             + " ON DUPLICATE KEY UPDATE admission_date = VALUES(admission_date),"
                             + " discharge_date = VALUES(discharge_date), los_days = VALUES(los_days),"
                             + " admission_dept_id = VALUES(admission_dept_id), discharge_dept_id = VALUES(discharge_dept_id),"
                             + " admission_diag_code = VALUES(admission_diag_code), admission_diag_name = VALUES(admission_diag_name),"
                             + " discharge_main_diag_code = VALUES(discharge_main_diag_code),"
-                            + " discharge_main_diag_name = VALUES(discharge_main_diag_name),"
+                            + " discharge_main_diag_name = VALUES(discharge_main_diag_name), main_diag_id = VALUES(main_diag_id),"
                             + " discharge_other_diags = VALUES(discharge_other_diags),"
                             + " operation_records = VALUES(operation_records), blood_type = VALUES(blood_type),"
                             + " allergy_drugs = VALUES(allergy_drugs), total_cost = VALUES(total_cost),"
@@ -342,7 +340,7 @@ public class InpCaseFirstPageService {
                             + " update_time = NOW()",
                     visitId, patientId, admissionDate, dischargeDate, losDays,
                     deptId, deptId, admDiagCode, admDiagName,
-                    mainDiagCode, mainDiagName, otherDiagsJson,
+                    mainDiagCode, mainDiagName, mainDiagId, otherDiagsJson,
                     operationsJson, bloodType, allergyText,
                     totalCost, drugCost, examCost, treatmentCost, bedCost, nursingCost,
                     materialCost, otherCost, selfPay, insurancePay, costClassJson,
@@ -352,7 +350,7 @@ public class InpCaseFirstPageService {
                             + " admission_date = ?, discharge_date = ?, los_days = ?,"
                             + " admission_dept_id = ?, discharge_dept_id = ?,"
                             + " admission_diag_code = ?, admission_diag_name = ?,"
-                            + " discharge_main_diag_code = ?, discharge_main_diag_name = ?,"
+                            + " discharge_main_diag_code = ?, discharge_main_diag_name = ?, main_diag_id = ?,"
                             + " discharge_other_diags = ?, operation_records = ?, blood_type = ?, allergy_drugs = ?,"
                             + " total_cost = ?, drug_cost = ?, exam_cost = ?, treatment_cost = ?,"
                             + " bed_cost = ?, nursing_cost = ?, material_cost = ?, other_cost = ?,"
@@ -362,7 +360,7 @@ public class InpCaseFirstPageService {
                     admissionDate, dischargeDate, losDays,
                     deptId, deptId,
                     admDiagCode, admDiagName,
-                    mainDiagCode, mainDiagName,
+                    mainDiagCode, mainDiagName, mainDiagId,
                     otherDiagsJson, operationsJson, bloodType, allergyText,
                     totalCost, drugCost, examCost, treatmentCost,
                     bedCost, nursingCost, materialCost, otherCost,
@@ -383,12 +381,48 @@ public class InpCaseFirstPageService {
         return assemble(ctx, loadFrontPage(visitId, tid));
     }
 
-    /** 打印数据: 在查询基础上补打印标题与质控医师姓名(打印模板直接消费) */
+    /** 打印数据: 在查询基础上补打印标题与质控医师姓名(打印模板直接消费); 出院闸门: 仅已出院(4)可打印 */
     public Map<String, Object> getFirstPageForPrint(Long visitId) {
+        Long ptid = TenantContext.require();
+        Map<String, Object> pctx = loadVisitContext(visitId, ptid);
+        if (intVal(pctx.get("visitStatus"), 0) != 4) {
+            throw new BizException(400, "患者尚未出院, 病案首页须出院后方可打印");
+        }
         Map<String, Object> data = getFirstPage(visitId);
         data.put("printTitle", "住院病案首页");
         data.put("printTime", LocalDateTime.now().toString());
         return data;
+    }
+
+    /** 定向同步出院诊断: 按病历现行出院诊断(diag_type=4)覆盖首页诊断区(仅草稿, 不动手术/费用/其他字段) */
+    @Transactional(rollbackFor = Exception.class)
+    public Map<String, Object> syncDiagFromRecord(Long visitId) {
+        Long tid = TenantContext.require();
+        loadVisitContext(visitId, tid);
+        Map<String, Object> fp = loadFrontPage(visitId, tid);
+        if (fp == null) {
+            throw new BizException(400, "病案首页尚未生成, 请先点击「生成」");
+        }
+        if (intVal(fp.get("status"), 0) != 1) {
+            throw new BizException(400, "病案首页已提交或已审核, 不可同步出院诊断");
+        }
+        List<Map<String, Object>> disDiags = queryDischargeDiags(visitId, tid);
+        Map<String, Object> mainDiag = disDiags.isEmpty() ? null : disDiags.get(0);
+        JSONArray others = buildOtherDiags(disDiags);
+        int affected = jdbcTemplate.update("UPDATE his_case_front_page SET"
+                        + " discharge_main_diag_code = ?, discharge_main_diag_name = ?, main_diag_id = ?, discharge_other_diags = ?,"
+                        + " update_time = NOW()"
+                        + " WHERE visit_id = ? AND status = 1 AND tenant_id = ? AND deleted = 0",
+                mainDiag == null ? null : strVal(mainDiag.get("code")),
+                mainDiag == null ? null : strVal(mainDiag.get("name")),
+                mainDiag == null ? null : longVal(mainDiag.get("id")),
+                others.isEmpty() ? null : JSON.toJSONString(others),
+                visitId, tid);
+        if (affected == 0) {
+            throw new BizException(400, "病案首页状态已变化, 同步未生效, 请刷新后重试");
+        }
+        log.info("首页同步出院诊断: visitId={}, 出院诊断行数={}", visitId, disDiags.size());
+        return getFirstPage(visitId);
     }
 
     /* ==================== 保存(草稿) ==================== */
@@ -547,15 +581,23 @@ public class InpCaseFirstPageService {
                         + " WHERE visit_id = ? AND status = 1 AND tenant_id = ? AND deleted = 0",
                 args.toArray());
         log.info("保存病案首页草稿: visitId={}, 字段数={}", visitId, sets.size() - 1);
+        /* 诊断双向联动: payload 含诊断相关字段时回写病历出院诊断(同事务, 失败整体回滚) */
+        if (data.containsKey("dischargeMainDiagCode") || data.containsKey("dischargeMainDiagName")
+                || data.containsKey("dischargeOtherDiags") || data.containsKey("mainDiagId")) {
+            syncDischargeDiags(visitId, tid, data);
+        }
     }
 
     /* ==================== 提交 / 质控审核 ==================== */
 
-    /** 提交(草稿→已提交): 需医师电子签名图 URL, 乐观更新仅 status=1 生效 */
+    /** 提交(草稿→已提交): 出院闸门(仅已出院可提交) + 需医师电子签名图 URL, 乐观更新仅 status=1 生效 */
     @Transactional(rollbackFor = Exception.class)
     public void submitFirstPage(Long visitId, String doctorSignImg) {
         Long tid = TenantContext.require();
-        loadVisitContext(visitId, tid);
+        Map<String, Object> sctx = loadVisitContext(visitId, tid);
+        if (intVal(sctx.get("visitStatus"), 0) != 4) {
+            throw new BizException(400, "患者尚未出院, 病案首页可暂存草稿, 出院后方可提交");
+        }
         if (!StringUtils.hasText(doctorSignImg)) {
             throw new BizException(400, "医师签名不能为空, 请完成电子签名后提交");
         }
@@ -586,8 +628,38 @@ public class InpCaseFirstPageService {
             miss.add("医院感染部位");
         }
         if (!StringUtils.hasText(strVal(fp.get("dischargeMainDiagCode")))
-                && !StringUtils.hasText(strVal(fp.get("dischargeMainDiagName")))) {
-            miss.add("出院主要诊断");
+                || !StringUtils.hasText(strVal(fp.get("dischargeMainDiagName")))) {
+            miss.add("出院主要诊断(编码与名称均必填)");
+        }
+        // 其他诊断逐行成对校验(对齐 HQMS: 有编码必有名称, 反之亦然)
+        List<Object> otherDiagRows = parseJsonArray(fp.get("dischargeOtherDiags"));
+        for (int i = 0; i < otherDiagRows.size(); i++) {
+            Object item = otherDiagRows.get(i);
+            if (!(item instanceof JSONObject)) {
+                continue;
+            }
+            JSONObject o = (JSONObject) item;
+            boolean hasCode = StringUtils.hasText(strVal(o.get("code")));
+            boolean hasName = StringUtils.hasText(strVal(o.get("name")));
+            if (hasCode != hasName) {
+                miss.add("其他诊断第" + (i + 1) + "条缺" + (hasCode ? "名称" : "编码"));
+            }
+        }
+        // HQMS 条件必填: 肿瘤/新生物(C或D00-D48)须病理诊断编码; 损伤中毒(S/T)须外部原因编码
+        String mainCode = strVal(fp.get("dischargeMainDiagCode"));
+        String mainStem = mainCode == null ? "" : mainCode.trim().toUpperCase().replace(".", "");
+        if (mainStem.length() >= 3) {
+            char c0 = mainStem.charAt(0);
+            String num2 = mainStem.substring(1, 3);
+            boolean tumor = c0 == 'C'
+                    || (c0 == 'D' && num2.compareTo("00") >= 0 && num2.compareTo("48") <= 0);
+            if (tumor && !StringUtils.hasText(strVal(fp.get("pathologyCode")))) {
+                miss.add("病理诊断编码(肿瘤/新生物类主要诊断必填)");
+            }
+            if ((c0 == 'S' || c0 == 'T')
+                    && !StringUtils.hasText(strVal(fp.get("injuryPoisonCode")))) {
+                miss.add("损伤中毒外部原因编码(S/T类主要诊断必填)");
+            }
         }
         if (!miss.isEmpty()) {
             throw new BizException(400, "病案首页缺少必填项: " + String.join("、", miss));
@@ -666,6 +738,8 @@ public class InpCaseFirstPageService {
         }
         result.put("exists", true);
         result.putAll(fp);
+                /* 雪花ID超 JS 安全整数: mainDiagId 出口强制字符串化, 前端原样回传 */
+                result.put("mainDiagId", fp.get("mainDiagId") == null ? null : String.valueOf(fp.get("mainDiagId")));
         result.put("dischargeOtherDiags", parseJsonArray(fp.get("dischargeOtherDiags")));
         result.put("operationRecords", parseJsonArray(fp.get("operationRecords")));
         result.put("costClassDetail", parseJsonArray(fp.get("costClassDetail")));
@@ -681,6 +755,170 @@ public class InpCaseFirstPageService {
             result.put("qcDoctorName", null);
         }
         return result;
+    }
+
+    /* ==================== 诊断双向联动 ==================== */
+
+    /** 病历出院诊断行集(diag_type=4, 主诊断优先): id/code/name */
+    private List<Map<String, Object>> queryDischargeDiags(Long visitId, Long tid) {
+        return jdbcTemplate.queryForList(
+                "SELECT id, diag_code AS code, diag_name AS name FROM his_inp_diagnosis"
+                        + " WHERE inp_visit_id = ? AND diag_type = 4 AND tenant_id = ? AND deleted = 0"
+                        + " ORDER BY is_main DESC, sort_no ASC, id ASC",
+                visitId, tid);
+    }
+
+    /** 其他诊断 JSON(除首行外): diagId 字符串化防雪花ID在 JS 丢精度 */
+    private static JSONArray buildOtherDiags(List<Map<String, Object>> disDiags) {
+        JSONArray arr = new JSONArray();
+        for (int i = 1; i < disDiags.size(); i++) {
+            Object id = disDiags.get(i).get("id");
+            JSONObject o = new JSONObject();
+            o.put("diagId", id == null ? "" : String.valueOf(id));
+            o.put("code", strVal(disDiags.get(i).get("code")));
+            o.put("name", strVal(disDiags.get(i).get("name")));
+            arr.add(o);
+        }
+        return arr;
+    }
+
+    /**
+     * 首页诊断行回写病历出院诊断(diag_type=4): 按 diagId 对既有行更新/无键新插/未引用逻辑删除,
+     * 主诊断置 is_main=1 其余置0; 同事务把关联键回写首页(main_diag_id + 刷新 discharge_other_diags 的 diagId)。
+     * 口径: 首页诊断全集即病历出院诊断全集; 名称空而有编码时以编码充名(diag_name NOT NULL);
+     * 入院病情(admitCondition)与首页 main_diag_admit_cond 值域不同, 不互写。
+     */
+    @SuppressWarnings("unchecked")
+    private void syncDischargeDiags(Long visitId, Long tid, Map<String, Object> data) {
+        Map<String, Object> ctx = loadVisitContext(visitId, tid);
+        Long orgId = longVal(ctx.get("orgId"));
+        Long deptId = longVal(ctx.get("deptId"));
+        Long doctorId = InpOrderService.currentDoctorId();
+        // 1) 首页行序列: 主要诊断(is_main=1)在前, 其他依次
+        List<Object[]> rows = new ArrayList<>(); // [diagId(Long|null), code, name, isMain, admitCond]
+        String mainCode = trimOrNull(data.get("dischargeMainDiagCode"));
+        String mainName = trimOrNull(data.get("dischargeMainDiagName"));
+        if (mainCode != null || mainName != null) {
+            rows.add(new Object[]{longVal(data.get("mainDiagId")), mainCode, mainName, 1,
+                    intOrNull(data.get("mainDiagAdmitCond"))});
+        }
+        Object others = data.get("dischargeOtherDiags");
+        List<Object> otherList;
+        if (others instanceof String) {
+            otherList = parseJsonArray(others);
+        } else if (others instanceof List) {
+            otherList = (List<Object>) others;
+        } else {
+            otherList = new ArrayList<>();
+        }
+        for (Object item : otherList) {
+            JSONObject o;
+            if (item instanceof JSONObject) {
+                o = (JSONObject) item;
+            } else if (item instanceof Map) {
+                o = new JSONObject((Map<String, Object>) item);
+            } else {
+                continue;
+            }
+            String code = trimOrNull(o.get("code"));
+            String name = trimOrNull(o.get("name"));
+            if (code == null && name == null) {
+                continue; // 占位空行兜底跳过
+            }
+            rows.add(new Object[]{longVal(o.get("diagId")), code, name, 0, intOrNull(o.get("admitCond"))});
+        }
+        // 2) 病历现行集对账
+        Map<Long, Boolean> existMap = new LinkedHashMap<>();
+        for (Map<String, Object> r : queryDischargeDiags(visitId, tid)) {
+            Long id = longVal(r.get("id"));
+            if (id != null) {
+                existMap.put(id, Boolean.TRUE);
+            }
+        }
+        Set<Long> used = new HashSet<>();
+        Long linkedMainId = null;
+        JSONArray rebuiltOthers = new JSONArray();
+        int sort = 1;
+        for (Object[] row : rows) {
+            Long diagId = (Long) row[0];
+            String code = (String) row[1];
+            String name = (String) row[2];
+            int isMain = (Integer) row[3];
+            Object admitCond = row[4];
+            String effName = name != null ? name : code;
+            Long assigned;
+            if (diagId != null && existMap.containsKey(diagId) && !used.contains(diagId)) {
+                jdbcTemplate.update("UPDATE his_inp_diagnosis SET diag_code = ?, diag_name = ?, is_main = ?, sort_no = ?,"
+                                + " update_time = NOW() WHERE id = ? AND tenant_id = ? AND deleted = 0",
+                        code, effName, isMain, sort, diagId, tid);
+                assigned = diagId;
+            } else {
+                assigned = insertDiagRow(tid, orgId, visitId, code, effName, isMain, deptId, doctorId, sort);
+            }
+            if (assigned != null) {
+                used.add(assigned);
+            }
+            if (isMain == 1) {
+                linkedMainId = assigned;
+            } else {
+                JSONObject j = new JSONObject();
+                j.put("diagId", assigned == null ? "" : String.valueOf(assigned));
+                j.put("code", code == null ? "" : code);
+                j.put("name", effName == null ? "" : effName);
+                if (admitCond != null) {
+                    j.put("admitCond", admitCond);
+                }
+                rebuiltOthers.add(j);
+            }
+            sort++;
+        }
+        // 3) 首页未引用的病历出院诊断行 → 逻辑删除(首页删行=病历删行)
+        for (Long id : existMap.keySet()) {
+            if (!used.contains(id)) {
+                jdbcTemplate.update("UPDATE his_inp_diagnosis SET deleted = 1, update_time = NOW()"
+                        + " WHERE id = ? AND tenant_id = ? AND deleted = 0", id, tid);
+            }
+        }
+        // 4) 关联键回写首页(含新插行 diagId), 前端 reload 即带键
+        jdbcTemplate.update("UPDATE his_case_front_page SET main_diag_id = ?, discharge_other_diags = ?,"
+                        + " update_time = NOW() WHERE visit_id = ? AND status = 1 AND tenant_id = ? AND deleted = 0",
+                linkedMainId, rebuiltOthers.isEmpty() ? null : JSON.toJSONString(rebuiltOthers), visitId, tid);
+        log.info("首页诊断回写出院诊断: visitId={}, 首页诊断行数={}, 主要诊断ID={}", visitId, rows.size(), linkedMainId);
+    }
+
+    /** 新插病历出院诊断行(diag_type=4), 返回生成主键; 列集合对齐 InpDiagnosisService.save */
+    private Long insertDiagRow(final Long tid, final Long orgId, final Long visitId, final String code,
+                               final String name, final int isMain, final Long deptId, final Long doctorId,
+                               final int sortNo) {
+        final String sql = "INSERT INTO his_inp_diagnosis"
+                + " (tenant_id, org_id, inp_visit_id, diag_type, diag_code, diag_name, is_main,"
+                + " diag_dept_id, diag_doctor_id, diag_time, sort_no, create_time, update_time, deleted)"
+                + " VALUES (?, ?, ?, 4, ?, ?, ?, ?, ?, NOW(), ?, NOW(), NOW(), 0)";
+        KeyHolder kh = new GeneratedKeyHolder();
+        jdbcTemplate.update(con -> {
+            PreparedStatement ps = con.prepareStatement(sql, Statement.RETURN_GENERATED_KEYS);
+            ps.setLong(1, tid);
+            ps.setObject(2, orgId);
+            ps.setLong(3, visitId);
+            ps.setString(4, code);
+            ps.setString(5, name);
+            ps.setInt(6, isMain);
+            ps.setObject(7, deptId);
+            ps.setObject(8, doctorId);
+            ps.setInt(9, sortNo);
+            return ps;
+        }, kh);
+        Number key = kh.getKey();
+        return key == null ? null : key.longValue();
+    }
+
+    /** 去空白后取非空串, 空/null 返回 null */
+    private static String trimOrNull(Object v) {
+        if (v == null) {
+            return null;
+        }
+        String s = String.valueOf(v).trim();
+        return s.isEmpty() ? null : s;
     }
 
     /** 乐观更新失败原因诊断: 无记录报"请先生成", 状态不符报当前状态文案 */
