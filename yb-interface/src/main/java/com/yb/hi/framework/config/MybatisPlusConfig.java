@@ -52,7 +52,9 @@ public class MybatisPlusConfig {
             "preparation_catalog",
             "med_service_catalog",
             "consumable_catalog",
-            "disease_catalog"
+            "disease_catalog",
+            // 疾病报卡触发规则(法定目录全国一套, 无 tenant_id 列; 隔离与启停由维护界面/Service 显式处理)
+            "his_disease_report_trigger_rule"
     ));
 
     @Bean

@@ -21,6 +21,9 @@ import org.springframework.util.CollectionUtils;
 import org.springframework.util.StringUtils;
 
 import java.math.BigDecimal;
+import java.sql.Connection;
+import java.sql.PreparedStatement;
+import java.sql.SQLException;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -485,6 +488,54 @@ public class CriticalValueService {
 
     private static BigDecimal toBd(Object o) {
         return ExamReportService.toBd(o);
+    }
+
+    /* ================= 影像科危急值规则种子(T3 任务书4) ================= */
+
+    /**
+     * 影像科专属危急值规则种子(静态, 供 DictSchemaMigration.ensureRisTables 启动期播种):
+     * 张力性气胸 / 大量胸腔积液 / 颅内出血六亚型(硬膜外/硬膜下/蛛网膜下腔/脑实质/脑室/小脑脑干) /
+     * 急性肺栓塞 / 主动脉夹层 / 主动脉瘤破裂 / 消化道穿孔 / 急性肠梗阻 / 肠扭转 /
+     * 脊柱不稳定骨折 / 骨盆骨折。
+     * 口径: item_code 统一 IMG_CV_ 前缀落 his_critical_value_rule(gender=0 通用, alert_level=1 危急,
+     * tenant_id=1 默认租户), 阈值列留空——影像危急值为术语/征象型条目, 无数值阈值, 供影像报告
+     * 征象命中与危急值上报流程选用; 与既有检验阈值种子(seedCriticalValueRules)同表共存。
+     * 幂等: INSERT ... SELECT ... WHERE NOT EXISTS(同 code 同 gender 同租户未删除则跳过), 重复启动不产生副本。
+     */
+    public static void seedImagingCriticalRules(Connection conn) throws SQLException {
+        String sql = "INSERT INTO his_critical_value_rule"
+                + " (item_code, item_name, unit, critical_low, critical_high, gender, alert_level, enabled, tenant_id, deleted)"
+                + " SELECT ?, ?, NULL, NULL, NULL, 0, 1, 1, 1, 0 FROM DUAL"
+                + " WHERE NOT EXISTS (SELECT 1 FROM his_critical_value_rule"
+                + " WHERE item_code = ? AND gender = 0 AND tenant_id = 1 AND deleted = 0)";
+        /* {item_code, item_name}; 颅内出血六亚型在前段集中 */
+        String[][] seeds = {
+                {"IMG_CV_TENSION_PTX", "张力性气胸"},
+                {"IMG_CV_MASSIVE_PLEURAL", "大量胸腔积液"},
+                {"IMG_CV_EDH", "硬膜外出血"},
+                {"IMG_CV_SDH", "硬膜下出血"},
+                {"IMG_CV_SAH", "蛛网膜下腔出血"},
+                {"IMG_CV_IPH", "脑实质出血"},
+                {"IMG_CV_IVH", "脑室内出血"},
+                {"IMG_CV_CEREBELLUM_HEMO", "小脑/脑干出血"},
+                {"IMG_CV_PE", "急性肺栓塞"},
+                {"IMG_CV_AO_DISSECTION", "主动脉夹层"},
+                {"IMG_CV_AO_RUPTURE", "主动脉瘤破裂"},
+                {"IMG_CV_GI_PERFORATION", "消化道穿孔"},
+                {"IMG_CV_BOWEL_OBSTRUCTION", "急性肠梗阻"},
+                {"IMG_CV_VOLVULUS", "肠扭转"},
+                {"IMG_CV_SPINE_UNSTABLE_FX", "脊柱不稳定骨折"},
+                {"IMG_CV_PELVIS_FX", "骨盆骨折"},
+        };
+        try (PreparedStatement ps = conn.prepareStatement(sql)) {
+            for (String[] s : seeds) {
+                ps.setString(1, s[0]);
+                ps.setString(2, s[1]);
+                ps.setString(3, s[0]);
+                ps.addBatch();
+            }
+            ps.executeBatch();
+        }
     }
 }
 

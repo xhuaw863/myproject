@@ -551,7 +551,7 @@ body { font-family: var(--yb-font-sans); background: var(--yb-canvas); }
 .dw-main { container-name: dwmain; container-type: inline-size; }
 
 /* ===== 诊疗工作台: 左诊断·病历 / 右处方·医嘱 双栏, 各栏独立滚动(右栏开单滚动不影响左栏) ===== */
-.dw-clinic { flex: 1 1 auto; min-height: 0; height: 100%; overflow: hidden; display: grid; grid-template-columns: minmax(360px, 5fr) minmax(560px, 7fr); gap: 10px; align-items: stretch; }
+.dw-clinic { flex: 1 1 auto; min-height: 0; height: 100%; overflow: hidden; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; align-items: stretch; }
 .dw-col { min-width: 0; min-height: 0; overflow-y: auto; overflow-x: hidden; display: flex; flex-direction: column; gap: 10px; padding-right: 2px; }
 /* 窄屏回退: 单列纵向, 滚动交回 tab-body(整页滚), 栏内不再各自滚 */
 @media (max-width: 1180px) {
@@ -592,9 +592,16 @@ body { font-family: var(--yb-font-sans); background: var(--yb-canvas); }
 /* 处方行式编辑器: 顶部 type-ahead + 一行一药品表格 */
 .dw-rx-editor { padding: 8px 10px 10px; }
 .dw-prescription-panel .dw-panel-header { gap: 8px; flex-wrap: wrap; }
-.dw-rx-hd-left { display: flex; align-items: center; gap: 7px; }
-.dw-rx-hd-right { display: flex; align-items: center; gap: 6px; margin-left: auto; }
+.dw-rx-hd-left { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; }
+/* 处方右组工具条(发药药房/选择处方组套/存为组套/组套管理/最大化/折叠)约 457px 不换行, 两栏模式下窄列(列宽<~460)会被 .dw-col overflow-x:hidden 裁掉最右按钮; 允许折行后控件自动换行不再被遮 */
+.dw-rx-hd-right { display: flex; align-items: center; gap: 6px; margin-left: auto; flex-wrap: wrap; justify-content: flex-end; }
 .dw-rx-pickrow { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+/* P2 智能选药: 检索过滤 chip 行 */
+.dw-rx-filter { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin: -2px 0 6px; }
+.dw-rx-filter-lbl { color: var(--dw-text-hint); font-size: 11px; }
+.dw-rx-fchip { padding: 1px 9px; color: var(--dw-text-secondary); background: var(--dw-card-muted); border: 1px solid var(--dw-border); border-radius: 10px; font-size: 12px; cursor: pointer; white-space: nowrap; }
+.dw-rx-fchip:hover { border-color: var(--dw-primary); }
+.dw-rx-fchip.is-on { color: #fff; background: var(--dw-primary); border-color: var(--dw-primary-dark); font-weight: 600; }
 .dw-rx-pick { flex: 1 1 auto; min-width: 0; }
 .dw-rx-curgrp { flex: none; padding: 2px 8px; color: var(--dw-primary-dark); background: var(--dw-primary-light); border-radius: 3px; font-size: 12px; font-weight: 700; }
 .dw-rx-opt { display: flex; align-items: center; gap: 10px; }
@@ -606,11 +613,61 @@ body { font-family: var(--yb-font-sans); background: var(--yb-canvas); }
 .dw-rx-nm { display: flex; align-items: center; gap: 5px; min-width: 0; }
 .dw-rx-nm .spec { color: var(--dw-text-hint); font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 110px; }
 .dw-rx-nm .dw-tag.self { color: var(--dw-text-hint); }
+/* P1 医保目录富展示: 检索下拉分区富行(主行/副行/编码带) + 甲乙丙/自费徽标(与明细列共用) */
+.dw-rx-pick-popper .el-select-dropdown__item { height: auto; padding: 6px 12px; line-height: 1.45; }
+.dw-rx-opt2 { display: flex; flex-direction: column; gap: 2px; padding: 2px 0; }
+.dw-rx-opt2 .r1 { display: flex; align-items: center; gap: 8px; }
+.dw-rx-opt2 .r1 .nm { font-weight: 600; color: var(--dw-text); }
+.dw-rx-opt2 .r1 .trade { color: var(--dw-text-secondary); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 140px; }
+.dw-rx-opt2 .r1 .sp { color: var(--dw-text-hint); font-size: 11px; }
+.dw-rx-opt2 .r1 .price { margin-left: auto; color: var(--dw-fee); font-variant-numeric: tabular-nums; }
+.dw-rx-opt2 .r1 .stock { color: var(--dw-text-secondary); font-size: 12px; white-space: nowrap; }
+.dw-rx-opt2 .r2 { color: var(--dw-text-hint); font-size: 11px; }
+.dw-rx-opt2 .r3 { display: flex; align-items: center; gap: 12px; font-size: 11px; color: var(--dw-text-hint); }
+.dw-rx-opt2 .r3 .code { font-family: Consolas, monospace; }
+.dw-rx-opt2 .r3 .code.yb.unmapped { color: var(--dw-danger); font-weight: 600; }
+.dw-rx-opt2 .r3 .ybname { color: var(--dw-text-secondary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dw-rx-lv { flex: none; display: inline-block; padding: 0 5px; border-radius: 3px; font-size: 11px; font-weight: 600; line-height: 16px; white-space: nowrap; }
+.dw-rx-lv.dw-lv--a { color: #fff; background: var(--dw-success); }
+.dw-rx-lv.dw-lv--b { color: #fff; background: var(--dw-primary); }
+.dw-rx-lv.dw-lv--c { color: var(--dw-text-secondary); background: var(--dw-card-muted); border: 1px solid var(--dw-border); }
+.dw-rx-lv.dw-lv--self { color: #fff; background: var(--dw-warning); }
+.dw-rx-lv.dw-lv--none { color: var(--dw-text-hint); background: var(--dw-card-muted); border: 1px solid var(--dw-border); }
 .dw-rx-table td .cell, .dw-od-table td .cell { padding: 0 5px; }
 .dw-rx-grp { display: inline-block; min-width: 20px; padding: 1px 4px; color: var(--dw-text-secondary); background: var(--dw-card-muted); border: 1px solid var(--dw-border); border-radius: 3px; font-size: 11px; font-weight: 700; text-align: center; }
 .dw-rx-grp--tcm { color: var(--dw-rx-tcm); }
 .dw-rx-grp--ext { color: var(--dw-rx-ext); }
 .dw-rx-grp--nar { color: #fff; background: var(--dw-rx-nar); border-color: var(--dw-rx-nar); }
+/* P4 处方分组可视化: 组带(group band) 头部 + 成员行缩进关联 */
+.dw-rx-groups { display: flex; flex-direction: column; gap: 8px; overflow-y: auto; }
+.dw-rx-band { border: 1px solid var(--dw-border); border-left: 3px solid var(--dw-primary); border-radius: 5px; overflow: hidden; background: var(--dw-card); }
+.dw-rx-band.dw-rx-group--tcm { border-left-color: var(--dw-rx-tcm); }
+.dw-rx-band.dw-rx-group--narcotic { border-left-color: var(--dw-rx-nar); }
+.dw-rx-band.dw-rx-group--external { border-left-color: var(--dw-rx-ext); }
+.dw-rx-band-hd { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; padding: 5px 10px; background: var(--dw-card-muted); border-bottom: 1px solid var(--dw-border); font-size: 12px; }
+.dw-rx-band-no { padding: 1px 8px; color: #fff; background: var(--dw-primary); border-radius: 3px; font-weight: 700; }
+.dw-rx-band.dw-rx-group--tcm .dw-rx-band-no { background: var(--dw-rx-tcm); }
+.dw-rx-band.dw-rx-group--narcotic .dw-rx-band-no { background: var(--dw-rx-nar); }
+.dw-rx-band.dw-rx-group--external .dw-rx-band-no { background: var(--dw-rx-ext); }
+.dw-rx-band-type { color: var(--dw-text-secondary); font-weight: 600; }
+.dw-rx-band-field { display: inline-flex; align-items: center; gap: 4px; }
+.dw-rx-band-field i { font-style: normal; color: var(--dw-text-hint); }
+.dw-rx-band-sum { margin-left: auto; color: var(--dw-text-secondary); }
+.dw-rx-band-sum b { color: var(--dw-fee); font-variant-numeric: tabular-nums; }
+.dw-rx-band-ops { display: inline-flex; align-items: center; gap: 4px; }
+.dw-rx-band .dw-rx-nm { padding-left: 2px; }
+/* P6 中药饮片处方专属版式: 处方头(治法/剂数/每日剂次/煎服法/全局脚注/忌口) + 药味组煎服提示 */
+.dw-tcm-head { margin: 0 0 8px; padding: 8px 12px; border: 1px solid var(--dw-border); border-left: 3px solid var(--dw-rx-tcm); border-radius: 5px; background: var(--dw-card-muted); }
+.dw-tcm-hrow { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
+.dw-tcm-hrow + .dw-tcm-hrow { margin-top: 7px; padding-top: 7px; border-top: 1px dashed var(--dw-border); }
+.dw-tcm-fl { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; color: var(--dw-text-secondary); }
+.dw-tcm-fl i { font-style: normal; color: var(--dw-rx-tcm); font-weight: 700; }
+.dw-tcm-fl--wide { flex: 1; min-width: 220px; }
+.dw-tcm-fl--wide .el-input { flex: 1; }
+.dw-tcm-unit { font-size: 12px; color: var(--dw-text-hint); margin-left: -2px; }
+.dw-tcm-hint { margin-left: auto; font-size: 11px; color: var(--dw-text-hint); }
+.dw-rx-band-herb { display: inline-flex; align-items: center; gap: 4px; font-size: 12px; color: var(--dw-rx-tcm); font-weight: 600; }
+.dw-rx-band-herb i { font-style: normal; color: var(--dw-text-hint); font-weight: 400; }
 .dw-rx-done { margin-top: 8px; }
 .dw-rx-allergy { margin-top: 8px; padding: 5px 10px; color: var(--dw-text-hint); font-size: 12px; }
 .dw-rx-allergy.has { color: var(--dw-danger); background: var(--dw-danger-light); border-radius: 4px; font-weight: 600; }
@@ -622,9 +679,13 @@ body { font-family: var(--yb-font-sans); background: var(--yb-canvas); }
 .dw-diag-opt .nm { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .dw-diag-opt .code, .dw-diag-row .code { color: var(--dw-text-hint); font-family: Consolas, monospace; font-size: 11px; }
 .dw-diag-opt .extra { color: var(--dw-text-hint); font-size: 11px; }
-.dw-diag-common { display: flex; gap: 6px; flex-wrap: nowrap; overflow-x: auto; margin-bottom: 4px; padding-bottom: 2px; }
+.dw-diag-common { display: flex; gap: 6px; flex-wrap: wrap; align-content: flex-start; margin-bottom: 4px; padding-bottom: 2px; }
 .dw-diag-common .dw-tag { flex: none; padding: 2px 8px; cursor: pointer; }
 .dw-diag-common .dw-tag:disabled { cursor: default; opacity: .55; }
+/* 快捷选择标签云: 项多时换行网格 + 纵向滚动封顶(常规约3行, 最大化利用整屏空间), 取代横向平移 */
+.dw-diag-common-pick { max-height: 104px; overflow-y: auto; overflow-x: hidden; }
+.dw-panel.is-maximized .dw-diag-common-pick { max-height: 40vh; }
+.dw-diag-filter { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
 .dw-diag-assistant { display: flex; flex-direction: column; gap: 6px; }
 .dw-diag-assistant .dw-asst-group { display: flex; flex-direction: column; gap: 3px; }
 .dw-diag-assistant .dw-asst-title { font-size: 11px; color: var(--dw-primary-dark); font-weight: 700; }
@@ -1155,4 +1216,12 @@ body { font-family: var(--yb-font-sans); background: var(--yb-canvas); }
   .dts-document-fields { grid-template-columns: 1fr; }
   .dts-document-fields > div.is-wide { grid-column: auto; }
 }
+
+/* 医生站处方组套管理嵌入弹窗(2026-10-05): 内嵌医疗模板管理整页(.cd-fill height:100%)在弹窗体内无父高会塌缩,
+ * 故给弹窗体固定视口高并让内页自带滚动; 页签/工具栏/表格/分页的 flex 布局原样复用 */
+.dw-rxset-manage-dialog .el-dialog__body { max-height: 74vh; overflow: auto; padding-top: 8px; }
+.dw-rxset-manage-dialog .medical-template-wrap { height: 70vh; }
+/* 诊断面板页签行常驻"维护模板"链接(与空态"去维护"同逻辑, 打开嵌入弹窗) */
+.dw-diag-tab-manage { font-size: 12px; color: var(--el-color-primary, #409eff); margin-left: 10px; align-self: center; }
+.dw-diag-tab-manage:hover { text-decoration: underline; }
 

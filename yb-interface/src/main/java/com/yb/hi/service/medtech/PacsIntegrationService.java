@@ -29,11 +29,15 @@ public class PacsIntegrationService {
     private final HisExamReportMapper reportMapper;
     private final OrgAccessGuard guard;
     private final SystemParamResolver paramResolver;
+    private final org.springframework.jdbc.core.JdbcTemplate jdbcTemplate;
 
-    public PacsIntegrationService(HisExamReportMapper reportMapper, OrgAccessGuard guard, SystemParamResolver paramResolver) {
+    public PacsIntegrationService(HisExamReportMapper reportMapper, OrgAccessGuard guard,
+                                  SystemParamResolver paramResolver,
+                                  org.springframework.jdbc.core.JdbcTemplate jdbcTemplate) {
         this.reportMapper = reportMapper;
         this.guard = guard;
         this.paramResolver = paramResolver;
+        this.jdbcTemplate = jdbcTemplate;
     }
 
     /** PACS 集成配置视图(脱敏展示, 供前端提示与运维核对)。 */
@@ -139,5 +143,200 @@ public class PacsIntegrationService {
 
     private static boolean isLab(String reportType) {
         return "lab".equalsIgnoreCase(reportType);
+    }
+
+    /* ================= DICOMweb(WADO-RS) 风格查询接口(T3 任务书4, mock 实现) ================= */
+
+    /**
+     * WADO-RS Study 查询(mock): 按患者ID + 报告日期范围查询机构范围内影像报告,
+     * 派生结构化 Study 列表(studyUid/studyDate/modality/description/seriesCount);
+     * dicomweb 模式附 WADO-RS 检索 URL(真实对接时仅需配置端点)。
+     * dateRange 入参格式: "2026-01-01~2026-10-05"(支持 ~ 或 至 分隔, 单日期表示当日)。
+     */
+    public List<Map<String, Object>> queryStudies(String patientId, String dateRange) {
+        if (!StringUtils.hasText(patientId)) {
+            throw new BizException(400, "患者ID不能为空");
+        }
+        Long pid = toLong(patientId.trim());
+        if (pid == null) {
+            throw new BizException(400, "患者ID格式不正确(需为数字ID)");
+        }
+        String[] range = parseDateRange(dateRange);
+        StringBuilder sql = new StringBuilder(
+                "SELECT id, report_no AS reportNo, pacs_study_uid AS pacsStudyUid, modality, body_part AS bodyPart,"
+                        + " conclusion, report_type AS reportType,"
+                        + " DATE_FORMAT(IFNULL(report_time, create_time), '%Y-%m-%d') AS studyDate"
+                        + " FROM his_exam_report"
+                        + " WHERE deleted = 0 AND tenant_id = ? AND patient_id = ? AND report_type = 'exam'");
+        java.util.List<Object> args = new java.util.ArrayList<>();
+        args.add(tenantId());
+        args.add(pid);
+        if (range[0] != null) {
+            sql.append(" AND DATE(IFNULL(report_time, create_time)) >= ?");
+            args.add(range[0]);
+        }
+        if (range[1] != null) {
+            sql.append(" AND DATE(IFNULL(report_time, create_time)) <= ?");
+            args.add(range[1]);
+        }
+        sql.append(" ORDER BY IFNULL(report_time, create_time) DESC, id DESC LIMIT 100");
+        List<Map<String, Object>> reports = jdbcTemplate.queryForList(sql.toString(), args.toArray());
+        Long scope = guard.scopeOrgId(null);
+        boolean dicomweb = "dicomweb".equalsIgnoreCase(mode());
+        String base = param("pacs.base_url", "");
+        List<Map<String, Object>> out = new ArrayList<>();
+        for (Map<String, Object> r : reports) {
+            Long reportId = toLong(r.get("id"));
+            String uid = str(r.get("pacsStudyUid"));
+            if (!StringUtils.hasText(uid)) {
+                uid = "1.2.840.113619.2." + reportId;
+            }
+            Map<String, Object> s = new LinkedHashMap<>();
+            s.put("studyUid", uid);
+            s.put("reportId", reportId);
+            s.put("reportNo", str(r.get("reportNo")));
+            s.put("studyDate", str(r.get("studyDate")));
+            s.put("modality", StringUtils.hasText(str(r.get("modality"))) ? str(r.get("modality")) : "OT");
+            s.put("bodyPart", str(r.get("bodyPart")));
+            s.put("studyDescription", StringUtils.hasText(str(r.get("conclusion")))
+                    ? str(r.get("conclusion")) : "影像检查 " + str(r.get("reportNo")));
+            s.put("seriesCount", 2);
+            s.put("mock", dicomweb ? 0 : 1);
+            if (dicomweb && StringUtils.hasText(base)) {
+                String b = base.endsWith("/") ? base.substring(0, base.length() - 1) : base;
+                s.put("wadoRsUrl", b + "/studies/" + uid);
+            }
+            // 机构可见性标注(牵头可跨, 非牵头仅本机构报告可见后仍可能越界查到, 此处按 scope 标注供前端过滤)
+            s.put("scopeOrgId", scope);
+            out.add(s);
+        }
+        return out;
+    }
+
+    /** 查询 Study 下的 Series 列表(mock 派生: 定位像/轴位/重建三序列, UID 由 StudyUID 派生)。 */
+    public List<Map<String, Object>> querySeriesByStudy(String studyUid) {
+        if (!StringUtils.hasText(studyUid)) {
+            throw new BizException(400, "StudyUID不能为空");
+        }
+        String uid = studyUid.trim();
+        String[][] defs = {
+                {"1", "LOCALIZER", "定位像", "4"},
+                {"2", "AXIAL", "轴位图像", "24"},
+                {"3", "CORONAL RECON", "冠状位重建", "12"},
+        };
+        List<Map<String, Object>> out = new ArrayList<>();
+        for (String[] d : defs) {
+            Map<String, Object> s = new LinkedHashMap<>();
+            s.put("seriesUid", uid + "." + d[0]);
+            s.put("seriesNumber", Integer.valueOf(d[0]));
+            s.put("modality", "OT");
+            s.put("seriesDescription", d[2]);
+            s.put("instanceCount", Integer.valueOf(d[3]));
+            out.add(s);
+        }
+        return out;
+    }
+
+    /** 查询 Series 下的 Instance 列表(mock 派生: instanceUid = seriesUid.i)。 */
+    public List<Map<String, Object>> queryInstancesBySeries(String studyUid, String seriesUid) {
+        if (!StringUtils.hasText(seriesUid)) {
+            throw new BizException(400, "SeriesUID不能为空");
+        }
+        String su = seriesUid.trim();
+        int count = 6;
+        List<Map<String, Object>> out = new ArrayList<>();
+        for (int i = 1; i <= count; i++) {
+            Map<String, Object> ins = new LinkedHashMap<>();
+            ins.put("instanceUid", su + "." + i);
+            ins.put("instanceNumber", i);
+            ins.put("sopClassUid", "1.2.840.10008.5.1.4.1.1.2");
+            ins.put("sopClassDescription", "CT Image Storage");
+            ins.put("studyUid", StringUtils.hasText(studyUid) ? studyUid.trim() : null);
+            ins.put("thumbnailUrl", getThumbnailUrl(studyUid, su, su + "." + i));
+            out.add(ins);
+        }
+        return out;
+    }
+
+    /**
+     * 缩略图 URL: dicomweb 模式拼 WADO-RS 渲染端点({base}/studies/{s}/series/{se}/instances/{i}/thumbnail),
+     * mock 模式站内占位路由。
+     */
+    public String getThumbnailUrl(String studyUid, String seriesUid, String instanceUid) {
+        String base = param("pacs.base_url", "");
+        if ("dicomweb".equalsIgnoreCase(mode()) && StringUtils.hasText(base)) {
+            String b = base.endsWith("/") ? base.substring(0, base.length() - 1) : base;
+            return b + "/studies/" + safeUid(studyUid) + "/series/" + safeUid(seriesUid)
+                    + "/instances/" + safeUid(instanceUid) + "/thumbnail";
+        }
+        return "#/pacs-mock-thumb?study=" + safeUid(studyUid)
+                + "&series=" + safeUid(seriesUid) + "&instance=" + safeUid(instanceUid);
+    }
+
+    /** 影像查看器 URL(复用既有查看器路由构建逻辑)。 */
+    public String getViewerUrl(String studyUid) {
+        if (!StringUtils.hasText(studyUid)) {
+            throw new BizException(400, "StudyUID不能为空");
+        }
+        return buildViewerUrl(studyUid.trim());
+    }
+
+    /* ================= 辅助 ================= */
+
+    /** 日期范围解析: 支持 "yyyy-MM-dd~yyyy-MM-dd" / "yyyy-MM-dd至yyyy-MM-dd" / 单日期; 返回 [from, to]。 */
+    private static String[] parseDateRange(String dateRange) {
+        String[] out = {null, null};
+        if (!StringUtils.hasText(dateRange)) {
+            return out;
+        }
+        String s = dateRange.trim();
+        String[] parts = s.contains("~") ? s.split("~") : (s.contains("至") ? s.split("至") : new String[]{s});
+        if (parts.length >= 2) {
+            out[0] = normalizeDate(parts[0]);
+            out[1] = normalizeDate(parts[1]);
+        } else {
+            out[0] = normalizeDate(parts[0]);
+            out[1] = out[0];
+        }
+        return out;
+    }
+
+    private static String normalizeDate(String d) {
+        if (!StringUtils.hasText(d)) {
+            return null;
+        }
+        String s = d.trim().replace("/", "-");
+        return s.matches("\\d{4}-\\d{2}-\\d{2}") ? s : null;
+    }
+
+    /** UID 防注入: 仅保留数字与点号。 */
+    private static String safeUid(String uid) {
+        if (!StringUtils.hasText(uid)) {
+            return "";
+        }
+        return uid.trim().replaceAll("[^0-9.]", "");
+    }
+
+    private static String str(Object o) {
+        return o == null ? null : o.toString();
+    }
+
+    private static Long toLong(Object o) {
+        if (o == null) {
+            return null;
+        }
+        if (o instanceof Number) {
+            return ((Number) o).longValue();
+        }
+        try {
+            return Long.valueOf(o.toString());
+        } catch (NumberFormatException e) {
+            return null;
+        }
+    }
+
+    private static long tenantId() {
+        Long t = com.yb.hi.framework.tenant.TenantContext.get();
+        return t == null ? 0L : t;
     }
 }

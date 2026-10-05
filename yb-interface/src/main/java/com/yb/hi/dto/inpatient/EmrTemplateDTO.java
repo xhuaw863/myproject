@@ -33,8 +33,10 @@ public class EmrTemplateDTO {
     private String lockedSections;
     /** Tiptap ProseMirror JSON文档(type=doc) */
     private String document;
-    /** 打印格式脚本 */
+    /** 打印格式脚本(历史兼容) */
     private String printScript;
+    /** 结构化打印配置JSON(A4纸张、方向、页边距、页眉页脚和页码) */
+    private String printConfig;
     /** 关联数据集ID(his_emr_dataset.id) */
     private Long datasetId;
     /** 适用范围:1住院 2门诊 */

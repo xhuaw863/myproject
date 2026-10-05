@@ -14,7 +14,7 @@
   const HIS = (window.HIS = window.HIS || {});
 
   /* ================= 常量 ================= */
-  const VALUE_TYPES = ['text', 'number', 'date', 'select', 'multiselect', 'checkbox', 'dict'];
+  const VALUE_TYPES = ['text', 'textarea', 'number', 'date', 'select', 'multiselect', 'checkbox', 'dict', 'vitals'];
   const EDIT_MODE_LABEL = { form: '表单', free: '自由', mixed: '混合' };
   const OPERATORS = [
     { v: 'eq', l: '等于' }, { v: 'ne', l: '不等于' }, { v: 'contains', l: '包含' }, { v: 'empty', l: '为空' }, { v: 'notEmpty', l: '不为空' }
@@ -60,7 +60,38 @@
     }
     const s = String(o);
     if (s.replace(/^\s+/, '').indexOf('[') === 0) { const arr = jparse(s, null); if (Array.isArray(arr)) { return parseFieldOptions(arr); } }
-    return s.split(/[,，;；]/).map(function (x) { return x.trim(); }).filter(Boolean).map(function (x) { return { label: x, value: x }; });
+    return s.split(/[\r\n,，;；]+/).map(function (x) { return x.trim(); }).filter(Boolean).map(function (x) { return { label: x, value: x }; });
+  }
+  /* 生命体征以可读字符串入 structure，兼容既有 SOAP/打印/医保读侧；控件内拆成 T/P/R/BP 四项编辑。 */
+  function parseVitals(v) {
+    const out = { temperature: '', pulse: '', respiration: '', systolicBp: '', diastolicBp: '' };
+    if (v && typeof v === 'object') {
+      out.temperature = v.temperature == null ? '' : String(v.temperature);
+      out.pulse = v.pulse == null ? '' : String(v.pulse);
+      out.respiration = v.respiration == null ? '' : String(v.respiration);
+      out.systolicBp = v.systolicBp == null ? (v.systolic == null ? '' : String(v.systolic)) : String(v.systolicBp);
+      out.diastolicBp = v.diastolicBp == null ? (v.diastolic == null ? '' : String(v.diastolic)) : String(v.diastolicBp);
+      return out;
+    }
+    const s = String(v == null ? '' : v);
+    const pick = function (re) { const m = re.exec(s); return m ? m[1] : ''; };
+    out.temperature = pick(/(?:^|\s)T\s*[:：]?\s*(\d+(?:\.\d+)?)/i);
+    out.pulse = pick(/(?:^|\s)P\s*[:：]?\s*(\d+)/i);
+    out.respiration = pick(/(?:^|\s)R\s*[:：]?\s*(\d+)/i);
+    const bp = /(?:^|\s)BP\s*[:：]?\s*(\d*)\s*\/\s*(\d*)/i.exec(s);
+    if (bp) { out.systolicBp = bp[1] || ''; out.diastolicBp = bp[2] || ''; }
+    return out;
+  }
+  function formatVitals(v) {
+    const a = v || {};
+    const parts = [];
+    if (String(a.temperature || '').trim()) { parts.push('T ' + String(a.temperature).trim() + '℃'); }
+    if (String(a.pulse || '').trim()) { parts.push('P ' + String(a.pulse).trim() + '次/分'); }
+    if (String(a.respiration || '').trim()) { parts.push('R ' + String(a.respiration).trim() + '次/分'); }
+    if (String(a.systolicBp || '').trim() || String(a.diastolicBp || '').trim()) {
+      parts.push('BP ' + String(a.systolicBp || '').trim() + '/' + String(a.diastolicBp || '').trim() + 'mmHg');
+    }
+    return parts.join('　');
   }
 
   /* ================= 条件求值(条件块 NodeView 与打印预览共用) ================= */
@@ -118,23 +149,27 @@
       return v == null ? (vt === 'number' ? null : '') : v;
     }
     /* 无 Vue/EP 时兜底为原生控件, 保证引擎在极端环境不崩 */
-    const tplNative = '<input class="emr-f-native" v-model="val" :disabled="dis()" @input="onNative"/>';
+    const tplNative = vt === 'textarea'
+      ? '<textarea class="emr-f-native emr-f-native--textarea" v-model="val" :disabled="dis()" :placeholder="ph" @input="onNative"></textarea>'
+      : '<input class="emr-f-native" v-model="val" :disabled="dis()" @input="onNative"/>';
     const tplMap = {
       text: '<el-input v-model="val" size="small" style="width:170px" :disabled="dis()" :placeholder="ph" @change="commit"></el-input>',
+      textarea: '<span class="emr-f-textarea" :class="{ \'is-focus\': focused }"><el-input v-model="val" type="textarea" :autosize="{ minRows: 1, maxRows: 4 }" resize="vertical" :disabled="dis()" :placeholder="ph" @focus="focused = true" @blur="focused = false" @input="commit"></el-input><span v-if="candidates.length" class="emr-f-quick"><span class="emr-f-quick-label">快捷填入</span><el-button v-for="o in candidates" :key="o.value" size="small" plain :disabled="dis()" :title="o.label" @click="useQuick(o.value)">{{ o.label }}</el-button></span><span v-if="candidates.length" class="emr-f-quick-menu"><el-dropdown trigger="click" :disabled="dis()" popper-class="emr-quick-popper" @command="useQuick"><el-button size="small" plain :disabled="dis()">常用语 ▾</el-button><template #dropdown><el-dropdown-menu><el-dropdown-item v-for="o in candidates" :key="o.value" :command="o.value">{{ o.label }}</el-dropdown-item></el-dropdown-menu></template></el-dropdown></span></span>',
       number: '<el-input-number v-model="val" size="small" controls-position="right" style="width:132px" :disabled="dis()" @change="commit"></el-input-number>',
       date: '<el-date-picker v-model="val" type="date" value-format="YYYY-MM-DD" size="small" style="width:164px" :disabled="dis()" :placeholder="ph || \'年-月-日\'" @change="commit"></el-date-picker>',
       select: '<el-select v-model="val" size="small" filterable clearable style="width:200px" :disabled="dis()" :loading="loading" :remote="isRemote" :remote-method="search" :placeholder="ph || \'请选择\'" @change="commit"><el-option v-for="o in candidates" :key="o.value" :label="o.label" :value="o.value"></el-option></el-select>',
       dict: '<el-select v-model="val" size="small" filterable clearable style="width:200px" :disabled="dis()" :loading="loading" :remote="isRemote" :remote-method="search" :placeholder="ph || \'输入检索\'" @change="commit"><el-option v-for="o in candidates" :key="o.value" :label="o.label" :value="o.value"></el-option></el-select>',
       multiselect: '<el-select v-model="val" size="small" multiple filterable clearable collapse-tags collapse-tags-tooltip style="width:264px" :disabled="dis()" :loading="loading" :remote="isRemote" :remote-method="search" :placeholder="ph || \'可多选\'" @change="commit"><el-option v-for="o in candidates" :key="o.value" :label="o.label" :value="o.value"></el-option></el-select>',
-      checkbox: '<el-checkbox-group v-model="val" :disabled="dis()" @change="commit"><el-checkbox v-for="o in candidates" :key="o.value" :label="o.value">{{ o.label }}</el-checkbox></el-checkbox-group>'
+      checkbox: '<el-checkbox-group v-model="val" :disabled="dis()" @change="commit"><el-checkbox v-for="o in candidates" :key="o.value" :label="o.value">{{ o.label }}</el-checkbox></el-checkbox-group>',
+      vitals: '<span class="emr-f-vitals"><label>T<el-input v-model="vitals.temperature" size="small" placeholder="36.5" :disabled="dis()" @input="commitVitals"></el-input><i>℃</i></label><label>P<el-input v-model="vitals.pulse" size="small" placeholder="76" :disabled="dis()" @input="commitVitals"></el-input><i>次/分</i></label><label>R<el-input v-model="vitals.respiration" size="small" placeholder="18" :disabled="dis()" @input="commitVitals"></el-input><i>次/分</i></label><label>BP<el-input v-model="vitals.systolicBp" size="small" placeholder="120" :disabled="dis()" @input="commitVitals"></el-input><b>/</b><el-input v-model="vitals.diastolicBp" size="small" placeholder="80" :disabled="dis()" @input="commitVitals"></el-input><i>mmHg</i></label><el-button size="small" plain :disabled="dis()" title="仅在已测量且确认生命体征正常时使用" @click="fillNormalVitals">填正常参考值</el-button></span>'
     };
     let tpl = tplMap[vt] || tplMap.text;
     if (!hasVue || !hasEp) { tpl = tplNative; }
-    else if (a.unit) { tpl = '<span class="emr-f-ctl-in">' + tpl + '<span class="emr-f-unit">' + String(a.unit).replace(/</g, '&lt;') + '</span></span>'; }
+    else if (a.unit && vt !== 'textarea' && vt !== 'vitals') { tpl = '<span class="emr-f-ctl-in">' + tpl + '<span class="emr-f-unit">' + String(a.unit).replace(/</g, '&lt;') + '</span></span>'; }
 
     const app = Vue.createApp({
       data() {
-        return { val: initVal(a.value), opts: localOpts, remote: [], loading: false, isRemote: isDict, ph: a.placeholder || '', _dis: false };
+        return { val: initVal(a.value), vitals: parseVitals(a.value), opts: localOpts, remote: [], loading: false, focused: false, isRemote: isDict, ph: a.placeholder || '', _dis: false };
       },
       computed: {
         candidates: function () { return this.remote.length ? this.remote : this.opts; }
@@ -158,8 +193,19 @@
       },
       methods: {
         dis: function () { return !!(spec.isDisabled && spec.isDisabled()); },
-        commit: function () { /* v-model 已驱动 watch, 此处仅保留显式 change 钩子位 */ },
+        commit: function () { /* v-model 已驱动 watch, 此处仅保留显式 input/change 钩子位 */ },
         onNative: function () { /* 原生兜底输入 */ },
+        useQuick: function (phrase) {
+          const p = String(phrase == null ? '' : phrase).trim();
+          const old = String(this.val == null ? '' : this.val).trim();
+          if (!p || old.indexOf(p) >= 0) { return; }
+          this.val = old ? old + '\n' + p : p;
+        },
+        commitVitals: function () { this.val = formatVitals(this.vitals); },
+        fillNormalVitals: function () {
+          this.vitals = { temperature: '36.5', pulse: '76', respiration: '18', systolicBp: '120', diastolicBp: '80' };
+          this.commitVitals();
+        },
         search: function (kw) {
           const vm = this;
           if (!isDict || !dictLoader) { return; }
@@ -168,7 +214,10 @@
             vm.remote = (list || []).map(function (o) { return { label: o.name, value: o.name }; });
           }).catch(function () {}).then(function () { vm.loading = false; });
         },
-        setValue: function (v) { this.val = initVal(v); }
+        setValue: function (v) {
+          this.val = initVal(v);
+          if (vt === 'vitals') { this.vitals = parseVitals(v); }
+        }
       },
       template: tpl
     });
@@ -510,7 +559,7 @@
           fieldKey: { default: '' }, fieldName: { default: '' }, value: { default: null },
           valueType: { default: 'text' }, dictSource: { default: null }, options: { default: null },
           required: { default: false }, readonly: { default: false }, noCopy: { default: false },
-          placeholder: { default: '' }, unit: { default: '' }
+          placeholder: { default: '' }, unit: { default: '' }, defaultMacro: { default: '' }
         };
       },
 
@@ -524,7 +573,8 @@
               dictSource: el.getAttribute('data-dict-source') || null, options: el.getAttribute('data-options') || null,
               required: el.getAttribute('data-required') === '1', readonly: el.getAttribute('data-readonly') === '1',
               noCopy: el.getAttribute('data-nocopy') === '1',
-              placeholder: el.getAttribute('data-placeholder') || '', unit: el.getAttribute('data-unit') || ''
+              placeholder: el.getAttribute('data-placeholder') || '', unit: el.getAttribute('data-unit') || '',
+              defaultMacro: el.getAttribute('data-default-macro') || ''
             };
           }
         }];
@@ -540,7 +590,8 @@
           'data-options': typeof a.options === 'string' ? a.options : (jstr(a.options) || ''),
           'data-required': a.required ? '1' : '', 'data-readonly': a.readonly ? '1' : '',
           'data-nocopy': a.noCopy ? '1' : '',
-          'data-placeholder': a.placeholder || '', 'data-unit': a.unit || ''
+          'data-placeholder': a.placeholder || '', 'data-unit': a.unit || '',
+          'data-default-macro': a.defaultMacro || ''
         }), (a.fieldName ? a.fieldName + '：' : '') + formatFieldValue(a.value)];
       },
 
@@ -1010,8 +1061,17 @@
       '.emr-doc .emr-f-chip { display:inline-flex; align-items:center; color:var(--yb-ink-3,#5a6a7e); font-size:12px; white-space:nowrap; }',
       '.emr-doc .emr-f-chip--req::before { content:"*"; color:var(--yb-danger,#c74f4f); margin-right:1px; }',
       '.emr-doc .emr-field--req-empty .emr-f-chip { color:var(--yb-danger,#c74f4f); }',
-      '.emr-doc .emr-f-ctl, .emr-doc .emr-f-ctl-in { display:inline-flex; align-items:center; gap:4px; }',
-      '.emr-doc .emr-f-unit { color:var(--yb-ink-3,#5a6a7e); font-size:12px; } .emr-doc .emr-f-native { border:1px solid var(--yb-border-strong,#ccd4de); border-radius:4px; height:24px; padding:0 6px; font-size:12px; outline:none; }',
+      '.emr-doc .emr-f-ctl, .emr-doc .emr-f-ctl-in { display:inline-flex; align-items:center; gap:4px; min-width:0; }',
+      '.emr-doc .emr-field--textarea, .emr-doc .emr-field--vitals { display:flex; align-items:flex-start; width:calc(100% - 4px); margin:2px; }',
+      '.emr-doc .emr-field--textarea .emr-f-ctl, .emr-doc .emr-field--vitals .emr-f-ctl { flex:1; min-width:0; }',
+      '.emr-doc .emr-f-textarea { display:flex; flex:1; min-width:0; flex-direction:column; gap:5px; } .emr-doc .emr-f-textarea>.el-textarea { width:100%; }',
+      '.emr-doc .emr-f-quick { display:flex; align-items:center; gap:4px; flex-wrap:wrap; } .emr-doc .emr-f-quick-label { color:var(--yb-ink-4,#8994a5); font-size:11px; }',
+      '.emr-doc .emr-f-quick .el-button { max-width:220px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; margin-left:0; }',
+      '.emr-doc .emr-f-quick-menu { display:none; flex:none; }',
+      '.emr-quick-popper .el-dropdown-menu { max-width:440px; } .emr-quick-popper .el-dropdown-menu__item { height:auto; min-height:32px; white-space:normal; word-break:break-all; line-height:1.5; padding:6px 12px; }',
+      '.emr-doc .emr-f-vitals { display:flex; align-items:center; gap:8px; flex-wrap:wrap; } .emr-doc .emr-f-vitals label { display:inline-flex; align-items:center; gap:3px; font-size:12px; color:var(--yb-ink-2,#3d4a5c); }',
+      '.emr-doc .emr-f-vitals label .el-input { width:58px; } .emr-doc .emr-f-vitals label i { font-style:normal; color:var(--yb-ink-4,#8994a5); } .emr-doc .emr-f-vitals label b { font-weight:400; }',
+      '.emr-doc .emr-f-unit { color:var(--yb-ink-3,#5a6a7e); font-size:12px; } .emr-doc .emr-f-native { border:1px solid var(--yb-border-strong,#ccd4de); border-radius:4px; height:24px; padding:0 6px; font-size:12px; outline:none; } .emr-doc .emr-f-native--textarea { width:100%; min-height:54px; height:auto; padding:6px; }',
       /* 只读态: 值以下划线呈现(贴近纸质病历留痕) */
       '.emr-doc .emr-field--ro { background:var(--yb-surface-2,#f7f9fc); padding:0 4px; border-bottom:1px dotted var(--yb-border-strong,#ccd4de); }',
       '.emr-doc .emr-f-val { color:var(--yb-ink-1,#1c2430); min-width:56px; display:inline-block; text-align:center; border-bottom:1px solid var(--yb-ink-3,#5a6a7e); padding:0 6px; line-height:1.6; }',
@@ -1101,6 +1161,8 @@
     buildSectionHead: buildSectionHead,
     formatFieldValue: formatFieldValue,
     parseFieldOptions: parseFieldOptions,
+    parseVitals: parseVitals,
+    formatVitals: formatVitals,
     valuesEqual: valuesEqual,
     isBlankValue: isBlankValue
   };

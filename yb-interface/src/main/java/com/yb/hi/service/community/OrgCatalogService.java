@@ -47,11 +47,13 @@ public class OrgCatalogService {
     private final HisChargeItemService chargeService;
     private final HisMedDictService medDictService;
     private final com.yb.hi.service.pharmacy.PharmacyPriceService pharmacyPriceService;
+    private final CatalogMapService mapService;
 
     public OrgCatalogService(HisOrgCatalogMapper orgCatalogMapper, SysOrgMapper orgMapper,
                              HisDrugCatalogService drugService, HisConsCatalogService consService,
                              HisChargeItemService chargeService, HisMedDictService medDictService,
-                             com.yb.hi.service.pharmacy.PharmacyPriceService pharmacyPriceService) {
+                             com.yb.hi.service.pharmacy.PharmacyPriceService pharmacyPriceService,
+                             CatalogMapService mapService) {
         this.orgCatalogMapper = orgCatalogMapper;
         this.orgMapper = orgMapper;
         this.drugService = drugService;
@@ -59,6 +61,7 @@ public class OrgCatalogService {
         this.chargeService = chargeService;
         this.medDictService = medDictService;
         this.pharmacyPriceService = pharmacyPriceService;
+        this.mapService = mapService;
     }
 
     /* ================= 上下文 ================= */
@@ -238,21 +241,148 @@ public class OrgCatalogService {
         }
         applyEnabled(q, enabled);
         IPage<HisDrugCatalog> r = q.orderByDesc(HisDrugCatalog::getId).page(new Page<>(page, size));
-        r.getRecords().forEach(drugService::derivePackPrice);
-        if (pharmacyId != null && !r.getRecords().isEmpty()) {
+        enrichDrugRows(r.getRecords(), pharmacyId);
+        // P2 智能选药: 命中类型相关性优先(编码/简码精确 > 前缀 > 含), 同分在库优先
+        rankByRelevance(r.getRecords(), keyword);
+        return r;
+    }
+
+    /** 统一回填瞬态展示字段: 大包装参考价 + 医保名(ybName) + 药房生效价/在库量(P1/P3 口径) */
+    private void enrichDrugRows(List<HisDrugCatalog> records, Long pharmacyId) {
+        if (records == null || records.isEmpty()) {
+            return;
+        }
+        records.forEach(drugService::derivePackPrice);
+        mapService.fillDrugYbNames(records);
+        if (pharmacyId != null) {
             List<Long> ids = new ArrayList<>();
-            for (HisDrugCatalog d : r.getRecords()) {
+            for (HisDrugCatalog d : records) {
                 ids.add(d.getId());
             }
             Map<Long, BigDecimal> eff = pharmacyPriceService.effectivePriceBatch(pharmacyId, ids);
             Map<Long, BigDecimal> stock = pharmacyPriceService.stockSummary(pharmacyId, ids);
-            for (HisDrugCatalog d : r.getRecords()) {
+            Map<Long, BigDecimal> reserved = pharmacyPriceService.reservedQtyBatch(pharmacyId, ids);
+            for (HisDrugCatalog d : records) {
                 BigDecimal p = eff.get(d.getId());
                 d.setEffPrice(p == null ? d.getRetailPrice() : p);
-                d.setStockQty(stock.get(d.getId()));
+                BigDecimal sq = stock.get(d.getId());
+                d.setStockQty(sq);
+                BigDecimal rq = reserved.getOrDefault(d.getId(), BigDecimal.ZERO);
+                d.setReservedQty(rq);
+                // P3 软预占: 虚拟可用量 = 在库 - 他单已开未发占用(无库存位 sq=null 时不虚构可用量)
+                d.setStockAvail(sq == null ? null : sq.subtract(rq).max(BigDecimal.ZERO));
             }
         }
-        return r;
+    }
+
+    /**
+     * P2 智能选药: 空输入聚焦即出"精选候选"。按诊断码前缀匹配 his_drug_catalog.indication_codes,
+     * 命中本机构启用药品, 附医保名/药房价/库存; deptId 仅入参占位(启用集按登录机构收敛)。
+     */
+    public List<HisDrugCatalog> suggestDrugs(String diagCodes, long limit, Long pharmacyId) {
+        List<String> codes = splitCodes(diagCodes);
+        if (codes.isEmpty()) {
+            return Collections.emptyList();
+        }
+        SysOrg org = currentOrg();
+        Set<Long> enabled = enabledIds(org.getId(), "drug");
+        LambdaQueryChainWrapper<HisDrugCatalog> q = drugService.lambdaQuery().eq(HisDrugCatalog::getStatus, 1);
+        q.and(w -> {
+            for (int i = 0; i < codes.size(); i++) {
+                if (i > 0) {
+                    w.or();
+                }
+                w.like(HisDrugCatalog::getIndicationCodes, codes.get(i));
+            }
+        });
+        applyEnabled(q, enabled);
+        long cap = Math.max(1, Math.min(limit <= 0 ? 12 : limit, 50));
+        List<HisDrugCatalog> recs = q.orderByDesc(HisDrugCatalog::getId).last("LIMIT " + cap).list();
+        enrichDrugRows(recs, pharmacyId);
+        return recs;
+    }
+
+    private static List<String> splitCodes(String raw) {
+        List<String> out = new ArrayList<>();
+        if (!StringUtils.hasText(raw)) {
+            return out;
+        }
+        for (String part : raw.split("[,;\uFF0C\uFF1B\\s|]+")) {
+            String t = part.trim();
+            if (t.length() >= 2 && !out.contains(t)) {
+                out.add(t);
+            }
+            if (out.size() >= 12) {
+                break;
+            }
+        }
+        return out;
+    }
+
+    /** P2: 关键词相关性打分(0 最好), 仅用于当前页内重排, 不改变命中集。 */
+    private void rankByRelevance(List<HisDrugCatalog> records, String keyword) {
+        if (records == null || records.size() < 2 || !StringUtils.hasText(keyword)) {
+            return;
+        }
+        final String kw = keyword.trim().toLowerCase();
+        records.sort((a, b) -> {
+            int sa = relevanceScore(a, kw);
+            int sb = relevanceScore(b, kw);
+            if (sa != sb) {
+                return Integer.compare(sa, sb);
+            }
+            int ia = inStockRank(a);
+            int ib = inStockRank(b);
+            if (ia != ib) {
+                return Integer.compare(ia, ib);
+            }
+            return Long.compare(idOrZero(b), idOrZero(a));
+        });
+    }
+
+    private static int relevanceScore(HisDrugCatalog d, String kw) {
+        String code = lc(d.getDrugCode());
+        String py = lc(d.getPyCode());
+        String ab = lc(d.getAbbrCode());
+        String yb = lc(d.getYbDrugCode());
+        String gen = lc(d.getGenericName());
+        String tr = lc(d.getTradeName());
+        if (kw.equals(code) || kw.equals(py) || kw.equals(ab) || kw.equals(yb)) {
+            return 0;
+        }
+        if (startsWith(code, kw) || startsWith(py, kw) || startsWith(ab, kw) || startsWith(yb, kw)) {
+            return 1;
+        }
+        if (startsWith(gen, kw)) {
+            return 2;
+        }
+        if (startsWith(tr, kw)) {
+            return 3;
+        }
+        if (gen != null && gen.contains(kw)) {
+            return 4;
+        }
+        if ((tr != null && tr.contains(kw)) || (code != null && code.contains(kw))) {
+            return 5;
+        }
+        return 6;
+    }
+
+    private static int inStockRank(HisDrugCatalog d) {
+        BigDecimal s = d.getStockQty();
+        return (s != null && s.signum() > 0) ? 0 : 1;
+    }
+
+    private static long idOrZero(HisDrugCatalog d) {
+        return d.getId() == null ? 0L : d.getId();
+    }
+
+    private static String lc(String v) {
+        return v == null ? null : v.toLowerCase();
+    }
+
+    private static boolean startsWith(String s, String prefix) {
+        return s != null && s.startsWith(prefix);
     }
 
     /** 可开收费项目(本机构启用, 附执行价 execPrice) */

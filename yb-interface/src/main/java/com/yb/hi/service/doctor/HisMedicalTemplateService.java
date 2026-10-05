@@ -36,6 +36,12 @@ public class HisMedicalTemplateService extends ServiceImpl<HisMedicalTemplateMap
         LoginUser user = UserContext.get();
         Long staffId = user == null ? null : user.getStaffId();
         Long deptId = user == null ? null : user.getDeptId();
+        if (user != null && isAdmin(user)) {
+            /* 管理员维护台: 读取本租户全部范围模板(个人/科室/全院), 与写守卫 requireCreatableScope/requireMutable
+               的 admin 直通口径对称; 否则无本科室归属的管理员(staff_id 有值而 dept_id 为空)在科室诊断等页签将查不到
+               其有权维护的本科室级模板。租户隔离由 MyBatis-Plus 租户插件按 tenant_id 自动生效, 无需在此重复。 */
+            return list(q.orderByDesc("is_fav").orderByAsc("sort_order").orderByAsc("id"));
+        }
         if (staffId != null && deptId != null) {
             q.and(w -> w.eq("staff_id", staffId)
                     .or(x -> x.isNull("staff_id").eq("dept_id", deptId))

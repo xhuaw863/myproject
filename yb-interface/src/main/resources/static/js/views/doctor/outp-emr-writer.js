@@ -66,6 +66,40 @@
       '.oew-statusbar-title { color:var(--yb-ink-1,#1c2430); font-weight:600; max-width:42%; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }',
       '.oew-dirty { color:var(--yb-warning,#a26b1b); }',
       '.oew-draft-chip { color:var(--yb-success,#3c862d); }',
+      /* ---- 一分钟门诊病历: 单屏双列录入，聚焦时展开长文本，避免 12 张大卡片连续滚动 ---- */
+      '.oew-root.is-one-minute .oew-header { padding:6px 10px; }',
+      '.oew-root.is-one-minute .oew-center { padding:6px; gap:5px; }',
+      '.oew-root.is-one-minute .emr-toolbar { padding:4px 8px; }',
+      '.oew-root.is-one-minute .oew-statusbar { padding:3px 10px; }',
+      '.oew-editor-host.is-one-minute { container-type:inline-size; }',
+      '.oew-editor-host.is-one-minute .ProseMirror { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:4px 6px; align-content:start; padding:6px 8px; line-height:1.5; }',
+      '.oew-editor-host.is-one-minute .ProseMirror > * + * { margin-top:0; }',
+      '.oew-editor-host.is-one-minute .emr-section { min-width:0; min-height:40px; margin:0; display:grid; grid-template-columns:76px minmax(0,1fr); border-left-width:2px; border-radius:3px; transition:border-color .15s,box-shadow .15s; }',
+      '.oew-editor-host.is-one-minute .emr-section:focus-within { border-color:var(--yb-brand,#1a5c9e); box-shadow:0 0 0 2px rgba(26,92,158,.08); }',
+      '.oew-editor-host.is-one-minute .emr-section-head { min-width:0; padding:4px 7px; gap:3px; justify-content:flex-start; border-right:1px solid var(--yb-border-light,#ebeff4); border-bottom:0; }',
+      '.oew-editor-host.is-one-minute .emr-section-title { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:12px; }',
+      '.oew-editor-host.is-one-minute .emr-section:has(.emr-f-chip--req) .emr-section-title::before { content:"*"; color:var(--yb-danger,#c74f4f); margin-right:2px; }',
+      '.oew-editor-host.is-one-minute .emr-section:has(.emr-field--req-empty) .emr-section-title { color:var(--yb-danger,#c74f4f); }',
+      '.oew-editor-host.is-one-minute .emr-section-toggle, .oew-editor-host.is-one-minute .emr-section-badge, .oew-editor-host.is-one-minute .emr-section-flag, .oew-editor-host.is-one-minute .emr-f-chip { display:none !important; }',
+      '.oew-editor-host.is-one-minute .emr-section-body { min-width:0; display:flex; align-items:center; padding:3px 6px; }',
+      '.oew-editor-host.is-one-minute .emr-section-body > p { width:100%; min-width:0; margin:0; }',
+      '.oew-editor-host.is-one-minute .emr-field, .oew-editor-host.is-one-minute .emr-f-ctl { width:100%; margin:0; }',
+      '.oew-editor-host.is-one-minute .emr-field--textarea, .oew-editor-host.is-one-minute .emr-field--vitals { display:inline-flex; vertical-align:top; }',
+      '.oew-editor-host.is-one-minute .emr-f-textarea { flex-direction:row; align-items:flex-start; gap:4px; }',
+      '.oew-editor-host.is-one-minute .emr-f-textarea > .el-textarea { flex:1; min-width:0; }',
+      '.oew-editor-host.is-one-minute .emr-f-textarea .el-textarea__inner { min-height:30px !important; height:30px !important; padding:4px 7px; line-height:20px; overflow:hidden; resize:none; transition:height .12s ease; }',
+      '.oew-editor-host.is-one-minute .emr-section:focus-within .emr-f-textarea .el-textarea__inner, .oew-editor-host.is-one-minute .emr-f-textarea.is-focus .el-textarea__inner { min-height:54px !important; height:54px !important; overflow-y:auto; }',
+      '.oew-editor-host.is-one-minute .emr-f-quick { display:none; }',
+      '.oew-editor-host.is-one-minute .emr-f-quick-menu { display:inline-flex; }',
+      '.oew-editor-host.is-one-minute .emr-f-quick-menu .el-button { height:30px; padding:0 8px; margin-left:0; }',
+      '.oew-editor-host.is-one-minute .emr-field--text .el-input, .oew-editor-host.is-one-minute .emr-field--date .el-date-editor, .oew-editor-host.is-one-minute .emr-field--dict .el-select { width:100% !important; }',
+      '.oew-editor-host.is-one-minute .emr-f-vitals { gap:5px; flex-wrap:nowrap; }',
+      '.oew-editor-host.is-one-minute .emr-f-vitals label .el-input { width:46px; }',
+      '.oew-editor-host.is-one-minute .emr-f-vitals label i { display:none; }',
+      '.oew-editor-host.is-one-minute .emr-section[data-emr-section="vitals"], .oew-editor-host.is-one-minute .emr-section[data-emr-section="followupNote"] { grid-column:1 / -1; }',
+      /* 日期与签名由宏成功带入后转为系统托管元数据；宏失败时保留红色必填字段供医生补录。 */
+      '.oew-editor-host.is-one-minute .emr-section[data-emr-section="visitDate"]:not(:has(.emr-field--req-empty)), .oew-editor-host.is-one-minute .emr-section[data-emr-section="physicianSign"]:not(:has(.emr-field--req-empty)) { display:none; }',
+      '@container (max-width:520px) { .oew-editor-host.is-one-minute .ProseMirror { grid-template-columns:minmax(0,1fr); } .oew-editor-host.is-one-minute .emr-section { grid-column:1 !important; } }',
       /* ---- 空态与降级 ---- */
       '.oew-empty-root { flex:1; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:10px; color:var(--yb-ink-4,#8994a5); }',
       '.oew-empty-root svg { width:48px; height:48px; opacity:.5; }',
@@ -285,7 +319,8 @@
   function isBlankValue(v) {
     if (v == null) { return true; }
     if (Array.isArray(v)) { return v.length === 0; }
-    var s = String(v);
+    if (typeof v === 'object') { return Object.keys(v).every(function (k) { return isBlankValue(v[k]); }); }
+    var s = String(v).trim();
     return s === '' || s === '[]' || s === '{}';
   }
   /* 值等价比较(JSON 序列化兜底多选数组等结构) */
@@ -464,6 +499,11 @@
         var id = vm.selectedTemplateId;
         if (id == null) { return null; }
         return (vm.templates || []).filter(function (t) { return String(t.id) === String(id); })[0] || null;
+      },
+      /* 标准门诊通用模板启用一分钟紧凑书写；个人/科室自定义模板保持设计时版式。 */
+      oneMinuteMode: function () {
+        var t = this.selectedTemplate || {};
+        return String(t.templateCode || t.code || '') === 'EMR_OUTP_GENERAL';
       },
       /* 历史「纯文本病历」: 已完成且无 structure 但存在 SOAP 文本列 → 只读回显 */
       legacyHasText: function () {
@@ -744,6 +784,7 @@
         vm.templateNoDoc = false;
         vm.plainFallback = '';
         if (!tpl) { return; }
+        if (vm.oneMinuteMode) { vm.nlgCollapsed = true; }
         var doc = null;
         if (tpl.document) {
           try { doc = typeof tpl.document === 'string' ? JSON.parse(tpl.document) : tpl.document; } catch (e) { doc = null; }
@@ -773,6 +814,8 @@
           mode: 'edit',
           readOnly: vm.readOnly,
           document: doc,
+          printConfig: tpl.printConfig || null,
+          printScript: tpl.printScript || '',
           placeholder: '书写门诊病历内容…',
           nlgEnabled: false,           /* NLG 由本组件底部预览条接管(防抖 1s) */
           cdssEnabled: false,          /* CDSS 由右侧页签手动评估 */
@@ -827,33 +870,57 @@
         var vm = this;
         if (!vm.ready() || vm.readOnly || !vm.visitId || !HIS.post) { return; }
         var json = vm.currentDocJSON();
+        /* 解析 R<String> / 直接 doc / 历史 documentJson 包装三种返回，避免宏文档因传输包装未回填。 */
+        var parseResolvedDoc = function (value) {
+          var d = value;
+          for (var i = 0; i < 3; i++) {
+            if (d && d.type === 'doc') { return d; }
+            if (d && typeof d === 'object' && d.documentJson != null) { d = d.documentJson; continue; }
+            if (typeof d === 'string') {
+              try { d = JSON.parse(d); continue; } catch (e) { return null; }
+            }
+            break;
+          }
+          return d && d.type === 'doc' ? d : null;
+        };
+        /* 旧宏接口返回全量映射；同一事务解析 emrMacro，并仅给空白 emrField 回填 defaultMacro。 */
         var applyMap = function (map) {
           var ed = vm.editorWrapper && vm.editorWrapper.editor;
           if (!ed || !map || typeof map !== 'object') { return; }
-          if (typeof ed.commands.resolveEmrMacro !== 'function') { return; }
-          var chain = ed.chain().focus();
-          Object.keys(map).forEach(function (code) {
-            var v = map[code];
-            if (v != null && v !== '') {
-              try { chain.resolveEmrMacro(code, String(v)); } catch (e) { /* 单宏失败不扩散 */ }
+          var tr = ed.state.tr;
+          var changed = 0;
+          ed.state.doc.descendants(function (n, pos) {
+            if (n.type.name === 'emrMacro') {
+              var macroValue = map[n.attrs.macroCode];
+              if (!isBlankValue(macroValue) && String(n.attrs.resolvedValue || '') !== String(macroValue)) {
+                tr.setNodeMarkup(pos, null, Object.assign({}, n.attrs, { resolvedValue: String(macroValue) }));
+                changed++;
+              }
+              return;
+            }
+            if (n.type.name === 'emrField' && n.attrs.defaultMacro && isBlankValue(n.attrs.value)) {
+              var fieldValue = map[n.attrs.defaultMacro];
+              if (!isBlankValue(fieldValue)) {
+                tr.setNodeMarkup(pos, null, Object.assign({}, n.attrs, { value: String(fieldValue) }));
+                changed++;
+              }
             }
           });
-          try { chain.run(); } catch (e) { /* noop */ }
+          if (changed) { try { ed.view.dispatch(tr); } catch (e) { /* 单次回填失败不阻断书写 */ } }
         };
-        /* P3 新端点: body 携 Tiptap JSON(字符串, 与后端 String.valueOf+fastjson 解析口径一致);
-         * 若直接返回解析后文档(type=doc)则整文回写 */
-        HIS.post('/api/his/outp/emr/resolve-tiptap-macros?visitId=' + HIS.idParam(vm.visitId),
-          { documentJson: json ? JSON.stringify(json) : '' })
+        var resolveDefaults = function () {
+          return HIS.post('/api/his/outp/emr/macro/resolve?visitId=' + HIS.idParam(vm.visitId), {})
+            .then(applyMap)
+            .catch(function () { /* 默认宏不可用: 保留空字段, 不阻断书写 */ });
+        };
+        /* 新端点直接接收 Tiptap doc JSON；完成文档宏解析后仍取全量映射处理字段 defaultMacro。 */
+        HIS.post('/api/his/outp/emr/resolve-tiptap-macros?visitId=' + HIS.idParam(vm.visitId), json || {})
           .then(function (d) {
-            if (d && d.type === 'doc' && vm.ready()) { vm.editorWrapper.fromJSON(d); return; }
-            applyMap(d);
+            var resolvedDoc = parseResolvedDoc(d);
+            if (resolvedDoc && vm.ready()) { vm.editorWrapper.fromJSON(normalizeDocIn(resolvedDoc)); }
+            return resolveDefaults();
           })
-          .catch(function () {
-            /* 回退: 既有门诊宏解析({macroCode: 值}) */
-            HIS.post('/api/his/outp/emr/macro/resolve?visitId=' + HIS.idParam(vm.visitId), {})
-              .then(applyMap)
-              .catch(function () { /* 宏解析不可用: 保留宏占位, 不阻断书写 */ });
-          });
+          .catch(function () { return resolveDefaults(); });
       },
 
       /* ================= 就诊切换(resetFromVisit) ================= */
@@ -1192,8 +1259,24 @@
         var vm = this;
         if (!vm.ready()) { toast('warning', '请先选择模板并书写内容后再打印'); return; }
         var title = '门诊病历' + (vm.patientLabel ? ' - ' + vm.patientLabel : '');
+        var visit = vm.visit || {};
+        var patient = vm.currentPatient || {};
+        var user = typeof HIS.getUser === 'function' ? (HIS.getUser() || {}) : {};
         if (typeof vm.editorWrapper.print === 'function') {
-          try { vm.editorWrapper.print({ title: title }); return; } catch (e) { /* 回退提示 */ }
+          try {
+            vm.editorWrapper.print({
+              title: title,
+              context: {
+                templateName: vm.selectedTemplate ? vm.selectedTemplate.name : '门诊病历',
+                name: vm.patientLabel, patientName: vm.patientLabel,
+                visitNo: visit.visitNo || '', deptName: visit.deptName || '',
+                doctorName: visit.doctorName || user.userName || user.realName || '',
+                organizationName: visit.organizationName || patient.organizationName || ''
+              },
+              autoPrint: false
+            });
+            return;
+          } catch (e) { /* 回退提示 */ }
         }
         toast('warning', '打印组件不可用');
       },
@@ -1384,7 +1467,7 @@
 
     /* ================= 模板(字符串数组拼接, 无模板字符串) ================= */
     template: [
-      '<div class="oew-root" :class="{ \'is-fs\': isFs }">',
+      '<div class="oew-root" :class="{ \'is-fs\': isFs, \'is-one-minute\': oneMinuteMode }">',
       /* ---- 头栏 ---- */
       '  <div class="oew-header">',
       '    <span class="oew-title"><span class="oew-icon" v-html="icons.file"></span> 门诊病历</span>',
@@ -1436,7 +1519,7 @@
       /* Tiptap 编辑器 */
       '          <div v-else class="oew-editor-zone">',
       '            <div ref="toolbarHost" class="oew-toolbar-host" v-loading="editorLoading" element-loading-text="加载编辑器…"></div>',
-      '            <div ref="editorHost" class="oew-editor-host"></div>',
+      '            <div ref="editorHost" class="oew-editor-host" :class="{ \'is-one-minute\': oneMinuteMode }"></div>',
       '            <div class="oew-statusbar">',
       '              <span class="oew-statusbar-title">{{ selectedTemplate ? selectedTemplate.name : "门诊病历" }}</span>',
       '              <el-tag v-if="readOnly" size="small" type="info" disable-transitions>只读模式</el-tag>',

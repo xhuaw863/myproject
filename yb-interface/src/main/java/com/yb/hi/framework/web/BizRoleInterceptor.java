@@ -31,6 +31,8 @@ public class BizRoleInterceptor implements HandlerInterceptor {
         // 收费工作站
         WRITE_ROLES.put("/api/his/cashier/", new String[]{Roles.CASHIER});
         // 药房工作站(发药/退药/改派/定价) + 药库(出入库/调拨/价格调整/追溯)
+        // P5 处方发药默认药房路由: 精确子前缀先行匹配, 仅系统管理员可写(业务角色如药师在此被拦), 不影响 /api/his/pharmacy/ 下其它写端点
+        WRITE_ROLES.put("/api/his/pharmacy/rx-route/", new String[]{Roles.ADMIN});
         WRITE_ROLES.put("/api/his/pharmacy/", new String[]{Roles.PHARMACIST});
         WRITE_ROLES.put("/api/his/stock/", new String[]{Roles.PHARMACIST});
         WRITE_ROLES.put("/api/his/price-adjust/", new String[]{Roles.PHARMACIST});

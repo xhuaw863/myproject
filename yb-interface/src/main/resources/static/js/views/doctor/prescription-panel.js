@@ -55,6 +55,36 @@
   const PROCESSES = ['生用', '炒', '麸炒', '蜜炙', '酒炙', '盐炙', '醋炙', '煅', '蒸', '煮'];
   const THERAPIES = ['解表', '泻下', '和解', '温里', '清热', '消导', '补益', '固涩'];
 
+  /* P6 中药饮片处方专属版式: 每日剂次/煎服法候选 + 十八反/十九畏经典配伍禁忌(关键词可含"/"同义多写) */
+  const TCM_DAILY_OPTIONS = [
+    { value: '日一剂', label: '日一剂' },
+    { value: '日二剂分早晚', label: '日二剂(分早晚服)' },
+    { value: '日三剂', label: '日三剂' },
+    { value: '频服', label: '不拘时频服' }
+  ];
+  const TCM_DECOCT_METHODS = ['水煎', '代煎', '配方颗粒'];
+  /* 十八反: 甘草反海藻/大戟/芫花/甘遂; 乌头(川乌/草乌/附子)反贝母/瓜蒌/半夏/白蔹/白及; 藜芦反人参/沙参/丹参/玄参/苦参/细辛/芍药 */
+  const TCM_EIGHTEEN_INCOMPATIBLE = [
+    ['甘草', '海藻'], ['甘草', '大戟'], ['甘草', '芫花'], ['甘草', '甘遂'],
+    ['川乌/草乌/附子/乌头', '贝母/浙贝/川贝'], ['川乌/草乌/附子/乌头', '瓜蒌/天花粉'], ['川乌/草乌/附子/乌头', '半夏/法夏/姜夏'],
+    ['川乌/草乌/附子/乌头', '白蔹'], ['川乌/草乌/附子/乌头', '白及'],
+    ['藜芦', '人参/党参/太子参'], ['藜芦', '沙参/丹参/玄参/苦参'], ['藜芦', '细辛'], ['藜芦', '芍药/赤芍/白芍']
+  ];
+  /* 十九畏: 硫黄畏朴硝; 水银畏砒霜; 狼毒畏密陀僧; 巴豆畏牵牛; 丁香畏郁金; 川乌/草乌畏犀角; 牙硝畏三棱; 官桂畏石脂; 人参畏五灵脂 */
+  const TCM_NINETEEN_FEAR = [
+    ['硫黄', '朴硝/芒硝'], ['水银', '砒霜'], ['狼毒', '密陀僧'], ['巴豆', '牵牛/黑丑/白丑'],
+    ['丁香', '郁金'], ['川乌/草乌/附子', '犀角/水牛角'], ['牙硝/芒硝', '三棱'],
+    ['官桂/肉桂/桂枝', '石脂/赤石脂'], ['人参', '五灵脂']
+  ];
+
+  function herbHit(name, key) {
+    var n = text(name);
+    if (!n) { return false; }
+    var parts = String(key).split('/');
+    for (var i = 0; i < parts.length; i++) { if (parts[i] && n.indexOf(parts[i]) >= 0) { return true; } }
+    return false;
+  }
+
   function money(value) {
     return Number(value || 0).toFixed(2);
   }
@@ -102,14 +132,27 @@
 
         <div v-else-if="!folded" class="dw-rx-editor dw-panel-body">
           <div class="dw-rx-pickrow">
-            <el-select class="dw-rx-pick" ref="rxPick" v-model="pickDrugId" size="small" filterable remote reserve-keyword clearable :remote-method="remoteSearchDrug" :loading="searching" :disabled="!canEdit" placeholder="检索药品：通用名 / 编码 / 拼音简码，选中即加入当前处方组" @change="onPickDrug">
-              <el-option v-for="d in searchResults" :key="d.id" :label="d.genericName || d.itemName" :value="d.id">
-                <div class="dw-rx-opt"><span class="nm">{{ d.genericName || d.itemName }}</span><span class="spec">{{ d.spec }}</span><span class="price">¥{{ unitPriceOf(d) }}</span><span class="stock">库存 {{ stockText(d) }}</span><span v-if="!d.medListCodg && !d.ybDrugCode" class="dw-tag self">自费</span></div>
-              </el-option>
+            <el-select class="dw-rx-pick" ref="rxPick" v-model="pickDrugId" size="small" filterable remote reserve-keyword clearable popper-class="dw-rx-pick-popper" :remote-method="remoteSearchDrug" :loading="searching" :disabled="!canEdit" placeholder="检索药品：通用名 / 编码 / 拼音简码；空输入即出精选候选" @change="onPickDrug" @visible-change="onPickVisible">
+              <el-option-group v-for="g in renderGroups" :key="g.label" :label="g.label">
+                <el-option v-for="d in g.items" :key="d.id" :label="d.genericName || d.itemName" :value="d.id">
+                  <div class="dw-rx-opt2">
+                    <div class="r1"><span class="nm">{{ d.genericName || d.itemName }}</span><span v-if="d.tradeName" class="trade">· {{ d.tradeName }}</span><span class="dw-rx-lv" :class="lvClass(d)">{{ lvText(d) }}</span><span v-if="selfpayText(d)" class="sp" title="医保自付比例">自付 {{ selfpayText(d) }}</span><span class="price">¥{{ unitPriceOf(d) }}</span><span class="stock">可用 {{ availText(d) }}</span></div>
+                    <div class="r2">{{ subLine(d) }}</div>
+                    <div class="r3"><span class="code">院内码 {{ d.drugCode || '—' }}</span><span class="code yb" :class="{ unmapped: !d.ybDrugCode }">医保码 {{ d.ybDrugCode || '未对照' }}</span><span v-if="d.ybName" class="ybname">{{ d.ybName }}</span></div>
+                  </div>
+                </el-option>
+              </el-option-group>
             </el-select>
             <span class="dw-rx-curgrp" title="当前活跃分组，新选药品将并入此组">Rp.{{ currentGroupNo }}</span>
             <el-button size="small" plain :disabled="!canEdit" @click="newGroup">＋新组</el-button>
             <el-button size="small" plain :disabled="!canEdit || rxItems.length<2" title="按拆方规则(险种/门慢/特药/药房等维度)预览并应用多处方拆分" @click="applySplitSuggest">按规则拆方</el-button>
+          </div>
+
+          <div class="dw-rx-filter">
+            <span class="dw-rx-filter-lbl">筛选</span>
+            <button class="dw-rx-fchip" :class="{ 'is-on': fInpharmacy }" title="仅显示本院发药药房在售(有生效价)" @click="fInpharmacy = !fInpharmacy">仅看本院</button>
+            <button class="dw-rx-fchip" :class="{ 'is-on': fStock }" title="仅显示当前药房有可用库存" @click="fStock = !fStock">仅看在药</button>
+            <button class="dw-rx-fchip" :class="{ 'is-on': fYb }" title="仅显示已对照医保目录" @click="fYb = !fYb">医保内</button>
           </div>
 
           <div v-if="assistantChips.length" class="dw-rx-assistant">
@@ -121,21 +164,64 @@
             <button v-for="c in chronicList" :key="c.id" class="dw-rx-chip dw-rx-chip--chronic" @click="useChronic(c)">{{ c.diseName }}</button>
           </div>
 
-          <el-table v-if="rxItems.length" class="dw-rx-table" :data="rxItems" border size="small" row-key="_key" :max-height="rxTableMaxHeight">
-            <el-table-column label="组" width="40" align="center"><template #default="s"><span class="dw-rx-grp" :class="grpClassOf(s.row)">{{ s.row.groupNo }}</span></template></el-table-column>
-            <el-table-column label="药品" min-width="140">
-              <template #default="s"><div class="dw-rx-nm" :title="s.row.itemName + ' ' + s.row.spec">{{ s.row.itemName }}<span class="spec">{{ s.row.spec }}</span><span v-if="!s.row.medListCodg" class="dw-tag self">自费</span><span v-if="s.row._warningLevel" class="dw-tag dw-tag--warning" :title="warningTitle(s.row)">审查</span></div></template>
-            </el-table-column>
-            <el-table-column label="剂量" width="88"><template #default="s"><el-input v-model="s.row.dosage" size="small" :disabled="!canEdit" @change="calcQty(s.row)" @keyup.enter="backToPick" placeholder="剂量"></el-input></template></el-table-column>
-            <el-table-column v-if="rxType==='TCM_HERB' || hasMixedHerb" label="中药专化" width="186"><template #default="s"><div v-if="isHerbItem(s.row)" class="dw-rx-herb"><el-select v-model="s.row.decoction" size="small" placeholder="煎法" :disabled="!canEdit" style="width:82px"><el-option v-for="o in decoctions" :key="o" :label="o" :value="o"></el-option></el-select><el-select v-model="s.row.processing" size="small" placeholder="炮制" :disabled="!canEdit" style="width:82px"><el-option v-for="o in processes" :key="o" :label="o" :value="o"></el-option></el-select><span v-if="Number(s.row.multipleBase)>0" class="dw-tag dw-tag--info" :title="'单味剂量须为 '+s.row.multipleBase+' 的整数倍'">×{{ s.row.multipleBase }}</span></div><span v-else class="dim">—</span></template></el-table-column>
-            <el-table-column label="用法" width="104"><template #default="s"><el-select v-model="s.row.usageMethod" size="small" placeholder="用法" :disabled="!canEdit" @change="onGroupFieldChange(s.row,'usageMethod')"><el-option v-for="option in usageMethods" :key="option.value" :label="option.label" :value="option.value"></el-option></el-select></template></el-table-column>
-            <el-table-column label="频次" width="104"><template #default="s"><el-select v-model="s.row.frequency" size="small" placeholder="频次" :disabled="!canEdit" @change="frequencyChanged(s.row)"><el-option v-for="option in frequencies" :key="option.value" :label="option.label" :value="option.value"></el-option></el-select></template></el-table-column>
-            <el-table-column label="天数" width="70"><template #default="s"><el-input-number v-model="s.row.days" :min="1" :max="typeConfigForItem(s.row).maxDays" size="small" controls-position="right" :disabled="!canEdit" @change="calcQty(s.row)" style="width:62px"></el-input-number></template></el-table-column>
-            <el-table-column label="发药量" width="80"><template #default="s"><el-input-number v-model="s.row.quantity" :min="1" size="small" controls-position="right" :disabled="!canEdit" style="width:72px" @keyup.enter="backToPick"></el-input-number></template></el-table-column>
-            <el-table-column label="金额" width="66" align="right"><template #default="s"><span class="amt">¥{{ lineAmount(s.row) }}</span></template></el-table-column>
-            <el-table-column label="" width="40" align="center"><template #default="s"><el-button link type="danger" size="small" :disabled="!canEdit" @click="removeItem(s.row)">删</el-button></template></el-table-column>
-          </el-table>
-          <div v-if="!rxItems.length" class="dw-collapse-empty">检索并选中药品即加入处方；同一给药可用“＋新组”分开</div>
+          <!-- P6 中药饮片处方专属处方头: 治法/剂数/每日剂次/煎服法/全局脚注/忌口 -->
+          <div v-if="rxType==='TCM_HERB'" class="dw-tcm-head">
+            <div class="dw-tcm-hrow">
+              <label class="dw-tcm-fl"><i>治法</i>
+                <el-select v-model="tcmTherapy" size="small" clearable filterable placeholder="选治法" style="width:112px" :disabled="!canEdit">
+                  <el-option v-for="t in therapies" :key="t" :label="t" :value="t"></el-option>
+                </el-select>
+              </label>
+              <label class="dw-tcm-fl"><i>剂数</i>
+                <el-input-number v-model="tcmDoseCount" :min="1" :max="99" size="small" controls-position="right" :disabled="!canEdit" style="width:92px" @change="recalcTcmAllQty"></el-input-number><span class="dw-tcm-unit">付</span>
+              </label>
+              <label class="dw-tcm-fl"><i>每日剂次</i>
+                <el-select v-model="tcmDailyTimes" size="small" :disabled="!canEdit" style="width:132px">
+                  <el-option v-for="o in tcmDailyOptions" :key="o.value" :label="o.label" :value="o.value"></el-option>
+                </el-select>
+              </label>
+              <label class="dw-tcm-fl"><i>煎服法</i>
+                <el-select v-model="tcmDecoctMethod" size="small" filterable allow-create default-first-option :disabled="!canEdit" style="width:112px">
+                  <el-option v-for="o in tcmDecoctMethods" :key="o" :label="o" :value="o"></el-option>
+                </el-select>
+              </label>
+            </div>
+            <div class="dw-tcm-hrow">
+              <label class="dw-tcm-fl dw-tcm-fl--wide"><i>全局脚注</i>
+                <el-input v-model="tcmGlobalFootnote" size="small" clearable :disabled="!canEdit" placeholder="全方通用特殊要求，如先煎、后下、忌铁器"></el-input>
+              </label>
+              <label class="dw-tcm-fl dw-tcm-fl--wide"><i>忌口</i>
+                <el-input v-model="tcmTaboo" size="small" clearable :disabled="!canEdit" placeholder="如：忌生冷、辛辣、油腻、鱼腥"></el-input>
+              </label>
+              <span class="dw-tcm-hint">{{ rxItems.length }}味 · 每味发药量 = 剂量(g) × {{ tcmDoseCount }}付</span>
+            </div>
+          </div>
+
+          <div v-if="rxItems.length" class="dw-rx-groups" :style="{ maxHeight: rxTableMaxHeight }">
+            <div v-for="group in groupedItems" :key="group.groupNo" class="dw-rx-band" :class="groupClass(group)">
+              <div class="dw-rx-band-hd">
+                <span class="dw-rx-band-no">Rp.{{ group.groupNo }}</span>
+                <span class="dw-rx-band-type">{{ groupTypeLabel(group) }}</span>
+                <span v-if="!isHerbGroup(group)" class="dw-rx-band-field"><i>用法</i><el-select :model-value="group.items[0].usageMethod" size="small" placeholder="用法" :disabled="!canEdit" style="width:100px" @change="onGroupUsageChange(group, $event)"><el-option v-for="option in usageMethods" :key="option.value" :label="option.label" :value="option.value"></el-option></el-select></span>
+                <span v-if="!isHerbGroup(group)" class="dw-rx-band-field"><i>频次</i><el-select :model-value="group.items[0].frequency" size="small" placeholder="频次" :disabled="!canEdit" style="width:100px" @change="onGroupFreqChange(group, $event)"><el-option v-for="option in frequencies" :key="option.value" :label="option.label" :value="option.value"></el-option></el-select></span>
+                <span v-if="!isHerbGroup(group)" class="dw-rx-band-field"><i>天数</i><el-input-number :model-value="group.items[0].days" :min="1" :max="rxTypeConfig.maxDays" size="small" controls-position="right" :disabled="!canEdit" style="width:84px" @change="onGroupDaysChange(group, $event)"></el-input-number></span>
+                <span v-if="isHerbGroup(group)" class="dw-rx-band-herb"><i>煎服</i>{{ tcmDecoctMethod }} · {{ tcmDailyTimes }} · 共{{ tcmDoseCount }}付</span>
+                <span class="dw-rx-band-sum">本组合计 <b>¥{{ groupTotal(group) }}</b></span>
+                <span class="dw-rx-band-ops"><el-button link size="small" :disabled="!canEdit || groupedItems.length<2" title="把本组药品并入其他组" @click="mergeGroup(group.groupNo)">合并组</el-button></span>
+              </div>
+              <el-table class="dw-rx-table" :data="group.items" border size="small" row-key="_key">
+                <el-table-column label="药品" min-width="160">
+                  <template #default="s"><div class="dw-rx-nm" :title="itemTitle(s.row)">{{ s.row.itemName }}<span class="spec">{{ s.row.spec }}</span><span class="dw-rx-lv" :class="lvClass(s.row)">{{ lvText(s.row) }}</span><span v-if="s.row._warningLevel" class="dw-tag dw-tag--warning" :title="warningTitle(s.row)">审查</span></div></template>
+                </el-table-column>
+                <el-table-column label="剂量" width="88"><template #default="s"><el-input v-model="s.row.dosage" size="small" :disabled="!canEdit" @change="calcQty(s.row)" @keyup.enter="backToPick" placeholder="剂量"></el-input></template></el-table-column>
+                <el-table-column v-if="rxType==='TCM_HERB' || hasMixedHerb" label="中药专化" width="186"><template #default="s"><div v-if="isHerbItem(s.row)" class="dw-rx-herb"><el-select v-model="s.row.decoction" size="small" placeholder="煎法" :disabled="!canEdit" style="width:82px"><el-option v-for="o in decoctions" :key="o" :label="o" :value="o"></el-option></el-select><el-select v-model="s.row.processing" size="small" placeholder="炮制" :disabled="!canEdit" style="width:82px"><el-option v-for="o in processes" :key="o" :label="o" :value="o"></el-option></el-select><span v-if="Number(s.row.multipleBase)>0" class="dw-tag dw-tag--info" :title="'单味剂量须为 '+s.row.multipleBase+' 的整数倍'">×{{ s.row.multipleBase }}</span></div><span v-else class="dim">—</span></template></el-table-column>
+                <el-table-column label="发药量" width="80"><template #default="s"><el-input-number v-model="s.row.quantity" :min="1" size="small" controls-position="right" :disabled="!canEdit" style="width:72px" @keyup.enter="backToPick"></el-input-number></template></el-table-column>
+                <el-table-column label="金额" width="66" align="right"><template #default="s"><span class="amt">¥{{ lineAmount(s.row) }}</span></template></el-table-column>
+                <el-table-column label="" width="64" align="center"><template #default="s"><el-button link type="primary" size="small" :disabled="!canEdit" title="拆出为独立组" @click="splitItem(s.row)">拆</el-button><el-button link type="danger" size="small" :disabled="!canEdit" @click="removeItem(s.row)">删</el-button></template></el-table-column>
+              </el-table>
+            </div>
+          </div>
+          <div v-if="!rxItems.length" class="dw-collapse-empty">检索并选中药品即加入处方；同一给药可用“＋新组”分开，组内用法/频次/天数共用</div>
 
           <div class="dw-foot-bar">
             <span>{{ rxItems.length }}种 · {{ groupedItems.length }}组 · 合计 <b>¥{{ rxTotal }}</b><span v-if="hasMixedHerb" class="dw-tag dw-tag--warning" style="margin-left:8px">含中药饮片将自动拆方</span></span>
@@ -155,6 +241,13 @@
             <div class="dw-rx-allergy" :class="allergyHistory ? 'has' : ''"><b>过敏史</b>　{{ allergyHistory || '未记录（开方前请主动核实）' }}</div>
           </div>
         </div>
+
+        <!-- 处方组套管理就地嵌入弹窗: 关闭即回到打开它的处方面板(不整页跳转, 患者上下文与在编处方不丢)。
+             内容为医疗模板管理页(自动定位处方组套页签), 其内部编辑弹窗由 Element Plus teleport 挂 body 不受影响 -->
+        <el-dialog v-model="rxSetManageVisible" title="处方组套管理（关闭后回到医生站处方界面）" width="76%" top="5vh"
+          append-to-body destroy-on-close class="dw-rxset-manage-dialog" @closed="loadTemplates">
+          <component v-if="rxSetManageVisible && medicalTemplateComp" :is="medicalTemplateComp"></component>
+        </el-dialog>
       </section>
     `,
     data: function () {
@@ -177,6 +270,9 @@
         loadedVisitId: null,
         folded: window.localStorage.getItem('dw.rx.folded') === '1',
         maximized: false,
+        /* 组套管理嵌入弹窗: 可见态 + 懒引用的医疗模板管理组件(本面板先于 medical-template.js 加载) */
+        rxSetManageVisible: false,
+        medicalTemplateComp: null,
         doneExpanded: false,
         assistant: { personalFrequent: [], deptFrequent: [] },
         chronicList: [],
@@ -184,9 +280,23 @@
         decoctions: DECOCTIONS,
         processes: PROCESSES,
         therapies: THERAPIES,
+        /* P6 中药饮片处方专属处方头(治法/剂数/每日剂次/煎服法/全局脚注/忌口) */
+        tcmTherapy: '',
+        tcmDoseCount: 1,
+        tcmDailyTimes: '日一剂',
+        tcmDecoctMethod: '水煎',
+        tcmGlobalFootnote: '',
+        tcmTaboo: '',
+        tcmDailyOptions: TCM_DAILY_OPTIONS,
+        tcmDecoctMethods: TCM_DECOCT_METHODS,
         pharmacies: [],
         selectedPharmacyId: null,
-        pharmacyAutoResolved: false
+        pharmacyAutoResolved: false,
+        /* P2 智能选药: 候选来源模式 + 检索过滤 chip */
+        searchMode: 'keyword',
+        fStock: false,
+        fYb: false,
+        fInpharmacy: false
       };
     },
     computed: {
@@ -250,6 +360,34 @@
           out.push(f);
         });
         return out.slice(0, 12);
+      },
+      /* P2 过滤 chip: 客户端筛选当前候选 */
+      displayResults: function () {
+        var vm = this;
+        return (this.searchResults || []).filter(function (d) {
+          /* P6 中药饮片处方: 药味检索限 majorClass=中药饮片(后端无 majorClass 参数, 前端按大类识别过滤) */
+          if (vm.rxType === 'TCM_HERB' && vm.detectRxType(d) !== 'TCM_HERB') { return false; }
+          if (vm.fYb && !(d.ybDrugCode || d.medListCodg)) { return false; }
+          if (vm.fStock && !(Number(vm.availText(d)) > 0)) { return false; }
+          if (vm.fInpharmacy && d.effPrice == null) { return false; }
+          return true;
+        });
+      },
+      /* P2 候选分区呈现: 关键词模式单组“匹配结果”, 精选模式按药品大类分组 */
+      renderGroups: function () {
+        var items = this.displayResults || [];
+        if (!items.length) { return []; }
+        if (this.searchMode !== 'curated') {
+          return [{ label: '匹配结果（' + items.length + '）', items: items }];
+        }
+        var map = {};
+        var order = [];
+        items.forEach(function (d) {
+          var k = d.majorClass || '其他';
+          if (!map[k]) { map[k] = { label: k, items: [] }; order.push(k); }
+          map[k].items.push(d);
+        });
+        return order.map(function (k) { return map[k]; });
       }
     },
     watch: {
@@ -261,6 +399,8 @@
           this.rxItems = [];
           this.currentGroupNo = 1;
           this.searchResults = [];
+          this.searchMode = 'keyword';
+          this.resetTcmHead();
           this.setDefaultRxType();
           this.initPharmacyScope();
           if (id) { this.loadPrescriptions(); this.loadAssistant(); this.loadChronic(); }
@@ -314,16 +454,21 @@
         var vm = this;
         vm.pharmacyAutoResolved = false;
         vm.searchDrugs();
-        // 已加明细按新药房生效价重算(服务端开方时仍会重算兑底, 此处仅预览对齐)
+        // 已加明细按新药房生效价/可用量重算(服务端开方时仍会重算兜底, 此处仅预览对齐)
         window.HIS.get('/api/org-catalog/available/drug?page=1&size=200&pharmacyId=' + encodeURIComponent(vm.selectedPharmacyId || ''))
           .then(function (data) {
             var map = {};
-            ((data && data.records) || []).forEach(function (row) { map[row.id] = row.effPrice != null ? row.effPrice : row.retailPrice; });
+            ((data && data.records) || []).forEach(function (row) { map[row.id] = row; });
             var changed = 0;
             vm.rxItems.forEach(function (item) {
-              if (item.drugId && map[item.drugId] != null && Number(map[item.drugId]) !== Number(item.price)) {
-                item.price = Number(map[item.drugId]); changed++;
-              }
+              var row = item.drugId ? map[item.drugId] : null;
+              if (!row) { return; }
+              var np = row.effPrice != null ? row.effPrice : row.retailPrice;
+              if (np != null && Number(np) !== Number(item.price)) { item.price = Number(np); changed++; }
+              item.stockQty = row.stockQty;
+              item.stockAvail = row.stockAvail;
+              item.reservedQty = row.reservedQty;
+              vm.refreshStockWarning(item);
             });
             if (changed) { ElementPlus.ElMessage.info('药房变更,' + changed + '种药品价格已刷新'); }
           }).catch(function () {});
@@ -336,6 +481,7 @@
           if (!item._detectedType || item._detectedType === 'NORMAL') { item._rxType = this.rxType; }
           if (Number(item.days) > cfg.maxDays && !this.isHerbItem(item)) { item.days = cfg.maxDays; }
         }, this);
+        if (this.rxType === 'TCM_HERB') { this.recalcTcmAllQty(); }
       },
       typeTagClass: function (type) {
         return type === 'NARCOTIC' || type === 'PSYCHO1' ? 'dw-tag--danger' : (type === 'EMERGENCY' ? 'dw-tag--warning' : 'dw-tag--info');
@@ -383,6 +529,16 @@
           abxGrade: drug.abxGrade || '',
           manufacturer: drug.manufacturer || '',
           majorClass: drug.majorClass || '',
+          chrgitmLv: drug.chrgitmLv || '',
+          chrgitmLvName: drug.chrgitmLvName || '',
+          selfpayProp: drug.selfpayProp,
+          ybName: drug.ybName || '',
+          ybDrugCode: drug.ybDrugCode || '',
+          dosformName: drug.dosformName || '',
+          tradeName: drug.tradeName || '',
+          stockQty: drug.stockQty,
+          stockAvail: drug.stockAvail,
+          reservedQty: drug.reservedQty,
           drugClass: drug.drugClass || '',
           drugClassName: drug.drugClassName || '',
           _rxType: type === 'NORMAL' ? (this.rxType === 'TCM_HERB' ? this.suggestedRxType() : this.rxType) : type,
@@ -408,13 +564,32 @@
       remoteSearchDrug: function (query) {
         var vm = this;
         var kw = text(query).trim();
-        if (!kw) { vm.searchResults = []; return; }
+        if (!kw) { vm.loadCuratedCandidates(); return; }
+        vm.searchMode = 'keyword';
         vm.searching = true;
-        var url = '/api/org-catalog/available/drug?page=1&size=30&keyword=' + encodeURIComponent(kw);
+        var url = '/api/org-catalog/available/drug?page=1&size=50&keyword=' + encodeURIComponent(kw);
         if (vm.selectedPharmacyId) { url += '&pharmacyId=' + encodeURIComponent(vm.selectedPharmacyId); }
         window.HIS.get(url).then(function (data) {
           vm.searchResults = (data && data.records) || [];
         }).catch(window.HIS.notifyError).finally(function () { vm.searching = false; });
+      },
+      /* P2 空输入聚焦即出精选候选: 按当前诊断推荐(常用助手已在 chips 区呈现) */
+      loadCuratedCandidates: function () {
+        var vm = this;
+        var visit = vm.visit || {};
+        var diagList = unwrap(vm.diagnoses) || [];
+        var diagCodes = diagList.map(function (d) { return d.diagCode || d.code; }).filter(Boolean).join(',');
+        vm.searchMode = 'curated';
+        if (!diagCodes) { vm.searchResults = []; return; }
+        vm.searching = true;
+        var url = '/api/his/prescription/drug-suggest?limit=24&deptId=' + encodeURIComponent(visit.deptId || '') + '&diagCodes=' + encodeURIComponent(diagCodes);
+        if (vm.selectedPharmacyId) { url += '&pharmacyId=' + encodeURIComponent(vm.selectedPharmacyId); }
+        window.HIS.get(url).then(function (rows) {
+          vm.searchResults = rows || [];
+        }).catch(function () { vm.searchResults = []; }).finally(function () { vm.searching = false; });
+      },
+      onPickVisible: function (visible) {
+        if (visible && !(this.searchResults || []).length) { this.loadCuratedCandidates(); }
       },
       onPickDrug: function (id) {
         var vm = this;
@@ -461,12 +636,12 @@
           }
         }
         if (!drug.medListCodg) { warnings.push({ level: 'info', msg: '“' + drug.itemName + '”非医保目录药品（自费）' }); }
-        var stock = Number(drug.stockQty != null ? drug.stockQty : -1);
-        if (stock >= 0 && stock < Number(drug.quantity || 1)) {
-          warnings.push({ level: 'warning', msg: '所选药房库存不足（可用' + drug.stockQty + '，本次需' + (drug.quantity || 1) + '），发药环节可能需改派药房' });
-        }
         if (this.rxItems.length && this.rxItems.some(function (item) { return this.isHerbItem(item) !== this.isHerbItem(drug); }, this)) {
           warnings.push({ level: 'info', msg: '中药饮片与西药/中成药将自动拆分为两张独立处方' });
+        }
+        /* P6 中药饮片配伍审查: 十八反/十九畏经典禁忌 → "用药不适宜"级告警 */
+        if (this.isHerbItem(drug)) {
+          this.checkTcmIncompatibility(drug).forEach(function (w) { warnings.push(w); });
         }
         return warnings;
       },
@@ -628,19 +803,67 @@
         return Math.ceil(value);
       },
       calcQty: function (item, silent) {
+        /* P6 中药饮片: 发药量 = 单味剂量(g) × 剂数(付), 不走频次×天数 */
+        if (this.isHerbItem(item)) {
+          var herbDose = Number(item.dosage);
+          var _fu = Number(this.tcmDoseCount) || 1;
+          if (herbDose > 0) {
+            item.dosageUnit = item.dosageUnit || 'g';
+            item.quantity = Math.max(1, Math.round(herbDose * _fu));
+          }
+          this.refreshStockWarning(item);
+          return;
+        }
         var dosage = Number(item.dosage);
         var unitDose = Number(item.unitDose);
         var days = Number(item.days);
         if (!(dosage > 0 && unitDose > 0 && days > 0)) {
           if (!silent) { ElementPlus.ElMessage.warning('请填写单次剂量，且药品需配置单位含药量'); }
+          this.refreshStockWarning(item);
           return;
         }
         var perDose = this.roundByRule(dosage / unitDose, Number(item.roundRule) || 1);
         item.quantity = Math.max(1, Math.ceil(perDose * this.frequencyTimes(item.frequency) * days));
+        /* P3 软预占: 发药量变更后即时重评可用量告警 */
+        this.refreshStockWarning(item);
+      },
+      /* P3 软预占告警: 以虚拟可用量(stockAvail=在库-他单已开未发占用)为准, 非致命行内提示 */
+      refreshStockWarning: function (item) {
+        if (!item) { return; }
+        var need = Number(item.quantity || 1);
+        var avail = item.stockAvail != null ? Number(item.stockAvail) : null;
+        item._warnings = (item._warnings || []).filter(function (w) { return w.kind !== 'stock'; });
+        if (avail != null && avail >= 0 && avail < need) {
+          item._warnings.push({
+            level: 'warning', kind: 'stock',
+            msg: '该药房在库' + (item.stockQty != null ? item.stockQty : '—') + '、已被他单占用' + (item.reservedQty != null ? item.reservedQty : 0) + '、本次可用' + avail + '（需' + need + '），发药环节可能需改派药房'
+          });
+        }
+        var level = '';
+        item._warnings.forEach(function (w) {
+          if (w.level === 'serious') { level = 'serious'; }
+          else if (w.level === 'warning' && level !== 'serious') { level = 'warning'; }
+        });
+        item._warningLevel = level;
       },
       groupUsage: function (group) { return (group.items[0] && group.items[0].usageMethod) || '未选用法'; },
       groupFrequency: function (group) { return (group.items[0] && group.items[0].frequency) || '未选频次'; },
       groupDays: function (group) { return group.items[0] && group.items[0].days ? group.items[0].days + '天' : ''; },
+      /* P4 组带上移的组级编辑: 改一个即同步本组全部成员(组内用法/频次/天数共用) */
+      onGroupUsageChange: function (group, val) {
+        (group.items || []).forEach(function (it) { it.usageMethod = val; });
+      },
+      onGroupFreqChange: function (group, val) {
+        var vm = this;
+        (group.items || []).forEach(function (it) { it.frequency = val; vm.calcQty(it, true); });
+      },
+      onGroupDaysChange: function (group, val) {
+        var vm = this;
+        (group.items || []).forEach(function (it) { it.days = Number(val) || 1; vm.calcQty(it, true); });
+      },
+      groupTotal: function (group) {
+        return money((group.items || []).reduce(function (s, it) { return s + Number(it.price || 0) * Number(it.quantity || 0); }, 0));
+      },
       groupTypeLabel: function (group) {
         var type = group.items[0] && group.items[0]._rxType;
         return (RX_TYPES[type] || this.rxTypeConfig).label;
@@ -650,6 +873,62 @@
         if (this.isHerbItem(first)) { return 'dw-rx-group--tcm'; }
         if (first._rxType === 'NARCOTIC' || first._rxType === 'PSYCHO1') { return 'dw-rx-group--narcotic'; }
         return first.usageMethod === '外用' ? 'dw-rx-group--external' : '';
+      },
+      /* ===== P6 中药饮片处方专属能力 ===== */
+      isHerbGroup: function (group) {
+        var vm = this;
+        return !!(group && group.items && group.items.length && group.items.every(function (it) { return vm.isHerbItem(it); }));
+      },
+      resetTcmHead: function () {
+        this.tcmTherapy = '';
+        this.tcmDoseCount = 1;
+        this.tcmDailyTimes = '日一剂';
+        this.tcmDecoctMethod = '水煎';
+        this.tcmGlobalFootnote = '';
+        this.tcmTaboo = '';
+      },
+      applyTcmHead: function (t) {
+        if (!t) { return; }
+        if (t.therapy != null) { this.tcmTherapy = t.therapy; }
+        if (Number(t.doseCount) > 0) { this.tcmDoseCount = Number(t.doseCount); }
+        if (t.dailyTimes) { this.tcmDailyTimes = t.dailyTimes; }
+        if (t.decoctMethod) { this.tcmDecoctMethod = t.decoctMethod; }
+        if (t.globalFootnote != null) { this.tcmGlobalFootnote = t.globalFootnote; }
+        if (t.taboo != null) { this.tcmTaboo = t.taboo; }
+        this.recalcTcmAllQty();
+      },
+      collectTcmHead: function () {
+        return {
+          therapy: this.tcmTherapy, doseCount: this.tcmDoseCount, dailyTimes: this.tcmDailyTimes,
+          decoctMethod: this.tcmDecoctMethod, globalFootnote: this.tcmGlobalFootnote, taboo: this.tcmTaboo
+        };
+      },
+      /* 剂数/切换处方头时重算全方所有药味发药量 */
+      recalcTcmAllQty: function () {
+        var vm = this;
+        vm.rxItems.forEach(function (item) { if (vm.isHerbItem(item)) { vm.calcQty(item, true); } });
+      },
+      /* 十八反/十九畏配伍禁忌扫描(待加药味 vs 已在方药味) */
+      checkTcmIncompatibility: function (drug) {
+        var vm = this;
+        var out = [];
+        var drugName = text(drug.itemName);
+        var existing = vm.rxItems.filter(function (it) { return vm.isHerbItem(it); }).map(function (it) { return text(it.itemName); });
+        if (!drugName || !existing.length) { return out; }
+        function scan(pairs, listName, verb) {
+          pairs.forEach(function (pair) {
+            var a = pair[0];
+            var b = pair[1];
+            var hit = (herbHit(drugName, a) && existing.some(function (n) { return herbHit(n, b); }))
+              || (herbHit(drugName, b) && existing.some(function (n) { return herbHit(n, a); }));
+            if (hit) {
+              out.push({ level: 'warning', kind: 'tcm-contra', msg: listName + '配伍禁忌（' + verb + '）：“' + drug.itemName + '”与处方内现有药味属经典' + listName + '禁忌，属用药不适宜，请复核或调整配伍' });
+            }
+          });
+        }
+        scan(TCM_EIGHTEEN_INCOMPATIBLE, '十八反', '反');
+        scan(TCM_NINETEEN_FEAR, '十九畏', '畏');
+        return out;
       },
       safetyRowStyle: function (item) {
         if (item._warningLevel === 'serious') { return { borderColor: 'var(--dw-danger)', background: 'var(--dw-danger-light)' }; }
@@ -662,10 +941,56 @@
         var value = drug.stockQty != null ? drug.stockQty : (drug.qty != null ? drug.qty : drug.availableQty);
         return value === null || value === undefined ? '-' : value;
       },
+      /* ===== P1 医保目录富展示: 甲乙丙/自费徽标 + 自付比例 + 可用量 + 副行/编码带 ===== */
+      lvCode: function (d) {
+        if (!d) { return 'none'; }
+        if (!d.ybDrugCode && !d.medListCodg) { return 'self'; }
+        var lv = text(d.chrgitmLv);
+        var nm = text(d.chrgitmLvName) || lv;
+        if (lv === '1' || /^甲/.test(nm)) { return 'a'; }
+        if (lv === '2' || /^乙/.test(nm)) { return 'b'; }
+        if (lv === '3' || lv === '4' || /^丙/.test(nm)) { return 'c'; }
+        return 'none';
+      },
+      lvText: function (d) {
+        var code = this.lvCode(d);
+        if (code === 'self') { return '自费'; }
+        if (code === 'none') { return text(d && d.chrgitmLvName) || '未分类'; }
+        return code === 'a' ? '甲' : (code === 'b' ? '乙' : '丙');
+      },
+      lvClass: function (d) { return 'dw-lv--' + this.lvCode(d); },
+      selfpayText: function (d) {
+        if (!d || d.selfpayProp == null || d.selfpayProp === '') { return ''; }
+        var v = Number(d.selfpayProp);
+        if (isNaN(v) || v <= 0) { return ''; }
+        var pct = v <= 1 ? v * 100 : v;
+        return (Math.round(pct * 10) / 10) + '%';
+      },
+      availText: function (d) {
+        if (!d) { return '-'; }
+        var v = d.stockAvail != null ? d.stockAvail : (d.stockQty != null ? d.stockQty : (d.qty != null ? d.qty : d.availableQty));
+        return v == null ? '-' : v;
+      },
+      subLine: function (d) {
+        return [text(d.spec), text(d.dosformName), text(d.manufacturer)].filter(function (x) { return x; }).join(' / ');
+      },
+      itemTitle: function (row) {
+        var t = text(row.itemName) + ' ' + text(row.spec);
+        if (row.itemCode) { t += '｜院内码 ' + row.itemCode; }
+        if (row.medListCodg) { t += '｜医保码 ' + row.medListCodg + (row.ybName ? '（' + row.ybName + '）' : ''); }
+        else { t += '｜未对照医保（自费）'; }
+        return t;
+      },
       validateItems: function () {
         if (!this.rxItems.length) { ElementPlus.ElMessage.warning('请添加处方明细'); return false; }
         for (var i = 0; i < this.rxItems.length; i++) {
           var item = this.rxItems[i];
+          /* P6 中药饮片: 仅校验单味剂量与剂数(发药量由 剂量×剂数 导出), 不要求西药用法/频次/天数 */
+          if (this.isHerbItem(item)) {
+            if (!(Number(item.dosage) > 0) || !(Number(item.quantity) > 0)) { ElementPlus.ElMessage.warning('请填写中药"' + item.itemName + '"的剂量(克)'); return false; }
+            if (!(Number(this.tcmDoseCount) > 0)) { ElementPlus.ElMessage.warning('请填写中药方剂数(付)'); return false; }
+            continue;
+          }
           if (!item.dosage || !item.usageMethod || !item.frequency || !(Number(item.days) > 0) || !(Number(item.quantity) > 0)) {
             ElementPlus.ElMessage.warning('请完整填写“' + item.itemName + '”的剂量、用法、频次、天数和发药量');
             return false;
@@ -765,6 +1090,7 @@
           vm.keyword = '';
           vm.searchResults = [];
           vm.splitPlan = null;
+          vm.resetTcmHead();
           vm.loadPrescriptions();
           vm.loadAssistant();
           vm.$emit('rx-saved', list);
@@ -856,9 +1182,12 @@
       },
       printPrescription: function (row) { this.$emit('print-rx', row.id); },
       openRxSetManage: function () {
-        try { window.sessionStorage.setItem('yb.medical-template.activeTab', 'rx_set'); } catch (e) { /* 隐私模式仍可跳转, 但使用默认页签 */ }
-        if (window.HIS && typeof window.HIS.go === 'function') { window.HIS.go('medical-template'); }
-        else { ElementPlus.ElMessage.warning('医疗模板管理入口暂不可用'); }
+        try { window.sessionStorage.setItem('yb.medical-template.activeTab', 'rx_set'); } catch (e) { /* 隐私模式仍可弹窗, 但使用默认页签 */ }
+        // 懒引用: medical-template.js 在本面板之后加载, 打开时才从 HIS.views 取组件定义
+        var comp = window.HIS && HIS.views ? HIS.views.MedicalTemplateManage : null;
+        if (!comp) { ElementPlus.ElMessage.warning('医疗模板管理组件未加载'); return; }
+        this.medicalTemplateComp = comp;
+        this.rxSetManageVisible = true;
       },
       loadTemplates: function () {
         var vm = this;
@@ -883,6 +1212,7 @@
           vm.rxItems = [];
           vm.currentGroupNo = 1;
           if (body.rxType && RX_TYPES[body.rxType]) { vm.rxType = body.rxType; }
+          if (body.tcm) { vm.applyTcmHead(body.tcm); }
           return body.items.reduce(function (chain, source) {
             return chain.then(function () { return vm.addDrug(source, source.groupNo); });
           }, Promise.resolve()).then(function () {
@@ -903,6 +1233,7 @@
         var items = Array.isArray(parsed) ? parsed : ((parsed && parsed.items) || []);
         if (!items.length) { ElementPlus.ElMessage.warning('该模板没有药品明细'); return; }
         if (parsed && parsed.rxType && RX_TYPES[parsed.rxType]) { vm.rxType = parsed.rxType; }
+        if (parsed && parsed.tcm) { vm.applyTcmHead(parsed.tcm); }
         return items.reduce(function (chain, source) {
           return chain.then(function () { return vm.addDrug(source, source.groupNo); });
         }, Promise.resolve()).then(function () {
@@ -925,7 +1256,18 @@
           });
           return 'Rp.' + grp.groupNo + ' ' + parts.join('；');
         });
-        vm.$emit('insert-to-record', { target: 'treatment', text: '处方摘要：' + lines.join('；') });
+        var tcmNote = '';
+        if (vm.rxType === 'TCM_HERB') {
+          var head = [];
+          if (text(vm.tcmTherapy)) { head.push('治法' + vm.tcmTherapy); }
+          head.push(vm.tcmDoseCount + '付');
+          if (text(vm.tcmDailyTimes)) { head.push(vm.tcmDailyTimes); }
+          if (text(vm.tcmDecoctMethod)) { head.push(vm.tcmDecoctMethod); }
+          if (text(vm.tcmGlobalFootnote)) { head.push('脚注:' + vm.tcmGlobalFootnote); }
+          if (text(vm.tcmTaboo)) { head.push('忌口:' + vm.tcmTaboo); }
+          tcmNote = '（中药饮片方 ' + head.join('，') + '）';
+        }
+        vm.$emit('insert-to-record', { target: 'treatment', text: '处方摘要：' + tcmNote + lines.join('；') });
       },
       saveAsTemplate: function () {
         var vm = this;
@@ -938,7 +1280,7 @@
           return window.HIS.post('/api/his/template/create', {
             templateType: 'rx_set', name: text(result.value).trim(),
             deptId: visit.deptId || null, staffId: visit.staffId || visit.drId || null,
-            content: JSON.stringify({ rxType: vm.rxType, items: vm.rxItems.map(function (item) { return vm.templateItem(item); }) }),
+            content: JSON.stringify({ rxType: vm.rxType, tcm: vm.collectTcmHead(), items: vm.rxItems.map(function (item) { return vm.templateItem(item); }) }),
             sortOrder: 0, status: 1
           });
         }).then(function () {

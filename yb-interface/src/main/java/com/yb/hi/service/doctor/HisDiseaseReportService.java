@@ -9,6 +9,7 @@ import com.yb.hi.entity.doctor.HisDiagnosis;
 import com.yb.hi.entity.doctor.HisDiseaseReport;
 import com.yb.hi.entity.doctor.HisDiseaseReportDetail;
 import com.yb.hi.entity.doctor.HisDiseaseReportSkip;
+import com.yb.hi.entity.doctor.HisDiseaseReportTriggerRule;
 import com.yb.hi.entity.outpatient.HisPatient;
 import com.yb.hi.framework.common.BizException;
 import com.yb.hi.framework.tenant.LoginUser;
@@ -45,6 +46,7 @@ public class HisDiseaseReportService extends ServiceImpl<HisDiseaseReportMapper,
     private final DiseaseReportDict dictProvider;
     private final HisDiagnosisService diagnosisService;
     private final HisDiseaseReportSkipMapper skipMapper;
+    private final HisDiseaseReportTriggerRuleService triggerRuleService;
 
     private static final DateTimeFormatter YM = DateTimeFormatter.ofPattern("yyyyMM");
 
@@ -52,12 +54,14 @@ public class HisDiseaseReportService extends ServiceImpl<HisDiseaseReportMapper,
                                    HisDiseaseReportDetailMapper detailMapper,
                                    DiseaseReportDict dictProvider,
                                    HisDiagnosisService diagnosisService,
-                                   HisDiseaseReportSkipMapper skipMapper) {
+                                   HisDiseaseReportSkipMapper skipMapper,
+                                   HisDiseaseReportTriggerRuleService triggerRuleService) {
         this.patientService = patientService;
         this.detailMapper = detailMapper;
         this.dictProvider = dictProvider;
         this.diagnosisService = diagnosisService;
         this.skipMapper = skipMapper;
+        this.triggerRuleService = triggerRuleService;
     }
 
     /** 查询某次就诊的报卡列表(附各卡明细, 供回显) */
@@ -439,12 +443,14 @@ public class HisDiseaseReportService extends ServiceImpl<HisDiseaseReportMapper,
             return out;
         }
         java.util.Set<String> seen = new java.util.HashSet<>();
+        // 触发规则查表(启用集按 priority 升序一次加载): 维护界面增删改启停即时生效, 不再依赖硬编码
+        List<HisDiseaseReportTriggerRule> rules = triggerRuleService.listEnabledOrdered();
         for (HisDiagnosis d : diags) {
             String code = d.getDiagCode();
             if (!StringUtils.hasText(code)) {
                 continue;
             }
-            Integer cat = matchCat(code, d.getDiagClass());
+            Integer cat = matchCat(code, d.getDiagClass(), rules);
             if (cat == null || !seen.add(code + "#" + cat)) {
                 continue;
             }
@@ -472,21 +478,26 @@ public class HisDiseaseReportService extends ServiceImpl<HisDiseaseReportMapper,
         return out;
     }
 
-    /** 触发判定: 肿瘤(tumor类别或 C 开头)>传染病(法定目录前缀)>精障(F码); 均不中返回 null */
-    private Integer matchCat(String diagCode, String diagClass) {
+    /** 触发判定(查表): 启用规则按 priority 升序首个命中即定大类; prefix=诊断码前缀, exact=诊断码精确, class=诊断类别等值; 全不中返回 null */
+    private Integer matchCat(String diagCode, String diagClass, List<HisDiseaseReportTriggerRule> rules) {
         String c = diagCode == null ? "" : diagCode.trim().toUpperCase();
-        if ("tumor".equals(diagClass) || c.startsWith("C")) {
-            return 3;
-        }
-        if (!c.isEmpty()) {
-            for (String code : infectiousCodes()) {
-                if (c.startsWith(code)) {
-                    return 1;
-                }
+        for (HisDiseaseReportTriggerRule r : rules) {
+            String p = r.getCodePattern() == null ? "" : r.getCodePattern().trim();
+            if (p.isEmpty()) {
+                continue;
             }
-            for (String code : smiCodes()) {
-                if (c.startsWith(code)) {
-                    return 2;
+            String mt = r.getMatchType() == null ? "prefix" : r.getMatchType().trim().toLowerCase();
+            if ("class".equals(mt)) {
+                if (StringUtils.hasText(diagClass) && diagClass.trim().equalsIgnoreCase(p)) {
+                    return r.getReportCategory();
+                }
+            } else if ("exact".equals(mt)) {
+                if (!c.isEmpty() && c.equals(p.toUpperCase())) {
+                    return r.getReportCategory();
+                }
+            } else {
+                if (!c.isEmpty() && c.startsWith(p.toUpperCase())) {
+                    return r.getReportCategory();
                 }
             }
         }

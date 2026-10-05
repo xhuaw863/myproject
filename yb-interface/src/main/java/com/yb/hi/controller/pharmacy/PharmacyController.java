@@ -8,7 +8,7 @@ import com.yb.hi.dto.pharmacy.TransferReq;
 import com.yb.hi.entity.pharmacy.HisDispense;
 import com.yb.hi.entity.pharmacy.HisDrugReturn;
 import com.yb.hi.entity.pharmacy.HisPharmacyDef;
-import com.yb.hi.entity.pharmacy.HisPharmacyDrugPrice;
+import com.yb.hi.entity.pharmacy.HisRxPharmacyRoute;
 import com.yb.hi.framework.common.BizException;
 import com.yb.hi.framework.common.R;
 import com.yb.hi.framework.common.Roles;
@@ -17,7 +17,6 @@ import com.yb.hi.framework.tenant.UserContext;
 import com.yb.hi.platform.ExportGuard;
 import com.yb.hi.platform.service.OrgAccessGuard;
 import com.yb.hi.service.pharmacy.PharmacyDefService;
-import com.yb.hi.service.pharmacy.PharmacyPriceService;
 import com.yb.hi.service.pharmacy.PharmacyService;
 import com.yb.hi.service.pharmacy.ScanVerifyService;
 import com.yb.hi.service.warehouse.WarehouseAccessService;
@@ -25,7 +24,6 @@ import org.springframework.web.bind.annotation.*;
 
 import javax.servlet.http.HttpServletResponse;
 import java.io.IOException;
-import java.math.BigDecimal;
 import java.net.URLEncoder;
 import java.time.LocalDate;
 import java.util.HashSet;
@@ -44,17 +42,15 @@ public class PharmacyController {
 
     private final PharmacyService pharmacyService;
     private final PharmacyDefService pharmacyDefService;
-    private final PharmacyPriceService pharmacyPriceService;
     private final ScanVerifyService scanVerifyService;
     private final OrgAccessGuard guard;
     private final WarehouseAccessService access;
 
     public PharmacyController(PharmacyService pharmacyService, PharmacyDefService pharmacyDefService,
-                              PharmacyPriceService pharmacyPriceService, ScanVerifyService scanVerifyService,
+                              ScanVerifyService scanVerifyService,
                               OrgAccessGuard guard, WarehouseAccessService access) {
         this.pharmacyService = pharmacyService;
         this.pharmacyDefService = pharmacyDefService;
-        this.pharmacyPriceService = pharmacyPriceService;
         this.scanVerifyService = scanVerifyService;
         this.guard = guard;
         this.access = access;
@@ -240,55 +236,82 @@ public class PharmacyController {
         return R.ok(out);
     }
 
-    /** 药房定价分页(按药房列目录药+覆盖价/生效价/库存) */
-    @GetMapping("/price/page")
-    public R<Map<String, Object>> pricePage(@RequestParam(required = false) Long orgId,
-                                            @RequestParam Long pharmacyId,
-                                            @RequestParam(required = false) String keyword,
-                                            @RequestParam(defaultValue = "1") long page,
-                                            @RequestParam(defaultValue = "20") long size) {
-        return R.ok(pharmacyPriceService.pricePage(resolveOrgId(orgId), pharmacyId, keyword, page, size));
+    /* ================= P5: 处方发药默认药房路由(科室×时段×大类) ================= */
+
+    /** 路由规则列表(按机构; 含停用; 读放开, 非牵头强制本机构) */
+    @GetMapping("/rx-route/list")
+    public R<List<HisRxPharmacyRoute>> rxRouteList(@RequestParam(required = false) Long orgId) {
+        return R.ok(pharmacyDefService.listRoutes(resolveOrgId(orgId)));
     }
 
-    /** 保存药房覆盖价(upsert): 管理员/药师可维护 */
-    @PostMapping("/price/save")
-    public R<HisPharmacyDrugPrice> priceSave(@RequestBody Map<String, Object> body) {
-        requirePriceWrite();
-        Long orgId = resolveOrgId(toLong(body.get("orgId")));
-        Long pharmacyId = toLong(body.get("pharmacyId"));
-        Long drugCatalogId = toLong(body.get("drugCatalogId"));
-        Object price = body.get("retailPrice");
-        if (price == null) {
-            throw new BizException(400, "零售价不能为空");
-        }
-        BigDecimal retailPrice;
-        try {
-            retailPrice = new BigDecimal(price.toString().trim());
-        } catch (NumberFormatException e) {
-            throw new BizException(400, "零售价格式不正确: " + price);
-        }
-        return R.ok(pharmacyPriceService.save(orgId, pharmacyId, drugCatalogId, retailPrice));
+    /** 保存路由规则(新增/编辑; 仅牵头机构 ADMIN/SUPER_ADMIN; 同科室+时段+大类判重) */
+    @PostMapping("/rx-route/save")
+    public R<HisRxPharmacyRoute> rxRouteSave(@RequestBody HisRxPharmacyRoute route) {
+        guard.requireLeadWrite();
+        requireRxRouteAdmin();
+        route.setOrgId(resolveOrgId(route.getOrgId()));
+        return R.ok(pharmacyDefService.saveRoute(route));
     }
 
-    /** 清空药房覆盖价(回落目录价) */
-    @PostMapping("/price/clear")
-    public R<Void> priceClear(@RequestBody Map<String, Object> body) {
-        requirePriceWrite();
-        pharmacyPriceService.clear(toLong(body.get("pharmacyId")), toLong(body.get("drugCatalogId")));
+    /** 启停路由规则(仅牵头机构 ADMIN/SUPER_ADMIN) */
+    @PostMapping("/rx-route/{id}/toggle")
+    public R<HisRxPharmacyRoute> rxRouteToggle(@PathVariable Long id, @RequestParam boolean enabled) {
+        guard.requireLeadWrite();
+        requireRxRouteAdmin();
+        return R.ok(pharmacyDefService.toggleRoute(id, enabled));
+    }
+
+    /** 删除路由规则(仅牵头机构 ADMIN/SUPER_ADMIN) */
+    @DeleteMapping("/rx-route/{id}")
+    public R<Void> rxRouteDelete(@PathVariable Long id) {
+        guard.requireLeadWrite();
+        requireRxRouteAdmin();
+        pharmacyDefService.deleteRoute(id);
         return R.ok();
     }
 
-    /** 定价维护守卫: 本机构管理员/药师/超管(牵头 requireLeadWrite 语义过严, 药房自维护覆盖价属日常业务) */
-    private void requirePriceWrite() {
+    /**
+     * 处方发药默认药房路由解析(科室×时段×药品大类): at 为空取服务端当前时刻; 未命中回落科室默认西/中药药房。
+     * 返回 {pharmacyId, pharmacyName, timeSlot}; 与 resolve-default 并存(后者保留向后兼容)。
+     */
+    @GetMapping("/resolve-route")
+    public R<Map<String, Object>> resolveRoute(@RequestParam(required = false) Long deptId,
+                                               @RequestParam(required = false) String majorClass,
+                                               @RequestParam(required = false) String at) {
+        java.time.LocalTime now = parseAt(at);
+        Long pid = pharmacyDefService.resolveRxPharmacy(deptId, majorClass, now);
+        HisPharmacyDef def = pharmacyDefService.find(pid);
+        Map<String, Object> out = new java.util.LinkedHashMap<>();
+        out.put("pharmacyId", pid);
+        out.put("pharmacyName", def == null ? null : def.getName());
+        return R.ok(out);
+    }
+
+    /** 路由写操作角色守卫: 仅 ADMIN/SUPER_ADMIN(超管/系统管理员维护) */
+    private void requireRxRouteAdmin() {
         LoginUser lu = UserContext.get();
-        if (lu == null) {
-            throw new BizException(401, "未登录");
+        if (lu == null || !lu.hasAnyRole(Roles.ADMIN, Roles.SUPER_ADMIN)) {
+            throw new BizException(403, "处方发药默认药房路由仅系统管理员(ADMIN/SUPER_ADMIN)可维护");
         }
-        if (!lu.hasAnyRole(Roles.ADMIN, Roles.ORG_ADMIN, Roles.PHARMACIST, Roles.SUPER_ADMIN)) {
-            throw new BizException(403, "仅本机构管理员或药师可维护药房定价");
+    }
+
+    /** 解析 at 参数为当日时刻(支持 HH:mm 或 yyyy-MM-ddTHH:mm; 空/异常返回 null → 服务端当前时刻不特化) */
+    private static java.time.LocalTime parseAt(String at) {
+        if (at == null || at.trim().isEmpty()) {
+            return java.time.LocalTime.now();
         }
-        if (lu.getOrgId() == null) {
-            throw new BizException(403, "当前账号未归属任何机构, 无法维护药房定价");
+        String s = at.trim();
+        int tpos = s.indexOf('T');
+        if (tpos >= 0) {
+            s = s.substring(tpos + 1);
+        }
+        if (s.length() > 5) {
+            s = s.substring(0, 5);
+        }
+        try {
+            return java.time.LocalTime.parse(s);
+        } catch (Exception e) {
+            return java.time.LocalTime.now();
         }
     }
 

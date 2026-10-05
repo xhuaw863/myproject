@@ -86,11 +86,8 @@
         /* 患者全景时间线(注册键 emr-patient-timeline 与 comp 同值): 门诊+住院就诊史统一时间轴;
          * 只读聚合页, 后端 EmrTimelineController(须在 RbacInitializer 补种菜单与角色授权) */
         { key: 'emr-patient-timeline', label: '患者时间线', comp: 'emr-patient-timeline' },
-        /* 结构化模板设计器(P1a-3, 注册键 emr-template-designer 与 comp 同值): 数据集驱动 Tiptap 三栏式模板设计;
-         * RbacInitializer 已补种(ensureEmrQualityMenus 挂 emr-quality 目录, DOCTOR 角色已补授) */
-        { key: 'emr-template-designer', label: '模板设计器(结构化)', comp: 'emr-template-designer' },
-        /* 字段画布设计器保留在病历业务域；医疗模板管理已归入门诊医生站，便于维护处方组套。 */
-        { key: 'emr-designer', label: '病历模板设计器(字段画布)', comp: 'EmrTemplateDesigner' },
+        /* 类 Word 病历模板设计器：唯一模板设计入口；旧字段画布入口已隐藏。 */
+        { key: 'emr-template-designer', label: '病历模板设计器', comp: 'emr-template-designer' },
         { key: 'emr-quality-rule', label: '质控规则维护', comp: 'EmrQualityRuleManage' },
         { key: 'emr-element-search', label: '病历检索上报', comp: 'EmrElementSearch' },
         { key: 'emr-quality-board', label: '质控评分看板', comp: 'EmrQualityBoard' },
@@ -136,11 +133,11 @@
         { key: 'inp-dispense-history', label: '住院发药历史', comp: 'InpDispenseHistory' },
         /* 药房运营与追溯 */
         { key: 'pharmacy-def', label: '药房管理', comp: 'PharmacyDef' },
-        { key: 'price-mgr', label: '药房定价', comp: 'PharmacyPriceManage' },
         { key: 'req-mgr', label: '药品请领', comp: 'RequisitionManage' },
         { key: 'pharmacy-window', label: '发药窗口', comp: 'PharmacyWindowManage' },
         { key: 'window-dept-rule', label: '科室定向窗口', comp: 'WindowDeptRule' },
         { key: 'pharmacy-cross', label: '跨药房配置', comp: 'PharmacyCrossConfig' },
+        { key: 'rx-pharmacy-route', label: '处方发药默认药房', comp: 'RxPharmacyRouteConfig' },
         { key: 'trace-code', label: '药品追溯码', comp: 'TraceCodeManage' },
         /* 统计查询 */
         { key: 'pharmacy-rpt', label: '药房统计', comp: 'PharmacyReport' },
@@ -204,6 +201,26 @@
         { key: 'medtech-critical', label: '危急值管理', comp: 'MedtechCritical' },
         { key: 'medtech-critical-rule', label: '危急值规则', comp: 'MedtechCriticalRule' },
         { key: 'medtech-report-query', label: '报告查询', comp: 'MedtechReportQuery' }
+      ]
+    },
+    /* 影像中心(RIS 2026-10 Task#7 集成, 静态兑底菜单, 与 RbacInitializer 动态菜单同 key 同名):
+     * 检查申请/排程(ris-schedule.js 内同时注册 RisSchedule 与 RisScheduleTemplate 两组件)/技师工作台/
+     * 报告书写/报告审核/设备/报告模板/质控/统计/影像云(ris/*.js 共10个文件);
+     * 角色授权: 技师(ris-worklist/ris-schedule/ris-request)、医生(ris-report/ris-review/ris-request/ris-statistics)、
+     * 护士(ris-request)、机构管理员(ris-device/ris-template/ris-qc/ris-statistics/ris-cloud) */
+    {
+      group: '影像中心', children: [
+        { key: 'ris-request', label: '检查申请查询', comp: 'RisRequest' },
+        { key: 'ris-schedule', label: '检查排程管理', comp: 'RisSchedule' },
+        { key: 'ris-schedule-tpl', label: '排程模板管理', comp: 'RisScheduleTemplate' },
+        { key: 'ris-worklist', label: '技师工作台', comp: 'RisWorklist' },
+        { key: 'ris-report', label: '报告书写', comp: 'RisReport' },
+        { key: 'ris-review', label: '报告审核', comp: 'RisReview' },
+        { key: 'ris-device', label: '设备管理', comp: 'RisDevice' },
+        { key: 'ris-template', label: '报告模板管理', comp: 'RisTemplate' },
+        { key: 'ris-qc', label: '质控管理', comp: 'RisQc' },
+        { key: 'ris-statistics', label: '统计分析', comp: 'RisStatistics' },
+        { key: 'ris-cloud', label: '影像云管理', comp: 'RisCloud' }
       ]
     },
     /* 住院模块基座(静态兑底菜单, 与 RbacInitializer 动态菜单同 key 同名):
@@ -294,11 +311,13 @@
     },
     /* 公共卫生管理(报卡集中审核, 与 RbacInitializer 动态菜单 public-health 同 key 同名):
      * 传染病报卡审核(report-audit-inf.js ReportAuditInf, cats=[1])/慢病报卡审核(report-audit-chronic.js ReportAuditChronic, cats=[2,3,4,5]);
-     * ADMIN/SUPER_ADMIN 走 all_menus 可见, 后端 page/stats/export 有 requireAdminOrSuper 守卫 */
+     * 报卡触发规则维护(trigger-rule-manage.js TriggerRuleManage, 全局规则表增删改启停);
+     * ADMIN/SUPER_ADMIN 走 all_menus 可见, 后端 page/stats/export/trigger-rules 有 requireAdminOrSuper 守卫 */
     {
       group: '公共卫生管理', children: [
         { key: 'report-audit-inf', label: '传染病报卡审核', comp: 'ReportAuditInf' },
-        { key: 'report-audit-chronic', label: '慢病报卡审核', comp: 'ReportAuditChronic' }
+        { key: 'report-audit-chronic', label: '慢病报卡审核', comp: 'ReportAuditChronic' },
+        { key: 'report-trigger-rule', label: '报卡触发规则维护', comp: 'TriggerRuleManage' }
       ]
     }
   ];
@@ -449,13 +468,18 @@
         collapsed: localStorage.getItem('his-aside-collapsed') === '1',
         /* 固定开关: 默认不固定=菜单自动隐藏(2026-09); 固定后常驻展开不再自动隐藏 */
         pinned: localStorage.getItem('his-aside-pinned') === '1',
-        hoverOpen: false
+        hoverOpen: false,
+        /* 三类临床工作站默认收起全局菜单；仅当前页面会话生效，不污染用户全局菜单偏好 */
+        workstationMenuDefaultCollapsed: true,
+        workstationMenuAutoCollapsed: false,
+        workstationMenuTouched: false
       };
     },
     computed: {
       /* 三态: 固定且未手动收起=常规流内展开; 否则仅留 40px 入口条;
        * 悬停(且未处于展开态)时菜单以浮层面板弹出, 不挤压内容区 */
-      asideExpanded: function () { return this.pinned && !this.collapsed; },
+      asideCollapsed: function () { return this.collapsed || this.workstationMenuAutoCollapsed; },
+      asideExpanded: function () { return this.pinned && !this.asideCollapsed; },
       asideFloating: function () { return this.hoverOpen && !this.asideExpanded; },
       currentItem: function () { return findItemIn(this.menu, this.activeKey); },
       currentComp: function () {
@@ -488,7 +512,33 @@
       /* 可登录机构(多点执业): >1 时顶栏展示"切换机构" */
       allowedOrgs: function () { return (this.user || {}).allowedOrgs || []; }
     },
+    watch: {
+      activeKey: function (newKey, oldKey) {
+        var entering = this.isClinicalWorkstationKey(newKey);
+        var leaving = this.isClinicalWorkstationKey(oldKey);
+        if (entering && !leaving) {
+          this.workstationMenuTouched = false;
+          this.applyWorkstationMenuDefault();
+          return;
+        }
+        if (!entering) {
+          this.workstationMenuAutoCollapsed = false;
+          this.workstationMenuTouched = false;
+        }
+      }
+    },
     methods: {
+      /* 通过菜单组件识别工作站，兼容住院医嘱/病历等复用同一工作站组件的快捷入口 */
+      isClinicalWorkstationKey: function (key) {
+        var it = findItemIn(this.menu, key);
+        var comp = it && it.comp;
+        return comp === 'DoctorWorkstation' || comp === 'InpDoctorWorkstation' || comp === 'InpNurseStation';
+      },
+      applyWorkstationMenuDefault: function () {
+        if (!this.isClinicalWorkstationKey(this.activeKey) || this.workstationMenuTouched) { return; }
+        this.workstationMenuAutoCollapsed = this.workstationMenuDefaultCollapsed && !this.collapsed;
+        if (this.workstationMenuAutoCollapsed) { this.hoverOpen = false; }
+      },
       onSelect: function (key) {
         /* 医保验证台: 独立静态调试页外链, 新标签打开且不切换当前视图(验证台按当前登录机构的医保身份生效) */
         if (key === 'verify-console') {
@@ -528,12 +578,19 @@
       onAsideLeave: function () { this.hoverOpen = false; },
       /* 固定/取消固定: 两种情况都回到"未手动收起"态, 固定后即常驻展开 */
       togglePin: function () {
+        this.workstationMenuTouched = true;
+        this.workstationMenuAutoCollapsed = false;
         this.pinned = !this.pinned;
         this.collapsed = false;
         localStorage.setItem('his-aside-pinned', this.pinned ? '1' : '0');
         localStorage.setItem('his-aside-collapsed', '0');
       },
       toggleAside: function () {
+        this.workstationMenuTouched = true;
+        if (this.workstationMenuAutoCollapsed) {
+          this.workstationMenuAutoCollapsed = false;
+          return;
+        }
         this.collapsed = !this.collapsed;
         localStorage.setItem('his-aside-collapsed', this.collapsed ? '1' : '0');
       }
@@ -544,6 +601,20 @@
       this.dateTimer = setInterval(function () { vm.now = new Date(); }, 60000);
       /* 全局视图跳转: 供列表页跳转到工作台等场景 */
       HIS.go = function (key) { vm.activeKey = key; };
+      /* 临床工作站菜单策略：仅门诊医生、住院医生、住院护士工作站进入时默认最小化；
+       * 参数只开放全局/租户级，接口不可用时按产品默认值 true 降级。 */
+      HIS.params = HIS.params || {};
+      HIS.get('/api/sys/param/resolve/system.clinical_workstation_menu_default_collapsed')
+        .then(function (v) {
+          var enabled = String(v).toLowerCase() !== 'false';
+          HIS.params.clinicalWorkstationMenuDefaultCollapsed = enabled;
+          vm.workstationMenuDefaultCollapsed = enabled;
+          vm.applyWorkstationMenuDefault();
+        })
+        .catch(function () {
+          HIS.params.clinicalWorkstationMenuDefaultCollapsed = true;
+          vm.applyWorkstationMenuDefault();
+        });
       /* 左菜单默认折叠参数(租户级可配, 机构级覆盖优先由后端四级解析器保证):
        * 参数值与上次应用记录不同→应用新默认; 未变→尊重用户本地手动选择。
        * 切换机构会整页重载, mounted 重跑, 新机构上下文自动命中机构级覆盖 */
@@ -621,7 +692,7 @@
       '            <path class="pin-ghost" d="M3.6 14.2h8.8"></path>',
       '          </svg>',
       '        </el-button>',
-      '        <el-button v-if="pinned" link size="small" :title="collapsed?\'展开菜单\':\'收起菜单\'" @click="toggleAside">{{ collapsed?"\u00bb":"\u00ab" }}</el-button>',
+      '        <el-button v-if="pinned" link size="small" :title="asideCollapsed?\'展开菜单\':\'收起菜单\'" @click="toggleAside">{{ asideCollapsed?"\u00bb":"\u00ab" }}</el-button>',
       '      </div>',
       /* 不用 v-show 隐藏: v-show 会触发 el-menu 内置 collapse 过渡, 展开后残留内联 width:0 裁掉全部菜单项;
          改由 CSS .layout-aside.is-collapsed .aside-menu-wrap{display:none} 控制显隐 */

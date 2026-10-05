@@ -1280,6 +1280,8 @@
         /* 筛选: 科室联动医师(周视图按医师分行, 医师筛选仅列表视图生效) */
         filterDeptId: null, filterStaffId: null,
         depts: [], staffs: [], allStaffs: [],
+        /* 本机构完整科室树(含大类/各层/诊室): 供挂号科室选择器展示层级树, 仅 depts(开诊门诊)可点选 */
+        allDepts: [],
         /* 周视图: weekStart 为周一日期字符串(yyyy-MM-dd, 避免响应式 Date 内置方法陷阱) */
         weekStart: '', weekData: [], weekStats: [], weekLoading: false, weekDays: [],
         /* 班次字典(his_shift_dict): 周视图列/表单时段选项, created 拉取后覆盖兜底三值 */
@@ -1358,7 +1360,18 @@
       /* 批量模板科室下拉: 同样仅列科室级(第2层), 诊室走槽位行诊室列 */
       batchDeptOptions: function () {
         return this.deptLevel2Options(this.batchTplForm.deptId, this.batchTplForm.deptName);
-      }
+      },
+      /* 挂号科室选择器树选项: 本机构完整科室树(大类→科室→诊室); allDepts 未就绪时回落 depts */
+      deptTreeOptions: function () {
+        return (this.allDepts && this.allDepts.length) ? this.allDepts : (this.depts || []);
+      },
+      /* 可挂号科室 id 集(deptLevel=2 开诊门诊): 作为选择器 selectableIds, 树全展示但仅此集合可点选 */
+      regDeptIds: function () {
+        return (this.depts || []).filter(function (d) { return Number(d.deptLevel) === 2; }).map(function (d) { return d.id; });
+      },
+      formRegDeptIds: function () { var a = this.regDeptIds.slice(); if (this.form.deptId && a.indexOf(this.form.deptId) < 0) { a.push(this.form.deptId); } return a; },
+      tplRegDeptIds: function () { var a = this.regDeptIds.slice(); if (this.tplForm.deptId && a.indexOf(this.tplForm.deptId) < 0) { a.push(this.tplForm.deptId); } return a; },
+      batchRegDeptIds: function () { var a = this.regDeptIds.slice(); if (this.batchTplForm.deptId && a.indexOf(this.batchTplForm.deptId) < 0) { a.push(this.batchTplForm.deptId); } return a; }
     },
     methods: {
       empty: function () {
@@ -1421,6 +1434,11 @@
         var vm = this;
         /* 仅本机构“开诊”的门诊科室(挂号科室): 后端硬限定登录机构, 不传 orgId */
         HIS.get('/api/his/dept/outpatient').then(function (d) { vm.depts = d || []; }).catch(function () { vm.depts = []; });
+        /* 本机构完整科室层级树(大类→科室→诊室): 供选择器弹窗展示层次; 客户端再按当前机构严格等值收敛(不级联下级机构) */
+        HIS.get('/api/his/dept/list?orgId=' + encodeURIComponent(HIS.currentOrgId())).then(function (d) {
+          var oid = String(HIS.currentOrgId());
+          vm.allDepts = (d || []).filter(function (x) { return String(x.orgId) === oid; });
+        }).catch(function () { vm.allDepts = []; });
       },
       loadStaffs: function () {
         var vm = this;
@@ -1941,7 +1959,7 @@
       '        <el-select v-model="form.staffId" filterable style="width:100%" placeholder="选择医师(可输拼音简码)" :filter-method="kwFilter(\'formStaff\')" @change="onFormStaffChange"><el-option v-for="s in kwOptions(\'formStaff\', staffs, [\'staffName\',\'staffNo\',\'pyCode\',\'abbrCode\'])" :key="s.id" :label="s.staffName+\'(\'+s.staffNo+\')\'" :value="s.id"></el-option></el-select>',
       '      </el-form-item>',
       '      <el-form-item label="挂号科室" title="本机构已开诊的门诊科室; 可与出诊医师行政所属科室不同(支持跨科室/院外专家出诊)">',
-      '        <dept-tree-picker v-model="form.deptId" :options="formDeptOptions" placeholder="选择本机构开诊门诊科室(可输拼音简码)" @change="onFormDeptChange" />',
+      '        <dept-tree-picker v-model="form.deptId" :options="deptTreeOptions" :selectable-ids="formRegDeptIds" dialog-title="选择挂号科室（完整科室树 · 仅开诊门诊科室可选）" placeholder="选择本机构开诊门诊科室(可输拼音简码)" @change="onFormDeptChange" />',
       '      </el-form-item>',
       '      <el-row :gutter="12">',
       '        <el-col :span="12"><el-form-item label="出诊日期">',
@@ -2045,7 +2063,7 @@
       '          <el-select v-model="tplForm.staffId" filterable style="width:100%" placeholder="选择医师(可输拼音简码)" :filter-method="kwFilter(\'tplStaff\')" @change="onTplStaffChange"><el-option v-for="s in kwOptions(\'tplStaff\', allStaffs, [\'staffName\',\'staffNo\',\'pyCode\',\'abbrCode\'])" :key="s.id" :label="s.staffName+\'(\'+s.staffNo+\')\'" :value="s.id"></el-option></el-select>',
       '        </el-form-item>',
       '        <el-form-item label="挂号科室" title="本机构已开诊的门诊科室; 模板生成排班时按此科室落库">',
-      '          <dept-tree-picker v-model="tplForm.deptId" :options="tplDeptOptions" placeholder="选择本机构开诊门诊科室(可输拼音简码)" @change="onTplDeptChange" />',
+      '          <dept-tree-picker v-model="tplForm.deptId" :options="deptTreeOptions" :selectable-ids="tplRegDeptIds" dialog-title="选择挂号科室（完整科室树 · 仅开诊门诊科室可选）" placeholder="选择本机构开诊门诊科室(可输拼音简码)" @change="onTplDeptChange" />',
       '        </el-form-item>',
       '        <el-row :gutter="12">',
       '          <el-col :span="12"><el-form-item label="星期">',
@@ -2081,7 +2099,7 @@
       '    <el-dialog v-model="batchTplVisible" title="批量创建排班模板" width="880px" top="5vh" append-to-body>',
       '      <el-form label-width="90px">',
       '        <el-form-item label="科室">',
-      '          <dept-tree-picker v-model="batchTplForm.deptId" :options="batchDeptOptions" placeholder="选择本科室级挂号科室(不选则逐医师回退其行政科室)" @change="onBatchDeptChange" />',
+      '          <dept-tree-picker v-model="batchTplForm.deptId" :options="deptTreeOptions" :selectable-ids="batchRegDeptIds" dialog-title="选择挂号科室（完整科室树 · 仅开诊门诊科室可选）" placeholder="选择本科室级挂号科室(不选则逐医师回退其行政科室)" @change="onBatchDeptChange" />',
       '        </el-form-item>',
       '        <el-form-item label="医师(多选)">',
       '          <el-select v-model="batchTplForm.staffIds" multiple filterable collapse-tags collapse-tags-tooltip :max-collapse-tags="8" style="width:100%" placeholder="勾选需生成排班模板的医师(可输拼音简码)" :filter-method="kwFilter(\'bStaff\')"><el-option v-for="s in kwOptions(\'bStaff\', batchStaffOptions, [\'staffName\',\'staffNo\',\'pyCode\',\'abbrCode\'])" :key="s.id" :label="s.staffName+\'(\'+s.staffNo+\')\'" :value="s.id"></el-option></el-select>',

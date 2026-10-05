@@ -42,8 +42,10 @@ public class HisEmrTemplate extends BaseEntity {
     private String lockedSections;
     /** Tiptap ProseMirror JSON文档(结构化书写主载荷) */
     private String document;
-    /** 打印格式脚本 */
+    /** 打印格式脚本(历史兼容) */
     private String printScript;
+    /** 结构化打印配置JSON(A4纸张、方向、页边距、页眉页脚和页码) */
+    private String printConfig;
     /** 关联数据集ID(his_emr_dataset.id) */
     private Long datasetId;
     /** 个人模板归属职工ID(his_staff.id, null=科室/全院) */

@@ -34,6 +34,7 @@ import com.yb.hi.mapper.doctor.HisVisitMapper;
 import com.yb.hi.mapper.outpatient.HisPatientInsuMapper;
 import com.yb.hi.mapper.outpatient.HisRegistrationMapper;
 import com.yb.hi.platform.service.DeptScopeResolver;
+import com.yb.hi.platform.service.SystemParamResolver;
 import com.yb.hi.service.OutpatientService;
 import com.yb.hi.service.emr.EmrAuditService;
 import com.yb.hi.service.emr.EmrDocumentService;
@@ -68,6 +69,11 @@ import java.util.stream.Collectors;
 @Service
 public class HisVisitService extends ServiceImpl<HisVisitMapper, HisVisit> {
 
+    /** 参数键: 2203 就诊信息上传方式(enum: realtime即时 / deferred定时批量补传; 定义见 VisitUploadModeParamSeeder) */
+    public static final String P_INSURANCE_VISIT_UPLOAD_MODE = "yb.visit.upload.mode";
+    public static final String UPLOAD_MODE_REALTIME = "realtime";
+    public static final String UPLOAD_MODE_DEFERRED = "deferred";
+
     private final OutpatientService outpatientService;
     private final HisDiagnosisService diagnosisService;
     private final HisMedicalRecordService medicalRecordService;
@@ -81,6 +87,8 @@ public class HisVisitService extends ServiceImpl<HisVisitMapper, HisVisit> {
     private final DeptScopeResolver deptScopeResolver;
     // 上传管线状态机(M5: 2203 结果落库/收费入口守卫/退号撤销)
     private final UploadStatusService uploadStatusService;
+    // 2203 上传方式参数(yb.visit.upload.mode 四级作用域解析, 按登录机构上下文取生效值)
+    private final SystemParamResolver paramResolver;
     // Phase B 门诊结构化病历版本快照(仅依赖 JdbcTemplate, 与本服务无环)
     private final EmrVersionService emrVersionService;
     // Phase C 门诊结构化病历数据元抽取(仅依赖 Mapper/Guard, 与本服务无环)
@@ -96,7 +104,8 @@ public class HisVisitService extends ServiceImpl<HisVisitMapper, HisVisit> {
                            HisMedicalRecordService medicalRecordService, HisPrescriptionMapper prescriptionMapper,
                            HisOrderMapper orderMapper, HisPatientInsuMapper patientInsuMapper,
                            HisRegistrationMapper registrationMapper, DeptScopeResolver deptScopeResolver,
-                           UploadStatusService uploadStatusService, EmrVersionService emrVersionService,
+                           UploadStatusService uploadStatusService, SystemParamResolver paramResolver,
+                           EmrVersionService emrVersionService,
                            EmrElementService emrElementService, EmrDocumentService emrDocumentService,
                            EmrAuditService emrAuditService,
                            PlatformTransactionManager transactionManager) {
@@ -109,6 +118,7 @@ public class HisVisitService extends ServiceImpl<HisVisitMapper, HisVisit> {
         this.registrationMapper = registrationMapper;
         this.deptScopeResolver = deptScopeResolver;
         this.uploadStatusService = uploadStatusService;
+        this.paramResolver = paramResolver;
         this.emrVersionService = emrVersionService;
         this.emrElementService = emrElementService;
         this.emrDocumentService = emrDocumentService;
@@ -219,7 +229,9 @@ public class HisVisitService extends ServiceImpl<HisVisitMapper, HisVisit> {
 
     /**
      * 完成接诊: T1 事务(病历字段+SOAP病历+诊断+挂号状态闭环, 状态位条件抢占防双窗口重复完成)
-     * -> T2 事务外可选2203上传(结果落状态机, 失败不阻断, 收费入口守卫强制补传)。
+     * -> T2 事务外按参数分派 2203 上传(yb.visit.upload.mode: realtime即时调用 /
+     *    deferred 落待传(0)队列由定时任务批量补传; 结果落 his_upload_status 状态机,
+     *    失败/入队异常均不阻断接诊完成, 收费入口守卫强制补传兜底)。
      * 诊断"先删后插"替换式写入并发下曾死锁(idx_visit 间隙锁, 压测复现): T1 事务已改读已提交(不取间隙锁)
      * 从根上消除, 并保留 DeadlockLoserDataAccessException 整体重试(每次新事务)作兜底;
      * 2203 不得在事务内执行(真实平台响应秒级, 会长时间占事务与连接)。
@@ -231,29 +243,78 @@ public class HisVisitService extends ServiceImpl<HisVisitMapper, HisVisit> {
         requireVisitScope(req.getVisitId());
         // T1 事务: 落库(死锁整体重试)
         HisVisit v = executeWithDeadlockRetry(() -> txTemplate.execute(status -> doFinishTx(req)));
-        // T2 事务外: 医保2203就诊信息上传(M5: 结果落 his_upload_status 状态机,
-        // 失败不阻断接诊完成, 由收费入口守卫强制补传 + 定时扫描指数退避重试)
+        // T2 事务外: 医保2203就诊信息上传(时机由机构级参数控制, 默认 realtime 与历史行为一致;
+        // deferred 不即时调医保接口, 落待传队列由 UploadStatusSweeper 定时批量补传)
         boolean upload = req.getUploadYb() == null || req.getUploadYb();
         if (upload && StringUtils.hasText(v.getMdtrtId())) {
-            boolean ok = false;
-            String msgid = null;
-            String err = "2203未执行";
-            try {
-                YbResponse resp = tryUploadVisitInfo(v, diagnosisService.listByVisit(v.getId()));
-                ok = resp != null && resp.isSuccess();
-                msgid = resp == null || resp.getInfRefmsgid() == null ? null : resp.getInfRefmsgid();
-                if (!ok) {
-                    err = resp == null ? "医保无响应" : (resp.isUnknown() ? "医保响应未知(超时)" : resp.getErrMsg());
+            if (isVisitUploadDeferred()) {
+                try {
+                    uploadStatusService.markPending(TenantContext.require(),
+                            HisUploadStatus.BIZ_VISIT, v.getId(), v.getMdtrtId());
+                    log.info("2203按参数 deferred 入待传队列: visitId={}", v.getId());
+                } catch (Exception e) {
+                    // 入队失败不阻断接诊完成: 收费入口守卫(ensureVisitUploaded)仍会现场补传兜底
+                    log.warn("2203待传队列入队失败: visitId={}, err={}", v.getId(), e.getMessage());
                 }
-            } catch (Exception e) {
-                // 上传失败不阻断接诊完成, 仅记录日志
-                err = e.getMessage();
-                log.warn("2203就诊信息上传失败: visitId={}, err={}", v.getId(), e.getMessage());
+            } else {
+                boolean ok = false;
+                String msgid = null;
+                String err = "2203未执行";
+                try {
+                    YbResponse resp = tryUploadVisitInfo(v, diagnosisService.listByVisit(v.getId()));
+                    ok = resp != null && resp.isSuccess();
+                    msgid = resp == null || resp.getInfRefmsgid() == null ? null : resp.getInfRefmsgid();
+                    if (!ok) {
+                        err = resp == null ? "医保无响应" : (resp.isUnknown() ? "医保响应未知(超时)" : resp.getErrMsg());
+                    }
+                } catch (Exception e) {
+                    // 上传失败不阻断接诊完成, 仅记录日志
+                    err = e.getMessage();
+                    log.warn("2203就诊信息上传失败: visitId={}, err={}", v.getId(), e.getMessage());
+                }
+                uploadStatusService.recordVisit(TenantContext.require(), v.getId(), v.getMdtrtId(), ok, msgid, err);
             }
-            uploadStatusService.recordVisit(TenantContext.require(), v.getId(), v.getMdtrtId(), ok, msgid, err);
         }
         log.info("完成接诊: visitId={}, patient={}", v.getId(), v.getPatientName());
         return v;
+    }
+    
+    /** 2203 是否配置为定时批量补传(deferred); 参数未定义/解析异常一律回退 realtime, 与历史行为一致 */
+    private boolean isVisitUploadDeferred() {
+        try {
+            String mode = paramResolver.resolve(P_INSURANCE_VISIT_UPLOAD_MODE);
+            return StringUtils.hasText(mode) && UPLOAD_MODE_DEFERRED.equalsIgnoreCase(mode.trim());
+        } catch (Exception e) {
+            log.warn("2203上传方式参数解析失败({}), 默认 realtime", e.getMessage());
+            return false;
+        }
+    }
+
+    /**
+     * 接诊中显式保存诊断(OP-B 报卡前移): 诊断面板"保存诊断"按钮经此替换式落库,
+     * 使医保对接/报卡判定等就诊过程中的消费方能读到已存诊断。
+     * 与完成接诊同一口径: 科室判权 + 仅接诊中(visitStatus=2)可保存 + 死锁整体重试(先删后插)
+     * + 诊断医师/科室归集参数同源; 完成接诊的替换式落库仍保留作兜底(不点保存也不丢诊断)。
+     */
+    public List<HisDiagnosis> saveConsultDiagnoses(Long visitId, List<HisDiagnosis> diagnoses) {
+        if (visitId == null) {
+            throw new BizException(400, "就诊ID不能为空");
+        }
+        requireVisitScope(visitId);
+        HisVisit v = getById(visitId);
+        if (v == null) {
+            throw new BizException(400, "就诊记录不存在");
+        }
+        if (v.getVisitStatus() == null || v.getVisitStatus() != 2) {
+            throw new BizException(400, "仅接诊中的患者可保存诊断(请先开始接诊或已完成接诊)");
+        }
+        executeWithDeadlockRetry(() -> txTemplate.execute(st -> {
+            diagnosisService.saveDiagnoses(v.getId(), v.getDeptName(), v.getAtddrNo(), v.getDrName(),
+                    diagnoses, v.getStaffId(), v.getDeptId());
+            return null;
+        }));
+        log.info("接诊中诊断已保存: visitId={}, count={}", visitId, diagnoses == null ? 0 : diagnoses.size());
+        return diagnosisService.listByVisit(visitId);
     }
 
     /** T1 事务体: 校验 -> 状态位条件抢占(防双窗口) -> 病历/诊断/挂号闭环落库 */
@@ -387,7 +448,9 @@ public class HisVisitService extends ServiceImpl<HisVisitMapper, HisVisit> {
                 return null;
             }
             if (v.getVisitStatus() != null && v.getVisitStatus() == 4) {
-                throw new BizException("就诊已退号撤销, 无需补传");
+                // 返回而非抛异常: 退号后遗留的待传(0)队列行由扫描器安全跳过, 不计失败退避
+                log.warn("2203补传跳过: 就诊已退号撤销, visitId={}", visitId);
+                return null;
             }
             List<HisDiagnosis> diagnoses = diagnosisService.listByVisit(visitId);
             return tryUploadVisitInfo(v, diagnoses);

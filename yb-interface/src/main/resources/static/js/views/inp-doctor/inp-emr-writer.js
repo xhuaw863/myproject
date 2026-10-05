@@ -403,6 +403,9 @@
         collapsedGroups: {},
         /* 当前记录与编辑器 */
         current: null,
+        currentPrintConfig: null,
+        currentPrintScript: '',
+        currentTemplateName: '',
         editorLoading: false,
         editorWrapper: null,
         legacyMode: false,
@@ -799,6 +802,7 @@
         var vm = this;
         vm.destroyEditor();
         vm.current = null;
+        vm.currentPrintConfig = null; vm.currentPrintScript = ''; vm.currentTemplateName = '';
         vm.dirty = false;
         vm.legacyMode = false;
         vm.groups = [];
@@ -823,6 +827,7 @@
         if (vm.current && HIS.sameId(vm.current.id, row.id) && !vm.editorLoading) { return; }
         vm.destroyEditor();
         vm.current = null;                       /* v-if 触发编辑区 DOM 重建 */
+        vm.currentPrintConfig = null; vm.currentPrintScript = ''; vm.currentTemplateName = '';
         vm.legacyMode = false;
         vm.dirty = false;
         vm.draftSavedText = '';
@@ -835,6 +840,7 @@
             rec.id = HIS.id(rec.id);
             rec.doctorId = HIS.id(rec.doctorId);
             vm.current = Object.assign({}, row, rec);
+            vm.loadRecordPrintConfig(vm.current.templateId, vm.current.id);
             /* 面板联动数据 */
             vm.loadSignInfo();
             vm.loadVersions();
@@ -888,6 +894,8 @@
           mode: 'edit',
           readOnly: !editable,
           document: doc || EMPTY_DOC,
+          printConfig: vm.currentPrintConfig,
+          printScript: vm.currentPrintScript,
           placeholder: '开始书写病历内容…',
           nlgEnabled: true,
           cdssEnabled: editable,
@@ -1134,6 +1142,26 @@
           .then(function (list) { vm.tplList = Array.isArray(list) ? list : []; })
           .catch(function (e) { vm.tplList = []; HIS.notifyError(e); })
           .finally(function () { vm.tplLoading = false; });
+      },
+      /* 病历正文已实例化保存，打印版式仍取建档模板；详情异步返回后刷新编辑器打印选项。 */
+      loadRecordPrintConfig: function (templateId, recordId) {
+        var vm = this;
+        vm.currentPrintConfig = null; vm.currentPrintScript = ''; vm.currentTemplateName = '';
+        if (!templateId || !HIS.get) { return; }
+        var cached = (vm.tplList || []).filter(function (t) { return HIS.sameId(t.id, templateId); })[0];
+        var source = cached && (cached.printConfig != null || cached.printScript != null)
+          ? Promise.resolve(cached)
+          : HIS.get('/api/his/emr/template/' + HIS.idParam(templateId));
+        source.then(function (tpl) {
+          if (!tpl || !vm.current || !HIS.sameId(vm.current.id, recordId) || !HIS.sameId(vm.current.templateId, templateId)) { return; }
+          vm.currentPrintConfig = tpl.printConfig || null;
+          vm.currentPrintScript = tpl.printScript || '';
+          vm.currentTemplateName = tpl.templateName || tpl.name || '';
+          if (vm.editorWrapper) {
+            if (typeof vm.editorWrapper.setPrintConfig === 'function') { vm.editorWrapper.setPrintConfig(vm.currentPrintConfig); }
+            vm.editorWrapper.options.printScript = vm.currentPrintScript;
+          }
+        }).catch(function () { /* 模板已停用或不可见时按默认 A4 打印，不阻断病历打印 */ });
       },
       chooseType: function (type) {
         var vm = this;
@@ -1790,8 +1818,24 @@
         var vm = this;
         if (!vm.current || !vm.current.id) { toast('warning', '请先保存草稿后再打印'); return; }
         /* 优先编辑器本地直渲染(Tiptap) */
+        var patient = vm.patient || {};
+        var user = typeof HIS.getUser === 'function' ? (HIS.getUser() || {}) : {};
         if (vm.editorWrapper && typeof vm.editorWrapper.print === 'function') {
-          try { vm.editorWrapper.print({ title: vm.current.title || '病历打印' }); return; } catch (e) { /* 回退后端 */ }
+          try {
+            vm.editorWrapper.print({
+              title: vm.current.title || '病历打印',
+              context: {
+                templateName: vm.currentTemplateName || vm.current.title || '病历',
+                name: vm.patientName || patient.patientName || patient.name || '',
+                patientName: vm.patientName || patient.patientName || patient.name || '',
+                inpatientNo: patient.inpatientNo || patient.inpNo || vm.inpVisitId || '',
+                deptName: patient.deptName || vm.deptCode || '', bedNo: vm.bedNo || patient.bedNo || '',
+                doctorName: user.userName || user.realName || '', organizationName: patient.organizationName || ''
+              },
+              autoPrint: false
+            });
+            return;
+          } catch (e) { /* 回退后端 */ }
         }
         HIS.get('/api/his/inp/print/render/emr?recordId=' + HIS.idParam(vm.current.id))
           .then(function (html) {

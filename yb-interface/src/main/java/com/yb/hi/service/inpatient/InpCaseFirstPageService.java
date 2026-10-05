@@ -101,6 +101,12 @@ public class InpCaseFirstPageService {
                     + " native_place AS nativePlace, mr_grade AS mrGrade,"
                     + " chief_doctor AS chiefDoctor, resident_doctor AS residentDoctor, qc_nurse AS qcNurse,"
                     + " cost_class_detail AS costClassDetail,"
+                    + " attending_doctor AS attendingDoctor, coder, trainee_doctor AS traineeDoctor,"
+                    + " intern_doctor AS internDoctor, duty_nurse AS dutyNurse,"
+                    + " admission_ward AS admissionWard, discharge_ward AS dischargeWard, bed_no AS bedNo,"
+                    + " transfer_depts AS transferDepts, vent_use_time AS ventUseTime,"
+                    + " diag_fit_code AS diagFitCode, infection_flag AS infectionFlag, infection_site AS infectionSite,"
+                    + " unplanned_reop AS unplannedReop, newborn_apgar AS newbornApgar, blood_transfusion AS bloodTransfusion,"
                     + " create_time AS createTime, update_time AS updateTime"
                     + " FROM his_case_front_page WHERE visit_id = ? AND tenant_id = ? AND deleted = 0 LIMIT 1";
 
@@ -303,6 +309,8 @@ public class InpCaseFirstPageService {
         String otherDiagsJson = otherDiags.isEmpty() ? null : JSON.toJSONString(otherDiags);
         String operationsJson = operationRecords.isEmpty() ? null : JSON.toJSONString(operationRecords);
         String bloodType = strVal(ctx.get("visitBloodType"));
+        String bedNo = strVal(ctx.get("bedNo"));
+        String wardName = strVal(ctx.get("wardName"));
 
         if (exist == null) {
             jdbcTemplate.update("INSERT INTO his_case_front_page"
@@ -312,8 +320,9 @@ public class InpCaseFirstPageService {
                             + " operation_records, blood_type, allergy_drugs, autopsy,"
                             + " total_cost, drug_cost, exam_cost, treatment_cost, bed_cost, nursing_cost,"
                             + " material_cost, other_cost, self_pay, insurance_pay, cost_class_detail,"
+                            + " bed_no, admission_ward, discharge_ward,"
                             + " status, tenant_id, deleted, update_time)"
-                            + " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, 0, NOW())"
+                            + " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, 0, NOW())"
                             + " ON DUPLICATE KEY UPDATE admission_date = VALUES(admission_date),"
                             + " discharge_date = VALUES(discharge_date), los_days = VALUES(los_days),"
                             + " admission_dept_id = VALUES(admission_dept_id), discharge_dept_id = VALUES(discharge_dept_id),"
@@ -328,13 +337,16 @@ public class InpCaseFirstPageService {
                             + " nursing_cost = VALUES(nursing_cost), material_cost = VALUES(material_cost),"
                             + " other_cost = VALUES(other_cost), self_pay = VALUES(self_pay),"
                             + " insurance_pay = VALUES(insurance_pay), cost_class_detail = VALUES(cost_class_detail),"
+                            + " bed_no = VALUES(bed_no), admission_ward = VALUES(admission_ward),"
+                            + " discharge_ward = VALUES(discharge_ward),"
                             + " update_time = NOW()",
                     visitId, patientId, admissionDate, dischargeDate, losDays,
                     deptId, deptId, admDiagCode, admDiagName,
                     mainDiagCode, mainDiagName, otherDiagsJson,
                     operationsJson, bloodType, allergyText,
                     totalCost, drugCost, examCost, treatmentCost, bedCost, nursingCost,
-                    materialCost, otherCost, selfPay, insurancePay, costClassJson, tid);
+                    materialCost, otherCost, selfPay, insurancePay, costClassJson,
+                    bedNo, wardName, wardName, tid);
         } else {
             jdbcTemplate.update("UPDATE his_case_front_page SET"
                             + " admission_date = ?, discharge_date = ?, los_days = ?,"
@@ -344,7 +356,8 @@ public class InpCaseFirstPageService {
                             + " discharge_other_diags = ?, operation_records = ?, blood_type = ?, allergy_drugs = ?,"
                             + " total_cost = ?, drug_cost = ?, exam_cost = ?, treatment_cost = ?,"
                             + " bed_cost = ?, nursing_cost = ?, material_cost = ?, other_cost = ?,"
-                            + " self_pay = ?, insurance_pay = ?, cost_class_detail = ?, update_time = NOW()"
+                            + " self_pay = ?, insurance_pay = ?, cost_class_detail = ?,"
+                            + " bed_no = ?, admission_ward = ?, discharge_ward = ?, update_time = NOW()"
                             + " WHERE id = ? AND status = 1 AND tenant_id = ? AND deleted = 0",
                     admissionDate, dischargeDate, losDays,
                     deptId, deptId,
@@ -353,7 +366,8 @@ public class InpCaseFirstPageService {
                     otherDiagsJson, operationsJson, bloodType, allergyText,
                     totalCost, drugCost, examCost, treatmentCost,
                     bedCost, nursingCost, materialCost, otherCost,
-                    selfPay, insurancePay, costClassJson, longVal(exist.get("id")), tid);
+                    selfPay, insurancePay, costClassJson,
+                    bedNo, wardName, wardName, longVal(exist.get("id")), tid);
         }
         log.info("生成病案首页: visitId={}, 状态={}, 费用合计={}, 手术数={}",
                 visitId, exist == null ? "新建" : "覆盖草稿", totalCost, operationRecords.size());
@@ -422,7 +436,17 @@ public class InpCaseFirstPageService {
                 {"comaAfter", "coma_after"},
                 {"nativePlace", "native_place"},
                 {"chiefDoctor", "chief_doctor"},
+                {"attendingDoctor", "attending_doctor"},
                 {"residentDoctor", "resident_doctor"},
+                {"traineeDoctor", "trainee_doctor"},
+                {"internDoctor", "intern_doctor"},
+                {"dutyNurse", "duty_nurse"},
+                {"coder", "coder"},
+                {"admissionWard", "admission_ward"},
+                {"dischargeWard", "discharge_ward"},
+                {"bedNo", "bed_no"},
+                {"ventUseTime", "vent_use_time"},
+                {"infectionSite", "infection_site"},
                 {"qcNurse", "qc_nurse"}
         };
         for (String[] col : textCols) {
@@ -438,7 +462,9 @@ public class InpCaseFirstPageService {
         String[][] jsonCols = {
                 {"dischargeOtherDiags", "discharge_other_diags"},
                 {"operationRecords", "operation_records"},
-                {"costClassDetail", "cost_class_detail"}
+                {"costClassDetail", "cost_class_detail"},
+                {"transferDepts", "transfer_depts"},
+                {"bloodTransfusion", "blood_transfusion"}
         };
         for (String[] col : jsonCols) {
             if (!data.containsKey(col[0])) {
@@ -491,7 +517,9 @@ public class InpCaseFirstPageService {
                 {"dischargeMode", "discharge_mode"}, {"treatResult", "treat_result"},
                 {"readmitPlan", "readmit_plan"}, {"mainDiagAdmitCond", "main_diag_admit_cond"},
                 {"allergyFlag", "allergy_flag"}, {"mrGrade", "mr_grade"},
-                {"newbornBirthWeight", "newborn_birth_weight"}, {"newbornAdmitWeight", "newborn_admit_weight"}
+                {"newbornBirthWeight", "newborn_birth_weight"}, {"newbornAdmitWeight", "newborn_admit_weight"},
+                {"diagFitCode", "diag_fit_code"}, {"infectionFlag", "infection_flag"},
+                {"unplannedReop", "unplanned_reop"}, {"newbornApgar", "newborn_apgar"}
         };
         for (String[] col : codeCols) {
             if (!data.containsKey(col[0])) {

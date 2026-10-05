@@ -2,10 +2,14 @@ package com.yb.hi.service.pharmacy;
 
 import com.baomidou.mybatisplus.core.toolkit.Wrappers;
 import com.yb.hi.entity.pharmacy.HisPharmacyDef;
+import com.yb.hi.entity.pharmacy.HisRxPharmacyRoute;
 import com.yb.hi.entity.warehouse.HisWarehouseDef;
 import com.yb.hi.framework.common.BizException;
+import com.yb.hi.framework.tenant.LoginUser;
 import com.yb.hi.framework.tenant.TenantContext;
+import com.yb.hi.framework.tenant.UserContext;
 import com.yb.hi.mapper.pharmacy.HisPharmacyDefMapper;
+import com.yb.hi.mapper.pharmacy.HisRxPharmacyRouteMapper;
 import com.yb.hi.mapper.warehouse.HisWarehouseDefMapper;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.dao.DuplicateKeyException;
@@ -14,6 +18,9 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.StringUtils;
 
+import java.time.LocalTime;
+import java.time.format.DateTimeFormatter;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
@@ -42,12 +49,14 @@ public class PharmacyDefService {
 
     private final HisPharmacyDefMapper pharmacyDefMapper;
     private final HisWarehouseDefMapper warehouseDefMapper;
+    private final HisRxPharmacyRouteMapper rxRouteMapper;
     private final JdbcTemplate jdbcTemplate;
 
     public PharmacyDefService(HisPharmacyDefMapper pharmacyDefMapper, HisWarehouseDefMapper warehouseDefMapper,
-                             JdbcTemplate jdbcTemplate) {
+                             HisRxPharmacyRouteMapper rxRouteMapper, JdbcTemplate jdbcTemplate) {
         this.pharmacyDefMapper = pharmacyDefMapper;
         this.warehouseDefMapper = warehouseDefMapper;
+        this.rxRouteMapper = rxRouteMapper;
         this.jdbcTemplate = jdbcTemplate;
     }
 
@@ -118,6 +127,211 @@ public class PharmacyDefService {
             return null;
         }
         return pid;
+    }
+
+    /* ================= 处方发药默认药房路由(P5) ================= */
+
+    /** 药品大类→中西药渠道: 含中药/饮片/颗粒走中药渠道, 其余西药渠道(供路由未命中回落 his_dept 默认药房) */
+    public static boolean isTcmMajorClass(String majorClass) {
+        return majorClass != null && (majorClass.contains("中药") || majorClass.contains("饮片") || majorClass.contains("颗粒"));
+    }
+
+    /**
+     * 处方发药默认药房解析(P5): 科室×时段×药品大类 → 药房, 优先级链 精确(科室+时段+大类) > 科室+大类 >
+     * 科室+时段 > 科室 > his_dept 默认西/中药药房兑底。未配置或未命中返回 null(不阻断开方)。
+     * timeSlot 为空且 nowTime 非空时经班次字典自动推算当前时段码; pharmacy_id 命中药房须启用且同机构, 失效则回落下一级。
+     * his_rx_pharmacy_route 为租户表(MP 插件自动注入 tenant_id), 此处按 orgId 显式过滤。
+     */
+    public Long resolveRxPharmacy(Long deptId, String majorClass, LocalTime nowTime) {
+        Long orgId = currentOrgId();
+        String slot = currentShiftCode(nowTime);
+        List<HisRxPharmacyRoute> candidates = rxRouteMapper.selectList(Wrappers.<HisRxPharmacyRoute>lambdaQuery()
+                .eq(orgId != null, HisRxPharmacyRoute::getOrgId, orgId)
+                .eq(HisRxPharmacyRoute::getStatus, 1));
+        HisRxPharmacyRoute best = null;
+        int bestScore = -1;
+        for (HisRxPharmacyRoute r : candidates) {
+            int score = matchScore(r, deptId, slot, majorClass);
+            if (score < 0) {
+                continue;
+            }
+            int pri = r.getPriority() == null ? 100 : r.getPriority();
+            int bestPri = best == null || best.getPriority() == null ? 100 : best.getPriority();
+            if (score > bestScore || (score == bestScore && best != null && pri < bestPri)) {
+                best = r;
+                bestScore = score;
+            }
+        }
+        if (best != null) {
+            HisPharmacyDef def = pharmacyDefMapper.selectById(best.getPharmacyId());
+            if (def != null && def.getStatus() != null && def.getStatus() == 1) {
+                return def.getId();
+            }
+            log.warn("路由命中药房失效(不存在/已停用), 回落默认: routeId={}, pharmacyId={}", best.getId(), best.getPharmacyId());
+        }
+        // 回落 his_dept 默认西/中药药房(兼容未配置路由的存量科室)
+        return resolveDefaultPharmacyId(deptId, isTcmMajorClass(majorClass) ? "中药" : "西药");
+    }
+
+    /**
+     * 规则匹配打分: 返回 -1 表示不匹配(某非空维度与请求不符); 否则返回精确命中维度数(0~3, 越大越优先)。
+     * 维度为 null 表示通配(不限), 不扣分也不加分。
+     */
+    private int matchScore(HisRxPharmacyRoute r, Long deptId, String slot, String majorClass) {
+        int score = 0;
+        if (r.getDeptId() != null) {
+            if (deptId == null || !deptId.equals(r.getDeptId())) {
+                return -1;
+            }
+            score++;
+        }
+        if (StringUtils.hasText(r.getTimeSlot())) {
+            if (!r.getTimeSlot().equals(slot)) {
+                return -1;
+            }
+            score++;
+        }
+        if (StringUtils.hasText(r.getDrugMajorClass())) {
+            if (!r.getDrugMajorClass().equals(majorClass)) {
+                return -1;
+            }
+            score++;
+        }
+        return score;
+    }
+
+    /**
+     * 由当前时刻经班次字典(his_shift_dict)推算时段码: 命中 start_time~end_time 区间的启用班次;
+     * nowTime 为空或未命中返回 null(不参与时段维度匹配)。his_shift_dict 租户表但 JdbcTemplate 不走插件, 显式 tenant_id。
+     */
+    private String currentShiftCode(LocalTime nowTime) {
+        if (nowTime == null) {
+            return null;
+        }
+        List<Map<String, Object>> rows = jdbcTemplate.queryForList(
+                "SELECT code, start_time, end_time FROM his_shift_dict WHERE tenant_id = ? AND status = 1 AND deleted = 0"
+                        + " AND start_time IS NOT NULL AND end_time IS NOT NULL",
+                tenantId());
+        for (Map<String, Object> row : rows) {
+            LocalTime st = parseHm(str(row.get("start_time")));
+            LocalTime et = parseHm(str(row.get("end_time")));
+            if (st == null || et == null) {
+                continue;
+            }
+            boolean hit = et.isBefore(st) ? (!nowTime.isBefore(st) || !nowTime.isAfter(et))
+                    : (!nowTime.isBefore(st) && !nowTime.isAfter(et));
+            if (hit) {
+                return str(row.get("code"));
+            }
+        }
+        return null;
+    }
+
+    private static LocalTime parseHm(String hm) {
+        if (!StringUtils.hasText(hm)) {
+            return null;
+        }
+        try {
+            return LocalTime.parse(hm.trim(), DateTimeFormatter.ofPattern("H:mm"));
+        } catch (Exception e) {
+            try {
+                return LocalTime.parse(hm.trim());
+            } catch (Exception e2) {
+                return null;
+            }
+        }
+    }
+
+    private static String str(Object o) {
+        return o == null ? null : o.toString();
+    }
+
+    /* ================= 路由规则 CRUD(P5) ================= */
+
+    /** 路由规则列表(按机构, 含停用; 优先级/精确度排序供展示) */
+    public List<HisRxPharmacyRoute> listRoutes(Long orgId) {
+        return rxRouteMapper.selectList(Wrappers.<HisRxPharmacyRoute>lambdaQuery()
+                .eq(orgId != null, HisRxPharmacyRoute::getOrgId, orgId)
+                .orderByAsc(HisRxPharmacyRoute::getPriority)
+                .orderByDesc(HisRxPharmacyRoute::getId));
+    }
+
+    /** 新增/编辑路由规则; 校验 pharmacyId 启用同机构, 同(科室+时段+大类)组合判重(排除自身) */
+    @Transactional(rollbackFor = Exception.class)
+    public HisRxPharmacyRoute saveRoute(HisRxPharmacyRoute route) {
+        if (route == null || route.getPharmacyId() == null) {
+            throw new BizException(400, "发药药房不能为空");
+        }
+        HisRxPharmacyRoute exist = route.getId() == null ? null : rxRouteMapper.selectById(route.getId());
+        if (route.getId() != null && exist == null) {
+            throw new BizException(400, "路由规则不存在");
+        }
+        Long orgId = exist != null ? exist.getOrgId() : (route.getOrgId() != null ? route.getOrgId() : currentOrgId());
+        if (orgId == null) {
+            throw new BizException(400, "机构不能为空");
+        }
+        route.setOrgId(orgId);
+        // 发药药房必须存在且启用同机构
+        requireEnabled(route.getPharmacyId(), orgId);
+        if (!StringUtils.hasText(route.getTimeSlot())) {
+            route.setTimeSlot(null);
+        }
+        if (!StringUtils.hasText(route.getDrugMajorClass())) {
+            route.setDrugMajorClass(null);
+        }
+        if (route.getPriority() == null) {
+            route.setPriority(100);
+        }
+        // 同(科室+时段+大类)组合判重(null 代表通配, 归一为空串参与比较)
+        Long dup = rxRouteMapper.selectCount(Wrappers.<HisRxPharmacyRoute>lambdaQuery()
+                .eq(HisRxPharmacyRoute::getOrgId, orgId)
+                .eq(route.getDeptId() != null, HisRxPharmacyRoute::getDeptId, route.getDeptId())
+                .isNull(route.getDeptId() == null, HisRxPharmacyRoute::getDeptId)
+                .eq(StringUtils.hasText(route.getTimeSlot()), HisRxPharmacyRoute::getTimeSlot, route.getTimeSlot())
+                .isNull(!StringUtils.hasText(route.getTimeSlot()), HisRxPharmacyRoute::getTimeSlot)
+                .eq(StringUtils.hasText(route.getDrugMajorClass()), HisRxPharmacyRoute::getDrugMajorClass, route.getDrugMajorClass())
+                .isNull(!StringUtils.hasText(route.getDrugMajorClass()), HisRxPharmacyRoute::getDrugMajorClass)
+                .ne(route.getId() != null, HisRxPharmacyRoute::getId, route.getId()));
+        if (dup != null && dup > 0) {
+            throw new BizException(400, "相同科室+时段+药品大类的路由规则已存在, 不允许重复配置");
+        }
+        if (route.getId() == null) {
+            if (route.getStatus() == null) {
+                route.setStatus(1);
+            }
+            rxRouteMapper.insert(route);
+            log.info("新增发药路由: id={}, orgId={}, deptId={}, slot={}, majorClass={}, pharmacyId={}",
+                    route.getId(), orgId, route.getDeptId(), route.getTimeSlot(), route.getDrugMajorClass(), route.getPharmacyId());
+        } else {
+            rxRouteMapper.updateById(route);
+            log.info("编辑发药路由: id={}, pharmacyId={}, status={}", route.getId(), route.getPharmacyId(), route.getStatus());
+        }
+        return rxRouteMapper.selectById(route.getId());
+    }
+
+    /** 启停路由规则 */
+    @Transactional(rollbackFor = Exception.class)
+    public HisRxPharmacyRoute toggleRoute(Long id, boolean enabled) {
+        if (id == null) {
+            throw new BizException(400, "路由规则ID不能为空");
+        }
+        if (rxRouteMapper.selectById(id) == null) {
+            throw new BizException(400, "路由规则不存在");
+        }
+        HisRxPharmacyRoute upd = new HisRxPharmacyRoute();
+        upd.setId(id);
+        upd.setStatus(enabled ? 1 : 0);
+        rxRouteMapper.updateById(upd);
+        return rxRouteMapper.selectById(id);
+    }
+
+    /** 删除路由规则(逻辑删除) */
+    @Transactional(rollbackFor = Exception.class)
+    public void deleteRoute(Long id) {
+        if (id == null) {
+            throw new BizException(400, "路由规则ID不能为空");
+        }
+        rxRouteMapper.deleteById(id);
     }
 
     /* ================= 保存 / 启停 ================= */
@@ -322,5 +536,11 @@ public class PharmacyDefService {
     private static long tenantId() {
         Long t = TenantContext.get();
         return t == null ? 0L : t;
+    }
+
+    /** 当前登录用户归属机构(路由解析/新增未显式传 orgId 时的默认作用域) */
+    private static Long currentOrgId() {
+        LoginUser lu = UserContext.get();
+        return lu == null ? null : lu.getOrgId();
     }
 }

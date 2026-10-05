@@ -48,6 +48,8 @@ public class ExamReportService {
     private final HisExamReportMapper reportMapper;
     private final HisExamResultItemMapper resultItemMapper;
     private final CriticalValueService criticalValueService;
+    private final com.yb.hi.service.ris.RisStructuredReportService structuredReportService;
+    private final com.yb.hi.service.ris.RisConsultService risConsultService;
     private final JdbcTemplate jdbcTemplate;
 
     /** 单号内存序号(synchronized 唯一; 跨日重置时从DB回读当日最大序号) */
@@ -55,10 +57,15 @@ public class ExamReportService {
     private int seqNo = 0;
 
     public ExamReportService(HisExamReportMapper reportMapper, HisExamResultItemMapper resultItemMapper,
-                             CriticalValueService criticalValueService, JdbcTemplate jdbcTemplate) {
+                             CriticalValueService criticalValueService,
+                             com.yb.hi.service.ris.RisStructuredReportService structuredReportService,
+                             com.yb.hi.service.ris.RisConsultService risConsultService,
+                             JdbcTemplate jdbcTemplate) {
         this.reportMapper = reportMapper;
         this.resultItemMapper = resultItemMapper;
         this.criticalValueService = criticalValueService;
+        this.structuredReportService = structuredReportService;
+        this.risConsultService = risConsultService;
         this.jdbcTemplate = jdbcTemplate;
     }
 
@@ -706,5 +713,109 @@ public class ExamReportService {
         } catch (NumberFormatException e) {
             return null;
         }
+    }
+
+    /* ================= RIS 影像报告专业化(T3 任务书4) ================= */
+
+    /**
+     * 为报告加载结构化模板: 校验报告存在 -> 回写 template_id 挂接 -> 返回模板实例化结果
+     * (模板实体 + 数据元定义 + defaultValue 填充的初始数据项), 供报告书写端作为初始编辑态。
+     * 选用后由前端调用结构化保存接口落库; 本方法只做挂接与预填充, 不产生报告数据行。
+     */
+    @Transactional(rollbackFor = Exception.class)
+    public java.util.Map<String, Object> loadTemplate(Long reportId, Long templateId) {
+        if (reportId == null) {
+            throw new BizException(400, "报告ID不能为空");
+        }
+        if (templateId == null) {
+            throw new BizException(400, "模板ID不能为空");
+        }
+        HisExamReport report = reportMapper.selectById(reportId);
+        if (report == null) {
+            throw new BizException(400, "报告不存在");
+        }
+        // 挂接: 报告与模板同租户即可(template_id 为 RIS 补列, 实体未映射, 走 JdbcTemplate)
+        jdbcTemplate.update(
+                "UPDATE his_exam_report SET template_id = ?, update_by = ?, update_time = NOW()"
+                        + " WHERE id = ? AND tenant_id = ? AND deleted = 0",
+                templateId, currentUserName(), reportId, tenantId());
+        java.util.Map<String, Object> out = structuredReportService.instantiateTemplate(templateId);
+        out.put("reportId", reportId);
+        log.info("报告加载结构化模板: reportId={}, templateId={}", reportId, templateId);
+        return out;
+    }
+
+    /**
+     * 按科室类型路由报告工作流: 读取 his_exam_dept_config 配置(自动分配设备/默认模板/Worklist/双阅比例/急诊色),
+     * 无配置时回落通用手动路由(dept_type 入参缺省 RADIOLOGY)。供报告工作台初始化与工作流分支判断。
+     */
+    public java.util.Map<String, Object> routeByDeptType(String examDeptType) {
+        String type = StringUtils.hasText(examDeptType) ? examDeptType.trim() : "RADIOLOGY";
+        List<java.util.Map<String, Object>> rows = jdbcTemplate.queryForList(
+                "SELECT dept_id AS deptId, dept_type AS deptType, auto_assign_device AS autoAssignDevice,"
+                        + " default_report_template_id AS defaultReportTemplateId,"
+                        + " worklist_enabled AS worklistEnabled, double_read_rate AS doubleReadRate,"
+                        + " urgent_color AS urgentColor"
+                        + " FROM his_exam_dept_config"
+                        + " WHERE dept_type = ? AND tenant_id = ? AND deleted = 0"
+                        + " ORDER BY id LIMIT 1",
+                type, tenantId());
+        java.util.Map<String, Object> out = new LinkedHashMap<>();
+        out.put("deptType", type);
+        if (rows.isEmpty()) {
+            // 未配置回落: 手动分配 + 不启用 Worklist + 双阅 0%
+            out.put("configured", 0);
+            out.put("autoAssignDevice", 0);
+            out.put("defaultReportTemplateId", null);
+            out.put("worklistEnabled", 0);
+            out.put("doubleReadRate", 0);
+            out.put("urgentColor", "#F56C6C");
+            out.put("workflow", "MANUAL");
+            return out;
+        }
+        java.util.Map<String, Object> cfg = rows.get(0);
+        out.put("configured", 1);
+        out.putAll(cfg);
+        Number rate = (Number) cfg.get("doubleReadRate");
+        boolean doubleRead = rate != null && rate.intValue() > 0;
+        out.put("workflow", doubleRead ? "DOUBLE_READ" : "SINGLE_READ");
+        return out;
+    }
+
+    /**
+     * 指派双阅(委托 {@link com.yb.hi.service.ris.RisConsultService#requestDoubleRead}):
+     * 同报告待处理双阅防重复, 回写报告 double_read_flag=1。
+     */
+    @Transactional(rollbackFor = Exception.class)
+    public com.yb.hi.entity.ris.HisRisConsult assignDoubleRead(Long reportId) {
+        return risConsultService.requestDoubleRead(reportId);
+    }
+
+    /**
+     * 阳性判定回写: 院内 positive_flag(-1 未判定/0 阴性/1 阳性) + 医保 4501 双列
+     * exam_rslt_poit_flag(阳性标志)/exam_rslt_abn(异常标志)。三列为 RIS 迁移补列, 实体未映射, 走 JdbcTemplate。
+     * poitFlag/abnFlag 入参空时按判定结果取默认: 阳性 1/1, 阴性 2/2(医保 1是 2否 口径)。
+     */
+    @Transactional(rollbackFor = Exception.class)
+    public void markPositive(Long reportId, boolean isPositive, String poitFlag, String abnFlag) {
+        if (reportId == null) {
+            throw new BizException(400, "报告ID不能为空");
+        }
+        HisExamReport report = reportMapper.selectById(reportId);
+        if (report == null) {
+            throw new BizException(400, "报告不存在");
+        }
+        String poit = StringUtils.hasText(poitFlag) ? poitFlag.trim() : (isPositive ? "1" : "2");
+        String abn = StringUtils.hasText(abnFlag) ? abnFlag.trim() : (isPositive ? "1" : "2");
+        int affected = jdbcTemplate.update(
+                "UPDATE his_exam_report SET positive_flag = ?, exam_rslt_poit_flag = ?, exam_rslt_abn = ?,"
+                        + " update_by = ?, update_time = NOW()"
+                        + " WHERE id = ? AND tenant_id = ? AND deleted = 0",
+                isPositive ? 1 : 0, poit, abn, currentUserName(), reportId, tenantId());
+        if (affected == 0) {
+            throw new BizException("阳性判定回写失败(报告不存在或已删除)");
+        }
+        log.info("报告阳性判定回写: reportId={}, positive={}, poitFlag={}, abnFlag={}",
+                reportId, isPositive, poit, abn);
     }
 }

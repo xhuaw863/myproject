@@ -23,6 +23,20 @@
     { v: 'oper', l: '手术代码' }, { v: 'tumor', l: '肿瘤代码' }
   ];
 
+  /* 医疗科室判定: 科室大类(dept_category, 逗号分隔多选)含以下任一即为医疗科室。
+   * 仅"行政后勤"(信息科/财务科/医保办/药剂科等)属非医疗; 医疗模板(病历/诊断等)不应归属非医疗科室,
+   * 故科室下拉/树候选须排除非医疗科室。以 dept_category 为权威判据:
+   * 派生列 dept_type 存在脏数据(如财务科大类=行政后勤却被派生成临床), 不可据此过滤。 */
+  var MEDICAL_CATS = ['门诊科室', '住院科室', '病区护理', '医技科室'];
+  function isMedicalDept(d) {
+    if (!d) { return false; }
+    var cats = text(d.deptCategory).split(',');
+    for (var i = 0; i < cats.length; i++) {
+      if (MEDICAL_CATS.indexOf(cats[i].trim()) >= 0) { return true; }
+    }
+    return false;
+  }
+
   function text(v) { return v == null ? '' : String(v); }
   function parseJson(v, fallback) {
     if (v && typeof v === 'object') { return v; }
@@ -68,7 +82,9 @@
         return t ? t.label : '';
       },
       rxTypeLabels: function () { return RX_TYPE_LABELS; },
-      diagClasses: function () { return DIAG_CLASSES; }
+      diagClasses: function () { return DIAG_CLASSES; },
+      /* 科室下拉/树候选: 仅医疗科室(排除行政后勤等非医疗科室); depts 仍保留全量供归属列名称回显 */
+      medicalDepts: function () { return (this.depts || []).filter(isMedicalDept); }
     },
     created: function () {
       this.loadDepts();
@@ -144,7 +160,12 @@
         this.editId = null;
         this.form = this.emptyForm();
         this.form.scope = this.activeTab === 'diag_dept' || this.activeTab === 'order_set' ? 'dept' : 'personal';
-        if (this.form.scope === 'dept' && this.user.deptId != null) { this.form.deptId = this.user.deptId; }
+        /* 预填本科室仅限其为医疗科室; 管理员自身若属非医疗科室则留空(避免下拉候选外回显退化为 #id) */
+        if (this.form.scope === 'dept' && this.user.deptId != null) {
+          var self = this;
+          var own = (this.depts || []).find(function (d) { return String(d.id) === String(self.user.deptId); });
+          if (own && isMedicalDept(own)) { this.form.deptId = this.user.deptId; }
+        }
         this.diagSearchCode = null; this.diagResults = [];
         this.dialogVisible = true;
       },
@@ -344,7 +365,7 @@
                 </el-radio-group>
               </el-form-item>
               <el-form-item label="科室" v-if="form.scope==='dept'">
-                <dept-tree-picker v-model="form.deptId" :options="depts" placeholder="选择科室" />
+                <dept-tree-picker v-model="form.deptId" :options="medicalDepts" placeholder="选择科室" />
               </el-form-item>
               <el-form-item label="排序号"><el-input-number v-model="form.sortOrder" :min="0" :max="9999" controls-position="right" style="width:110px"></el-input-number></el-form-item>
               <el-form-item label="状态"><el-switch v-model="form.status" :active-value="1" :inactive-value="0" active-text="启用" inactive-text="停用"></el-switch></el-form-item>

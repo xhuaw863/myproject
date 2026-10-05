@@ -7,6 +7,8 @@ import org.springframework.boot.ApplicationRunner;
 import org.springframework.core.annotation.Order;
 import org.springframework.stereotype.Component;
 
+import com.yb.hi.service.medtech.CriticalValueService;
+
 import javax.sql.DataSource;
 import java.math.BigDecimal;
 import java.sql.Connection;
@@ -456,6 +458,8 @@ public class DictSchemaMigration implements ApplicationRunner {
             ensurePharmacyPriceTable(conn);
             // P1 发药窗口子系统: 窗口/工作站/科室定向/跨药房配置/签到 5 表(幂等, 新模块非启动关键路径)
             ensurePharmacyWindowTables(conn);
+            // P5 处方发药默认药房路由: 科室×时段×药品大类→发药药房 规则表(幂等, 新模块非启动关键路径)
+            ensureRxPharmacyRouteTable(conn);
             // 护士站/治疗管理/医技管理三模块基座: 12 张新表(幂等, 新模块非启动关键路径)
             ensureNurseTables(conn);
             ensureTreatmentTables(conn);
@@ -505,6 +509,8 @@ public class DictSchemaMigration implements ApplicationRunner {
             alterExistingTables(conn);
             // 检查多部位医保计费: his_order_item 补 检查部位/计价部位数 两列 + his_charge_addon_rule 补 加收比例 列(幂等)
             ensureExamBillingColumns(conn);
+            // RIS 影像信息系统基座: 14 张新表 + his_exam_report/his_exam_result_item 医保4501/4502 对齐补列(幂等, 新模块非启动关键路径)
+            ensureRisTables(conn);
         } catch (Exception e) {
             log.warn("字典化字段建列迁移跳过: {}", e.getMessage());
             return;
@@ -2605,6 +2611,35 @@ public class DictSchemaMigration implements ApplicationRunner {
                     + "KEY idx_tenant (tenant_id),"
                     + "KEY idx_org (tenant_id, org_id)"
                     + ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='药房定义(机构级多药房)'");
+        }
+    }
+
+    /**
+     * 幂等建表: 处方发药默认药房路由表(P5)。
+     * 一条规则 = (科室 dept_id × 时段 time_slot × 药品大类 drug_major_class) → 发药药房 pharmacy_id。
+     * dept_id/time_slot/drug_major_class 任一为 NULL 表示该维度不限(通配), 解析按
+     * 精确(科室+时段+大类) > 科室+大类 > 科室+时段 > 科室 优先级链匹配, 未命中回落 his_dept 默认西/中药药房。
+     * 同 (科室+时段+大类) 组合的服务层判重(允 NULL 维度, 故不加 DB 唯一键), priority 数字小者优先。
+     */
+    private void ensureRxPharmacyRouteTable(Connection conn) throws Exception {
+        try (Statement st = conn.createStatement()) {
+            st.executeUpdate("CREATE TABLE IF NOT EXISTS his_rx_pharmacy_route ("
+                    + "id BIGINT NOT NULL AUTO_INCREMENT COMMENT '主键',"
+                    + "tenant_id BIGINT NOT NULL COMMENT '租户ID',"
+                    + "org_id BIGINT NOT NULL COMMENT '机构ID',"
+                    + "dept_id BIGINT DEFAULT NULL COMMENT '开单科室ID(his_dept.id, NULL=全院该维度)',"
+                    + "time_slot VARCHAR(20) DEFAULT NULL COMMENT '班次时段码(his_shift_dict.code, NULL=不限)',"
+                    + "drug_major_class VARCHAR(50) DEFAULT NULL COMMENT '药品大类(his_drug_catalog.major_class 文本, NULL=不限)',"
+                    + "pharmacy_id BIGINT NOT NULL COMMENT '命中发药药房ID(his_pharmacy_def.id)',"
+                    + "priority INT DEFAULT 100 COMMENT '优先级(数字小者优先, 同级按精确度)',"
+                    + "status TINYINT DEFAULT 1 COMMENT '状态:1启用 0停用',"
+                    + "remark VARCHAR(200) DEFAULT NULL COMMENT '备注',"
+                    + "create_by VARCHAR(50) DEFAULT NULL, create_time DATETIME DEFAULT NULL,"
+                    + "update_by VARCHAR(50) DEFAULT NULL, update_time DATETIME DEFAULT NULL, deleted TINYINT DEFAULT 0,"
+                    + "PRIMARY KEY (id),"
+                    + "KEY idx_tenant (tenant_id),"
+                    + "KEY idx_org_dept (tenant_id, org_id, dept_id)"
+                    + ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='处方发药默认药房路由(科室×时段×大类→药房)'");
         }
     }
 
@@ -4870,6 +4905,7 @@ public class DictSchemaMigration implements ApplicationRunner {
                     + "locked_sections TEXT NULL COMMENT '母板锁定的章节key列表JSON',"
                     + "document TEXT NULL COMMENT 'Tiptap ProseMirror JSON文档',"
                     + "print_script TEXT NULL COMMENT '打印格式脚本',"
+                    + "print_config TEXT NULL COMMENT '结构化打印配置JSON',"
                     + "dataset_id BIGINT DEFAULT NULL COMMENT '关联数据集ID(his_emr_dataset.id)',"
                     + "dept_id BIGINT DEFAULT 0 COMMENT '科室ID(his_dept.id, 0=全院)',"
                     + "version INT DEFAULT 1 COMMENT '版本号',"
@@ -5173,6 +5209,7 @@ public class DictSchemaMigration implements ApplicationRunner {
         addColumnIfNotExists(conn, "his_emr_template", "locked_sections", "TEXT NULL COMMENT '母板锁定的章节key列表JSON'");
         addColumnIfNotExists(conn, "his_emr_template", "document", "TEXT NULL COMMENT 'Tiptap ProseMirror JSON文档'");
         addColumnIfNotExists(conn, "his_emr_template", "print_script", "TEXT NULL COMMENT '打印格式脚本'");
+        addColumnIfNotExists(conn, "his_emr_template", "print_config", "TEXT NULL COMMENT '结构化打印配置JSON'");
         addColumnIfNotExists(conn, "his_emr_template", "dataset_id", "BIGINT DEFAULT NULL COMMENT '关联数据集ID(his_emr_dataset.id)'");
         /* 病历签名多方式扩展列(P8b-1: 文字/图片/CA三方式 + 验签结果 + 患者家属签名; 新库 CREATE 已含, 旧库幂等补) */
         addColumnIfNotExists(conn, "his_emr_signature", "sign_mode", "TINYINT DEFAULT 1 COMMENT '签名方式:1文字/2图片/3CA数字签名'");
@@ -5675,6 +5712,23 @@ public class DictSchemaMigration implements ApplicationRunner {
         addColumnIfNotExists(conn, "his_case_front_page", "resident_doctor", "VARCHAR(50) DEFAULT NULL COMMENT '住院医师姓名'");
         addColumnIfNotExists(conn, "his_case_front_page", "qc_nurse", "VARCHAR(50) DEFAULT NULL COMMENT '质控护士姓名'");
         addColumnIfNotExists(conn, "his_case_front_page", "cost_class_detail", "TEXT DEFAULT NULL COMMENT '病案首页费用分项聚合JSON(按his_charge_item.mr_cost_class归并)'");
+        /* 病案首页对齐国标 P1 字段完整性补齐: 三级医师中间级与落款/病区床号/诊断符合/院感/非计划再手术/Apgar/输血/转科/呼吸机时长 */
+        addColumnIfNotExists(conn, "his_case_front_page", "attending_doctor", "VARCHAR(50) DEFAULT NULL COMMENT '主治医师姓名'");
+        addColumnIfNotExists(conn, "his_case_front_page", "coder", "VARCHAR(50) DEFAULT NULL COMMENT '病案首页编码员姓名'");
+        addColumnIfNotExists(conn, "his_case_front_page", "trainee_doctor", "VARCHAR(50) DEFAULT NULL COMMENT '进修医师姓名'");
+        addColumnIfNotExists(conn, "his_case_front_page", "intern_doctor", "VARCHAR(50) DEFAULT NULL COMMENT '实习医师姓名'");
+        addColumnIfNotExists(conn, "his_case_front_page", "duty_nurse", "VARCHAR(50) DEFAULT NULL COMMENT '责任护士姓名'");
+        addColumnIfNotExists(conn, "his_case_front_page", "admission_ward", "VARCHAR(50) DEFAULT NULL COMMENT '入院病房(病区)名称'");
+        addColumnIfNotExists(conn, "his_case_front_page", "discharge_ward", "VARCHAR(50) DEFAULT NULL COMMENT '出院病房(病区)名称'");
+        addColumnIfNotExists(conn, "his_case_front_page", "bed_no", "VARCHAR(20) DEFAULT NULL COMMENT '住院床号'");
+        addColumnIfNotExists(conn, "his_case_front_page", "transfer_depts", "TEXT DEFAULT NULL COMMENT '转科科别JSON(数组: [{dept,date}] 由住院转科记录汇总)'");
+        addColumnIfNotExists(conn, "his_case_front_page", "vent_use_time", "VARCHAR(20) DEFAULT NULL COMMENT '呼吸机使用时长(天时分)'");
+        addColumnIfNotExists(conn, "his_case_front_page", "diag_fit_code", "TINYINT DEFAULT NULL COMMENT '诊断符合情况:1全部符合 2诊断不明确 3院外误诊 4本病院误诊 5本病未肯定诊断'");
+        addColumnIfNotExists(conn, "his_case_front_page", "infection_flag", "TINYINT DEFAULT NULL COMMENT '医院感染:0无 1有'");
+        addColumnIfNotExists(conn, "his_case_front_page", "infection_site", "VARCHAR(200) DEFAULT NULL COMMENT '医院感染部位(infection_flag=1 时必填)'");
+        addColumnIfNotExists(conn, "his_case_front_page", "unplanned_reop", "TINYINT DEFAULT NULL COMMENT '非计划再手术:0无 1有'");
+        addColumnIfNotExists(conn, "his_case_front_page", "newborn_apgar", "TINYINT DEFAULT NULL COMMENT '新生儿Apgar评分(0-10)'");
+        addColumnIfNotExists(conn, "his_case_front_page", "blood_transfusion", "TEXT DEFAULT NULL COMMENT '输血记录JSON(数组: [{kind,volume,unit,donateInst,transDate}] 对齐国标首页输血段)'");
         // 播种常见危急值规则(tenant_id=1 默认租户; INSERT IGNORE 幂等, 已有规则不覆盖)
         seedCriticalValueRules(conn);
     }
@@ -6163,6 +6217,22 @@ public class DictSchemaMigration implements ApplicationRunner {
                     + "KEY idx_visit (tenant_id, visit_id),"
                     + "KEY idx_cat_time (tenant_id, report_category, skip_time)"
                     + ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='疾病报卡漏报留痕(暂不报卡)'"
+            );
+            // 报卡触发规则(全局共享, 无 tenant_id, 同 std_* 口径; MybatisPlusConfig.IGNORE_TABLES 豁免租户插件):
+            // 把原 matchCat 硬编码的"ICD前缀→报卡大类"判定升格为数据, ADMIN 维护界面增删改启停即时生效; 种子由 DiseaseReportTriggerRuleSeeder 幂等导入
+            st.executeUpdate("CREATE TABLE IF NOT EXISTS his_disease_report_trigger_rule ("
+                    + "id BIGINT NOT NULL AUTO_INCREMENT COMMENT '主键',"
+                    + "report_category TINYINT NOT NULL COMMENT '报卡大类:1传染病 2精障 3肿瘤 4高血压 5糖尿病 9其他',"
+                    + "match_type VARCHAR(10) NOT NULL DEFAULT 'prefix' COMMENT '匹配方式:prefix诊断码前缀 exact诊断码精确 class诊断类别等值',"
+                    + "code_pattern VARCHAR(50) NOT NULL COMMENT '匹配模式(ICD码前缀/精确码/诊断类别值如tumor)',"
+                    + "priority INT NOT NULL DEFAULT 100 COMMENT '判定优先级(小者先判, 首个命中即定大类)',"
+                    + "enabled TINYINT NOT NULL DEFAULT 1 COMMENT '启用:1参与触发 0停用',"
+                    + "remark VARCHAR(200) DEFAULT NULL COMMENT '备注(病种名/法规依据)',"
+                    + "create_by VARCHAR(50) DEFAULT NULL, create_time DATETIME DEFAULT NULL,"
+                    + "update_by VARCHAR(50) DEFAULT NULL, update_time DATETIME DEFAULT NULL, deleted TINYINT DEFAULT 0,"
+                    + "PRIMARY KEY (id),"
+                    + "KEY idx_enabled_pri (enabled, priority)"
+                    + ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='疾病报卡触发规则(诊断→报卡大类判定, 维护界面可控)'"
             );
             st.executeUpdate("CREATE TABLE IF NOT EXISTS his_diag_template_link ("
                     + "id BIGINT NOT NULL AUTO_INCREMENT COMMENT '主键',"
@@ -6929,6 +6999,490 @@ public class DictSchemaMigration implements ApplicationRunner {
         }
     }
 
+    /**
+     * RIS 影像信息系统基座(幂等 CREATE TABLE IF NOT EXISTS):
+     * 1) his_imaging_device 影像设备台账: 排程/Worklist 设备真源(modality/ae_title/ip/port 供 DICOM 对接);
+     * 2) his_exam_dept_config 检查科室配置: 科室类型/自动分配设备/默认报告模板/Worklist 开关/双阅比例;
+     * 3) his_exam_request 检查申请单: 对齐医保 4501 检查信息(申请人/执行科室/检查类别/报告单类别等医保字段落列);
+     * 4) his_exam_schedule 检查排程: 设备×日期×时段号源簿(booked_count 预约占位);
+     * 5) his_exam_schedule_tpl 排程周模板: 按周几批量生成排程;
+     * 6) his_exam_worklist DICOM Worklist 条目: Accession/StudyInstanceUID 与影像设备对接;
+     * 7) his_exam_execution 检查执行记录: 技师/曝光/图像数/造影剂/剂量(DLP/CTDIvol/DAP);
+     * 8) his_ris_report_template RIS 报告模板: 所见/结论/印象/技术描述 + 三级作用域;
+     * 9) his_ris_report_element 结构化数据元: FINDINGS/CONCLUSION/TECHNIQUE 段结构化控件定义;
+     * 10) his_ris_report_data 报告结构化数据值: 报告×数据元键值;
+     * 11) his_ris_qc_rule RIS 质控规则: 完整性/时效性/一致性/术语 四类检查点;
+     * 12) his_ris_qc_record 质控评分记录: 报告×规则通过与否留痕;
+     * 13) his_ris_consult 远程会诊/双阅记录: 会诊意见/同意与否闭环;
+     * 14) his_ris_cloud_index 医保影像云索引: 结算明细×StudyUID 上传状态;
+     * 另: his_exam_report 补医保4501报告列(28列) + his_exam_result_item 补医保4502明细列(12列)。
+     * 审计列口径与全库一致(create_by/update_by VARCHAR(50), 由 MyMetaObjectHandler 填充 String 账号)。
+     */
+    private void ensureRisTables(Connection conn) throws Exception {
+        try (Statement st = conn.createStatement()) {
+            /* 1) 影像设备台账: 检查排程/Worklist 设备真源, modality+ae_title 供 DICOM 对接 */
+            st.executeUpdate("CREATE TABLE IF NOT EXISTS his_imaging_device ("
+                    + "id BIGINT NOT NULL COMMENT '主键(雪花)',"
+                    + "tenant_id BIGINT NOT NULL COMMENT '租户ID',"
+                    + "org_id BIGINT NOT NULL COMMENT '机构ID',"
+                    + "device_code VARCHAR(50) NOT NULL COMMENT '设备编号',"
+                    + "device_name VARCHAR(100) NOT NULL COMMENT '设备名称',"
+                    + "device_type VARCHAR(20) NOT NULL COMMENT '设备类型: DR/CT/MRI/US/DSA/ENDO',"
+                    + "modality VARCHAR(20) NOT NULL COMMENT 'DICOM Modality: CR/CT/MR/US/XA/ES',"
+                    + "dept_id BIGINT DEFAULT NULL COMMENT '所属科室(his_dept.id)',"
+                    + "room_no VARCHAR(50) DEFAULT NULL COMMENT '机房号',"
+                    + "ae_title VARCHAR(50) DEFAULT NULL COMMENT 'DICOM AE Title',"
+                    + "ip_address VARCHAR(50) DEFAULT NULL COMMENT '设备IP',"
+                    + "port INT DEFAULT NULL COMMENT 'DICOM端口',"
+                    + "manufacturer VARCHAR(100) DEFAULT NULL COMMENT '厂商',"
+                    + "model VARCHAR(100) DEFAULT NULL COMMENT '型号',"
+                    + "serial_no VARCHAR(100) DEFAULT NULL COMMENT '设备序列号',"
+                    + "install_date DATE DEFAULT NULL COMMENT '安装日期',"
+                    + "max_daily_slots INT DEFAULT 0 COMMENT '每日最大检查量(排程用)',"
+                    + "status TINYINT DEFAULT 1 COMMENT '1正常/2维修中/3停用',"
+                    + "dose_tracking TINYINT DEFAULT 0 COMMENT '是否启用剂量追踪',"
+                    + "create_by VARCHAR(50) DEFAULT NULL, create_time DATETIME DEFAULT NULL,"
+                    + "update_by VARCHAR(50) DEFAULT NULL, update_time DATETIME DEFAULT NULL, deleted TINYINT DEFAULT 0,"
+                    + "PRIMARY KEY (id),"
+                    + "UNIQUE KEY uk_tenant_device_code (tenant_id, device_code),"
+                    + "KEY idx_org_status (tenant_id, org_id, status),"
+                    + "KEY idx_dept (tenant_id, dept_id)"
+                    + ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='影像设备台账'");
+            /* 2) 检查科室配置: 科室类型/自动分配设备/默认报告模板/Worklist 开关/双阅比例/急诊标识色 */
+            st.executeUpdate("CREATE TABLE IF NOT EXISTS his_exam_dept_config ("
+                    + "id BIGINT NOT NULL COMMENT '主键(雪花)',"
+                    + "tenant_id BIGINT NOT NULL COMMENT '租户ID',"
+                    + "org_id BIGINT NOT NULL COMMENT '机构ID',"
+                    + "dept_id BIGINT NOT NULL COMMENT '科室ID(his_dept.id)',"
+                    + "dept_type VARCHAR(20) NOT NULL COMMENT '科室类型: RADIOLOGY/ULTRASOUND/ENDOSCOPY',"
+                    + "auto_assign_device TINYINT DEFAULT 0 COMMENT '是否自动分配设备',"
+                    + "default_report_template_id BIGINT DEFAULT NULL COMMENT '默认报告模板',"
+                    + "worklist_enabled TINYINT DEFAULT 0 COMMENT '是否启用DICOM Worklist',"
+                    + "double_read_rate INT DEFAULT 0 COMMENT '双阅比例(0-100%)',"
+                    + "urgent_color VARCHAR(20) DEFAULT '#F56C6C' COMMENT '急诊标识颜色',"
+                    + "create_by VARCHAR(50) DEFAULT NULL, create_time DATETIME DEFAULT NULL,"
+                    + "update_by VARCHAR(50) DEFAULT NULL, update_time DATETIME DEFAULT NULL, deleted TINYINT DEFAULT 0,"
+                    + "PRIMARY KEY (id),"
+                    + "UNIQUE KEY uk_tenant_dept (tenant_id, dept_id),"
+                    + "KEY idx_dept_type (tenant_id, dept_type)"
+                    + ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='检查科室配置'");
+            /* 3) 检查申请单: 门诊/住院/急诊/体检四源统一, 医保 4501 检查信息字段在申请侧落列 */
+            st.executeUpdate("CREATE TABLE IF NOT EXISTS his_exam_request ("
+                    + "id BIGINT NOT NULL COMMENT '主键(雪花)',"
+                    + "tenant_id BIGINT NOT NULL COMMENT '租户ID',"
+                    + "org_id BIGINT NOT NULL COMMENT '机构ID',"
+                    + "request_no VARCHAR(50) NOT NULL COMMENT '申请单号(JC+日期+序号)',"
+                    + "source_type TINYINT NOT NULL COMMENT '来源: 1门诊/2住院/3急诊/4体检',"
+                    + "order_id BIGINT DEFAULT NULL COMMENT '关联门诊医嘱(his_order.id)',"
+                    + "inp_order_id BIGINT DEFAULT NULL COMMENT '关联住院医嘱(his_inp_order.id)',"
+                    + "patient_id BIGINT NOT NULL COMMENT '患者ID',"
+                    + "visit_id BIGINT DEFAULT NULL COMMENT '门诊就诊ID',"
+                    + "inp_visit_id BIGINT DEFAULT NULL COMMENT '住院就诊ID',"
+                    + "mdtrt_sn VARCHAR(30) DEFAULT NULL COMMENT '就医流水号(医保4501.mdtrt_sn)',"
+                    + "mdtrt_id VARCHAR(30) DEFAULT NULL COMMENT '医保就诊ID(医保4501.mdtrt_id)',"
+                    + "psn_no VARCHAR(30) DEFAULT NULL COMMENT '医保人员编号(医保4501.psn_no)',"
+                    + "charge_item_id BIGINT DEFAULT NULL COMMENT '收费项目ID',"
+                    + "charge_item_code VARCHAR(50) DEFAULT NULL COMMENT '收费项目编码(院内)',"
+                    + "charge_item_name VARCHAR(200) DEFAULT NULL COMMENT '收费项目名称(院内)',"
+                    + "exam_item_code VARCHAR(30) DEFAULT NULL COMMENT '医保检查项目代码',"
+                    + "exam_item_name VARCHAR(300) DEFAULT NULL COMMENT '医保检查项目名称',"
+                    + "inhosp_exam_item_code VARCHAR(30) DEFAULT NULL COMMENT '院内检查项目代码',"
+                    + "inhosp_exam_item_name VARCHAR(300) DEFAULT NULL COMMENT '院内检查项目名称',"
+                    + "exam_type VARCHAR(20) NOT NULL COMMENT '检查类型: XRAY/CT/MRI/US/DSA/ENDO',"
+                    + "exam_type_code VARCHAR(10) DEFAULT NULL COMMENT '医保检查类别代码',"
+                    + "exam_type_name VARCHAR(100) DEFAULT NULL COMMENT '医保检查类别名称(WS/T 102-1998)',"
+                    + "img_exam_type VARCHAR(20) DEFAULT NULL COMMENT '影像检查类型(医保字典: 1X线/2CT/3MRI/4US/5ECT)',"
+                    + "modality VARCHAR(20) DEFAULT NULL COMMENT 'DICOM Modality',"
+                    + "body_part VARCHAR(500) DEFAULT NULL COMMENT '检查部位(自由文本)',"
+                    + "body_part_code VARCHAR(200) DEFAULT NULL COMMENT '部位编码(WS/T 364.8-2023)',"
+                    + "site_count INT DEFAULT 1 COMMENT '部位数',"
+                    + "contrast_mode VARCHAR(20) DEFAULT NULL COMMENT '造影方式: NONE/ORAL/IV/BOTH',"
+                    + "clinical_diagnosis VARCHAR(500) DEFAULT NULL COMMENT '临床诊断',"
+                    + "exam_purpose VARCHAR(500) DEFAULT NULL COMMENT '检查目的',"
+                    + "clinical_history TEXT NULL COMMENT '简要病史',"
+                    + "is_urgent TINYINT DEFAULT 0 COMMENT '是否急诊',"
+                    + "is_isolation TINYINT DEFAULT 0 COMMENT '是否隔离患者',"
+                    + "allergy_info VARCHAR(500) DEFAULT NULL COMMENT '过敏史(造影剂)',"
+                    + "pregnant_flag TINYINT DEFAULT 0 COMMENT '是否妊娠',"
+                    + "apply_doctor_id BIGINT DEFAULT NULL COMMENT '申请医生ID',"
+                    + "apply_doctor_code VARCHAR(30) DEFAULT NULL COMMENT '申请医生代码(医保4501.bilg_dr_codg)',"
+                    + "apply_doctor_name VARCHAR(50) DEFAULT NULL COMMENT '申请医生姓名',"
+                    + "apply_dept_id BIGINT DEFAULT NULL COMMENT '申请科室ID',"
+                    + "apply_dept_code VARCHAR(30) DEFAULT NULL COMMENT '申请科室代码(医保4501.appy_dept_code)',"
+                    + "apply_dept_name VARCHAR(100) DEFAULT NULL COMMENT '申请科室名称',"
+                    + "apply_org_name VARCHAR(50) DEFAULT NULL COMMENT '申请机构名称(医共体)',"
+                    + "apply_time DATETIME DEFAULT NULL COMMENT '申请时间',"
+                    + "target_dept_id BIGINT DEFAULT NULL COMMENT '执行科室ID',"
+                    + "target_dept_code VARCHAR(30) DEFAULT NULL COMMENT '执行科室代码(医保4501.exam_dept_code)',"
+                    + "target_dept_name VARCHAR(100) DEFAULT NULL COMMENT '执行科室名称',"
+                    + "exe_org_name VARCHAR(200) DEFAULT NULL COMMENT '执行机构名称(医共体)',"
+                    + "ipt_dept_code VARCHAR(30) DEFAULT NULL COMMENT '住院科室代码',"
+                    + "ipt_dept_name VARCHAR(50) DEFAULT NULL COMMENT '住院科室名称',"
+                    + "scheduled_time DATETIME DEFAULT NULL COMMENT '预约检查时间',"
+                    + "device_id BIGINT DEFAULT NULL COMMENT '分配设备ID',"
+                    + "technician_id BIGINT DEFAULT NULL COMMENT '分配技师ID',"
+                    + "priority TINYINT DEFAULT 5 COMMENT '优先级(1最高-9最低)',"
+                    + "status TINYINT DEFAULT 0 COMMENT '0待预约/1已预约/2已登记/3检查中/4已完成/5已报告/6已审核/7已取消',"
+                    + "cancel_reason VARCHAR(200) DEFAULT NULL COMMENT '取消原因',"
+                    + "paid_flag TINYINT DEFAULT 0 COMMENT '0未缴费/1已缴费',"
+                    + "exam_charge DECIMAL(16,2) DEFAULT NULL COMMENT '检查费用',"
+                    + "yb_upload_status TINYINT DEFAULT 0 COMMENT '医保上报: 0未上报/1已上报/2失败',"
+                    + "yb_upload_time DATETIME DEFAULT NULL COMMENT '医保上报时间',"
+                    + "vali_flag VARCHAR(3) DEFAULT '1' COMMENT '有效标志(医保4501.vali_flag)',"
+                    + "notes VARCHAR(500) DEFAULT NULL COMMENT '申请备注',"
+                    + "create_by VARCHAR(50) DEFAULT NULL, create_time DATETIME DEFAULT NULL,"
+                    + "update_by VARCHAR(50) DEFAULT NULL, update_time DATETIME DEFAULT NULL, deleted TINYINT DEFAULT 0,"
+                    + "PRIMARY KEY (id),"
+                    + "UNIQUE KEY uk_tenant_request_no (tenant_id, request_no),"
+                    + "KEY idx_org_status (tenant_id, org_id, status),"
+                    + "KEY idx_patient (tenant_id, patient_id),"
+                    + "KEY idx_order (order_id),"
+                    + "KEY idx_inp_order (inp_order_id),"
+                    + "KEY idx_sched (tenant_id, device_id, scheduled_time)"
+                    + ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='检查申请单'");
+            /* 4) 检查排程: 设备×日期×时段号源簿(booked_count 预约占位, status 2已满由服务端刷新) */
+            st.executeUpdate("CREATE TABLE IF NOT EXISTS his_exam_schedule ("
+                    + "id BIGINT NOT NULL COMMENT '主键(雪花)',"
+                    + "tenant_id BIGINT NOT NULL COMMENT '租户ID',"
+                    + "org_id BIGINT NOT NULL COMMENT '机构ID',"
+                    + "device_id BIGINT NOT NULL COMMENT '设备ID',"
+                    + "schedule_date DATE NOT NULL COMMENT '排程日期',"
+                    + "time_slot VARCHAR(20) NOT NULL COMMENT '时段: 08:00-08:30',"
+                    + "slot_start TIME NOT NULL COMMENT '开始时间',"
+                    + "slot_end TIME NOT NULL COMMENT '结束时间',"
+                    + "slot_duration INT DEFAULT 15 COMMENT '时段时长(分钟)',"
+                    + "max_patients INT DEFAULT 1 COMMENT '最大检查人数',"
+                    + "booked_count INT DEFAULT 0 COMMENT '已预约数',"
+                    + "request_id BIGINT DEFAULT NULL COMMENT '关联申请单ID',"
+                    + "status TINYINT DEFAULT 1 COMMENT '1可预约/2已满/3停诊/4临时加号',"
+                    + "technician_id BIGINT DEFAULT NULL COMMENT '值班技师',"
+                    + "create_by VARCHAR(50) DEFAULT NULL, create_time DATETIME DEFAULT NULL,"
+                    + "update_by VARCHAR(50) DEFAULT NULL, update_time DATETIME DEFAULT NULL, deleted TINYINT DEFAULT 0,"
+                    + "PRIMARY KEY (id),"
+                    + "UNIQUE KEY uk_tenant_dev_date_slot (tenant_id, device_id, schedule_date, time_slot),"
+                    + "KEY idx_date_status (tenant_id, schedule_date, status)"
+                    + ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='检查排程'");
+            /* 5) 排程周模板: 按周几定义设备排班段, 批量生成具体日期排程 */
+            st.executeUpdate("CREATE TABLE IF NOT EXISTS his_exam_schedule_tpl ("
+                    + "id BIGINT NOT NULL COMMENT '主键(雪花)',"
+                    + "tenant_id BIGINT NOT NULL COMMENT '租户ID',"
+                    + "org_id BIGINT NOT NULL COMMENT '机构ID',"
+                    + "device_id BIGINT NOT NULL COMMENT '设备ID',"
+                    + "day_of_week TINYINT NOT NULL COMMENT '周几(1-7)',"
+                    + "slot_start TIME NOT NULL COMMENT '开始时间',"
+                    + "slot_end TIME NOT NULL COMMENT '结束时间',"
+                    + "slot_duration INT DEFAULT 15 COMMENT '时段时长(分钟)',"
+                    + "max_patients INT DEFAULT 1 COMMENT '最大检查人数',"
+                    + "technician_id BIGINT DEFAULT NULL COMMENT '默认技师',"
+                    + "enabled TINYINT DEFAULT 1 COMMENT '是否启用',"
+                    + "create_by VARCHAR(50) DEFAULT NULL, create_time DATETIME DEFAULT NULL,"
+                    + "update_by VARCHAR(50) DEFAULT NULL, update_time DATETIME DEFAULT NULL, deleted TINYINT DEFAULT 0,"
+                    + "PRIMARY KEY (id),"
+                    + "KEY idx_device_day (tenant_id, device_id, day_of_week)"
+                    + ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='检查排程周模板'");
+            /* 6) DICOM Worklist 条目: Accession/StudyInstanceUID/MPPS 与影像设备对接 */
+            st.executeUpdate("CREATE TABLE IF NOT EXISTS his_exam_worklist ("
+                    + "id BIGINT NOT NULL COMMENT '主键(雪花)',"
+                    + "tenant_id BIGINT NOT NULL COMMENT '租户ID',"
+                    + "org_id BIGINT NOT NULL COMMENT '机构ID',"
+                    + "request_id BIGINT NOT NULL COMMENT '关联申请单',"
+                    + "accession_no VARCHAR(30) NOT NULL COMMENT '检查号(Accession Number)',"
+                    + "patient_id BIGINT NOT NULL COMMENT '患者ID',"
+                    + "patient_name VARCHAR(50) DEFAULT NULL COMMENT '患者姓名',"
+                    + "patient_id_no VARCHAR(30) DEFAULT NULL COMMENT '患者ID号',"
+                    + "gender VARCHAR(10) DEFAULT NULL COMMENT 'DICOM性别: M/F/O',"
+                    + "birth_date VARCHAR(10) DEFAULT NULL COMMENT 'DICOM日期YYYYMMDD',"
+                    + "modality VARCHAR(20) NOT NULL COMMENT 'DICOM Modality',"
+                    + "device_ae_title VARCHAR(50) DEFAULT NULL COMMENT '目标设备AE Title',"
+                    + "scheduled_station VARCHAR(50) DEFAULT NULL COMMENT 'Scheduled Station AE',"
+                    + "scheduled_date VARCHAR(10) DEFAULT NULL COMMENT 'DICOM日期',"
+                    + "scheduled_time VARCHAR(10) DEFAULT NULL COMMENT 'DICOM时间',"
+                    + "study_uid VARCHAR(128) DEFAULT NULL COMMENT 'Study Instance UID',"
+                    + "body_part VARCHAR(200) DEFAULT NULL COMMENT '检查部位',"
+                    + "procedure_desc VARCHAR(200) DEFAULT NULL COMMENT '检查描述',"
+                    + "referring_physician VARCHAR(50) DEFAULT NULL COMMENT '申请医生',"
+                    + "requesting_dept VARCHAR(100) DEFAULT NULL COMMENT '申请科室',"
+                    + "status TINYINT DEFAULT 0 COMMENT '0待检查/1检查中/2已完成/3已取消',"
+                    + "mpps_status VARCHAR(20) DEFAULT NULL COMMENT 'MPPS状态',"
+                    + "create_by VARCHAR(50) DEFAULT NULL, create_time DATETIME DEFAULT NULL,"
+                    + "update_by VARCHAR(50) DEFAULT NULL, update_time DATETIME DEFAULT NULL, deleted TINYINT DEFAULT 0,"
+                    + "PRIMARY KEY (id),"
+                    + "UNIQUE KEY uk_tenant_accession (tenant_id, accession_no),"
+                    + "KEY idx_request (request_id),"
+                    + "KEY idx_org_status (tenant_id, org_id, status),"
+                    + "KEY idx_study_uid (study_uid)"
+                    + ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='DICOM Worklist条目'");
+            /* 7) 检查执行记录: 技师操作/曝光/图像数/造影剂/剂量(CT 的 DLP/CTDIvol, DR/DSA 的 DAP) */
+            st.executeUpdate("CREATE TABLE IF NOT EXISTS his_exam_execution ("
+                    + "id BIGINT NOT NULL COMMENT '主键(雪花)',"
+                    + "tenant_id BIGINT NOT NULL COMMENT '租户ID',"
+                    + "org_id BIGINT NOT NULL COMMENT '机构ID',"
+                    + "request_id BIGINT NOT NULL COMMENT '关联申请单',"
+                    + "worklist_id BIGINT DEFAULT NULL COMMENT '关联Worklist',"
+                    + "accession_no VARCHAR(30) NOT NULL COMMENT '检查号',"
+                    + "device_id BIGINT DEFAULT NULL COMMENT '实际使用设备',"
+                    + "technician_id BIGINT DEFAULT NULL COMMENT '操作技师ID',"
+                    + "technician_name VARCHAR(50) DEFAULT NULL COMMENT '技师姓名',"
+                    + "check_in_time DATETIME DEFAULT NULL COMMENT '到检登记时间',"
+                    + "exam_start_time DATETIME DEFAULT NULL COMMENT '检查开始时间',"
+                    + "exam_end_time DATETIME DEFAULT NULL COMMENT '检查完成时间',"
+                    + "exposure_count INT DEFAULT NULL COMMENT '曝光次数',"
+                    + "image_count INT DEFAULT NULL COMMENT '图像数量',"
+                    + "contrast_agent VARCHAR(100) DEFAULT NULL COMMENT '造影剂名称',"
+                    + "contrast_dose VARCHAR(50) DEFAULT NULL COMMENT '造影剂剂量',"
+                    + "contrast_route VARCHAR(20) DEFAULT NULL COMMENT '给药途径',"
+                    + "dose_dlp DECIMAL(10,2) DEFAULT NULL COMMENT 'CT剂量DLP(mGy*cm)',"
+                    + "dose_ctdi DECIMAL(10,2) DEFAULT NULL COMMENT 'CT剂量CTDIvol(mGy)',"
+                    + "dose_dap DECIMAL(10,2) DEFAULT NULL COMMENT 'DR/DSA剂量DAP(Gy*cm2)',"
+                    + "kvp VARCHAR(20) DEFAULT NULL COMMENT '管电压',"
+                    + "mas VARCHAR(20) DEFAULT NULL COMMENT '毫安秒',"
+                    + "patient_position VARCHAR(50) DEFAULT NULL COMMENT '体位',"
+                    + "study_uid VARCHAR(128) DEFAULT NULL COMMENT 'DICOM Study Instance UID',"
+                    + "series_count INT DEFAULT NULL COMMENT 'Series数量',"
+                    + "notes VARCHAR(500) DEFAULT NULL COMMENT '检查备注(技师)',"
+                    + "status TINYINT DEFAULT 0 COMMENT '0未开始/1检查中/2已完成/3中断',"
+                    + "create_by VARCHAR(50) DEFAULT NULL, create_time DATETIME DEFAULT NULL,"
+                    + "update_by VARCHAR(50) DEFAULT NULL, update_time DATETIME DEFAULT NULL, deleted TINYINT DEFAULT 0,"
+                    + "PRIMARY KEY (id),"
+                    + "KEY idx_request (request_id),"
+                    + "KEY idx_accession (tenant_id, accession_no),"
+                    + "KEY idx_org_status (tenant_id, org_id, status)"
+                    + ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='检查执行记录'");
+            /* 8) RIS 报告模板: 所见/结论/印象/技术描述 + 全院/科室/个人三级作用域 */
+            st.executeUpdate("CREATE TABLE IF NOT EXISTS his_ris_report_template ("
+                    + "id BIGINT NOT NULL COMMENT '主键(雪花)',"
+                    + "tenant_id BIGINT NOT NULL COMMENT '租户ID',"
+                    + "org_id BIGINT NOT NULL COMMENT '机构ID',"
+                    + "template_code VARCHAR(50) NOT NULL COMMENT '模板编码',"
+                    + "template_name VARCHAR(100) NOT NULL COMMENT '模板名称',"
+                    + "modality VARCHAR(20) NOT NULL COMMENT '适用模态: CT/MR/DR/US/ES/ALL',"
+                    + "body_part VARCHAR(100) DEFAULT NULL COMMENT '适用部位(空=通用)',"
+                    + "dept_type VARCHAR(20) NOT NULL COMMENT '适用科室类型: RADIOLOGY/ULTRASOUND/ENDOSCOPY',"
+                    + "template_level TINYINT DEFAULT 1 COMMENT '级别: 1全院/2科室/3个人',"
+                    + "owner_dept_id BIGINT DEFAULT NULL COMMENT '科室级别时的科室ID',"
+                    + "owner_staff_id BIGINT DEFAULT NULL COMMENT '个人级别时的医生ID',"
+                    + "findings_template TEXT NULL COMMENT '所见模板(结构化JSON)',"
+                    + "conclusion_template TEXT NULL COMMENT '结论模板(结构化JSON)',"
+                    + "impression_template TEXT NULL COMMENT '印象模板',"
+                    + "technique_template TEXT NULL COMMENT '检查技术描述模板',"
+                    + "normal_flag TINYINT DEFAULT 0 COMMENT '是否为正常模板',"
+                    + "sort_order INT DEFAULT 0 COMMENT '排序',"
+                    + "use_count INT DEFAULT 0 COMMENT '使用次数',"
+                    + "status TINYINT DEFAULT 1 COMMENT '1启用/0停用',"
+                    + "create_by VARCHAR(50) DEFAULT NULL, create_time DATETIME DEFAULT NULL,"
+                    + "update_by VARCHAR(50) DEFAULT NULL, update_time DATETIME DEFAULT NULL, deleted TINYINT DEFAULT 0,"
+                    + "PRIMARY KEY (id),"
+                    + "UNIQUE KEY uk_tenant_tpl_code (tenant_id, template_code),"
+                    + "KEY idx_modality_body (tenant_id, modality, body_part),"
+                    + "KEY idx_scope (tenant_id, template_level, owner_dept_id, owner_staff_id)"
+                    + ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='RIS报告模板'");
+            /* 9) RIS 结构化数据元: FINDINGS/CONCLUSION/TECHNIQUE 三段结构化控件定义 */
+            st.executeUpdate("CREATE TABLE IF NOT EXISTS his_ris_report_element ("
+                    + "id BIGINT NOT NULL COMMENT '主键(雪花)',"
+                    + "tenant_id BIGINT NOT NULL COMMENT '租户ID',"
+                    + "org_id BIGINT NOT NULL COMMENT '机构ID',"
+                    + "template_id BIGINT NOT NULL COMMENT '所属模板',"
+                    + "element_code VARCHAR(50) NOT NULL COMMENT '数据元编码',"
+                    + "element_name VARCHAR(100) NOT NULL COMMENT '数据元名称',"
+                    + "element_type VARCHAR(20) NOT NULL COMMENT '类型: TEXT/NUMBER/SELECT/MULTISELECT/RADIO/MEASUREMENT',"
+                    + "section VARCHAR(20) NOT NULL COMMENT '所属段: FINDINGS/CONCLUSION/TECHNIQUE',"
+                    + "value_unit VARCHAR(20) DEFAULT NULL COMMENT '单位',"
+                    + "value_options TEXT NULL COMMENT '候选值JSON',"
+                    + "default_value VARCHAR(200) DEFAULT NULL COMMENT '默认值',"
+                    + "normal_range VARCHAR(100) DEFAULT NULL COMMENT '正常范围',"
+                    + "sort_order INT DEFAULT 0 COMMENT '排序',"
+                    + "required TINYINT DEFAULT 0 COMMENT '是否必填',"
+                    + "create_by VARCHAR(50) DEFAULT NULL, create_time DATETIME DEFAULT NULL,"
+                    + "update_by VARCHAR(50) DEFAULT NULL, update_time DATETIME DEFAULT NULL, deleted TINYINT DEFAULT 0,"
+                    + "PRIMARY KEY (id),"
+                    + "KEY idx_template (template_id),"
+                    + "KEY idx_code (tenant_id, element_code)"
+                    + ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='RIS报告结构化数据元'");
+            /* 10) 报告结构化数据值: 报告×数据元键值(文本/数值/编码三载体) */
+            st.executeUpdate("CREATE TABLE IF NOT EXISTS his_ris_report_data ("
+                    + "id BIGINT NOT NULL COMMENT '主键(雪花)',"
+                    + "tenant_id BIGINT NOT NULL COMMENT '租户ID',"
+                    + "org_id BIGINT NOT NULL COMMENT '机构ID',"
+                    + "report_id BIGINT NOT NULL COMMENT '报告ID(his_exam_report.id)',"
+                    + "element_id BIGINT NOT NULL COMMENT '数据元ID',"
+                    + "element_code VARCHAR(50) NOT NULL COMMENT '数据元编码',"
+                    + "value_text TEXT NULL COMMENT '文本值',"
+                    + "value_number DECIMAL(12,4) DEFAULT NULL COMMENT '数值',"
+                    + "value_code VARCHAR(50) DEFAULT NULL COMMENT '编码值',"
+                    + "create_by VARCHAR(50) DEFAULT NULL, create_time DATETIME DEFAULT NULL,"
+                    + "update_by VARCHAR(50) DEFAULT NULL, update_time DATETIME DEFAULT NULL, deleted TINYINT DEFAULT 0,"
+                    + "PRIMARY KEY (id),"
+                    + "KEY idx_report (report_id),"
+                    + "KEY idx_element (element_id),"
+                    + "KEY idx_report_code (tenant_id, report_id, element_code)"
+                    + ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='RIS报告结构化数据'");
+            /* 11) RIS 质控规则: 完整性/时效性/一致性/术语四类, 检查时点 ON_SAVE/ON_SUBMIT/ON_REVIEW/BATCH */
+            st.executeUpdate("CREATE TABLE IF NOT EXISTS his_ris_qc_rule ("
+                    + "id BIGINT NOT NULL COMMENT '主键(雪花)',"
+                    + "tenant_id BIGINT NOT NULL COMMENT '租户ID',"
+                    + "org_id BIGINT NOT NULL COMMENT '机构ID',"
+                    + "rule_code VARCHAR(50) NOT NULL COMMENT '规则编码',"
+                    + "rule_name VARCHAR(100) NOT NULL COMMENT '规则名称',"
+                    + "rule_type VARCHAR(20) NOT NULL COMMENT '类型: COMPLETENESS/TIMELINESS/CONSISTENCY/TERMINOLOGY',"
+                    + "dept_type VARCHAR(20) DEFAULT NULL COMMENT '适用科室类型',"
+                    + "check_point VARCHAR(20) NOT NULL COMMENT '检查时点: ON_SAVE/ON_SUBMIT/ON_REVIEW/BATCH',"
+                    + "rule_expression TEXT NOT NULL COMMENT '规则表达式JSON',"
+                    + "severity TINYINT DEFAULT 2 COMMENT '1警告/2阻断',"
+                    + "score_deduction INT DEFAULT 0 COMMENT '扣分',"
+                    + "message VARCHAR(200) NOT NULL COMMENT '提示消息',"
+                    + "enabled TINYINT DEFAULT 1 COMMENT '是否启用',"
+                    + "create_by VARCHAR(50) DEFAULT NULL, create_time DATETIME DEFAULT NULL,"
+                    + "update_by VARCHAR(50) DEFAULT NULL, update_time DATETIME DEFAULT NULL, deleted TINYINT DEFAULT 0,"
+                    + "PRIMARY KEY (id),"
+                    + "UNIQUE KEY uk_tenant_rule_code (tenant_id, rule_code),"
+                    + "KEY idx_type_point (tenant_id, rule_type, check_point)"
+                    + ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='RIS质控规则'");
+            /* 12) 质控评分记录: 报告×规则通过与否留痕(供报告质控评分汇总) */
+            st.executeUpdate("CREATE TABLE IF NOT EXISTS his_ris_qc_record ("
+                    + "id BIGINT NOT NULL COMMENT '主键(雪花)',"
+                    + "tenant_id BIGINT NOT NULL COMMENT '租户ID',"
+                    + "org_id BIGINT NOT NULL COMMENT '机构ID',"
+                    + "report_id BIGINT NOT NULL COMMENT '报告ID',"
+                    + "rule_id BIGINT NOT NULL COMMENT '规则ID',"
+                    + "check_time DATETIME NOT NULL COMMENT '检查时间',"
+                    + "passed TINYINT NOT NULL COMMENT '0不通过/1通过',"
+                    + "detail VARCHAR(500) DEFAULT NULL COMMENT '检查详情',"
+                    + "create_by VARCHAR(50) DEFAULT NULL, create_time DATETIME DEFAULT NULL,"
+                    + "update_by VARCHAR(50) DEFAULT NULL, update_time DATETIME DEFAULT NULL, deleted TINYINT DEFAULT 0,"
+                    + "PRIMARY KEY (id),"
+                    + "KEY idx_report (report_id),"
+                    + "KEY idx_rule (rule_id),"
+                    + "KEY idx_time (tenant_id, check_time)"
+                    + ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='RIS质控评分记录'");
+            /* 13) 远程会诊/双阅记录: 会诊意见/同意与否闭环(双阅/远程会诊/科内讨论三类) */
+            st.executeUpdate("CREATE TABLE IF NOT EXISTS his_ris_consult ("
+                    + "id BIGINT NOT NULL COMMENT '主键(雪花)',"
+                    + "tenant_id BIGINT NOT NULL COMMENT '租户ID',"
+                    + "org_id BIGINT NOT NULL COMMENT '机构ID',"
+                    + "consult_no VARCHAR(30) NOT NULL COMMENT '会诊号',"
+                    + "report_id BIGINT NOT NULL COMMENT '原报告ID',"
+                    + "request_doctor_id BIGINT DEFAULT NULL COMMENT '发起医生',"
+                    + "request_reason VARCHAR(500) DEFAULT NULL COMMENT '会诊原因',"
+                    + "consult_type TINYINT NOT NULL COMMENT '1双阅/2远程会诊/3科内讨论',"
+                    + "consult_doctor_id BIGINT DEFAULT NULL COMMENT '会诊医生',"
+                    + "consult_org_id BIGINT DEFAULT NULL COMMENT '会诊机构(远程)',"
+                    + "consult_opinion TEXT NULL COMMENT '会诊意见',"
+                    + "consult_time DATETIME DEFAULT NULL COMMENT '会诊时间',"
+                    + "agree_flag TINYINT DEFAULT NULL COMMENT '0不同意/1同意',"
+                    + "status TINYINT DEFAULT 0 COMMENT '0待会诊/1已完成/2已取消',"
+                    + "create_by VARCHAR(50) DEFAULT NULL, create_time DATETIME DEFAULT NULL,"
+                    + "update_by VARCHAR(50) DEFAULT NULL, update_time DATETIME DEFAULT NULL, deleted TINYINT DEFAULT 0,"
+                    + "PRIMARY KEY (id),"
+                    + "UNIQUE KEY uk_tenant_consult_no (tenant_id, consult_no),"
+                    + "KEY idx_report (report_id),"
+                    + "KEY idx_org_status (tenant_id, org_id, status)"
+                    + ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='RIS远程会诊/双阅记录'");
+            /* 14) 医保影像云索引: 结算明细×StudyUID 上传状态(供医保影像云索引上报) */
+            st.executeUpdate("CREATE TABLE IF NOT EXISTS his_ris_cloud_index ("
+                    + "id BIGINT NOT NULL COMMENT '主键(雪花)',"
+                    + "tenant_id BIGINT NOT NULL COMMENT '租户ID',"
+                    + "org_id BIGINT NOT NULL COMMENT '机构ID',"
+                    + "report_id BIGINT NOT NULL COMMENT '报告ID',"
+                    + "request_id BIGINT NOT NULL COMMENT '申请单ID',"
+                    + "settle_id VARCHAR(50) DEFAULT NULL COMMENT '医保结算ID',"
+                    + "charge_detail_sn VARCHAR(50) DEFAULT NULL COMMENT '费用明细流水号',"
+                    + "yb_exam_code VARCHAR(50) DEFAULT NULL COMMENT '医保影像检查项目编码',"
+                    + "study_uid VARCHAR(128) DEFAULT NULL COMMENT 'DICOM Study UID',"
+                    + "upload_status TINYINT DEFAULT 0 COMMENT '0待上传/1已上传/2上传失败',"
+                    + "upload_time DATETIME DEFAULT NULL COMMENT '上传时间',"
+                    + "upload_response TEXT NULL COMMENT '上传响应',"
+                    + "cloud_index_id VARCHAR(100) DEFAULT NULL COMMENT '云端索引ID',"
+                    + "create_by VARCHAR(50) DEFAULT NULL, create_time DATETIME DEFAULT NULL,"
+                    + "update_by VARCHAR(50) DEFAULT NULL, update_time DATETIME DEFAULT NULL, deleted TINYINT DEFAULT 0,"
+                    + "PRIMARY KEY (id),"
+                    + "KEY idx_report (report_id),"
+                    + "KEY idx_request (request_id),"
+                    + "KEY idx_upload (tenant_id, upload_status),"
+                    + "KEY idx_settle (tenant_id, settle_id)"
+                    + ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='医保影像云索引'");
+        }
+        /* ---------- 存量表补列: his_exam_report 医保4501 报告列 + his_exam_result_item 医保4502 明细列(幂等) ---------- */
+        /* ---------- his_exam_report 补列: 影像检查专业化 + 医保4501检查报告字段对齐(幂等) ---------- */
+        addColumnIfNotExists(conn, "his_exam_report", "accession_no", "VARCHAR(30) DEFAULT NULL COMMENT '检查号'");
+        addColumnIfNotExists(conn, "his_exam_report", "modality", "VARCHAR(20) DEFAULT NULL COMMENT '检查模态'");
+        addColumnIfNotExists(conn, "his_exam_report", "body_part", "VARCHAR(500) DEFAULT NULL COMMENT '检查部位'");
+        addColumnIfNotExists(conn, "his_exam_report", "body_part_code", "VARCHAR(200) DEFAULT NULL COMMENT '部位标准码'");
+        addColumnIfNotExists(conn, "his_exam_report", "technique", "TEXT NULL COMMENT '检查技术描述'");
+        addColumnIfNotExists(conn, "his_exam_report", "impression", "TEXT NULL COMMENT '印象'");
+        addColumnIfNotExists(conn, "his_exam_report", "template_id", "BIGINT DEFAULT NULL COMMENT '报告模板ID'");
+        addColumnIfNotExists(conn, "his_exam_report", "structured_data", "TEXT NULL COMMENT '结构化数据快照JSON'");
+        addColumnIfNotExists(conn, "his_exam_report", "report_level", "TINYINT DEFAULT 1 COMMENT '1普通/2疑难/3会诊'");
+        addColumnIfNotExists(conn, "his_exam_report", "double_read_flag", "TINYINT DEFAULT 0 COMMENT '是否双阅'");
+        addColumnIfNotExists(conn, "his_exam_report", "consult_flag", "TINYINT DEFAULT 0 COMMENT '是否远程会诊'");
+        addColumnIfNotExists(conn, "his_exam_report", "request_id", "BIGINT DEFAULT NULL COMMENT '关联检查申请单'");
+        addColumnIfNotExists(conn, "his_exam_report", "ai_suggestion", "TEXT NULL COMMENT 'AI辅助诊断建议'");
+        addColumnIfNotExists(conn, "his_exam_report", "exam_dept_type", "VARCHAR(20) DEFAULT NULL COMMENT '科室类型: RADIOLOGY/ULTRASOUND/ENDOSCOPY'");
+        addColumnIfNotExists(conn, "his_exam_report", "rpotc_type_code", "VARCHAR(30) DEFAULT NULL COMMENT '报告单类别代码(医保4501)'");
+        addColumnIfNotExists(conn, "his_exam_report", "exam_rpotc_name", "VARCHAR(50) DEFAULT NULL COMMENT '检查报告单名称(医保4501)'");
+        addColumnIfNotExists(conn, "his_exam_report", "exam_date", "DATE DEFAULT NULL COMMENT '检查日期(医保4501)'");
+        addColumnIfNotExists(conn, "his_exam_report", "rpt_date", "DATE DEFAULT NULL COMMENT '报告日期(医保4501)'");
+        addColumnIfNotExists(conn, "his_exam_report", "exam_ccls", "VARCHAR(1000) DEFAULT NULL COMMENT '检查结论(医保4501)'");
+        addColumnIfNotExists(conn, "his_exam_report", "exam_rslt_poit_flag", "VARCHAR(2) DEFAULT NULL COMMENT '阳性标志(医保4501)'");
+        addColumnIfNotExists(conn, "his_exam_report", "exam_rslt_abn", "VARCHAR(10) DEFAULT NULL COMMENT '异常标志(医保4501)'");
+        addColumnIfNotExists(conn, "his_exam_report", "positive_flag", "TINYINT DEFAULT -1 COMMENT '院内阳性: -1未判定/0阴性/1阳性'");
+        addColumnIfNotExists(conn, "his_exam_report", "rpot_doc", "VARCHAR(50) DEFAULT NULL COMMENT '报告医师(医保4502)'");
+        addColumnIfNotExists(conn, "his_exam_report", "store_path", "VARCHAR(300) DEFAULT NULL COMMENT '影像存储路径(医保4501 imageinfo)'");
+        addColumnIfNotExists(conn, "his_exam_report", "yb_upload_status", "TINYINT DEFAULT 0 COMMENT '医保上报状态'");
+        addColumnIfNotExists(conn, "his_exam_report", "yb_upload_time", "DATETIME DEFAULT NULL COMMENT '上报时间'");
+        addColumnIfNotExists(conn, "his_exam_report", "vali_flag", "VARCHAR(3) DEFAULT '1' COMMENT '有效标志(医保4501)'");
+        addColumnIfNotExists(conn, "his_exam_report", "cloud_uploaded", "TINYINT DEFAULT 0 COMMENT '医保影像云已上传'");
+        /* ---------- his_exam_result_item 补列: 测量/定量专业化 + 医保4502检验明细字段对齐(幂等) ---------- */
+        addColumnIfNotExists(conn, "his_exam_result_item", "measurement_value", "DECIMAL(12,4) DEFAULT NULL COMMENT '测量值'");
+        addColumnIfNotExists(conn, "his_exam_result_item", "measurement_unit", "VARCHAR(20) DEFAULT NULL COMMENT '测量单位'");
+        addColumnIfNotExists(conn, "his_exam_result_item", "normal_range", "VARCHAR(100) DEFAULT NULL COMMENT '正常范围'");
+        addColumnIfNotExists(conn, "his_exam_result_item", "abnormal_flag", "TINYINT DEFAULT 0 COMMENT '异常标识'");
+        addColumnIfNotExists(conn, "his_exam_result_item", "exam_mtd", "VARCHAR(50) DEFAULT NULL COMMENT '检验方法(医保4502)'");
+        addColumnIfNotExists(conn, "his_exam_result_item", "ref_val", "VARCHAR(20) DEFAULT NULL COMMENT '参考值(医保4502)'");
+        addColumnIfNotExists(conn, "his_exam_result_item", "exam_unt", "VARCHAR(200) DEFAULT NULL COMMENT '检验计量单位(医保4502)'");
+        addColumnIfNotExists(conn, "his_exam_result_item", "exam_rslt_val", "DECIMAL(16,4) DEFAULT NULL COMMENT '检验结果数值(医保4502)'");
+        addColumnIfNotExists(conn, "his_exam_result_item", "exam_rslt_dicm", "VARCHAR(2000) DEFAULT NULL COMMENT '检验结果定性(医保4502)'");
+        addColumnIfNotExists(conn, "his_exam_result_item", "exam_item_detl_code", "VARCHAR(30) DEFAULT NULL COMMENT '项目明细代码(医保4502)'");
+        addColumnIfNotExists(conn, "his_exam_result_item", "exam_item_detl_name", "VARCHAR(300) DEFAULT NULL COMMENT '项目明细名称(医保4502)'");
+        addColumnIfNotExists(conn, "his_exam_result_item", "exam_rslt_abn", "VARCHAR(10) DEFAULT NULL COMMENT '异常标识(医保4502)'");
+        /* ---------- 医保值域字典种子: 影像检查类型/文件类别(45xx/48xx 报文取值, 幂等) ---------- */
+        seedRisYbDicts(conn);
+        /* ---------- RIS 种子数据(幂等): 报告模板 + 质控规则 + 影像危急值规则 ---------- */
+        seedRisTemplates(conn);
+        seedRisQcRules(conn);
+        CriticalValueService.seedImagingCriticalRules(conn);
+    }
+
+    /**
+     * 幂等补种子: RIS 医保值域字典(std_cv_code)
+     * - img_exam_type 影像检查类型: 48xx 影像云 imgExamType 字段字典(4804 查重/4801 索引页), 1 X线成像/2 CT/3 MRI/4 US 超声/5 ECT 核医学;
+     * - file_type 文件类别: 影像云文件上报类别(01 文本/02 图片/03 视频/04 音频/05 其他)。
+     */
+    private void seedRisYbDicts(Connection conn) throws Exception {
+        String sql = "INSERT INTO std_cv_code (dict_code, dict_name, val_code, val_name, std_type, src_doc, vali_flag) "
+                + "SELECT ?, ?, ?, ?, '医保字典', 'RIS影像云值域(48xx影像云/4501检查报告报文取值, 补充种子)', '1' "
+                + "FROM DUAL WHERE NOT EXISTS (SELECT 1 FROM std_cv_code c WHERE c.dict_code = ? AND c.val_code = ?)";
+        try (PreparedStatement ps = conn.prepareStatement(sql)) {
+            // {dict_code, dict_name, val_code, val_name}
+            String[][] seeds = {
+                    {"img_exam_type", "影像检查类型", "1", "X线成像"},
+                    {"img_exam_type", "影像检查类型", "2", "CT"},
+                    {"img_exam_type", "影像检查类型", "3", "MRI"},
+                    {"img_exam_type", "影像检查类型", "4", "US超声"},
+                    {"img_exam_type", "影像检查类型", "5", "ECT核医学"},
+                    {"file_type", "文件类别", "01", "文本"},
+                    {"file_type", "文件类别", "02", "图片"},
+                    {"file_type", "文件类别", "03", "视频"},
+                    {"file_type", "文件类别", "04", "音频"},
+                    {"file_type", "文件类别", "05", "其他"},
+            };
+            for (String[] s : seeds) {
+                ps.setString(1, s[0]); ps.setString(2, s[1]); ps.setString(3, s[2]); ps.setString(4, s[3]);
+                ps.setString(5, s[0]); ps.setString(6, s[2]);
+                ps.executeUpdate();
+            }
+        }
+    }
+
     private boolean columnExists(Connection conn, String table, String column) throws Exception {
         String sql = "SELECT COUNT(*) FROM information_schema.columns "
                 + "WHERE table_schema = DATABASE() AND table_name = ? AND column_name = ?";
@@ -6938,6 +7492,220 @@ public class DictSchemaMigration implements ApplicationRunner {
             try (ResultSet rs = ps.executeQuery()) {
                 return rs.next() && rs.getInt(1) > 0;
             }
+        }
+    }
+
+    /**
+     * 幂等播种 RIS 报告模板种子(31 个: 放射 16 + 超声 10 + 内镜 5):
+     * 覆盖任务书名称全集, 骨关节按四肢/脊柱/骨盆拆分独立模板。
+     * 口径: org_id=0 全局模板(template_level=1 全院), tenant_id=1 默认租户, use_count=0, status=1;
+     * findings_template/conclusion_template 为简单 JSON(标准所见/结论条目数组), 供结构化书写端起步。
+     * 幂等: INSERT ... SELECT ... WHERE NOT EXISTS(同租户同 template_code 未删除则跳过), 重复启动不产生副本;
+     * id 取 871xx 固定段避开雪花 ID(雪花为 19 位, 小整数无碰撞)。
+     */
+    private void seedRisTemplates(Connection conn) throws Exception {
+        String sql = "INSERT INTO his_ris_report_template (id, tenant_id, org_id, template_code, template_name,"
+                + " modality, body_part, dept_type, template_level, findings_template, conclusion_template,"
+                + " normal_flag, sort_order, use_count, status, create_by, create_time, deleted)"
+                + " SELECT ?, 1, 0, ?, ?, ?, ?, ?, 1, ?, ?, 0, ?, 0, 1, 'system', NOW(), 0 FROM DUAL"
+                + " WHERE NOT EXISTS (SELECT 1 FROM his_ris_report_template"
+                + " WHERE tenant_id = 1 AND template_code = ? AND deleted = 0)";
+        /* {id, template_code, template_name, modality, body_part, dept_type, findingsJson, conclusionJson, sort} */
+        Object[][] seeds = {
+                /* ---------- 放射科 RADIOLOGY(16) ---------- */
+                {87101L, "RAD_CHEST_DR", "胸部DR正侧位", "DR", "胸部", "RADIOLOGY",
+                        "{\"items\":[\"胸廓对称，气管居中\",\"两肺纹理清晰，走行自然，肺内未见明显实质性病变\",\"心影大小形态未见异常\",\"双侧膈面光整，肋膈角锐利\"]}",
+                        "{\"items\":[\"心肺膈未见明显异常\"]}", 1},
+                {87102L, "RAD_ABDOMEN_PLAIN", "腹部平片", "DR", "腹部", "RADIOLOGY",
+                        "{\"items\":[\"腹部肠气分布尚可\",\"未见明显气腹征象及阶梯状液气平面\",\"腹部未见明显异常致密影\"]}",
+                        "{\"items\":[\"腹部立位平片未见明显异常\"]}", 2},
+                {87103L, "RAD_BONE_LIMB", "骨关节(四肢)", "DR", "四肢关节", "RADIOLOGY",
+                        "{\"items\":[\"骨皮质连续，骨小梁走行自然\",\"关节间隙清晰，关节面光整\",\"周围软组织未见肿胀\"]}",
+                        "{\"items\":[\"所示骨关节未见明显骨折及脱位征象\"]}", 3},
+                {87104L, "RAD_BONE_SPINE", "骨关节(脊柱)", "DR", "脊柱", "RADIOLOGY",
+                        "{\"items\":[\"脊柱生理曲度存在\",\"椎体形态及骨质密度未见异常\",\"椎间隙未见明显狭窄\"]}",
+                        "{\"items\":[\"所示脊柱未见明显异常\"]}", 4},
+                {87105L, "RAD_BONE_PELVIS", "骨关节(骨盆)", "DR", "骨盆", "RADIOLOGY",
+                        "{\"items\":[\"骨盆骨质结构完整\",\"双侧髋关节间隙清晰\",\"软组织内未见异常密度影\"]}",
+                        "{\"items\":[\"骨盆诸骨未见明显异常\"]}", 5},
+                {87106L, "RAD_HEAD_CT", "头颅CT平扫", "CT", "头颅", "RADIOLOGY",
+                        "{\"items\":[\"颅内未见明显出血及梗死灶\",\"脑实质密度均匀，脑沟脑裂未见增宽\",\"中线结构居中\",\"颅骨骨质未见异常\"]}",
+                        "{\"items\":[\"头颅CT平扫未见明显异常\"]}", 6},
+                {87107L, "RAD_CHEST_CT", "胸部CT平扫", "CT", "胸部", "RADIOLOGY",
+                        "{\"items\":[\"两肺纹理清晰，肺内未见明显实质性病变\",\"纵隔内未见肿大淋巴结\",\"胸腔未见积液\",\"骨质未见破坏\"]}",
+                        "{\"items\":[\"胸部CT平扫未见明显异常\"]}", 7},
+                {87108L, "RAD_CHEST_CTE", "胸部CT增强", "CT", "胸部", "RADIOLOGY",
+                        "{\"items\":[\"增强后肺内病灶未见明显强化\",\"纵隔血管走行自然，强化均匀\",\"胸腔未见积液\"]}",
+                        "{\"items\":[\"胸部CT增强扫描未见明显异常强化灶\"]}", 8},
+                {87109L, "RAD_ABDOMEN_CT", "腹部CT平扫", "CT", "腹部", "RADIOLOGY",
+                        "{\"items\":[\"肝脏形态大小正常，实质密度均匀\",\"胆囊壁光整，腔内未见高密度影\",\"胰腺脾脏双肾未见异常\",\"腹膜后未见肿大淋巴结\"]}",
+                        "{\"items\":[\"腹部CT平扫未见明显异常\"]}", 9},
+                {87110L, "RAD_ABDOMEN_CTE", "腹部CT增强", "CT", "腹部", "RADIOLOGY",
+                        "{\"items\":[\"动脉期/门脉期/延迟期肝实质强化均匀\",\"肝内胆管未见扩张\",\"门静脉充盈良好\"]}",
+                        "{\"items\":[\"腹部CT增强扫描未见明显异常强化灶\"]}", 10},
+                {87111L, "RAD_HEAD_MRI", "头颅MRI", "MR", "头颅", "RADIOLOGY",
+                        "{\"items\":[\"脑实质内未见明显异常信号灶\",\"脑室系统无扩张\",\"中线结构居中\",\"颅内大血管流空信号存在\"]}",
+                        "{\"items\":[\"头颅MRI平扫未见明显异常\"]}", 11},
+                {87112L, "RAD_SPINE_MRI", "脊柱MRI", "MR", "脊柱", "RADIOLOGY",
+                        "{\"items\":[\"椎体形态及信号未见异常\",\"椎间盘未见明显膨出及突出\",\"椎管内未见占位性病变\",\"脊髓信号均匀\"]}",
+                        "{\"items\":[\"所示脊柱MRI未见明显异常\"]}", 12},
+                {87113L, "RAD_ABDOMEN_MRI", "腹部MRI", "MR", "腹部", "RADIOLOGY",
+                        "{\"items\":[\"肝脏信号均匀，未见异常信号灶\",\"胆道系统未见扩张\",\"脾脏胰腺双肾未见异常信号\"]}",
+                        "{\"items\":[\"腹部MRI平扫未见明显异常\"]}", 13},
+                {87114L, "RAD_JOINT_MRI", "关节MRI", "MR", "关节", "RADIOLOGY",
+                        "{\"items\":[\"关节软骨连续，信号均匀\",\"半月板形态未见异常\",\"关节腔内未见积液及滑膜增厚\",\"韧带走行连续\"]}",
+                        "{\"items\":[\"所示关节MRI未见明显异常\"]}", 14},
+                {87115L, "RAD_DSA_CORONARY", "DSA冠脉造影", "XA", "冠状动脉", "RADIOLOGY",
+                        "{\"items\":[\"左主干未见狭窄\",\"前降支/回旋支/右冠状动脉走行自然\",\"未见明显狭窄及闭塞\",\"TIMI血流3级\"]}",
+                        "{\"items\":[\"冠状动脉造影未见明显狭窄\"]}", 15},
+                {87116L, "RAD_DSA_CEREBRAL", "DSA脑血管造影", "XA", "脑血管", "RADIOLOGY",
+                        "{\"items\":[\"双侧颈内动脉/大脑前中动脉走行自然\",\"椎基底动脉系统显影良好\",\"未见明显狭窄/动脉瘤/动静脉畸形\"]}",
+                        "{\"items\":[\"脑血管造影未见明显异常\"]}", 16},
+                /* ---------- 超声科 ULTRASOUND(10) ---------- */
+                {87117L, "US_ABDOMEN", "腹部超声", "US", "腹部", "ULTRASOUND",
+                        "{\"items\":[\"肝脏形态大小正常，实质回声均匀\",\"胆囊壁光整，腔内透声好\",\"胰腺脾脏双肾未见异常\"]}",
+                        "{\"items\":[\"腹部超声未见明显异常\"]}", 17},
+                {87118L, "US_URINARY", "泌尿系超声", "US", "泌尿系", "ULTRASOUND",
+                        "{\"items\":[\"双肾形态大小正常，皮质回声均匀\",\"双侧输尿管未见扩张\",\"膀胱壁光整，残余尿量未见增多\"]}",
+                        "{\"items\":[\"泌尿系超声未见明显异常\"]}", 18},
+                {87119L, "US_THYROID", "甲状腺超声", "US", "甲状腺", "ULTRASOUND",
+                        "{\"items\":[\"甲状腺形态大小正常，实质回声均匀\",\"腺体内未见异常回声团块\"]}",
+                        "{\"items\":[\"甲状腺超声未见明显异常\"]}", 19},
+                {87120L, "US_BREAST", "乳腺超声", "US", "乳腺", "ULTRASOUND",
+                        "{\"items\":[\"双侧乳腺腺体结构清晰，回声尚均匀\",\"乳腺内未见异常回声团块\",\"腋窝未见肿大淋巴结\"]}",
+                        "{\"items\":[\"双侧乳腺超声未见明显异常\"]}", 20},
+                {87121L, "US_ECHOCARDIO", "心脏彩超", "US", "心脏", "ULTRASOUND",
+                        "{\"items\":[\"各心腔内径正常范围\",\"室壁厚度及运动幅度未见异常\",\"瓣膜形态及启闭未见异常\",\"CDFI未见异常血流信号\"]}",
+                        "{\"items\":[\"心脏结构及功能未见明显异常\"]}", 21},
+                {87122L, "US_CAROTID", "颈部血管超声", "US", "颈部血管", "ULTRASOUND",
+                        "{\"items\":[\"双侧颈动脉内中膜未见增厚\",\"管腔内未见斑块及血栓回声\",\"CDFI血流通畅\"]}",
+                        "{\"items\":[\"颈部血管超声未见明显异常\"]}", 22},
+                {87123L, "US_LOWER_LIMB_VESSEL", "下肢血管超声", "US", "下肢血管", "ULTRASOUND",
+                        "{\"items\":[\"下肢深静脉血管内径正常\",\"管腔内未见血栓回声\",\"探头加压管腔闭合良好\"]}",
+                        "{\"items\":[\"下肢血管超声未见明显异常\"]}", 23},
+                {87124L, "US_OBST_EARLY", "产科超声(早期)", "US", "子宫附件", "ULTRASOUND",
+                        "{\"items\":[\"宫腔内可见孕囊回声\",\"孕囊内可见卵黄囊及胚芽\",\"可见原始心管搏动\"]}",
+                        "{\"items\":[\"早期妊娠，单活胎\"]}", 24},
+                {87125L, "US_OBST_MID", "产科超声(中期)", "US", "胎儿", "ULTRASOUND",
+                        "{\"items\":[\"胎头位于下方，双顶径测量值相当于孕周\",\"胎心搏动规律\",\"羊水量正常\",\"胎盘位于前/后壁\"]}",
+                        "{\"items\":[\"中期妊娠，单活胎\"]}", 25},
+                {87126L, "US_SUPERFICIAL", "浅表器官超声", "US", "浅表器官", "ULTRASOUND",
+                        "{\"items\":[\"所示浅表部位皮下软组织层次清晰\",\"未见明显占位性病变\"]}",
+                        "{\"items\":[\"浅表器官超声未见明显异常\"]}", 26},
+                /* ---------- 内镜 ENDOSCOPY(5) ---------- */
+                {87127L, "ENDO_GASTROSCOPY", "胃镜", "ES", "食管胃十二指肠", "ENDOSCOPY",
+                        "{\"items\":[\"食管黏膜光滑，血管纹理清晰\",\"胃腔形态正常，黏膜光滑\",\"幽门圆，开放好\",\"十二指肠球部及降部未见异常\"]}",
+                        "{\"items\":[\"胃镜检查未见明显异常\"]}", 27},
+                {87128L, "ENDO_COLONOSCOPY", "肠镜", "ES", "结直肠", "ENDOSCOPY",
+                        "{\"items\":[\"肠道准备满意\",\"回盲部及全结肠黏膜光滑\",\"血管纹理清晰，未见糜烂及占位\"]}",
+                        "{\"items\":[\"肠镜检查未见明显异常\"]}", 28},
+                {87129L, "ENDO_BRONCHOSCOPY", "支气管镜", "ES", "气道", "ENDOSCOPY",
+                        "{\"items\":[\"声带活动对称\",\"气管及各级支气管管腔通畅\",\"黏膜光滑，未见新生物及狭窄\"]}",
+                        "{\"items\":[\"支气管镜检查未见明显异常\"]}", 29},
+                {87130L, "ENDO_NASOPHARYNX", "鼻咽喉镜", "ES", "鼻咽喉", "ENDOSCOPY",
+                        "{\"items\":[\"鼻腔黏膜光滑，各鼻道通畅\",\"鼻咽部黏膜光滑\",\"声带活动对称，未见新生物\"]}",
+                        "{\"items\":[\"鼻咽喉镜检查未见明显异常\"]}", 30},
+                {87131L, "ENDO_ERCP", "ERCP", "ES", "胆胰管", "ENDOSCOPY",
+                        "{\"items\":[\"十二指肠乳头形态正常\",\"胆管造影未见充盈缺损及狭窄\",\"胰管显影良好\"]}",
+                        "{\"items\":[\"ERCP检查未见明显异常\"]}", 31},
+        };
+        try (PreparedStatement ps = conn.prepareStatement(sql)) {
+            for (Object[] s : seeds) {
+                ps.setLong(1, (Long) s[0]);
+                ps.setString(2, (String) s[1]);
+                ps.setString(3, (String) s[2]);
+                ps.setString(4, (String) s[3]);
+                ps.setString(5, (String) s[4]);
+                ps.setString(6, (String) s[5]);
+                ps.setString(7, (String) s[6]);
+                ps.setString(8, (String) s[7]);
+                ps.setInt(9, (Integer) s[8]);
+                ps.setString(10, (String) s[1]);
+                ps.addBatch();
+            }
+            ps.executeBatch();
+        }
+    }
+
+    /**
+     * 幂等播种 RIS 质控规则种子(20 条, 四类规则):
+     * COMPLETENESS 完整性(所见/结论/印象/部位/技术描述非空) / TIMELINESS 时效性(普通24h/急诊2h/
+     * 危急值30min/审核4h) / CONSISTENCY 一致性(申请-报告部位匹配、阳性标志-结论一致) /
+     * TERMINOLOGY 术语(禁用模糊表述: 考虑/大致正常/基本正常/可能/待排)。
+     * 口径: org_id=0 全局规则, dept_type 空=通用科室, severity 1警告/2阻断, score_deduction 按扣分;
+     * rule_expression JSON 与 RisQcService 评估器约定一致({"field":...}/{"maxHours":...}/
+     * {"maxMinutes":...}/{"type":...}/{"forbidden":[...]});
+     * 幂等: INSERT ... SELECT ... WHERE NOT EXISTS(同租户同 rule_code 未删除则跳过); id 取 872xx 固定段。
+     */
+    private void seedRisQcRules(Connection conn) throws Exception {
+        String sql = "INSERT INTO his_ris_qc_rule (id, tenant_id, org_id, rule_code, rule_name, rule_type,"
+                + " dept_type, check_point, rule_expression, severity, score_deduction, message, enabled,"
+                + " create_by, create_time, deleted)"
+                + " SELECT ?, 1, 0, ?, ?, ?, NULL, ?, ?, ?, ?, ?, 1, 'system', NOW(), 0 FROM DUAL"
+                + " WHERE NOT EXISTS (SELECT 1 FROM his_ris_qc_rule"
+                + " WHERE tenant_id = 1 AND rule_code = ? AND deleted = 0)";
+        /* {id, rule_code, rule_name, rule_type, check_point, rule_expression, severity, deduction, message} */
+        Object[][] seeds = {
+                /* ---------- COMPLETENESS 完整性(6) ---------- */
+                {87201L, "QC_CP_FINDINGS", "所见不为空", "COMPLETENESS", "ON_SUBMIT",
+                        "{\"field\":\"findings\"}", 2, 10, "检查所见不能为空"},
+                {87202L, "QC_CP_CONCLUSION", "结论不为空", "COMPLETENESS", "ON_SUBMIT",
+                        "{\"field\":\"conclusion\"}", 2, 10, "检查结论不能为空"},
+                {87203L, "QC_CP_IMPRESSION", "印象不为空", "COMPLETENESS", "ON_REVIEW",
+                        "{\"field\":\"impression\"}", 1, 5, "印象不能为空"},
+                {87204L, "QC_CP_BODY_PART", "检查部位不为空", "COMPLETENESS", "ON_SUBMIT",
+                        "{\"field\":\"body_part\"}", 2, 5, "检查部位不能为空"},
+                {87205L, "QC_CP_TECHNIQUE", "检查技术描述不为空", "COMPLETENESS", "ON_SAVE",
+                        "{\"field\":\"technique\"}", 1, 3, "建议补全检查技术描述"},
+                {87206L, "QC_CP_FINDINGS_SAVE", "所见保存时非空提醒", "COMPLETENESS", "ON_SAVE",
+                        "{\"field\":\"findings\"}", 1, 3, "检查所见尚未填写"},
+                /* ---------- TIMELINESS 时效性(4) ---------- */
+                {87207L, "QC_TL_NORMAL", "普通报告24小时内完成", "TIMELINESS", "ON_SUBMIT",
+                        "{\"maxHours\":24}", 1, 5, "普通报告超出24小时时限"},
+                {87208L, "QC_TL_URGENT", "急诊报告2小时内完成", "TIMELINESS", "ON_SUBMIT",
+                        "{\"maxHours\":2}", 2, 10, "急诊报告超出2小时时限"},
+                {87209L, "QC_TL_CRITICAL", "危急值30分钟内报告", "TIMELINESS", "ON_SUBMIT",
+                        "{\"maxMinutes\":30}", 2, 10, "危急值报告超出30分钟时限"},
+                {87210L, "QC_TL_REVIEW", "审核时效4小时内", "TIMELINESS", "ON_REVIEW",
+                        "{\"maxHours\":4}", 1, 3, "报告审核超出4小时时限"},
+                /* ---------- CONSISTENCY 一致性(4) ---------- */
+                {87211L, "QC_CS_BODY_PART", "申请部位与报告部位匹配", "CONSISTENCY", "ON_SUBMIT",
+                        "{\"type\":\"bodyPartMatch\"}", 1, 5, "报告部位与申请部位不匹配"},
+                {87212L, "QC_CS_POSITIVE", "阳性标志与结论一致", "CONSISTENCY", "ON_SUBMIT",
+                        "{\"type\":\"positiveConsistent\"}", 2, 10, "阳性标志未判定或与结论不一致"},
+                {87213L, "QC_CS_POSITIVE_REVIEW", "阳性一致性复核", "CONSISTENCY", "ON_REVIEW",
+                        "{\"type\":\"positiveConsistent\"}", 1, 5, "审核复核: 阳性标志与结论需一致"},
+                {87214L, "QC_CS_BODY_PART_REVIEW", "部位匹配复核", "CONSISTENCY", "ON_REVIEW",
+                        "{\"type\":\"bodyPartMatch\"}", 1, 3, "审核复核: 部位与申请需匹配"},
+                /* ---------- TERMINOLOGY 术语(6) ---------- */
+                {87215L, "QC_TM_KAO_LV", "禁用模糊表述:考虑", "TERMINOLOGY", "ON_REVIEW",
+                        "{\"forbidden\":[\"考虑\"]}", 1, 5, "报告禁用模糊表述\"考虑\", 请明确诊断意见"},
+                {87216L, "QC_TM_DA_ZHI", "禁用模糊表述:大致正常", "TERMINOLOGY", "ON_REVIEW",
+                        "{\"forbidden\":[\"大致正常\"]}", 1, 3, "报告禁用模糊表述\"大致正常\""},
+                {87217L, "QC_TM_JI_BEN", "禁用模糊表述:基本正常", "TERMINOLOGY", "ON_REVIEW",
+                        "{\"forbidden\":[\"基本正常\"]}", 1, 3, "报告禁用模糊表述\"基本正常\""},
+                {87218L, "QC_TM_MAYBE", "禁用模糊表述:可能", "TERMINOLOGY", "ON_REVIEW",
+                        "{\"forbidden\":[\"可能\"]}", 1, 3, "报告禁用模糊表述\"可能\""},
+                {87219L, "QC_TM_DAI_PAI", "禁用模糊表述:待排", "TERMINOLOGY", "ON_REVIEW",
+                        "{\"forbidden\":[\"待排\"]}", 1, 3, "报告禁用模糊表述\"待排\""},
+                {87220L, "QC_TM_KAO_LV_SUBMIT", "禁用模糊表述:考虑(提交时点)", "TERMINOLOGY", "ON_SUBMIT",
+                        "{\"forbidden\":[\"考虑\"]}", 1, 5, "提交检查: 报告禁用模糊表述\"考虑\""},
+        };
+        try (PreparedStatement ps = conn.prepareStatement(sql)) {
+            for (Object[] s : seeds) {
+                ps.setLong(1, (Long) s[0]);
+                ps.setString(2, (String) s[1]);
+                ps.setString(3, (String) s[2]);
+                ps.setString(4, (String) s[3]);
+                ps.setString(5, (String) s[4]);
+                ps.setString(6, (String) s[5]);
+                ps.setInt(7, (Integer) s[6]);
+                ps.setInt(8, (Integer) s[7]);
+                ps.setString(9, (String) s[8]);
+                ps.setString(10, (String) s[1]);
+                ps.addBatch();
+            }
+            ps.executeBatch();
         }
     }
 }

@@ -396,6 +396,13 @@
           if (error && error.message) { HIS.notifyError(error); }
         }).finally(function () { vm.submitting = false; });
       },
+      /* OP-B 报卡前移: 接诊中"保存诊断"成功后面板上抛命中清单, 复用同一非阻断弹层(与完成接诊兜底 check-trigger 同源去重) */
+      onReportTrigger: function (tips) {
+        var hits = Array.isArray(tips) ? tips : [];
+        if (!hits.length) { return; }
+        this.reportTips = hits;
+        this.reportTipVisible = true;
+      },
       /* OP-B 保存诊断后触发判定: 命中法定应报卡则弹非阻断提醒条, 已报/已暂不报的后端自动过滤 */
       checkReportTrigger: function (visitId) {
         var vm = this;
@@ -708,7 +715,7 @@
 
             <div class="dw-tab-body dw-clinic" v-show="activeTab==='clinic'">
               <div class="dw-col dw-col-left">
-                <dw-diagnosis-panel ref="diagPanel" @update-diagnoses="onUpdateDiagnoses" @apply-template="onApplyDiagTemplate"></dw-diagnosis-panel>
+                <dw-diagnosis-panel ref="diagPanel" @update-diagnoses="onUpdateDiagnoses" @apply-template="onApplyDiagTemplate" @report-trigger="onReportTrigger"></dw-diagnosis-panel>
                 <dw-emr-panel ref="emrPanel" @save-draft="onSaveDraft" @emr-dirty="dirtyEmr = true"></dw-emr-panel>
               </div>
               <div class="dw-col dw-col-right">

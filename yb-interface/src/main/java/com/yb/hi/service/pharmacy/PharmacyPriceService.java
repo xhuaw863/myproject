@@ -1,18 +1,12 @@
 package com.yb.hi.service.pharmacy;
 
-import com.baomidou.mybatisplus.core.toolkit.Wrappers;
 import com.yb.hi.entity.pharmacy.HisPharmacyDef;
-import com.yb.hi.entity.pharmacy.HisPharmacyDrugPrice;
-import com.yb.hi.framework.common.BizException;
 import com.yb.hi.framework.tenant.TenantContext;
 import com.yb.hi.mapper.community.HisDrugCatalogMapper;
-import com.yb.hi.mapper.pharmacy.HisPharmacyDrugPriceMapper;
 import com.yb.hi.entity.community.HisDrugCatalog;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
-import org.springframework.transaction.annotation.Transactional;
-import org.springframework.util.StringUtils;
 
 import java.math.BigDecimal;
 import java.util.ArrayList;
@@ -24,24 +18,22 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * 药房维度定价服务(三期): 生效价=药房覆盖价 his_pharmacy_drug_price, 未覆盖回落目录零售价。
- * 1) effectivePrice/Batch: 开方计费与服务端重算价唯一口径; pharmacyId 为空一律目录价(兼容不绑药房存量);
- * 2) stockSummary: 按药房库存位(stock_location_id, 空回退旧 warehouse_id)聚合各药品可用量;
- * 3) 覆盖价维护 save 幂等 upsert; clear 物理删除(唯一键下软删残行会撞键, 且"回落目录价"本应是无状态操作)。
+ * 药房维度定价服务(批次驱动): 生效价 = 发药药房 FIFO 吃批次加权单价, 在库不足回落目录零售价。
+ * 1) effectivePrice/Batch/chargePriceBatch: 开方计费与服务端重算价唯一口径; pharmacyId 为空一律目录价(兼容不绑药房存量);
+ * 2) stockSummary/reservedQtyBatch: 按药房库存位聚合各药品可用量/已开未发预占量。
+ * 注: 旧覆盖价层 his_pharmacy_drug_price 及其维护页(药房定价)已于 2026-10 下线(不符批次价业务实际), 不再参与任何定价。
  * JdbcTemplate 原生 SQL 不走租户插件, 显式 tenant_id 过滤。
  */
 @Slf4j
 @Service
 public class PharmacyPriceService {
 
-    private final HisPharmacyDrugPriceMapper priceMapper;
     private final HisDrugCatalogMapper drugCatalogMapper;
     private final PharmacyDefService pharmacyDefService;
     private final JdbcTemplate jdbcTemplate;
 
-    public PharmacyPriceService(HisPharmacyDrugPriceMapper priceMapper, HisDrugCatalogMapper drugCatalogMapper,
+    public PharmacyPriceService(HisDrugCatalogMapper drugCatalogMapper,
                                 PharmacyDefService pharmacyDefService, JdbcTemplate jdbcTemplate) {
-        this.priceMapper = priceMapper;
         this.drugCatalogMapper = drugCatalogMapper;
         this.pharmacyDefService = pharmacyDefService;
         this.jdbcTemplate = jdbcTemplate;
@@ -54,7 +46,7 @@ public class PharmacyPriceService {
 
     /**
      * 单药生效价(批次驱动预览): 药房 FIFO 头一批零售价优先, 回落目录零售价; 无价返回 null。
-     * 注: 覆盖价层 his_pharmacy_drug_price 不再参与任何定价(仅 药房定价 维护页过渡期保留, 三期下线)。
+     * 注: 旧覆盖价层 his_pharmacy_drug_price 及其维护页(药房定价)已于 2026-10 下线, 不再参与任何定价。
      */
     public BigDecimal effectivePrice(Long pharmacyId, Long drugCatalogId) {
         if (drugCatalogId == null) {
@@ -65,7 +57,7 @@ public class PharmacyPriceService {
         return m.get(drugCatalogId);
     }
 
-    /** 批量生效价(浏览/展示, 无数量维度): 每药按 FIFO 头一批零售价 ?? 目录价; 覆盖价不再参与 */
+    /** 批量生效价(浏览/展示, 无数量维度): 每药按 FIFO 头一批零售价, 无库存回落目录价 */
     public Map<Long, BigDecimal> effectivePriceBatch(Long pharmacyId, Collection<Long> drugIds) {
         if (drugIds == null || drugIds.isEmpty()) {
             return new HashMap<>();
@@ -189,107 +181,37 @@ public class PharmacyPriceService {
         return out;
     }
 
-    /* ================= 覆盖价维护 ================= */
-
-    /** 定价页(按药房): 目录启用药品分页 + 覆盖价/生效价/该房库存; keyword 匹配名称/编码/简码 */
-    public Map<String, Object> pricePage(Long orgId, Long pharmacyId, String keyword, long page, long size) {
-        HisPharmacyDef pharmacy = pharmacyDefService.requireEnabled(pharmacyId, orgId);
-        long p = page < 1 ? 1 : page;
-        long s = size < 1 ? 20 : Math.min(size, 200);
-        long tenant = tenantId();
-        StringBuilder where = new StringBuilder(" WHERE c.tenant_id = ? AND c.status = 1 AND c.deleted = 0");
+    /**
+     * P3 库存软预占: 某药房已开未发(status=1)处方对各药的占用量合计 drugId->SUM(quantity)。
+     * 已发药(2)/已退药(3)/已作废(-1) 不计; 药房归属由 pharmacy_id 天然收敛到机构。发药才实扣, 作废/退药自然退出占用。
+     * JdbcTemplate 原生 SQL 不走租户插件, 显式 tenant_id + deleted=0。
+     */
+    public Map<Long, BigDecimal> reservedQtyBatch(Long pharmacyId, Collection<Long> drugIds) {
+        Map<Long, BigDecimal> out = new HashMap<>();
+        if (pharmacyId == null || drugIds == null || drugIds.isEmpty()) {
+            return out;
+        }
+        List<Long> ids = new ArrayList<>(new java.util.LinkedHashSet<>(drugIds));
+        StringBuilder sql = new StringBuilder(
+                "SELECT i.drug_id AS drug_id, SUM(i.quantity) AS qty FROM his_prescription_item i"
+                        + " JOIN his_prescription p ON i.prescription_id = p.id"
+                        + " WHERE p.tenant_id = ? AND p.pharmacy_id = ? AND p.status = 1 AND p.deleted = 0 AND i.deleted = 0"
+                        + " AND i.drug_id IN (");
         List<Object> args = new ArrayList<>();
-        args.add(tenant);
-        if (StringUtils.hasText(keyword)) {
-            where.append(" AND (c.generic_name LIKE ? OR c.trade_name LIKE ? OR c.drug_code LIKE ? OR c.py_code LIKE ?)");
-            String kw = "%" + keyword.trim() + "%";
-            args.add(kw);
-            args.add(kw);
-            args.add(kw);
-            args.add(kw);
+        args.add(tenantId());
+        args.add(pharmacyId);
+        for (int i = 0; i < ids.size(); i++) {
+            sql.append(i == 0 ? "?" : ",?");
+            args.add(ids.get(i));
         }
-        Long total = jdbcTemplate.queryForObject(
-                "SELECT COUNT(*) FROM his_drug_catalog c" + where, Long.class, args.toArray());
-        Long locId = pharmacy.getStockLocationId() != null ? pharmacy.getStockLocationId() : pharmacy.getWarehouseId();
-        List<Object> dataArgs = new ArrayList<>(args);
-        dataArgs.add((p - 1) * s);
-        dataArgs.add(s);
-        // 覆盖价/库存位聚合均为标量子查询: 定价页数据量小, 换取分页语义简单可靠
-        List<Map<String, Object>> rows = jdbcTemplate.queryForList(
-                "SELECT c.id, c.drug_code, c.generic_name, c.trade_name, c.spec, c.min_unit, c.pack_ratio,"
-                        + " c.retail_price catalog_price,"
-                        + " (SELECT p.retail_price FROM his_pharmacy_drug_price p"
-                        + "  WHERE p.tenant_id = ? AND p.pharmacy_id = ? AND p.drug_catalog_id = c.id AND p.deleted = 0) override_price,"
-                        + " (SELECT IFNULL(SUM(k.qty), 0) FROM his_drug_stock k"
-                        + "  WHERE k.tenant_id = ? AND k.warehouse_id = ? AND k.drug_catalog_id = c.id"
-                        + "   AND k.status = 1 AND k.deleted = 0) stock_qty"
-                        + " FROM his_drug_catalog c" + where
-                        + " ORDER BY c.id DESC LIMIT ?, ?",
-                buildArgs(tenant, pharmacyId, tenant, locId, dataArgs));
-        for (Map<String, Object> r : rows) {
-            BigDecimal ov = toBd(r.get("override_price"));
-            r.put("eff_price", ov != null ? ov : toBd(r.get("catalog_price")));
+        sql.append(") GROUP BY i.drug_id");
+        for (Map<String, Object> r : jdbcTemplate.queryForList(sql.toString(), args.toArray())) {
+            out.put(toLong(r.get("drug_id")), toBd(r.get("qty")));
         }
-        Map<String, Object> out = new LinkedHashMap<>();
-        out.put("records", rows);
-        out.put("total", total == null ? 0L : total);
-        out.put("page", p);
-        out.put("size", s);
-        out.put("pharmacyName", pharmacy.getName());
         return out;
     }
 
-    /** 保存覆盖价(幂等 upsert): 校验药房归属 + 药品存在 + 价非负 */
-    @Transactional(rollbackFor = Exception.class)
-    public HisPharmacyDrugPrice save(Long orgId, Long pharmacyId, Long drugCatalogId, BigDecimal retailPrice) {
-        pharmacyDefService.requireEnabled(pharmacyId, orgId);
-        if (drugCatalogId == null || retailPrice == null || retailPrice.compareTo(BigDecimal.ZERO) < 0) {
-            throw new BizException(400, "药品与零售价(非负)不能为空");
-        }
-        if (drugCatalogMapper.selectById(drugCatalogId) == null) {
-            throw new BizException(400, "药品目录不存在: " + drugCatalogId);
-        }
-        HisPharmacyDrugPrice exist = priceMapper.selectOne(Wrappers.<HisPharmacyDrugPrice>lambdaQuery()
-                .eq(HisPharmacyDrugPrice::getPharmacyId, pharmacyId)
-                .eq(HisPharmacyDrugPrice::getDrugCatalogId, drugCatalogId)
-                .last("LIMIT 1"));
-        if (exist != null) {
-            exist.setRetailPrice(retailPrice);
-            priceMapper.updateById(exist);
-            log.info("药房覆盖价更新: pharmacyId={}, drugId={}, price={}", pharmacyId, drugCatalogId, retailPrice);
-            return exist;
-        }
-        HisPharmacyDrugPrice e = new HisPharmacyDrugPrice();
-        e.setOrgId(orgId);
-        e.setPharmacyId(pharmacyId);
-        e.setDrugCatalogId(drugCatalogId);
-        e.setRetailPrice(retailPrice);
-        priceMapper.insert(e);
-        log.info("药房覆盖价新增: pharmacyId={}, drugId={}, price={}", pharmacyId, drugCatalogId, retailPrice);
-        return e;
-    }
-
-    /** 清空覆盖价(物理删除, 回落目录价): 无覆盖行时静默成功 */
-    @Transactional(rollbackFor = Exception.class)
-    public void clear(Long pharmacyId, Long drugCatalogId) {
-        if (pharmacyId == null || drugCatalogId == null) {
-            throw new BizException(400, "药房与药品不能为空");
-        }
-        int n = priceMapper.physicalDelete(pharmacyId, drugCatalogId);
-        log.info("药房覆盖价清空(回落目录价): pharmacyId={}, drugId={}, affected={}", pharmacyId, drugCatalogId, n);
-    }
-
     /* ================= 内部 ================= */
-
-    private static Object[] buildArgs(long tenant, Long pharmacyId, long tenant2, Long locId, List<Object> tail) {
-        List<Object> args = new ArrayList<>();
-        args.add(tenant);
-        args.add(pharmacyId);
-        args.add(tenant2);
-        args.add(locId);
-        args.addAll(tail);
-        return args.toArray();
-    }
 
     private static long tenantId() {
         Long t = TenantContext.get();

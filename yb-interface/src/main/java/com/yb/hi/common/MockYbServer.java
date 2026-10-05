@@ -282,8 +282,78 @@ public class MockYbServer {
                 }
                 break;
             }
+            case "4801": {
+                // RIS 影像云: 4801 影像索引页 URL(参数驱动骨架, 回模拟 URL 供端到端演示; 48xx 字段 camelCase)
+                JSONObject d48 = input == null ? null : input.getJSONObject("data");
+                log.info("【模拟医保平台】4801 影像索引页查询: psnNo={}, psnName={}, drCode={}",
+                        d48 == null ? null : d48.getString("psnNo"),
+                        d48 == null ? null : d48.getString("psnName"),
+                        d48 == null ? null : d48.getString("drCode"));
+                output.put("url", "/verify/cloud-index.html?psnNo=" + (d48 == null ? "" : d48.getString("psnNo")));
+                break;
+            }
+            case "4802": case "4803": {
+                // RIS 影像云: 4802 预约上传 / 4803 取消预约(输出无节点, infcode=0 即成功)
+                JSONObject d48 = input == null ? null : input.getJSONObject("data");
+                log.info("【模拟医保平台】{} 预约影像: ordrRgstSn={}, psnName={}", infno,
+                        d48 == null ? null : d48.getString("ordrRgstSn"),
+                        d48 == null ? null : d48.getString("psnName"));
+                break;
+            }
+            case "4804": {
+                // RIS 影像云: 4804 重复检查查询(默认未查到重复; 测试钩子 -Dyb.mock.4804.dup=true 回重复记录 URL)
+                JSONObject d48 = input == null ? null : input.getJSONObject("data");
+                log.info("【模拟医保平台】4804 重复检查查询: psnName={}, imgExamType={}, examDate={}, examPart={}",
+                        d48 == null ? null : d48.getString("psnName"),
+                        d48 == null ? null : d48.getString("imgExamType"),
+                        d48 == null ? null : d48.getString("examDate"),
+                        d48 == null ? null : d48.getString("examPart"));
+                if ("true".equalsIgnoreCase(System.getProperty("yb.mock.4804.dup"))) {
+                    output.put("url", "/verify/dup-exam.html?psnName=" + (d48 == null ? "" : d48.getString("psnName")));
+                }
+                break;
+            }
+            case "5401": {
+                // RIS 互认: 5401 项目互认查询(回一条模拟互认记录; 54xx 字段 snake_case)
+                JSONObject d54 = input == null ? null : input.getJSONObject("data");
+                log.info("【模拟医保平台】5401 项目互认查询: psnNo={}, examItemCode={}",
+                        d54 == null ? null : d54.getString("psn_no"),
+                        d54 == null ? null : d54.getString("exam_item_code"));
+                JSONArray mutual = new JSONArray();
+                JSONObject mrow = new JSONObject();
+                mrow.put("psn_no", d54 == null ? null : d54.getString("psn_no"));
+                mrow.put("rpotc_no", "MOCK5401" + SEQ.incrementAndGet());
+                mrow.put("rpt_date", DateUtil.currentDateTime().substring(0, 10));
+                mrow.put("rpotc_type_code", "1");
+                mrow.put("exam_rpotc_name", "胸部正位DR(模拟互认记录)");
+                mrow.put("exam_rslt_poit_flag", "1");
+                mrow.put("exam_ccls", "双肺纹理增多(模拟)");
+                mrow.put("exam_rslt_abn", "1");
+                mutual.add(mrow);
+                output.put("result", mutual);
+                break;
+            }
+            case "5402": {
+                // RIS 互认: 5402 报告明细查询(检查报告/检验报告/检验明细三组, 模拟只回检查报告一组)
+                JSONObject d54 = input == null ? null : input.getJSONObject("data");
+                log.info("【模拟医保平台】5402 报告明细查询: psnNo={}, rpotcNo={}",
+                        d54 == null ? null : d54.getString("psn_no"),
+                        d54 == null ? null : d54.getString("rpotc_no"));
+                JSONArray checks = new JSONArray();
+                JSONObject crow = new JSONObject();
+                crow.put("rpotc_no", d54 == null ? null : d54.getString("rpotc_no"));
+                crow.put("exam_rpotc_name", "胸部正位DR(模拟明细)");
+                crow.put("exam_part", "胸部");
+                crow.put("exam_date", DateUtil.currentDateTime().substring(0, 10));
+                crow.put("exam_ccls", "双肺纹理增多, 未见明显实变(模拟)");
+                checks.add(crow);
+                output.put("checkReportDetails", checks);
+                output.put("inspectionReportInformation", new JSONArray());
+                output.put("inspectionDetails", new JSONArray());
+                break;
+            }
             default:
-                // 2203/2402 等无输出交易
+                // 2203/2402/4501/4502 等无输出交易
                 break;
         }
 

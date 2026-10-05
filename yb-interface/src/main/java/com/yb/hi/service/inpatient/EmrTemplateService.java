@@ -406,6 +406,7 @@ public class EmrTemplateService implements ApplicationRunner {
         t.setLockedSections(normalizeLockedSections(dto.getLockedSections()));
         t.setDocument(validateDocument(dto.getDocument()));
         t.setPrintScript(dto.getPrintScript());
+        t.setPrintConfig(normalizePrintConfig(dto.getPrintConfig()));
         t.setDatasetId(dto.getDatasetId());
         t.setScope(dto.getScope() != null ? dto.getScope() : 1);
         t.setStaffId(staffId);
@@ -471,6 +472,9 @@ public class EmrTemplateService implements ApplicationRunner {
         }
         if (dto.getPrintScript() != null) {
             exist.setPrintScript(dto.getPrintScript());
+        }
+        if (dto.getPrintConfig() != null) {
+            exist.setPrintConfig(normalizePrintConfig(dto.getPrintConfig()));
         }
         if (dto.getDatasetId() != null) {
             exist.setDatasetId(dto.getDatasetId());
@@ -1321,6 +1325,83 @@ public class EmrTemplateService implements ApplicationRunner {
         return json.trim();
     }
 
+    /**
+     * 结构化打印配置归一：历史模板允许为 null；非空配置固定为 A4、方向、毫米页边距、页眉页脚和页码。
+     * 旧 printScript 继续独立保留，仅作为兼容样式，不参与结构化配置校验。
+     */
+    private String normalizePrintConfig(String json) {
+        if (json == null) {
+            return null;
+        }
+        JSONObject input;
+        try {
+            input = StringUtils.hasText(json) ? JSON.parseObject(json.trim()) : new JSONObject();
+        } catch (Exception e) {
+            throw new BizException(400, "printConfig 须为合法的 JSON 对象");
+        }
+        if (input == null) {
+            input = new JSONObject();
+        }
+        String paperSize = input.getString("paperSize");
+        if (!StringUtils.hasText(paperSize)) {
+            paperSize = "A4";
+        }
+        if (!"A4".equalsIgnoreCase(paperSize)) {
+            throw new BizException(400, "printConfig.paperSize 首期仅支持 A4");
+        }
+        String orientation = input.getString("orientation");
+        if (!StringUtils.hasText(orientation)) {
+            orientation = "portrait";
+        }
+        orientation = orientation.trim().toLowerCase();
+        if (!"portrait".equals(orientation) && !"landscape".equals(orientation)) {
+            throw new BizException(400, "printConfig.orientation 仅支持 portrait/landscape");
+        }
+
+        JSONObject margins = input.getJSONObject("margins");
+        JSONObject normalizedMargins = new JSONObject();
+        normalizedMargins.put("top", normalizePrintMargin(margins, "top", 18));
+        normalizedMargins.put("right", normalizePrintMargin(margins, "right", 16));
+        normalizedMargins.put("bottom", normalizePrintMargin(margins, "bottom", 18));
+        normalizedMargins.put("left", normalizePrintMargin(margins, "left", 16));
+
+        JSONObject out = new JSONObject();
+        out.put("paperSize", "A4");
+        out.put("orientation", orientation);
+        out.put("margins", normalizedMargins);
+        out.put("header", normalizePrintBand(input.getJSONObject("header")));
+        out.put("footer", normalizePrintBand(input.getJSONObject("footer")));
+        out.put("showPageNumber", input.getBoolean("showPageNumber") == null || input.getBooleanValue("showPageNumber"));
+        return JSON.toJSONString(out);
+    }
+
+    private int normalizePrintMargin(JSONObject margins, String key, int defaultValue) {
+        if (margins == null || margins.get(key) == null) {
+            return defaultValue;
+        }
+        int value;
+        try {
+            value = margins.getIntValue(key);
+        } catch (Exception e) {
+            throw new BizException(400, "printConfig.margins." + key + " 须为毫米整数");
+        }
+        if (value < 0 || value > 50) {
+            throw new BizException(400, "printConfig.margins." + key + " 须在 0-50 毫米之间");
+        }
+        return value;
+    }
+
+    private JSONObject normalizePrintBand(JSONObject band) {
+        JSONObject out = new JSONObject();
+        out.put("enabled", band != null && band.getBooleanValue("enabled"));
+        String content = band == null ? "" : band.getString("content");
+        if (content != null && content.length() > 500) {
+            throw new BizException(400, "页眉或页脚内容不能超过 500 个字符");
+        }
+        out.put("content", content == null ? "" : content);
+        return out;
+    }
+
     /** 父模板链接校验: 父存在、非自身、不成环(三级继承最多向上两跳) */
     private void validateParentLink(Long templateId, Long parentId) {
         if (parentId == null) {
@@ -1508,6 +1589,15 @@ public class EmrTemplateService implements ApplicationRunner {
         return o;
     }
 
+    /** 快捷短语选项: 保持数组形态写入 fields/document，避免按中文标点误拆。 */
+    private static JSONArray quickOptions(String... values) {
+        JSONArray options = new JSONArray();
+        if (values != null) {
+            options.addAll(Arrays.asList(values));
+        }
+        return options;
+    }
+
     /** 8 类标准模板的字段定义(与任务规格逐字段一致) */
     private static String buildSeedFields(String code) {
         JSONArray a = new JSONArray();
@@ -1633,24 +1723,58 @@ public class EmrTemplateService implements ApplicationRunner {
                 a.add(f("rescueProcess", "抢救经过", "textarea", false));
                 a.add(f("physicianSign", "医师签名", "text", true, "defaultMacro", "attending_doctor"));
                 break;
-            case "EMR_OUTP_GENERAL":
+            case "EMR_OUTP_GENERAL": {
+                JSONArray presentOptions = quickOptions(
+                        "起病急，症状持续，未予特殊处理，精神、食欲、睡眠尚可，大小便正常。",
+                        "起病缓，症状反复，院外治疗后效果欠佳。",
+                        "复诊，症状较前好转，无新发不适。",
+                        "复诊，症状无明显改善。"
+                );
+                JSONArray examOptions = quickOptions(
+                        "一般情况可，神志清楚，查体合作。心肺听诊未见明显异常，腹软，无压痛及反跳痛。",
+                        "一般情况可，咽部充血，双侧扁桃体无明显肿大，双肺呼吸音清，未闻及干湿性啰音。",
+                        "一般情况可，腹软，局部压痛，无反跳痛及肌紧张。"
+                );
+                JSONArray auxOptions = quickOptions("暂未行辅助检查。", "辅助检查结果详见报告。", "院外检查结果已阅。");
+                JSONArray treatmentOptions = quickOptions(
+                        "予对症治疗，嘱按医嘱用药。",
+                        "完善相关检查，根据结果进一步处理。",
+                        "继续原治疗方案，观察病情变化。",
+                        "建议转上级医院进一步诊治。"
+                );
+                JSONArray followupOptions = quickOptions(
+                        "如症状加重或出现新发不适，及时复诊。",
+                        "按时复诊，复诊时携带相关检查资料。",
+                        "如出现高热、呼吸困难等情况立即就医。"
+                );
                 a.add(f("sec_1", "主诉与病史", "section", false));
-                a.add(f("chiefComplaint", "主诉", "textarea", true, "maxLength", 200));
-                a.add(f("presentIllness", "现病史", "textarea", true));
-                a.add(f("pastHistory", "既往史", "textarea", false, "defaultMacro", "past_history"));
-                a.add(f("allergyHistory", "过敏史", "textarea", false, "defaultMacro", "allergy_info"));
-                a.add(f("sec_2", "体格检查", "section", false));
-                a.add(f("vitals", "生命体征", "vitals", false));
-                a.add(f("physicalExam", "体格检查", "textarea", true));
-                a.add(f("auxExam", "辅助检查", "textarea", false));
+                a.add(f("chiefComplaint", "主诉", "textarea", true,
+                        "maxLength", 200, "placeholder", "症状＋部位＋时长，如：咳嗽、咳痰3天"));
+                a.add(f("presentIllness", "现病史", "textarea", true,
+                        "placeholder", "可点选下方常用描述后修改", "options", presentOptions));
+                a.add(f("pastHistory", "既往史", "textarea", false,
+                        "defaultMacro", "past_history", "placeholder", "自动带入既往史，可补充修改"));
+                a.add(f("allergyHistory", "过敏史", "textarea", true,
+                        "defaultMacro", "allergy_info", "placeholder", "自动带入过敏信息，请核对"));
+                a.add(f("sec_2", "查体与辅助检查", "section", false));
+                a.add(f("vitals", "生命体征", "vitals", false,
+                        "placeholder", "按实测值录入，可一键填正常参考值"));
+                a.add(f("physicalExam", "体格检查", "textarea", true,
+                        "placeholder", "可点选常用查体后按实际情况修改", "options", examOptions));
+                a.add(f("auxExam", "辅助检查", "textarea", false,
+                        "placeholder", "填写本次或院外检查结果", "options", auxOptions));
                 a.add(f("sec_3", "诊断与处理", "section", false));
-                a.add(f("diagnosis", "门诊诊断", "diagnosis", false, "defaultMacro", "main_diag"));
-                a.add(f("treatmentOpinion", "处理意见", "textarea", true));
-                a.add(f("followupNote", "随访建议", "textarea", false));
+                a.add(f("diagnosis", "门诊诊断", "diagnosis", false,
+                        "defaultMacro", "main_diag", "placeholder", "同步主诊断，也可检索补充"));
+                a.add(f("treatmentOpinion", "处理意见", "textarea", true,
+                        "placeholder", "可点选常用处置后补充药品、检查或治疗", "options", treatmentOptions));
+                a.add(f("followupNote", "随访建议", "textarea", false,
+                        "placeholder", "交代复诊时间与警示症状", "options", followupOptions));
                 a.add(f("sec_4", "就诊信息", "section", false));
-                a.add(f("visitDate", "就诊日期", "date", true));
-                a.add(f("physicianSign", "医师签名", "text", true));
+                a.add(f("visitDate", "就诊日期", "date", true, "defaultMacro", "current_date"));
+                a.add(f("physicianSign", "医师签名", "text", true, "defaultMacro", "attending_doctor"));
                 break;
+            }
             case "EMR_OUTP_TCM":
                 a.add(f("chiefComplaint", "主诉", "textarea", true, "maxLength", 200));
                 a.add(f("presentIllness", "现病史", "textarea", true));
@@ -1793,89 +1917,71 @@ public class EmrTemplateService implements ApplicationRunner {
 
     /* ================= 种子文档骨架(P2 新增 10-15 类) ================= */
 
-    /** 门诊 SOAP 章节定义(P3): {章节标识(后端 attrs.key 与编辑器 sectionKey 双写同值), 章节标题, valueType, 是否必填} */
-    private static final String[][] OUTP_SOAP_SECTIONS = {
-            {"chiefComplaint", "主诉", "text", "1"},
-            {"presentIllness", "现病史", "text", "1"},
-            {"pastHistory", "既往史", "text", "0"},
-            {"allergyHistory", "过敏史", "text", "0"},
-            {"physicalExam", "体格检查", "text", "0"},
-            {"auxExam", "辅助检查", "text", "0"},
-            {"treatmentOpinion", "处理意见", "text", "1"},
-            {"followupNote", "随访备注", "text", "0"}
-    };
-
-    /** 中医门诊追加章节(P8 中医辨证书写器占位): 四诊合参/辨证分析, 插在过敏史之后、体格检查之前 */
-    private static final String[][] OUTP_TCM_EXTRA_SECTIONS = {
-            {"fourExams", "四诊合参(望闻问切)", "text", "0"},
-            {"syndromeAnalysis", "辨证分析", "text", "0"}
-    };
-
-    /** 门诊通用病历追加章节(就诊日期/医师签名, 按书写规范): 仅通用病历追加, 中医门诊不取 */
-    private static final String[][] OUTP_GENERAL_EXTRA_SECTIONS = {
-            {"visitDate", "就诊日期", "date", "1"},
-            {"physicianSign", "医师签名", "text", "1"}
-    };
-
     /**
-     * 门诊模板 Tiptap 文档(P3): 逐章节生成 emrSection(每章节独立标题, 内含单个数据元段落)。
-     * 章节 attrs 双写 key=sectionKey(前端编辑器 schema 读 sectionKey, 后端 propagate/batchReplaceSection 以 attrs.key 命中,
-     * 与设计器保存归一口径一致); 段落为 [文本标签 + emrField 内联节点], 节点口径与住院种子/前端 emrField 渲染器一致
-     * (emrField 为 inline 节点, 须经 paragraph 包裹才满足 emrSection 的 block+ 内容规格)。
+     * 门诊模板 Tiptap 文档(P3): 从 fields 单一真源逐字段生成章节，完整保留控件类型、快捷短语、占位提示和默认宏。
+     * 每个 SOAP 字段继续使用同名 sectionKey，保证病历引用、报告引用、NLG 与历史兼容逻辑可精确定位。
      */
     private static String buildOutpSeedDocument(String code) {
-        JSONArray sections = new JSONArray();
-        for (String[] s : OUTP_SOAP_SECTIONS) {
-            sections.add(s);
-        }
-        if ("EMR_OUTP_TCM".equals(code)) {
-            for (int i = 0; i < OUTP_TCM_EXTRA_SECTIONS.length; i++) {
-                sections.add(4 + i, OUTP_TCM_EXTRA_SECTIONS[i]); // 插在过敏史(索引3)之后
-            }
-        } else {
-            for (String[] extra : OUTP_GENERAL_EXTRA_SECTIONS) {
-                sections.add(extra); // 门诊通用病历尾部追加就诊日期/医师签名
-            }
-        }
+        JSONArray definitions = JSON.parseArray(buildSeedFields(code));
         JSONArray docContent = new JSONArray();
-        for (int i = 0; i < sections.size(); i++) {
-            String[] s = (String[]) sections.get(i);
+        for (int i = 0; i < definitions.size(); i++) {
+            JSONObject def = definitions.getJSONObject(i);
+            if (def == null || "section".equals(def.getString("type"))) {
+                continue;
+            }
+            String fieldKey = def.getString("fieldKey");
+            String labelText = def.getString("label");
+            String fieldType = def.getString("type");
+
             JSONObject fieldNode = new JSONObject();
             fieldNode.put("type", NODE_FIELD);
             JSONObject attrs = new JSONObject();
-            attrs.put("fieldKey", s[0]);
-            attrs.put("fieldName", s[1]);
-            attrs.put("valueType", s[2]);
-            attrs.put("required", "1".equals(s[3]));
+            attrs.put("fieldKey", fieldKey);
+            attrs.put("fieldName", labelText);
+            attrs.put("valueType", seedValueType(fieldType));
+            attrs.put("required", Boolean.TRUE.equals(def.getBoolean("required")));
             attrs.put("value", null);
+            copyFieldAttr(def, attrs, "options");
+            copyFieldAttr(def, attrs, "placeholder");
+            copyFieldAttr(def, attrs, "unit");
+            copyFieldAttr(def, attrs, "defaultMacro");
+            if ("diagnosis".equals(fieldType)) {
+                attrs.put("dictSource", "diag");
+            } else if (def.getJSONObject("dictRef") != null) {
+                attrs.put("dictSource", def.getJSONObject("dictRef").getString("source"));
+            }
             fieldNode.put("attrs", attrs);
-            JSONObject label = new JSONObject();
-            label.put("type", "text");
-            label.put("text", s[1] + "：");
-            JSONArray pContent = new JSONArray();
-            pContent.add(label);
-            pContent.add(fieldNode);
+
+            JSONArray paragraphContent = new JSONArray();
+            paragraphContent.add(fieldNode);
             JSONObject paragraph = new JSONObject();
             paragraph.put("type", "paragraph");
-            paragraph.put("content", pContent);
-            JSONArray sContent = new JSONArray();
-            sContent.add(paragraph);
+            paragraph.put("content", paragraphContent);
+
+            JSONArray sectionContent = new JSONArray();
+            sectionContent.add(paragraph);
             JSONObject section = new JSONObject();
             section.put("type", NODE_SECTION);
             JSONObject sectionAttrs = new JSONObject();
-            sectionAttrs.put("key", s[0]);
-            sectionAttrs.put("sectionKey", s[0]); // 编辑器 schema 键(设计器保存归一双写 key=sectionKey)
-            sectionAttrs.put("title", s[1]);
-            sectionAttrs.put("editMode", "mixed");
+            sectionAttrs.put("key", fieldKey);
+            sectionAttrs.put("sectionKey", fieldKey);
+            sectionAttrs.put("title", labelText);
+            sectionAttrs.put("editMode", "form");
             sectionAttrs.put("locked", false);
             section.put("attrs", sectionAttrs);
-            section.put("content", sContent);
+            section.put("content", sectionContent);
             docContent.add(section);
         }
         JSONObject doc = new JSONObject();
         doc.put("type", NODE_DOC);
         doc.put("content", docContent);
         return JSON.toJSONString(doc);
+    }
+
+    private static void copyFieldAttr(JSONObject source, JSONObject target, String key) {
+        if (source.containsKey(key) && source.get(key) != null) {
+            target.put(key, source.get(key));
+        }
     }
 
     /* ================= P8 中医三模板文档(多章节) ================= */
@@ -2007,7 +2113,7 @@ public class EmrTemplateService implements ApplicationRunner {
         return JSON.toJSONString(doc);
     }
 
-    /** 种子字段类型 → Tiptap valueType(与前端 emrField 渲染器口径一致; textarea/text/vitals/diagnosis 归一文本) */
+    /** 种子字段类型 → Tiptap valueType；门诊书写器原生支持长文本、生命体征和诊断字典。 */
     private static String seedValueType(String fieldType) {
         if (fieldType == null) {
             return "text";
@@ -2019,8 +2125,18 @@ public class EmrTemplateService implements ApplicationRunner {
                 return "date";
             case "datetime":
                 return "datetime";
+            case "textarea":
+                return "textarea";
+            case "vitals":
+                return "vitals";
+            case "diagnosis":
+                return "dict";
             case "select":
                 return "select";
+            case "multiselect":
+                return "multiselect";
+            case "checkbox":
+                return "checkbox";
             default:
                 return "text";
         }

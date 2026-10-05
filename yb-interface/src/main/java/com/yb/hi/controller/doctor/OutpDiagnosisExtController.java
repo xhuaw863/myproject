@@ -1,9 +1,12 @@
 package com.yb.hi.controller.doctor;
 
 import com.baomidou.mybatisplus.core.metadata.IPage;
+import com.yb.hi.dto.doctor.DiagnosisSaveReq;
+import com.yb.hi.entity.doctor.HisDiagnosis;
 import com.yb.hi.entity.doctor.HisDiseaseReport;
 import com.yb.hi.entity.doctor.HisDiseaseReportDetail;
 import com.yb.hi.entity.doctor.HisDiseaseReportSkip;
+import com.yb.hi.entity.doctor.HisDiseaseReportTriggerRule;
 import com.yb.hi.framework.common.BizException;
 import com.yb.hi.framework.common.R;
 import com.yb.hi.framework.common.Roles;
@@ -13,8 +16,12 @@ import com.yb.hi.service.doctor.DiseaseReportDict;
 import com.yb.hi.service.doctor.HisDiagFreqService;
 import com.yb.hi.service.doctor.HisDiagTemplateLinkService;
 import com.yb.hi.service.doctor.HisDiseaseReportService;
+import com.yb.hi.service.doctor.HisDiseaseReportTriggerRuleService;
+import com.yb.hi.service.doctor.HisVisitService;
+import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
@@ -23,6 +30,7 @@ import org.springframework.web.bind.annotation.RestController;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -37,18 +45,37 @@ public class OutpDiagnosisExtController {
     private final HisDiseaseReportService diseaseReportService;
     private final HisDiagTemplateLinkService diagTemplateLinkService;
     private final DiseaseReportDict diseaseReportDict;
+    private final HisVisitService visitService;
+    private final HisDiseaseReportTriggerRuleService triggerRuleService;
 
     public OutpDiagnosisExtController(HisDiagFreqService diagFreqService,
                                       HisDiseaseReportService diseaseReportService,
                                       HisDiagTemplateLinkService diagTemplateLinkService,
-                                      DiseaseReportDict diseaseReportDict) {
+                                      DiseaseReportDict diseaseReportDict,
+                                      HisVisitService visitService,
+                                      HisDiseaseReportTriggerRuleService triggerRuleService) {
         this.diagFreqService = diagFreqService;
         this.diseaseReportService = diseaseReportService;
         this.diagTemplateLinkService = diagTemplateLinkService;
         this.diseaseReportDict = diseaseReportDict;
+        this.visitService = visitService;
+        this.triggerRuleService = triggerRuleService;
     }
 
-    /* ---------- 诊断助手 ---------- */
+    /* ---------- 诊断保存(接诊中) / 诊断助手 ---------- */
+
+    /** 接诊中显式保存诊断(OP-B 报卡前移): 替换式落库 + 同响应返回报卡触发清单, 前端保存成功后立即弹卡 */
+    @PostMapping("/diagnosis/save")
+    public R<Map<String, Object>> saveConsultDiagnoses(@RequestBody DiagnosisSaveReq req) {
+        if (req == null || req.getVisitId() == null) {
+            throw new BizException(400, "就诊ID不能为空");
+        }
+        List<HisDiagnosis> saved = visitService.saveConsultDiagnoses(req.getVisitId(), req.getDiagnoses());
+        Map<String, Object> out = new LinkedHashMap<>();
+        out.put("diagnoses", saved);
+        out.put("reportTips", diseaseReportService.checkTrigger(req.getVisitId()));
+        return R.ok(out);
+    }
 
     /** 诊断助手: 聚合患者历史诊断 / 本科室高频 / 个人常用三类候选 */
     @GetMapping("/diagnosis/assistant")
@@ -126,6 +153,43 @@ public class OutpDiagnosisExtController {
     @PostMapping("/disease-report/skip")
     public R<HisDiseaseReportSkip> saveSkip(@RequestBody HisDiseaseReportSkip skip) {
         return R.ok(diseaseReportService.saveSkip(skip));
+    }
+
+    /* ---------- 报卡触发规则维护(全局表, ADMIN/SUPER_ADMIN) ---------- */
+
+    /** 规则全量清单(含停用, 按优先级排序): 维护界面用 */
+    @GetMapping("/disease-report/trigger-rules")
+    public R<List<HisDiseaseReportTriggerRule>> triggerRules() {
+        requireAdminOrSuper();
+        return R.ok(triggerRuleService.listAllOrdered());
+    }
+
+    @PostMapping("/disease-report/trigger-rules")
+    public R<HisDiseaseReportTriggerRule> createTriggerRule(@RequestBody HisDiseaseReportTriggerRule rule) {
+        requireAdminOrSuper();
+        return R.ok(triggerRuleService.createRule(rule));
+    }
+
+    @PutMapping("/disease-report/trigger-rules/{id}")
+    public R<HisDiseaseReportTriggerRule> updateTriggerRule(@org.springframework.web.bind.annotation.PathVariable Long id,
+                                                            @RequestBody HisDiseaseReportTriggerRule rule) {
+        requireAdminOrSuper();
+        return R.ok(triggerRuleService.updateRule(id, rule));
+    }
+
+    /** 行内启停即时生效(enabled=0/1) */
+    @PutMapping("/disease-report/trigger-rules/{id}/toggle")
+    public R<HisDiseaseReportTriggerRule> toggleTriggerRule(@org.springframework.web.bind.annotation.PathVariable Long id,
+                                                            @RequestParam Integer enabled) {
+        requireAdminOrSuper();
+        return R.ok(triggerRuleService.toggle(id, enabled));
+    }
+
+    @DeleteMapping("/disease-report/trigger-rules/{id}")
+    public R<Void> deleteTriggerRule(@org.springframework.web.bind.annotation.PathVariable Long id) {
+        requireAdminOrSuper();
+        triggerRuleService.removeRule(id);
+        return R.ok(null);
     }
 
     /** 审核工作台分页(需 ADMIN/SUPER_ADMIN): cats 逗号分隔, from/to=yyyy-MM-dd */

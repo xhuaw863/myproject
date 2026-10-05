@@ -112,7 +112,6 @@ public class RbacInitializer implements ApplicationRunner {
             bindPharmacyMenus();
             bindChargeMenus();
             ensureNewPharmacyMenus(menuIds);
-            ensurePharmaPriceMenu(menuIds);
             ensureNewWarehouseMenus(menuIds);
             ensureNewChargeMenus(menuIds);
             ensureChargeWorkstationMenu(menuIds);
@@ -151,6 +150,8 @@ public class RbacInitializer implements ApplicationRunner {
             ensureChildMenu(menuIds, "yb-dict", "yb-txn-log", "医保接口日志", "YbTxnLog");
             mergeInpatientMenus(menuIds);
             ensureMedicalRecordMenus(menuIds);
+            // 影像中心(RIS 2026-10 Task#7 集成): 申请/排程/技师/报告/审核/设备/模板/质控/统计/云, 存量库幂等补种
+            ensureRisMenus(menuIds);
             Map<String, Long> roleIds = seedGlobalRoles();
             ensureOrgAdminRole();
             ensureTherapistTechnicianRoles(roleIds);
@@ -232,8 +233,7 @@ public class RbacInitializer implements ApplicationRunner {
         // P1a 2026-10 病历管理前置两菜单: 数据集管理/结构化模板设计器, comp 与 HIS.views 注册键同值(小写短横线特例))
         long gEmrQ = dir("emr-quality", "病历质控与数据元", 0L, ++sort[0]);
         ids.put("emr-dataset", menuK("emr-dataset", "数据集管理", "emr-dataset", null, gEmrQ, ++sort[0]));
-        ids.put("emr-template-designer", menuK("emr-template-designer", "模板设计器(结构化)", "emr-template-designer", null, gEmrQ, ++sort[0]));
-        ids.put("emr-designer", menuK("emr-designer", "病历模板设计器(字段画布)", "EmrTemplateDesigner", null, gEmrQ, ++sort[0]));
+        ids.put("emr-template-designer", menuK("emr-template-designer", "病历模板设计器", "emr-template-designer", null, gEmrQ, ++sort[0]));
         // P1c(2026-10) 患者全景时间线: 门诊+住院就诊事件统一时间轴, comp 与 HIS.views 注册键同值
         ids.put("emr-patient-timeline", menuK("emr-patient-timeline", "患者全景时间线", "emr-patient-timeline", null, gEmrQ, ++sort[0]));
         ids.put("emr-quality-rule", menuK("emr-quality-rule", "质控规则维护", "EmrQualityRuleManage", null, gEmrQ, ++sort[0]));
@@ -264,11 +264,11 @@ public class RbacInitializer implements ApplicationRunner {
         ids.put("inp-dispense-history", menuK("inp-dispense-history", "住院发药历史", "InpDispenseHistory", null, gPhInp, ++sort[0]));
         long gPhOps = dir("ph-ops", "药房运营与追溯", g7, ++sort[0]);
         ids.put("pharmacy-def", menuK("pharmacy-def", "药房管理", "PharmacyDef", null, gPhOps, ++sort[0]));
-        ids.put("price-mgr", menuK("price-mgr", "药房定价", "PharmacyPriceManage", null, gPhOps, ++sort[0]));
         ids.put("req-mgr", menuK("req-mgr", "药品请领", "RequisitionManage", null, gPhOps, ++sort[0]));
         ids.put("pharmacy-window", menuK("pharmacy-window", "发药窗口", "PharmacyWindowManage", null, gPhOps, ++sort[0]));
         ids.put("window-dept-rule", menuK("window-dept-rule", "科室定向窗口", "WindowDeptRule", null, gPhOps, ++sort[0]));
         ids.put("pharmacy-cross", menuK("pharmacy-cross", "跨药房配置", "PharmacyCrossConfig", null, gPhOps, ++sort[0]));
+        ids.put("rx-pharmacy-route", menuK("rx-pharmacy-route", "处方发药默认药房", "RxPharmacyRouteConfig", null, gPhOps, ++sort[0]));
         ids.put("trace-code", menuK("trace-code", "药品追溯码", "TraceCodeManage", null, gPhOps, ++sort[0]));
         long gPhStat = dir("ph-stat", "统计查询", g7, ++sort[0]);
         ids.put("pharmacy-rpt", menuK("pharmacy-rpt", "药房统计", "PharmacyReport", null, gPhStat, ++sort[0]));
@@ -354,8 +354,9 @@ public class RbacInitializer implements ApplicationRunner {
      *  charge-item=收费项目对照(与三目录医保对照重复, 2026-09 下线);
      *  doctor-queue/doctor-work=候诊列表/接诊工作台(合并为门诊医生工作站 doctor-ws, 2026-09 合并);
      *  purchase-stock-in=采购入库增强版(功能已并入原采购入库 wh-in/StockInManage, 2026-10 去重下线);
-     *  stock-book=账簿查询(进价/零售口径与财务/实物账已并入进销存台账 stock-ledger/DrugLedger, 2026-10 去重下线) */
-    private static final String[] RETIRED_MENU_KEYS = {"charge-item", "doctor-queue", "doctor-work", "purchase-stock-in", "stock-book"};
+     *  stock-book=账簿查询(进价/零售口径与财务/实物账已并入进销存台账 stock-ledger/DrugLedger, 2026-10 去重下线);
+     *  price-mgr=药房定价(覆盖价层自批次价改造后已不参与任何计价, 不符业务实际, 2026-10 下线) */
+    private static final String[] RETIRED_MENU_KEYS = {"charge-item", "doctor-queue", "doctor-work", "purchase-stock-in", "stock-book", "price-mgr"};
 
     private void pruneRetiredMenus() {
         for (String key : RETIRED_MENU_KEYS) {
@@ -524,7 +525,7 @@ public class RbacInitializer implements ApplicationRunner {
         // ADMIN/SUPER_ADMIN 走 all_menus 免配置; 其余角色给"工作台+本职能相关菜单"最小子集
         Map<String, String[]> grants = new HashMap<>();
         grants.put(Roles.REGISTRAR, new String[]{"dashboard", "patient", "register", "unregister", "reg_stats", "reg_detail"});
-        grants.put(Roles.DOCTOR, new String[]{"dashboard", "doctor-ws", "patient", "doctor-worklog", "medical-template", "emr-designer", "emr-template-designer", "emr-patient-timeline", "emr-element-search", "emr-quality-board", "emr-quality-console", "emr-audit-log", "emr-archive", "emr-level-assess", "nurse-allergy", "medtech-report-query",
+        grants.put(Roles.DOCTOR, new String[]{"dashboard", "doctor-ws", "patient", "doctor-worklog", "medical-template", "emr-template-designer", "emr-patient-timeline", "emr-element-search", "emr-quality-board", "emr-quality-console", "emr-audit-log", "emr-archive", "emr-level-assess", "nurse-allergy", "medtech-report-query",
                 // 住院医生站(2026-09 住院模块): 医嘱/诊断/病历/患者概览入口共用工作站组件
                 "inp-doctor-ws", "inp-order-manage", "inp-order-template", "inp-diagnosis", "inp-med-record", "inp-patient-overview",
                 // 临床路径/手术麻醉(2026-09 集成): 路径模板管理 + 手术管理 + 麻醉记录; 手麻P0: 手术申请管理
@@ -532,8 +533,10 @@ public class RbacInitializer implements ApplicationRunner {
                 // 住院报表(2026-09 报表/打印模块): 报表中心(只读)
                 "inp-report",
                 // 手麻P2: 手术统计报表(只读)
-                "surgery-report"});
-        grants.put(Roles.PHARMACIST, new String[]{"dashboard", "dispense-todo", "dispense", "drug-return", "pharmacy-def", "pharmacy-rpt", "wh-stock", "wh-in", "wh-out", "warehouse-def", "warehouse-rpt", "wh-check", "req-mgr", "trf-mgr", "price-adjust", "stock-ledger", "trace-code", "price-mgr", "pharmacy-window", "window-workstation", "window-dept-rule", "pharmacy-cross", "rx-audit", "supplier-mgr", "purchase-rule", "purchase-plan", "purchase-order", "stock-accept", "supplier-pay", "payable-rpt", "drug-maint", "maint-template", "month-end",
+                "surgery-report",
+                // 影像中心(RIS 2026-10): 报告书写/报告审核/检查申请/统计分析
+                "ris-report", "ris-review", "ris-request", "ris-statistics"});
+        grants.put(Roles.PHARMACIST, new String[]{"dashboard", "dispense-todo", "dispense", "drug-return", "pharmacy-def", "pharmacy-rpt", "wh-stock", "wh-in", "wh-out", "warehouse-def", "warehouse-rpt", "wh-check", "req-mgr", "trf-mgr", "price-adjust", "stock-ledger", "trace-code", "pharmacy-window", "window-workstation", "window-dept-rule", "pharmacy-cross", "rx-audit", "supplier-mgr", "purchase-rule", "purchase-plan", "purchase-order", "stock-accept", "supplier-pay", "payable-rpt", "drug-maint", "maint-template", "month-end",
                 // 住院药师站(T41 审核 + P4 发药增强)
                 "pharm-station", "inp-dispense-work", "inp-discharge-pickup", "inp-dispense-history",
                 // 统计查询增强(2026-11): 药品消耗分析/医保合规分析/处方与退药质量
@@ -551,9 +554,13 @@ public class RbacInitializer implements ApplicationRunner {
                 // 麻醉记录(2026-09 集成, 只读) + 手麻P0: 病区复核角色手术申请管理
                 "anesthesia-record", "surgery-apply",
                 // 住院报表(2026-09 报表/打印模块): 报表中心(只读)
-                "inp-report"});
+                "inp-report",
+                // 影像中心(RIS 2026-10): 检查申请查询(护理可追踪检查申请)
+                "ris-request"});
         grants.put(Roles.THERAPIST, new String[]{"dashboard", "patient", "treatment-pending", "treatment-plan", "treatment-equip", "treatment-log"});
-        grants.put(Roles.TECHNICIAN, new String[]{"dashboard", "patient", "medtech-specimen", "medtech-report", "medtech-critical", "medtech-critical-rule", "medtech-report-query"});
+        grants.put(Roles.TECHNICIAN, new String[]{"dashboard", "patient", "medtech-specimen", "medtech-report", "medtech-critical", "medtech-critical-rule", "medtech-report-query",
+                // 影像中心(RIS 2026-10): 技师工作台/检查排程/检查申请
+                "ris-worklist", "ris-schedule", "ris-request"});
         // 病案统计科(P0): 录入组编目首页; 编目组分配+编目; 质控组审核+查阅编目
         grants.put(Roles.MR_INPUT, new String[]{"dashboard", "mr-catalog", "mr-annotation", "mr-search", "mr-workload", "mr-report", "mr-drg", "mr-quality-diff"});
         grants.put(Roles.MR_CATALOG, new String[]{"dashboard", "mr-assign", "mr-catalog", "mr-annotation", "mr-recall", "mr-borrow", "mr-search", "mr-workload", "mr-maintain", "mr-report", "mr-submit", "mr-drg", "mr-quality-diff"});
@@ -580,7 +587,7 @@ public class RbacInitializer implements ApplicationRunner {
      */
     private void ensureBizRoleGrants(Map<String, Long> menuIds, Map<String, Long> roleIds) {
         Map<String, String[]> grants = new HashMap<>();
-        grants.put(Roles.PHARMACIST, new String[]{"wh-stock", "wh-in", "wh-out", "wh-check", "pharmacy-def", "pharmacy-rpt", "warehouse-def", "warehouse-rpt", "req-mgr", "trf-mgr", "price-adjust", "stock-ledger", "trace-code", "price-mgr", "pharmacy-window", "window-workstation", "window-dept-rule", "pharmacy-cross", "rx-audit",
+        grants.put(Roles.PHARMACIST, new String[]{"wh-stock", "wh-in", "wh-out", "wh-check", "pharmacy-def", "pharmacy-rpt", "warehouse-def", "warehouse-rpt", "req-mgr", "trf-mgr", "price-adjust", "stock-ledger", "trace-code", "pharmacy-window", "window-workstation", "window-dept-rule", "pharmacy-cross", "rx-audit",
                 // 住院药师站(T41): 药师审核(药品医嘱审方)
                 "pharm-station",
                 // P4 住院发药增强: 发药工作台/出院带药核发/历史发药查询
@@ -601,7 +608,7 @@ public class RbacInitializer implements ApplicationRunner {
                 // 住院报表(2026-09 报表/打印模块): 打印管理(日清单/结算单打印)
                 "inp-print"});
         grants.put(Roles.REGISTRAR, new String[]{"reg_stats", "reg_detail"});
-        grants.put(Roles.DOCTOR, new String[]{"doctor-ws", "doctor-worklog", "medical-template", "emr-designer", "emr-template-designer", "emr-patient-timeline", "emr-element-search", "emr-quality-board", "emr-quality-console", "emr-audit-log", "emr-archive", "emr-level-assess", "nurse-allergy", "medtech-report-query",
+        grants.put(Roles.DOCTOR, new String[]{"doctor-ws", "doctor-worklog", "medical-template", "emr-template-designer", "emr-patient-timeline", "emr-element-search", "emr-quality-board", "emr-quality-console", "emr-audit-log", "emr-archive", "emr-level-assess", "nurse-allergy", "medtech-report-query",
                 // 住院医生站(2026-09 住院模块)
                 "inp-doctor-ws", "inp-order-manage", "inp-order-template", "inp-diagnosis", "inp-med-record", "inp-patient-overview",
                 // 临床路径/手术麻醉(2026-09 集成): 路径模板管理 + 手术管理 + 麻醉记录; 手麻P0: 手术申请管理
@@ -613,7 +620,9 @@ public class RbacInitializer implements ApplicationRunner {
                 // 住院危急值闭环(T41): 危急值管理(确认/处置/关闭)
                 "critical-value",
                 // P6 会诊统一流程: 全院会诊流转驾驶舱(多维查询/统计/超时预警, 只读管理视角)
-                "consultation-manage"});
+                "consultation-manage",
+                // 影像中心(RIS 2026-10): 报告书写/报告审核/检查申请/统计分析
+                "ris-report", "ris-review", "ris-request", "ris-statistics"});
         grants.put(Roles.NURSE, new String[]{"doctor-ws", "doctor-worklog", "nurse-pending", "nurse-skin-test", "nurse-infusion", "nurse-allergy", "nurse-exec-log",
                 // 住院护士站(2026-09 住院模块)
                 "inp-nurse-ws", "inp-order-audit", "inp-order-exec", "inp-nursing-record", "inp-shift-handover", "inp-bed-overview",
@@ -622,9 +631,16 @@ public class RbacInitializer implements ApplicationRunner {
                 // 住院报表(2026-09 报表/打印模块): 报表中心(只读)
                 "inp-report",
                 // 住院危急值闭环 + PDA扫码(T41)
-                "critical-value", "pda-simulation"});
+                "critical-value", "pda-simulation",
+                // 影像中心(RIS 2026-10): 检查申请查询(护理可追踪检查申请)
+                "ris-request"});
         grants.put(Roles.THERAPIST, new String[]{"dashboard", "patient", "treatment-pending", "treatment-plan", "treatment-equip", "treatment-log"});
-        grants.put(Roles.TECHNICIAN, new String[]{"dashboard", "patient", "medtech-specimen", "medtech-report", "medtech-critical", "medtech-critical-rule", "medtech-report-query"});
+        grants.put(Roles.TECHNICIAN, new String[]{"dashboard", "patient", "medtech-specimen", "medtech-report", "medtech-critical", "medtech-critical-rule", "medtech-report-query",
+                // 影像中心(RIS 2026-10): 技师工作台/检查排程/检查申请
+                "ris-worklist", "ris-schedule", "ris-request"});
+        // 影像中心(RIS 2026-10)机构管理员补授: 设备/报告模板/质控/统计/影像云管理
+        // (ORG_ADMIN all_menus=1 本已全量可见, 此处按集成计划显式留痕, 幂等无副作用)
+        grants.put(Roles.ORG_ADMIN, new String[]{"ris-device", "ris-template", "ris-qc", "ris-statistics", "ris-cloud"});
         // 病案统计科(P0)存量库补授: 录入组编目首页; 编目组分配+编目; 质控组审核+查阅编目
         grants.put(Roles.MR_INPUT, new String[]{"dashboard", "mr-catalog", "mr-annotation", "mr-search", "mr-workload", "mr-report", "mr-drg", "mr-quality-diff"});
         grants.put(Roles.MR_CATALOG, new String[]{"dashboard", "mr-assign", "mr-catalog", "mr-annotation", "mr-recall", "mr-borrow", "mr-search", "mr-workload", "mr-maintain", "mr-report", "mr-submit", "mr-drg", "mr-quality-diff"});
@@ -649,7 +665,7 @@ public class RbacInitializer implements ApplicationRunner {
             }
         }
         if (added > 0) {
-            log.info("业务角色新菜单授权已补充: 药师(药库+管理统计+盘点+请领调拨调价台账追溯码+药房定价+药师审核)/收费员(报表+发票管理收费统计+住院登记结算+手麻记费+打印管理)/挂号员(挂号统计与明细)/医生护士(门诊医生站+医生工作日志)/医生(过敏登记+报告查询+住院医生站+临床路径/手术管理/麻醉记录+报表中心+危急值管理)/护士(护士站五项+住院护士站+麻醉记录+报表中心+危急值管理+PDA扫码)/治疗师医技人员(治疗/医技全量) 共 {} 条", added);
+            log.info("业务角色新菜单授权已补充: 药师(药库+管理统计+盘点+请领调拨调价台账追溯码+药房定价+药师审核)/收费员(报表+发票管理收费统计+住院登记结算+手麻记费+打印管理)/挂号员(挂号统计与明细)/医生护士(门诊医生站+医生工作日志)/医生(过敏登记+报告查询+住院医生站+临床路径/手术管理/麻醉记录+报表中心+危急值管理)/护士(护士站五项+住院护士站+麻醉记录+报表中心+危急值管理+PDA扫码)/治疗师医技人员(治疗/医技全量)/影像中心RIS(技师:工作台排程申请/医生:书写审核申请统计/护士:申请/机构管理员:设备模板质控统计云) 共 {} 条", added);
         }
     }
 
@@ -732,6 +748,8 @@ public class RbacInitializer implements ApplicationRunner {
         }
         ensureAuditLeafMenu(dirId, "report-audit-inf", "传染病报卡审核", "ReportAuditInf", 1);
         ensureAuditLeafMenu(dirId, "report-audit-chronic", "慢病报卡审核", "ReportAuditChronic", 2);
+        /* 报卡触发规则维护(全局表 his_disease_report_trigger_rule): 把"诊断→报卡大类"触发条件升格为可维护数据, ADMIN/SUPER_ADMIN 走 all_menu 可见 */
+        ensureAuditLeafMenu(dirId, "report-trigger-rule", "报卡触发规则维护", "TriggerRuleManage", 3);
     }
 
     /** 幂等补种报卡审核叶子菜单(挂 public-health 目录下, menu_key 判存) */
@@ -1525,47 +1543,23 @@ public class RbacInitializer implements ApplicationRunner {
         menuIds.put("medical-template", m.getId());
     }
 
-    /**
-     * 幂等确保“病历模板设计器”菜单存在(结构化病历模板可视化自建, 排在病历模板管理之后):
-     * 既有库按 menu_key 判存补种挂 doctor 目录, 并回填 menuIds 供 ensureBizRoleGrants 给医生角色补授权。
-     */
+    /** 旧字段画布入口只为存量回退保留源码，菜单不再补种；存量菜单幂等隐藏。 */
     private void ensureEmrDesignerMenu(Map<String, Long> menuIds) {
-        SysMenu m = menuMapper.selectOne(new QueryWrapper<SysMenu>().eq("menu_key", "emr-designer").last("LIMIT 1"));
-        if (m == null) {
-            SysMenu doctorDir = menuMapper.selectOne(new QueryWrapper<SysMenu>().eq("menu_key", "doctor").last("LIMIT 1"));
-            if (doctorDir == null) {
-                return;
-            }
-            int maxSort = 0;
-            for (SysMenu c : menuMapper.selectList(new QueryWrapper<SysMenu>().eq("parent_id", doctorDir.getId()))) {
-                maxSort = Math.max(maxSort, c.getSortNo() == null ? 0 : c.getSortNo());
-            }
-            m = new SysMenu();
-            m.setParentId(doctorDir.getId());
-            m.setMenuKey("emr-designer");
-            m.setMenuName("病历模板设计器");
-            m.setMenuType(2);
-            m.setComp("EmrTemplateDesigner");
-            m.setSortNo(maxSort + 1);
-            m.setVisible(1);
-            m.setStatus(1);
-            menuMapper.insert(m);
-            log.info("病历模板设计器菜单已补充(emr-designer/EmrTemplateDesigner)");
+        SysMenu legacy = menuMapper.selectOne(new QueryWrapper<SysMenu>().eq("menu_key", "emr-designer").last("LIMIT 1"));
+        if (legacy == null) {
+            return;
         }
-        menuIds.put("emr-designer", m.getId());
+        if (!Integer.valueOf(0).equals(legacy.getVisible())) {
+            legacy.setVisible(0);
+            menuMapper.updateById(legacy);
+            log.info("旧字段画布菜单已隐藏(emr-designer/EmrTemplateDesigner)");
+        }
     }
 
-    /**
-     * 幂等归组(2026-10): 医疗模板管理放入门诊医生站，方便医生维护处方组套；
-     * 字段画布设计器保留在病历质控与数据元，并与结构化设计器通过名称区分。
-     * 菜单 key/id 不变，sys_role_menu 按 id 授权自动保持。
-     */
+    /** 医疗模板管理归医生站；canonical 设计器统一命名，旧字段画布入口保持隐藏。 */
     private void moveMedicalTemplateToDoctorAndDesignerToQuality() {
         renameMenuIfOldName("medical-template", "病历模板管理", "医疗模板管理");
-        renameMenuIfOldName("emr-designer", "病历模板设计器", "病历模板设计器(字段画布)");
         SysMenu doctorDir = menuMapper.selectOne(new QueryWrapper<SysMenu>().eq("menu_key", "doctor").last("LIMIT 1"));
-        SysMenu qualityDir = menuMapper.selectOne(new QueryWrapper<SysMenu>().eq("menu_key", "emr-quality").last("LIMIT 1"));
-
         SysMenu medicalTemplate = menuMapper.selectOne(new QueryWrapper<SysMenu>().eq("menu_key", "medical-template").last("LIMIT 1"));
         if (doctorDir != null && medicalTemplate != null && !doctorDir.getId().equals(medicalTemplate.getParentId())) {
             int maxSort = 0;
@@ -1577,17 +1571,19 @@ public class RbacInitializer implements ApplicationRunner {
             menuMapper.updateById(medicalTemplate);
             log.info("医疗模板管理菜单已移入门诊医生站分组");
         }
-
-        SysMenu emrDesigner = menuMapper.selectOne(new QueryWrapper<SysMenu>().eq("menu_key", "emr-designer").last("LIMIT 1"));
-        if (qualityDir != null && emrDesigner != null && !qualityDir.getId().equals(emrDesigner.getParentId())) {
-            int maxSort = 0;
-            for (SysMenu c : menuMapper.selectList(new QueryWrapper<SysMenu>().eq("parent_id", qualityDir.getId()))) {
-                maxSort = Math.max(maxSort, c.getSortNo() == null ? 0 : c.getSortNo());
-            }
-            emrDesigner.setParentId(qualityDir.getId());
-            emrDesigner.setSortNo(maxSort + 1);
-            menuMapper.updateById(emrDesigner);
-            log.info("病历模板设计器菜单已移入病历质控与数据元分组");
+        SysMenu canonical = menuMapper.selectOne(new QueryWrapper<SysMenu>().eq("menu_key", "emr-template-designer").last("LIMIT 1"));
+        if (canonical != null && (!"病历模板设计器".equals(canonical.getMenuName()) || !Integer.valueOf(1).equals(canonical.getVisible()))) {
+            canonical.setMenuName("病历模板设计器");
+            canonical.setComp("emr-template-designer");
+            canonical.setVisible(1);
+            canonical.setStatus(1);
+            menuMapper.updateById(canonical);
+            log.info("病历模板设计器菜单已统一到 canonical 入口(emr-template-designer)");
+        }
+        SysMenu legacy = menuMapper.selectOne(new QueryWrapper<SysMenu>().eq("menu_key", "emr-designer").last("LIMIT 1"));
+        if (legacy != null && !Integer.valueOf(0).equals(legacy.getVisible())) {
+            legacy.setVisible(0);
+            menuMapper.updateById(legacy);
         }
     }
 
@@ -1624,7 +1620,7 @@ public class RbacInitializer implements ApplicationRunner {
         ensureChildMenu(menuIds, "emr-quality", "emr-quality-console", "质控工作台", "EmrQualityConsole");
         // P1a(2026-10) 病历管理两叶子: 数据集管理(章节/小节/数据元三级维护, 管理职能) + 结构化模板设计器(数据集驱动 Tiptap 三栏式)
         ensureChildMenu(menuIds, "emr-quality", "emr-dataset", "数据集管理", "emr-dataset");
-        ensureChildMenu(menuIds, "emr-quality", "emr-template-designer", "模板设计器(结构化)", "emr-template-designer");
+        ensureChildMenu(menuIds, "emr-quality", "emr-template-designer", "病历模板设计器", "emr-template-designer");
         // P1c(2026-10) 患者全景时间线: 门诊+住院就诊事件统一时间轴(只读聚合, DOCTOR可访问)
         ensureChildMenu(menuIds, "emr-quality", "emr-patient-timeline", "患者全景时间线", "emr-patient-timeline");
         // P2(病历审计日志): 操作审计全量分页检索(牵头机构管理员可查, 医生可查单份病历审计)
@@ -1675,15 +1671,6 @@ public class RbacInitializer implements ApplicationRunner {
     private void ensureNewPharmacyMenus(Map<String, Long> menuIds) {
         ensureChildMenu(menuIds, "pharmacy", "pharmacy-def", "药房管理", "PharmacyDef");
         ensureChildMenu(menuIds, "pharmacy", "pharmacy-rpt", "药房统计", "PharmacyReport");
-    }
-
-    /**
-     * 幂等补种"药房定价"菜单(三期: 药房维度差异化定价, 覆盖价维护未覆盖回落目录零售价)。既有库
-     * seedMenus 表非空即跳过, 故在此按 menu_key 判存补种(挂 pharmacy 目录, sort_no 续接), 并将 id
-     * 回填 menuIds 供角色补授权(ensureBizRoleGrants 给药师)。
-     */
-    private void ensurePharmaPriceMenu(Map<String, Long> menuIds) {
-        ensureChildMenu(menuIds, "pharmacy", "price-mgr", "药房定价", "PharmacyPriceManage");
     }
 
     /**
@@ -2037,11 +2024,11 @@ public class RbacInitializer implements ApplicationRunner {
                 {"inp-discharge-pickup", "出院带药核发", "InpDischargePickup", "ph-inp"},
                 {"inp-dispense-history", "住院发药历史", "InpDispenseHistory", "ph-inp"},
                 {"pharmacy-def", "药房管理", "PharmacyDef", "ph-ops"},
-                {"price-mgr", "药房定价", "PharmacyPriceManage", "ph-ops"},
                 {"req-mgr", "药品请领", "RequisitionManage", "ph-ops"},
                 {"pharmacy-window", "发药窗口", "PharmacyWindowManage", "ph-ops"},
                 {"window-dept-rule", "科室定向窗口", "WindowDeptRule", "ph-ops"},
                 {"pharmacy-cross", "跨药房配置", "PharmacyCrossConfig", "ph-ops"},
+                {"rx-pharmacy-route", "处方发药默认药房", "RxPharmacyRouteConfig", "ph-ops"},
                 {"trace-code", "药品追溯码", "TraceCodeManage", "ph-ops"},
                 {"pharmacy-rpt", "药房统计", "PharmacyReport", "ph-stat"},
                 {"stat-usage", "药品消耗分析", "PharmacyUsageStat", "ph-stat"},
@@ -2165,6 +2152,30 @@ public class RbacInitializer implements ApplicationRunner {
         ensureChildMenu(menuIds, "medtech-group", "medtech-critical", "危急值管理", "MedtechCritical");
         ensureChildMenu(menuIds, "medtech-group", "medtech-critical-rule", "危急值规则", "MedtechCriticalRule");
         ensureChildMenu(menuIds, "medtech-group", "medtech-report-query", "报告查询", "MedtechReportQuery");
+    }
+
+    /**
+     * 幂等补种影像中心(RIS)顶级目录及11叶子(2026-10 RIS 集成收尾, 与前端 app.js 静态兑底菜单同 key 同名):
+     * 检查申请查询/检查排程管理/排程模板管理/技师工作台/报告书写/报告审核/设备管理/报告模板管理/质控管理/统计分析/影像云管理。
+     * comp 与 HIS.views 注册键同值(ris-schedule.js 内同时注册 RisSchedule 与 RisScheduleTemplate 两组件)。
+     * 既有库 seedMenus 表非空即跳过, 故在此按 menu_key 判存补种(目录先行), id 回填 menuIds 供角色补授权:
+     * ensureBizRoleGrants 给技师(ris-worklist/ris-schedule/ris-request)、医生(ris-report/ris-review/ris-request/ris-statistics)、
+     * 护士(ris-request)、机构管理员(ris-device/ris-template/ris-qc/ris-statistics/ris-cloud)补授;
+     * ADMIN/SUPER_ADMIN 走 all_menus=1 免配置自动可见。
+     */
+    private void ensureRisMenus(Map<String, Long> menuIds) {
+        ensureDirMenu(menuIds, "ris-group", "影像中心");
+        ensureChildMenu(menuIds, "ris-group", "ris-request", "检查申请查询", "RisRequest");
+        ensureChildMenu(menuIds, "ris-group", "ris-schedule", "检查排程管理", "RisSchedule");
+        ensureChildMenu(menuIds, "ris-group", "ris-schedule-tpl", "排程模板管理", "RisScheduleTemplate");
+        ensureChildMenu(menuIds, "ris-group", "ris-worklist", "技师工作台", "RisWorklist");
+        ensureChildMenu(menuIds, "ris-group", "ris-report", "报告书写", "RisReport");
+        ensureChildMenu(menuIds, "ris-group", "ris-review", "报告审核", "RisReview");
+        ensureChildMenu(menuIds, "ris-group", "ris-device", "设备管理", "RisDevice");
+        ensureChildMenu(menuIds, "ris-group", "ris-template", "报告模板管理", "RisTemplate");
+        ensureChildMenu(menuIds, "ris-group", "ris-qc", "质控管理", "RisQc");
+        ensureChildMenu(menuIds, "ris-group", "ris-statistics", "统计分析", "RisStatistics");
+        ensureChildMenu(menuIds, "ris-group", "ris-cloud", "影像云管理", "RisCloud");
     }
 
     /**

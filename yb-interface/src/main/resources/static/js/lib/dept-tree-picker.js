@@ -64,6 +64,9 @@
     props: {
       modelValue: { default: null },
       options: { type: Array, default: function () { return []; } },
+      /* 可选叶子 id 集合: 传入时树展示 options 全部层级但仅该集合可点选、下拉也只列该集合;
+         不传(null)=保持原逻辑(下拉排除 deptLevel=1、树中仅大类不可选)。向后兼容 25 处存量站点。 */
+      selectableIds: { type: Array, default: null },
       multiple: { type: Boolean, default: false },
       /* 默认 null=取登录机构; 传值=按该机构过滤(职工/用户管理维护表单机构); false=不过滤 */
       orgId: { default: null },
@@ -95,9 +98,17 @@
           return !oid || oid === org;
         });
       },
-      /* 下拉候选: 排除大类(deptLevel=1), 只呈现可落库的真实科室/窗口 */
+      /* 下拉候选: 排除大类(deptLevel=1), 只呈现可落库的真实科室/窗口; 若传 selectableIds 则仅列该集合 */
       selectOptions: function () {
-        return this.flat.filter(function (d) { return d.deptLevel !== 1; });
+        var vm = this;
+        return this.flat.filter(function (d) { return vm.isSelectable(d); });
+      },
+      /* selectableIds 归一为 key 集合(未传=null 表示走旧逻辑) */
+      selKeySet: function () {
+        if (!this.selectableIds) { return null; }
+        var s = {};
+        (this.selectableIds || []).forEach(function (id) { s[HIS.idKey(id)] = true; });
+        return s;
       },
       /* 当前已选 id 数组(单选归一为 0/1 个, 多选原样) */
       selectedIds: function () {
@@ -132,10 +143,11 @@
       },
       treeData: function () { return buildTree(this.flat); },
       treeProps: function () {
+        var vm = this;
         return {
           children: 'children',
           label: 'deptName',
-          disabled: function (data) { return data && data.deptLevel === 1; }
+          disabled: function (data) { return !vm.isSelectable(data); }
         };
       },
       inner: {
@@ -149,7 +161,13 @@
     created: function () { ensureStyle(); },
     mounted: function () { ensureStyle(); },
     methods: {
-      isCategory: function (data) { return data && data.deptLevel === 1; },
+      /* 节点是否可点选: 传了 selectableIds 则按集合判定; 否则仅大类(deptLevel=1)不可选 */
+      isSelectable: function (data) {
+        if (this.selKeySet) { return !!(data && this.selKeySet[HIS.idKey(data.id)]); }
+        return !!(data && data.deptLevel !== 1);
+      },
+      /* 非可选项(大类分组/不在可选集合): 置灰且点选无效 */
+      isCategory: function (data) { return !this.isSelectable(data); },
       labelOf: function (data) { return data.deptName || data.name || ('科室#' + data.id); },
       filterNode: function (value, data) {
         if (!value) { return true; }
@@ -185,6 +203,7 @@
       },
       onChange: function (v) { this.$emit('change', v); },
       confirmMulti: function () {
+        var vm = this;
         var tree = this.$refs.tree;
         if (!tree) { return; }
         var lookup = {};
@@ -194,7 +213,7 @@
         var ids = []; var seen = {};
         keys.forEach(function (k) {
           var d = lookup[k];
-          if (d && d.deptLevel !== 1 && !seen[k]) { seen[k] = true; ids.push(d.id); }
+          if (d && vm.isSelectable(d) && !seen[k]) { seen[k] = true; ids.push(d.id); }
         });
         /* 保留无法在树中管理的既有值(历史大类/跨机构遗留), 避免静默清空用户既有数据权限(修复缺陷1) */
         var orig = Array.isArray(this.modelValue) ? this.modelValue : [];

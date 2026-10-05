@@ -51,15 +51,23 @@
     name: 'DwDiagnosisPanel',
     components: { 'dw-tooth-chart': window.HIS.components.DwToothChart, 'tcm-diag-selector': window.HIS.components.TcmDiagSelector },
     inject: ['currentVisit'],
-    emits: ['update-diagnoses', 'apply-template'],
+    emits: ['update-diagnoses', 'apply-template', 'report-trigger'],
     provide: function () {
       var vm = this;
       return { diagnoses: Vue.computed(function () { return vm.selectedDiagnoses; }) };
     },
     template: `
-      <section class="dw-panel dw-diagnosis-panel" :class="{ 'is-folded': folded }">
+      <section class="dw-panel dw-diagnosis-panel" :class="{ 'is-folded': folded, 'is-maximized': maximized }">
         <header class="dw-panel-header">
           <span>诊断录入 <span class="dim">{{ selectedDiagnoses.length }} 条</span></span>
+          <span style="flex:1"></span>
+          <el-button size="small" :type="diagDirty ? 'primary' : 'default'" plain style="margin-right:6px"
+            :disabled="!canSaveDiagnoses || diagSaving || !selectedDiagnoses.length"
+            :title="canSaveDiagnoses ? (diagDirty ? '诊断有未保存修改, 保存后落库并立即触发报卡判定' : '诊断已落库, 可继续修改后再保存') : '仅接诊中可保存诊断(完成接诊时会兜底落库)'"
+            @click="saveDiagnosesNow">{{ diagSaving ? '保存中…' : (diagDirty ? '保存诊断 ●' : '保存诊断') }}</el-button>
+          <button class="dw-panel-max-btn" :title="maximized ? '退出最大化(Esc)' : '最大化诊断面板'" @click="toggleMaximize" :aria-label="maximized ? '退出最大化' : '最大化诊断面板'">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><polyline points="15 3 21 3 21 9"></polyline><polyline points="9 21 3 21 3 15"></polyline><line x1="21" y1="3" x2="14" y2="10"></line><line x1="3" y1="21" x2="10" y2="14"></line></svg>
+          </button>
           <button class="dw-collapse-btn" :title="folded ? '展开诊断面板' : '折叠诊断面板'" @click="toggleFold">{{ folded ? '▸' : '▾' }}</button>
         </header>
 
@@ -83,6 +91,8 @@
               <button class="dw-diag-tab" :class="{'is-active': commonTab==='personal'}" @click="switchCommonTab('personal')">我的常用</button>
               <button class="dw-diag-tab" :class="{'is-active': commonTab==='dept'}" @click="switchCommonTab('dept')">科室诊断</button>
               <button class="dw-diag-tab" :class="{'is-active': commonTab==='assistant'}" @click="switchCommonTab('assistant')">智能助手</button>
+              <!-- 常驻维护入口: 嵌入弹窗直达医疗模板管理对应页签(不必等到空态才见"去维护") -->
+              <a v-if="commonTab!=='assistant'" href="javascript:void(0)" class="dw-diag-tab-manage" @click="gotoTemplateManage">维护模板</a>
               <span class="dim" style="margin-left:auto;font-size:12px">已选 {{ selectedDiagnoses.length }} 条</span>
             </div>
 
@@ -112,10 +122,17 @@
               </template>
             </div>
 
-            <!-- 常用诊断(个人/科室模板) -->
-            <div class="dw-diag-common" v-else-if="commonDiagnosisRows.length">
-              <button v-for="item in commonDiagnosisRows" :key="item.code" class="dw-tag" :class="isAdded(item) ? 'dw-tag--success' : 'dw-tag--info'" :disabled="readOnly || isAdded(item)" @click="addDiagnosis(item)">{{ item.name }}</button>
-            </div>
+            <!-- 常用诊断(个人/科室模板): 项多时换行网格+纵向滚动, 并提供作用域内实时过滤 -->
+            <template v-else-if="commonDiagnosisRows.length">
+              <div class="dw-diag-filter" v-if="commonDiagnosisRows.length > 8">
+                <el-input v-model="commonFilter" size="small" clearable placeholder="过滤(名称/编码)" style="width:200px"></el-input>
+                <span class="dim" style="font-size:12px">{{ filteredCommonRows.length }} / {{ commonDiagnosisRows.length }}</span>
+              </div>
+              <div class="dw-diag-common dw-diag-common-pick">
+                <button v-for="(item, idx) in filteredCommonRows" :key="(item.code||'') + '@' + idx" class="dw-tag" :class="isAdded(item) ? 'dw-tag--success' : 'dw-tag--info'" :disabled="readOnly || isAdded(item)" @click="addDiagnosis(item)">{{ item.name }}</button>
+              </div>
+              <div v-if="commonFilter && !filteredCommonRows.length" class="dw-slim-empty">无匹配「{{ commonFilter }}」, 换个关键词或清空过滤</div>
+            </template>
             <div v-else class="dw-slim-empty">暂无{{ commonTab==='personal' ? '个人常用' : '科室' }}诊断, 可用已选行的「★常用」沉淀, 或 <a href="javascript:void(0)" @click="gotoTemplateManage">去维护</a></div>
           </div>
 
@@ -259,6 +276,12 @@
             <el-button size="small" type="primary" :loading="reportSaving" @click="submitReport">提交报卡</el-button>
           </template>
         </el-dialog>
+
+        <!-- 诊断模板维护就地嵌入弹窗(与处方组套管理同款): 关闭即回到打开它的诊断面板, 患者上下文与已选诊断不丢 -->
+        <el-dialog v-model="diagTemplateManageVisible" title="诊断模板维护（关闭后回到医生站诊断界面）" width="76%" top="5vh"
+          append-to-body destroy-on-close class="dw-rxset-manage-dialog" @closed="loadCommonDiags">
+          <component v-if="diagTemplateManageVisible && medicalTemplateComp" :is="medicalTemplateComp"></component>
+        </el-dialog>
       </section>
     `,
     data: function () {
@@ -274,8 +297,12 @@
         /* P8a-3 中医诊断-证候组合(真源; 与 selectedDiagnoses 中 _fromTcm 行双向收敛) */
         tcmCombos: [],
         commonTab: 'personal',
+        commonFilter: '',
         personalDiags: [],
         deptDiags: [],
+        /* 诊断模板维护嵌入弹窗: 可见态 + 懒引用的医疗模板管理组件(本面板先于 medical-template.js 加载) */
+        diagTemplateManageVisible: false,
+        medicalTemplateComp: null,
         requestSerial: 0,
         /* OP-B 诊断助手 */
         assistant: { history: [], deptFrequent: [], personalFrequent: [] },
@@ -292,12 +319,24 @@
         dicts: null,
         reportForm: { diagCode: '', diagName: '', reportCategory: 2, reportType: 2, reportForm: 1, correctPrevNo: '', onsetDate: '', diagTime: '', deathDate: '', reportContent: '', name: '', gender: '', genderName: '', birthDate: '', age: '', idCard: '', phone: '', occupation: '', occupationName: '', presentDetail: '', diseaseCode: '', diseaseName: '', icdCode: '', riskLevel: '', guardianName: '', guardianPhone: '', guardianRelation: '', tumorTopo: '', tumorTopoName: '', tumorMorph: '', behavior: '', laterality: '', differentiation: '', dxBasis: '', stage: '' },
         /* U1: 折叠记忆(localStorage) */
-        folded: window.localStorage.getItem('dw.diag.folded') === '1'
+        folded: window.localStorage.getItem('dw.diag.folded') === '1',
+        /* 最大化(与处方/检查检验/病历一致: fixed 铺满工作区, 再点或 Esc 还原; 不持久化) */
+        maximized: false,
+        /* OP-B 报卡前移: 接诊中显式保存诊断(替换式落库+同响应触发报卡判定); diagSavedSig=上次已落库内容签名, 与当前行集不一致即未保存 */
+        diagSaving: false,
+        diagSavedSig: ''
       };
     },
     computed: {
       isExpanded: function () { return true; },
       readOnly: function () { return !this.currentVisit || Number(this.currentVisit.visitStatus) >= 3; },
+      /* 仅接诊中(visitStatus=2)可显式保存诊断; 待接诊/已完成均置灰(完成后由 finish 兜底落库) */
+      canSaveDiagnoses: function () { return !!this.currentVisit && Number(this.currentVisit.visitStatus) === 2; },
+      /* 脏标记: 按诊断业务字段签名比对(行增删/改主诊/改排序均会变签名, 回写真实id不影响签名) */
+      diagDirty: function () {
+        if (!this.selectedDiagnoses.length) { return false; }
+        return this.sigOf(this.cleanDiagnoses()) !== this.diagSavedSig;
+      },
       visitId: function () { return this.currentVisit && this.currentVisit.id; },
       /* P8a-3 中医模式: 中医诊断/中医症候 类别时以组合选择器替代普通诊断检索 */
       isTcmMode: function () { return this.diagClass === 'tcm' || this.diagClass === 'symp'; },
@@ -311,6 +350,15 @@
           return COMMON_DIAGNOSES;
         }
         return list;
+      },
+      /* 作用域内实时过滤(名称/编码子串, 不区分大小写): 项多时输入即收窄, 与顶部整典 type-ahead 职责互补 */
+      filteredCommonRows: function () {
+        var list = this.commonDiagnosisRows || [];
+        var kw = (this.commonFilter || '').trim().toLowerCase();
+        if (!kw) { return list; }
+        return list.filter(function (it) {
+          return String(it.name || '').toLowerCase().indexOf(kw) >= 0 || String(it.code || '').toLowerCase().indexOf(kw) >= 0;
+        });
       }
     },
     watch: {
@@ -320,12 +368,26 @@
       /* P8a-3 组合列表变更 → 诊断行幂等收敛(选择器 v-model / 删行回筛均经此) */
       tcmCombos: function (nv) { this.syncTcmCombos(Array.isArray(nv) ? nv : []); }
     },
+    mounted: function () { window.addEventListener('keydown', this.onPanelKeydown); },
+    beforeUnmount: function () { window.removeEventListener('keydown', this.onPanelKeydown); },
     methods: {
       isOral: isOralDiag,
       /* ===== U1: 折叠记忆与定位 / 行操作下拉命令路由 ===== */
       toggleFold: function () {
         this.folded = !this.folded;
+        if (this.folded) { this.maximized = false; }
         try { window.localStorage.setItem('dw.diag.folded', this.folded ? '1' : '0'); } catch (e) { /* 隐私模式忽略 */ }
+      },
+      /* 最大化: 与处方/检查检验面板同语义, 折叠态下先展开再铺满; 再点还原 */
+      toggleMaximize: function () {
+        if (this.folded) {
+          this.folded = false;
+          try { window.localStorage.setItem('dw.diag.folded', '0'); } catch (e) { /* 隐私模式忽略 */ }
+        }
+        this.maximized = !this.maximized;
+      },
+      onPanelKeydown: function (ev) {
+        if (ev && ev.key === 'Escape' && this.maximized) { this.maximized = false; }
       },
       revealForLocate: function () { this.folded = false; },
       onRowCmd: function (idx, cmd) {
@@ -339,9 +401,19 @@
       },
       switchCommonTab: function (tab) {
         this.commonTab = tab;
+        this.commonFilter = '';
         if (tab === 'assistant' && !this.assistantLoaded) { this.loadAssistant(); }
       },
-      gotoTemplateManage: function () { window.HIS.go('medical-template'); },
+      gotoTemplateManage: function () {
+        // 嵌入弹窗打开医疗模板管理页: 按当前常用页签定位对应诊断模板页签(个人/科室), sessionStorage 一次性消费
+        var tab = this.commonTab === 'dept' ? 'diag_dept' : 'diag_personal';
+        try { window.sessionStorage.setItem('yb.medical-template.activeTab', tab); } catch (e) { /* 隐私模式仍可弹窗, 但使用默认页签 */ }
+        // 懒引用: medical-template.js 在本面板之后加载, 打开时才从 HIS.views 取组件定义
+        var comp = window.HIS && HIS.views ? HIS.views.MedicalTemplateManage : null;
+        if (!comp) { ElementPlus.ElMessage.warning('医疗模板管理组件未加载'); return; }
+        this.medicalTemplateComp = comp;
+        this.diagTemplateManageVisible = true;
+      },
       /* 拉取个人/科室常用诊断模板(diag_personal / diag_dept), content=JSON{code,name,category} */
       loadCommonDiags: function () {
         var vm = this;
@@ -653,6 +725,27 @@
         });
       },
       notifyChange: function () { this.$emit('update-diagnoses', this.cleanDiagnoses()); },
+      /* ===== OP-B 报卡前移: 接诊中显式保存诊断 ===== */
+      sigOf: function (list) {
+        try {
+          return JSON.stringify((list || []).map(function (d) { return [d.diagCode, d.diagName, d.diagClass, d.diagType, d.maindiagFlag, d.diagSrtNo, d.toothPosition]; }));
+        } catch (e) { return ''; }
+      },
+      saveDiagnosesNow: function () {
+        var vm = this;
+        if (!vm.canSaveDiagnoses || vm.diagSaving || !vm.selectedDiagnoses.length) { return; }
+        vm.diagSaving = true;
+        HIS.post('/api/his/diagnosis/save', { visitId: vm.visitId, diagnoses: vm.cleanDiagnoses() }).then(function (res) {
+          res = res || {};
+          var n = (res.diagnoses || []).length;
+          /* 先复位脏签名再广播: 本地行保留 UI 字段(_key/中医拆行), 不用库回写替换(后端先删后插使旧 id 失效但前端不消费行 id) */
+          vm.diagSavedSig = vm.sigOf(vm.cleanDiagnoses());
+          vm.notifyChange();
+          HIS.notifySuccess && HIS.notifySuccess('诊断已保存(' + n + ' 条)');
+          var tips = res.reportTips || [];
+          if (tips.length) { vm.$emit('report-trigger', tips); }
+        }).catch(function (e) { HIS.notifyError && HIS.notifyError(e); }).finally(function () { vm.diagSaving = false; });
+      },
       loadExisting: function (id) {
         var vm = this;
         vm.selectedDiagnoses = [];
@@ -660,7 +753,7 @@
         vm.results = [];
         vm.keyword = '';
         vm.pickDiagCode = null;
-        if (!id) { vm.notifyChange(); return; }
+        if (!id) { vm.notifyChange(); vm.diagSavedSig = vm.sigOf(vm.cleanDiagnoses()); return; }
         var requestedId = id;
         window.HIS.get('/api/his/visit/detail?id=' + encodeURIComponent(id)).then(function (data) {
           if (vm.visitId !== requestedId) { return; }
@@ -688,7 +781,8 @@
           vm.tcmCombos = combos;
           vm.normalize(true);
           vm.notifyChange();
-        }).catch(function () { if (vm.visitId === requestedId) { vm.selectedDiagnoses = []; vm.tcmCombos = []; vm.notifyChange(); } });
+          vm.diagSavedSig = vm.sigOf(vm.cleanDiagnoses());
+        }).catch(function () { if (vm.visitId === requestedId) { vm.selectedDiagnoses = []; vm.tcmCombos = []; vm.notifyChange(); vm.diagSavedSig = '[]'; } });
       }
     }
   };

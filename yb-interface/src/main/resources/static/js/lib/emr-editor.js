@@ -19,7 +19,7 @@
 
   /* ================= 常量 ================= */
   const DEFAULT_DOC = { type: 'doc', content: [{ type: 'paragraph' }] };
-  const VT_LABEL = { text: '文本', number: '数字', date: '日期', select: '单选', multiselect: '多选', checkbox: '复选', dict: '字典' };
+  const VT_LABEL = { text: '单行文本', textarea: '长文本/快捷短语', number: '数字', date: '日期', select: '单选', multiselect: '多选', checkbox: '复选', dict: '字典', vitals: '生命体征' };
   const ALIGNS = ['left', 'center', 'right', 'justify'];
   const DRAW_CATS = { body_front: '躯干前', body_back: '躯干后', head: '头部', oral: '口腔', hand: '手部', foot: '足部', wound: '伤口', custom: '自定义' };
   const SCOPE_LABELS = { 0: '全院', 1: '科室', 2: '个人' };
@@ -29,24 +29,27 @@
   const NLG_DOC_URL = '/api/his/emr/nlg/generate-document';
   const CDSS_DOC_URL = '/api/his/emr/cdss/evaluate-document';
 
-  /* 打印窗口样式(独立于页面 theme, 纸质病历观感) */
+  /* 打印窗口样式：逐页 A4 容器与正式打印共用，不依赖应用主题。 */
   const PP_CSS = [
-    'body { font-family: "SimSun", "Songti SC", serif; color: #000; margin: 0; }',
-    '.emr-pp { max-width: 794px; margin: 0 auto; padding: 32px 40px; font-size: 14px; line-height: 1.9; }',
-    '.emr-pp h1, .emr-pp h2, .emr-pp h3, .emr-pp h4 { margin: .8em 0 .4em; } .emr-pp p { margin: .5em 0; }',
-    '.emr-pp table { border-collapse: collapse; width: 100%; margin: 8px 0; } .emr-pp td, .emr-pp th { border: 1px solid #000; padding: 4px 8px; }',
-    '.emr-pp th { background: #f2f2f2; }',
-    '.emr-pp-field { border-bottom: 1px solid #000; padding: 0 6px; }',
-    '.emr-pp-sec-title { font-weight: bold; margin: 12px 0 4px; font-size: 15px; }',
-    '.emr-pp-macro { font-weight: 600; }',
-    '.emr-pp-pagebreak { page-break-after: always; border-top: 1px dashed #999; margin: 24px 0 8px; text-align: center; color: #999; font-size: 12px; }',
-    '.emr-pp-pagebreak::after { content: "（以下分页）"; }',
-    '.emr-pp-fragment { border: 1px dashed #999; padding: 6px 10px; margin: 6px 0; color: #555; }',
-    '.emr-pp-drawing { text-align: center; margin: 8px 0; } .emr-pp-drawing svg { max-width: 100%; height: auto; }',
-    '.emr-print-hidden { display: none !important; }',
-    '@page { margin: 18mm 16mm; }',
-    '.emr-pp-toolbar { position: fixed; right: 16px; top: 12px; } .emr-pp-toolbar button { padding: 6px 18px; margin-left: 8px; cursor: pointer; }',
-    '@media print { .emr-pp-toolbar { display: none; } }'
+    '* { box-sizing:border-box; } html,body { margin:0; min-height:100%; }',
+    'body { font-family:"SimSun","Songti SC",serif; color:#000; background:#e7e9ed; }',
+    '.emr-pp-toolbar { position:sticky; top:0; z-index:20; display:flex; align-items:center; gap:8px; padding:10px 18px; background:#1f2937; color:#fff; font:13px sans-serif; box-shadow:0 2px 8px rgba(0,0,0,.22); }',
+    '.emr-pp-toolbar button { padding:6px 18px; cursor:pointer; border:1px solid #cbd5e1; border-radius:3px; background:#fff; color:#111827; }',
+    '.emr-pp-toolbar .emr-pp-print { background:#166534; border-color:#166534; color:#fff; } .emr-pp-meta { margin-left:auto; opacity:.86; }',
+    '.emr-pp-diagnostics { max-width:980px; margin:12px auto 0; padding:9px 12px; background:#fff7ed; color:#9a3412; border-left:4px solid #ea580c; font:13px/1.6 sans-serif; }',
+    '.emr-pp-pages { padding:18px 0 40px; } .emr-pp-page { position:relative; margin:0 auto 18px; background:#fff; box-shadow:0 3px 18px rgba(15,23,42,.18); overflow:hidden; break-after:page; page-break-after:always; }',
+    '.emr-pp-page:last-child { break-after:auto; page-break-after:auto; } .emr-pp-page-body { position:absolute; overflow:hidden; font-size:14px; line-height:1.9; }',
+    '.emr-pp-page-header,.emr-pp-page-footer { position:absolute; left:0; right:0; text-align:center; color:#444; font-size:11px; line-height:1.3; white-space:pre-wrap; }',
+    '.emr-pp-page-header { top:7mm; } .emr-pp-page-footer { bottom:6mm; }',
+    '.emr-pp-page-number { position:absolute; right:9mm; bottom:6mm; font-size:11px; color:#444; }',
+    '.emr-pp-page h1,.emr-pp-page h2,.emr-pp-page h3,.emr-pp-page h4 { margin:.8em 0 .4em; } .emr-pp-page p { margin:.5em 0; }',
+    '.emr-pp-page table { border-collapse:collapse; width:100%; margin:8px 0; table-layout:fixed; } .emr-pp-page td,.emr-pp-page th { border:1px solid #000; padding:4px 8px; vertical-align:top; }',
+    '.emr-pp-page th { background:#f2f2f2; } .emr-pp-field { border-bottom:1px solid #000; padding:0 6px; }',
+    '.emr-pp-sec-title { font-weight:bold; margin:12px 0 4px; font-size:15px; } .emr-pp-macro { font-weight:600; }',
+    '.emr-pp-pagebreak { display:none; } .emr-pp-fragment { border:1px dashed #999; padding:6px 10px; margin:6px 0; color:#555; }',
+    '.emr-pp-drawing { text-align:center; margin:8px 0; break-inside:avoid; } .emr-pp-drawing svg { max-width:100%; height:auto; } .emr-print-hidden { display:none!important; }',
+    '.emr-pp-overflow { outline:2px solid #dc2626; outline-offset:-2px; }',
+    '@media print { body { background:#fff; } .emr-pp-toolbar,.emr-pp-diagnostics { display:none!important; } .emr-pp-pages { padding:0; } .emr-pp-page { margin:0; box-shadow:none; } .emr-pp-overflow { outline:none; } }'
   ].join('\n');
 
   /* ================= 工具 ================= */
@@ -74,6 +77,135 @@
   function fmtVal(v) {
     const f = EX().formatFieldValue;
     return f ? f(v) : (v == null ? '' : String(v));
+  }
+  function normalizePrintConfig(input) {
+    let c = input;
+    if (typeof c === 'string') { try { c = JSON.parse(c); } catch (e) { c = {}; } }
+    c = c || {};
+    const defaults = { top: 18, right: 16, bottom: 18, left: 16 };
+    const sourceMargins = c.margins || {};
+    const margin = function (name) {
+      const n = Number(sourceMargins[name]);
+      return Number.isFinite(n) ? Math.max(0, Math.min(50, Math.round(n))) : defaults[name];
+    };
+    return {
+      paperSize: 'A4', orientation: c.orientation === 'landscape' ? 'landscape' : 'portrait',
+      margins: { top: margin('top'), right: margin('right'), bottom: margin('bottom'), left: margin('left') },
+      header: { enabled: !!(c.header && c.header.enabled), content: String((c.header && c.header.content) || '') },
+      footer: { enabled: !!(c.footer && c.footer.enabled), content: String((c.footer && c.footer.content) || '') },
+      showPageNumber: c.showPageNumber !== false
+    };
+  }
+  function printMetrics(config) {
+    const c = normalizePrintConfig(config);
+    const landscape = c.orientation === 'landscape';
+    const widthMm = landscape ? 297 : 210;
+    const heightMm = landscape ? 210 : 297;
+    return {
+      config: c, widthMm: widthMm, heightMm: heightMm,
+      contentWidthMm: Math.max(40, widthMm - c.margins.left - c.margins.right),
+      contentHeightMm: Math.max(40, heightMm - c.margins.top - c.margins.bottom)
+    };
+  }
+  function mmToPx(mm) { return Number(mm || 0) * 96 / 25.4; }
+
+  /* ================= A4 画布与无侵入分页器 =================
+   * 仅修改编辑器 DOM 装饰，不写入 ProseMirror 文档；显式 emrPageBreak 仍是唯一持久化分页节点。 */
+  function createPageCanvas(hostEl, wrapper, initialConfig) {
+    if (!hostEl) { return null; }
+    let config = normalizePrintConfig(initialConfig);
+    let zoom = 1;
+    let timer = null;
+    let destroyed = false;
+    let diagnostics = [];
+    let pageCount = 1;
+    const layer = document.createElement('div');
+    layer.className = 'emr-page-sheets';
+    hostEl.classList.add('emr-page-canvas');
+    hostEl.insertBefore(layer, hostEl.firstChild);
+
+    function clearBreaks(pm) {
+      Array.prototype.forEach.call(pm.children || [], function (el) {
+        if (el.dataset && el.dataset.emrAutoPageStart === '1') {
+          el.classList.remove('emr-auto-page-start');
+          el.style.marginTop = '';
+          delete el.dataset.emrAutoPageStart;
+        }
+        el.classList.remove('emr-page-overflow');
+      });
+    }
+    function renderSheets(metrics) {
+      layer.innerHTML = '';
+      const pageWidth = mmToPx(metrics.widthMm) * zoom;
+      const pageHeight = mmToPx(metrics.heightMm) * zoom;
+      for (let i = 0; i < pageCount; i++) {
+        const sheet = document.createElement('div');
+        sheet.className = 'emr-page-sheet';
+        sheet.style.width = pageWidth + 'px'; sheet.style.height = pageHeight + 'px';
+        sheet.style.top = (i * (pageHeight + 24)) + 'px';
+        const label = document.createElement('span'); label.textContent = (i + 1) + ' / ' + pageCount; sheet.appendChild(label);
+        layer.appendChild(sheet);
+      }
+      hostEl.style.setProperty('--emr-paper-width', pageWidth + 'px');
+      hostEl.style.setProperty('--emr-paper-height', pageHeight + 'px');
+      hostEl.style.setProperty('--emr-paper-stack-height', (pageCount * pageHeight + Math.max(0, pageCount - 1) * 24) + 'px');
+    }
+    function refreshNow() {
+      if (destroyed) { return; }
+      const pm = hostEl.querySelector('.ProseMirror');
+      if (!pm) { return; }
+      clearBreaks(pm);
+      const metrics = printMetrics(config);
+      const pageHeight = mmToPx(metrics.heightMm) * zoom;
+      const usable = mmToPx(metrics.contentHeightMm) * zoom;
+      const topPad = mmToPx(config.margins.top) * zoom;
+      const sideLeft = mmToPx(config.margins.left) * zoom;
+      const sideRight = mmToPx(config.margins.right) * zoom;
+      pm.style.width = (mmToPx(metrics.widthMm) * zoom) + 'px';
+      pm.style.minHeight = pageHeight + 'px';
+      pm.style.padding = topPad + 'px ' + sideRight + 'px ' + (mmToPx(config.margins.bottom) * zoom) + 'px ' + sideLeft + 'px';
+      pm.style.fontSize = (14 * zoom) + 'px';
+      diagnostics = [];
+      pageCount = 1;
+      let used = 0;
+      Array.prototype.forEach.call(pm.children || [], function (el) {
+        const isManual = el.matches && el.matches('[data-emr-pagebreak]');
+        const style = window.getComputedStyle(el);
+        const h = el.getBoundingClientRect().height + (parseFloat(style.marginTop) || 0) + (parseFloat(style.marginBottom) || 0);
+        if (isManual) {
+          const gap = Math.max(24, usable - used + mmToPx(config.margins.bottom + config.margins.top) * zoom + 24);
+          el.classList.add('emr-auto-page-start'); el.style.marginTop = gap + 'px'; el.dataset.emrAutoPageStart = '1';
+          pageCount++; used = 0; return;
+        }
+        if (h > usable) {
+          el.classList.add('emr-page-overflow');
+          diagnostics.push({ type: 'overflow', message: '存在高度超过单页可打印区域的不可拆分内容', node: (el.getAttribute('data-emr-drawing') ? '医学图示' : (el.tagName || '内容')) });
+        }
+        if (used > 0 && used + h > usable) {
+          const gap = Math.max(24, usable - used + mmToPx(config.margins.bottom + config.margins.top) * zoom + 24);
+          el.classList.add('emr-auto-page-start'); el.style.marginTop = gap + 'px'; el.dataset.emrAutoPageStart = '1';
+          pageCount++; used = h;
+        } else { used += h; }
+      });
+      renderSheets(metrics);
+      wrapper.pageCount = pageCount;
+      wrapper.paginationDiagnostics = diagnostics.slice();
+      wrapper.emit('pagination', { pageCount: pageCount, diagnostics: diagnostics.slice() });
+    }
+    function schedule() {
+      if (timer) { clearTimeout(timer); }
+      timer = setTimeout(function () { timer = null; requestAnimationFrame(refreshNow); }, 100);
+    }
+    const api = {
+      setConfig: function (value) { config = normalizePrintConfig(value); schedule(); return api; },
+      setZoom: function (value) { zoom = Math.max(.5, Math.min(1.5, Number(value) || 1)); schedule(); return api; },
+      getConfig: function () { return normalizePrintConfig(config); },
+      getDiagnostics: function () { return diagnostics.slice(); },
+      refresh: schedule,
+      destroy: function () { destroyed = true; if (timer) { clearTimeout(timer); } clearBreaks(hostEl.querySelector('.ProseMirror') || { children: [] }); if (layer.parentNode) { layer.parentNode.removeChild(layer); } hostEl.classList.remove('emr-page-canvas'); }
+    };
+    schedule();
+    return api;
   }
 
   /* ================= 宏变量解析器(客户端预览) ================= */
@@ -181,13 +313,26 @@
     const css = [];
     if (a) {
       const c = safeColor(a.color); if (c) { css.push('color:' + c); }
-      if (a.fontFamily) { css.push("font-family:'" + String(a.fontFamily).replace(/['";{}]/g, '') + "'"); }
+      if (a.fontFamily) { css.push("font-family:'" + String(a.fontFamily).replace(/['\";{}]/g, '') + "'"); }
       if (a.fontSize && /^[0-9.]+(px|pt|em|rem|%)$/.test(String(a.fontSize))) { css.push('font-size:' + a.fontSize); }
+      if (a.backgroundColor && safeColor(a.backgroundColor)) { css.push('background-color:' + safeColor(a.backgroundColor)); }
     }
     return css.join(';');
   }
-  function alignAttr(a) {
-    return a && a.textAlign && ALIGNS.indexOf(a.textAlign) >= 0 ? ' style="text-align:' + a.textAlign + '"' : '';
+  function blockStyleAttr(a) {
+    const css = [];
+    if (a) {
+      if (a.textAlign && ALIGNS.indexOf(a.textAlign) >= 0) { css.push('text-align:' + a.textAlign); }
+      if (a.lineHeight && /^(?:[0-9]+(?:\.[0-9]+)?|[0-9]+(?:\.[0-9]+)?(?:px|pt|em|rem|%))$/.test(String(a.lineHeight))) { css.push('line-height:' + a.lineHeight); }
+      ['marginTop', 'marginBottom', 'textIndent'].forEach(function (key) {
+        const value = String(a[key] || '');
+        if (/^(?:0|[0-9]+(?:\.[0-9]+)?(?:px|pt|em|rem|mm|cm|%))$/.test(value)) {
+          const cssKey = key.replace(/[A-Z]/g, function (ch) { return '-' + ch.toLowerCase(); });
+          css.push(cssKey + ':' + value);
+        }
+      });
+    }
+    return css.length ? ' style="' + css.join(';') + '"' : '';
   }
   function withMarks(html, marks) {
     (marks || []).forEach(function (m) {
@@ -216,8 +361,8 @@
     switch (n.type) {
       case 'text': return withMarks(escapeHtml(n.text || ''), n.marks);
       case 'hardBreak': return '<br>';
-      case 'paragraph': return '<p' + alignAttr(a) + '>' + kids() + '</p>';
-      case 'heading': { const lv = a.level || 1; return '<h' + lv + alignAttr(a) + '>' + kids() + '</h' + lv + '>'; }
+      case 'paragraph': return '<p' + blockStyleAttr(a) + '>' + kids() + '</p>';
+      case 'heading': { const lv = a.level || 1; return '<h' + lv + blockStyleAttr(a) + '>' + kids() + '</h' + lv + '>'; }
       case 'bulletList': return '<ul>' + kids() + '</ul>';
       case 'orderedList': return '<ol>' + kids() + '</ol>';
       case 'listItem': return '<li>' + kids() + '</li>';
@@ -271,7 +416,95 @@
     (nodes || []).forEach(function (n) { out += renderNode(n, ctx); });
     return out;
   }
+  function resolvePrintText(template, context, page, total) {
+    const values = Object.assign({}, context || {}, { page: page, totalPages: total });
+    return String(template || '').replace(/\{\{\s*([\w.]+)\s*\}\}/g, function (_, key) {
+      const parts = key.split('.'); let v = values;
+      for (let i = 0; i < parts.length && v != null; i++) { v = v[parts[i]]; }
+      return v == null ? '' : String(v);
+    });
+  }
+  function paginatePreviewWindow(w, config, context) {
+    const doc = w.document;
+    const source = doc.querySelector('.emr-pp-source');
+    const pagesHost = doc.querySelector('.emr-pp-pages');
+    const diagnosticsHost = doc.querySelector('.emr-pp-diagnostics');
+    const metrics = printMetrics(config);
+    const diagnostics = [];
+    let currentPage = null;
+    let currentBody = null;
+    let pageNo = 0;
+
+    function newPage() {
+      pageNo++;
+      currentPage = doc.createElement('article'); currentPage.className = 'emr-pp-page';
+      currentPage.style.width = metrics.widthMm + 'mm'; currentPage.style.height = metrics.heightMm + 'mm';
+      currentBody = doc.createElement('main'); currentBody.className = 'emr-pp-page-body';
+      currentBody.style.top = config.margins.top + 'mm'; currentBody.style.right = config.margins.right + 'mm';
+      currentBody.style.bottom = config.margins.bottom + 'mm'; currentBody.style.left = config.margins.left + 'mm';
+      currentPage.appendChild(currentBody); pagesHost.appendChild(currentPage);
+    }
+    function overflows() { return currentBody.scrollHeight > currentBody.clientHeight + 1; }
+    function appendTable(table) {
+      const rows = Array.prototype.slice.call(table.rows || []);
+      if (!rows.length) { currentBody.appendChild(table); return; }
+      const headerRows = rows.filter(function (row) {
+        return row.cells && row.cells.length && Array.prototype.every.call(row.cells, function (cell) { return cell.tagName === 'TH'; });
+      });
+      let target = table.cloneNode(false);
+      currentBody.appendChild(target);
+      headerRows.forEach(function (row) { target.appendChild(row.cloneNode(true)); });
+      rows.forEach(function (row) {
+        if (headerRows.indexOf(row) >= 0) { return; }
+        const clone = row.cloneNode(true); target.appendChild(clone);
+        if (overflows() && target.rows.length > headerRows.length + 1) {
+          target.removeChild(clone); newPage(); target = table.cloneNode(false); currentBody.appendChild(target);
+          headerRows.forEach(function (hr) { target.appendChild(hr.cloneNode(true)); });
+          target.appendChild(clone);
+        }
+        if (overflows()) { clone.classList.add('emr-pp-overflow'); diagnostics.push('表格行高度超过单页可打印区域'); }
+      });
+    }
+    newPage();
+    Array.prototype.slice.call(source.children || []).forEach(function (node) {
+      if (node.classList.contains('emr-pp-pagebreak')) { if (currentBody.children.length) { newPage(); } return; }
+      const clone = node.cloneNode(true);
+      if (clone.tagName === 'TABLE') { appendTable(clone); return; }
+      currentBody.appendChild(clone);
+      if (overflows() && currentBody.children.length > 1) {
+        currentBody.removeChild(clone); newPage(); currentBody.appendChild(clone);
+      }
+      if (overflows()) { clone.classList.add('emr-pp-overflow'); diagnostics.push('不可拆分内容超出第 ' + pageNo + ' 页打印区域'); }
+    });
+    if (source.querySelector('.emr-pp-macro')) {
+      Array.prototype.forEach.call(pagesHost.querySelectorAll('.emr-pp-macro'), function (el) {
+        if (/^【.+】$/.test((el.textContent || '').trim())) { diagnostics.push('存在未解析的宏：' + el.textContent.trim()); }
+      });
+    }
+    const pages = Array.prototype.slice.call(pagesHost.children);
+    pages.forEach(function (page, index) {
+      if (config.header.enabled) {
+        const header = doc.createElement('header'); header.className = 'emr-pp-page-header';
+        header.textContent = resolvePrintText(config.header.content, context, index + 1, pages.length); page.appendChild(header);
+      }
+      if (config.footer.enabled) {
+        const footer = doc.createElement('footer'); footer.className = 'emr-pp-page-footer';
+        footer.textContent = resolvePrintText(config.footer.content, context, index + 1, pages.length); page.appendChild(footer);
+      }
+      if (config.showPageNumber) {
+        const no = doc.createElement('span'); no.className = 'emr-pp-page-number'; no.textContent = (index + 1) + ' / ' + pages.length; page.appendChild(no);
+      }
+    });
+    source.remove();
+    doc.querySelector('.emr-pp-meta').textContent = 'A4 ' + (config.orientation === 'landscape' ? '横向' : '纵向') + ' · ' + pages.length + ' 页';
+    const unique = diagnostics.filter(function (x, i, arr) { return arr.indexOf(x) === i; });
+    if (unique.length) { diagnosticsHost.innerHTML = '<b>打印诊断</b><br>' + unique.map(escapeHtml).join('<br>'); }
+    else { diagnosticsHost.remove(); }
+    return { pageCount: pages.length, diagnostics: unique };
+  }
+
   const EmrPrintPreview = {
+    normalizeConfig: normalizePrintConfig,
     /* generateHTML(json, {fields, frags}) — 字段控件→纯文本值, 宏→解析值, 打印隐藏剔除, 条件块求值;
      * frags: {fragmentId: 文档JSON} 已解析片段(可选, 缺省片段以"未展开"占位) */
     generateHTML: function (json, options) {
@@ -286,30 +519,50 @@
       const o = options || {};
       return resolveFragmentDocs(json).then(function (frags) { o.frags = frags; return EmrPrintPreview.generateHTML(json, o); });
     },
-    /* print(editorOrJson, {title, fields, printScript, autoPrint}) — 先解析片段再新窗口预览并打印(返回 Promise<window>) */
+    /* print(editorOrJson, {title, fields, printScript, printConfig, context, autoPrint}) — 逐页预览后调用浏览器打印。 */
     print: function (editorOrJson, options) {
       const o = options || {};
       const json = editorOrJson && typeof editorOrJson.getJSON === 'function' ? editorOrJson.getJSON() : editorOrJson;
       if (!json) { return Promise.resolve(null); }
+      const w = window.open('', '_blank', 'width=1100,height=820');
+      if (!w) {
+        if (window.ElementPlus && ElementPlus.ElMessage) { ElementPlus.ElMessage.error('打印窗口被浏览器拦截，请允许弹窗后重试'); }
+        return Promise.resolve(null);
+      }
+      w.document.open();
+      w.document.write('<!DOCTYPE html><html><head><meta charset="utf-8"><title>正在生成打印预览</title></head><body>正在生成打印预览…</body></html>');
+      w.document.close();
       return EmrPrintPreview.generateHTMLAsync(json, o).then(function (body) {
+        const config = normalizePrintConfig(o.printConfig);
+        const metrics = printMetrics(config);
         const printScript = o.printScript ? String(o.printScript).replace(/<\/script/gi, '<\\/script') : '';
-        const w = window.open('', '_blank', 'width=980,height=760');
-        if (!w) {
-          if (window.ElementPlus && ElementPlus.ElMessage) { ElementPlus.ElMessage.error('打印窗口被浏览器拦截，请允许弹窗后重试'); }
-          return null;
-        }
+        const pageCss = '@page { size:A4 ' + config.orientation + '; margin:0; }';
         w.document.open();
         w.document.write([
           '<!DOCTYPE html><html><head><meta charset="utf-8"><title>', escapeHtml(o.title || '病历打印预览'),
-          '</title><style>', PP_CSS, '</style></head><body>',
-          '<div class="emr-pp-toolbar"><button onclick="window.print()">打印</button><button onclick="window.close()">关闭</button></div>',
-          '<div class="emr-pp">', body, '</div>',
+          '</title><style>', PP_CSS, pageCss, '</style></head><body>',
+          '<div class="emr-pp-toolbar"><button class="emr-pp-print" onclick="window.print()">打印 / 另存 PDF</button><button onclick="window.close()">关闭</button><span class="emr-pp-meta">正在分页…</span></div>',
+          '<div class="emr-pp-diagnostics"></div><div class="emr-pp-pages"></div>',
+          '<div class="emr-pp-source" style="position:absolute;visibility:hidden;width:', metrics.contentWidthMm, 'mm;font-size:14px;line-height:1.9;">', body, '</div>',
           printScript ? '<script>' + printScript + '<\/script>' : '',
           '</body></html>'
         ].join(''));
         w.document.close();
-        if (o.autoPrint !== false) { setTimeout(function () { try { w.focus(); w.print(); } catch (e) { /* noop */ } }, 350); }
+        const finish = function () {
+          try {
+            const result = paginatePreviewWindow(w, config, o.context || {});
+            if (typeof o.onPaginated === 'function') { o.onPaginated(result); }
+            if (o.autoPrint !== false) { setTimeout(function () { try { w.focus(); w.print(); } catch (e) { /* noop */ } }, 180); }
+          } catch (e) {
+            const diagnostic = w.document.querySelector('.emr-pp-diagnostics');
+            if (diagnostic) { diagnostic.textContent = '分页失败：' + ((e && e.message) || e); }
+          }
+        };
+        if (w.document.fonts && w.document.fonts.ready) { w.document.fonts.ready.then(finish); } else { setTimeout(finish, 80); }
         return w;
+      }).catch(function (e) {
+        try { w.document.body.textContent = '打印预览生成失败：' + ((e && e.message) || e); } catch (ignore) { /* noop */ }
+        throw e;
       });
     }
   };
@@ -458,7 +711,7 @@
           try { const arr = JSON.parse(v); v = Array.isArray(arr) ? arr : []; } catch (e) { v = []; }
         } else { v = []; }
       } else { v = v == null ? (vt === 'number' ? null : '') : v; }
-      return { val: v, remote: [], loading: false };
+      return { val: v, vitals: EX().parseVitals ? EX().parseVitals(v) : {}, remote: [], loading: false };
     },
     computed: {
       vt: function () { return (this.field.valueType || 'text'); },
@@ -469,7 +722,10 @@
     },
     watch: {
       modelValue: function (v) {
-        if (!EX().valuesEqual || !EX().valuesEqual(v, this.val)) { this.val = v == null ? (this.vt === 'number' ? null : '') : v; }
+        if (!EX().valuesEqual || !EX().valuesEqual(v, this.val)) {
+          this.val = v == null ? (this.vt === 'number' ? null : '') : v;
+          if (this.vt === 'vitals' && EX().parseVitals) { this.vitals = EX().parseVitals(v); }
+        }
       },
       val: {
         deep: true,
@@ -480,6 +736,16 @@
       if (this.isDict && typeof HIS.emrLoadDict === 'function') { this.search(''); }
     },
     methods: {
+      useQuick: function (phrase) {
+        const p = String(phrase == null ? '' : phrase).trim();
+        const old = String(this.val == null ? '' : this.val).trim();
+        if (p && old.indexOf(p) < 0) { this.val = old ? old + '\n' + p : p; }
+      },
+      commitVitals: function () { if (EX().formatVitals) { this.val = EX().formatVitals(this.vitals); } },
+      fillNormalVitals: function () {
+        this.vitals = { temperature: '36.5', pulse: '76', respiration: '18', systolicBp: '120', diastolicBp: '80' };
+        this.commitVitals();
+      },
       search: function (kw) {
         const self = this;
         if (!this.isDict || typeof HIS.emrLoadDict !== 'function') { return; }
@@ -492,6 +758,8 @@
     template: [
       '<span class="emr-fr">',
       '  <el-input v-if="vt === \'text\'" v-model="val" size="small" style="width:180px" :disabled="disabled" :placeholder="field.placeholder || \'\'"></el-input>',
+      '  <span v-else-if="vt === \'textarea\'" class="emr-f-textarea"><el-input v-model="val" type="textarea" :autosize="{ minRows:2, maxRows:6 }" :disabled="disabled" :placeholder="field.placeholder || \'\'"></el-input><span v-if="candidates.length" class="emr-f-quick"><el-button v-for="o in candidates" :key="o.value" size="small" plain :disabled="disabled" @click="useQuick(o.value)">{{ o.label }}</el-button></span></span>',
+      '  <span v-else-if="vt === \'vitals\'" class="emr-f-vitals"><label>T<el-input v-model="vitals.temperature" size="small" :disabled="disabled" @input="commitVitals"></el-input>℃</label><label>P<el-input v-model="vitals.pulse" size="small" :disabled="disabled" @input="commitVitals"></el-input>次/分</label><label>R<el-input v-model="vitals.respiration" size="small" :disabled="disabled" @input="commitVitals"></el-input>次/分</label><label>BP<el-input v-model="vitals.systolicBp" size="small" :disabled="disabled" @input="commitVitals"></el-input>/<el-input v-model="vitals.diastolicBp" size="small" :disabled="disabled" @input="commitVitals"></el-input>mmHg</label><el-button size="small" plain :disabled="disabled" @click="fillNormalVitals">填正常参考值</el-button></span>',
       '  <el-input-number v-else-if="vt === \'number\'" v-model="val" size="small" controls-position="right" style="width:140px" :disabled="disabled"></el-input-number>',
       '  <el-date-picker v-else-if="vt === \'date\'" v-model="val" type="date" value-format="YYYY-MM-DD" size="small" style="width:170px" :disabled="disabled"></el-date-picker>',
       '  <el-select v-else-if="vt === \'select\' || vt === \'dict\'" v-model="val" size="small" filterable clearable style="width:210px" :disabled="disabled" :loading="loading" :remote="isDict" :remote-method="search">',
@@ -810,7 +1078,7 @@
 
   /* ================= 工具栏组件 ================= */
   function newFieldForm() {
-    return { fieldKey: '', fieldName: '', valueType: 'text', dictSource: '', options: '', required: false, readonly: false, noCopy: false };
+    return { fieldKey: '', fieldName: '', valueType: 'text', dictSource: '', options: '', placeholder: '', unit: '', defaultMacro: '', required: false, readonly: false, noCopy: false };
   }
   const EmrToolbar = {
     name: 'EmrToolbar',
@@ -835,6 +1103,10 @@
         drawTemplates: [], drawTplLoading: false, drawTplFailed: false,
         fragList: [], fragLoading: false, fragMode: 'browse', fragOffline: false, fragSelected: null, fragKeyword: '',
         valueTypes: (EX().VALUE_TYPES || ['text']).map(function (v) { return { v: v, l: VT_LABEL[v] || v }; }),
+        fontFamilies: [{ v: 'SimSun', l: '宋体' }, { v: 'Microsoft YaHei', l: '微软雅黑' }, { v: 'KaiTi', l: '楷体' }, { v: 'FangSong', l: '仿宋' }],
+        fontSizes: [{ v: '12pt', l: '小四' }, { v: '14pt', l: '四号' }, { v: '16pt', l: '三号' }, { v: '18pt', l: '小二' }, { v: '22pt', l: '二号' }],
+        lineHeights: [{ v: '1.5', l: '1.5 倍' }, { v: '1.75', l: '1.75 倍' }, { v: '2', l: '2 倍' }, { v: '2.5', l: '2.5 倍' }],
+        blockSpacings: [{ v: '0pt', l: '0' }, { v: '3pt', l: '3 磅' }, { v: '6pt', l: '6 磅' }, { v: '12pt', l: '12 磅' }],
         macroPresets: EmrMacroResolver.presets
       };
     },
@@ -855,6 +1127,30 @@
       onColor: function (c) {
         const ch = this.wrapper.editor.chain().focus();
         try { if (c) { ch.setColor(c).run(); } else { ch.unsetColor().run(); } } catch (e) { /* noop */ }
+      },
+      onTextStyle: function (key, value) {
+        const attrs = {}; attrs[key] = value || null;
+        try { this.wrapper.editor.chain().focus().setMark('textStyle', attrs).run(); } catch (e) { /* noop */ }
+      },
+      onBlockStyle: function (key, value) {
+        const ed = this.wrapper.editor;
+        const type = ed.isActive('heading') ? 'heading' : 'paragraph';
+        const attrs = {}; attrs[key] = value || null;
+        try { ed.chain().focus().updateAttributes(type, attrs).run(); } catch (e) { /* noop */ }
+      },
+      clearFormatting: function () {
+        try {
+          const ed = this.wrapper.editor;
+          const type = ed.isActive('heading') ? 'heading' : 'paragraph';
+          ed.chain().focus().unsetAllMarks().updateAttributes(type, { lineHeight: null, marginTop: null, marginBottom: null, textIndent: null }).clearNodes().run();
+        } catch (e) { /* noop */ }
+      },
+      tableCmd: function (name, arg) {
+        const ed = this.wrapper.editor;
+        try {
+          const ch = ed.chain().focus(); const fn = ch[name];
+          if (typeof fn === 'function') { (arg === undefined ? fn.call(ch) : fn.call(ch, arg)).run(); }
+        } catch (e) { /* noop */ }
       },
       onInsert: function (key) {
         const self = this;
@@ -879,7 +1175,7 @@
         if (map[key]) { self[map[key]] = true; }
       },
       onSave: function () { this.wrapper.emit('save', this.wrapper); },
-      onPrint: function () { EmrPrintPreview.print(this.wrapper.editor, { title: '病历打印预览' }); },
+      onPrint: function () { this.wrapper.print({ title: '病历打印预览', autoPrint: false }); },
       /* --- NLG/CDSS: 开关底部预览面板 / 手动触发临床提醒评估 --- */
       onNlgToggle: function () {
         const w = this.wrapper;
@@ -895,6 +1191,7 @@
           fieldName: this.f.fieldName || '', valueType: this.f.valueType,
           dictSource: this.f.dictSource || null,
           options: this.f.options || null,
+          placeholder: this.f.placeholder || '', unit: this.f.unit || '', defaultMacro: this.f.defaultMacro || '',
           required: this.f.required, readonly: this.f.readonly, noCopy: this.f.noCopy
         }).run();
         this.dlgField = false; this.f = newFieldForm();
@@ -977,6 +1274,8 @@
     },
     template: [
       '<div class="emr-toolbar" role="toolbar">',
+      '  <el-select class="emr-toolbar-font" size="small" :model-value="ts.fontFamily" placeholder="字体" clearable @change="onTextStyle(\'fontFamily\',$event)"><el-option v-for="f2 in fontFamilies" :key="f2.v" :label="f2.l" :value="f2.v"></el-option></el-select>',
+      '  <el-select class="emr-toolbar-size" size="small" :model-value="ts.fontSize" placeholder="字号" clearable @change="onTextStyle(\'fontSize\',$event)"><el-option v-for="s2 in fontSizes" :key="s2.v" :label="s2.l" :value="s2.v"></el-option></el-select>',
       '  <el-button-group>',
       '    <el-button size="small" :type="ts.bold ? \'primary\' : \'\'" title="加粗 Ctrl+B" @click="cmd(\'toggleBold\')"><b>B</b></el-button>',
       '    <el-button size="small" :type="ts.italic ? \'primary\' : \'\'" title="斜体 Ctrl+I" @click="cmd(\'toggleItalic\')"><i>I</i></el-button>',
@@ -993,7 +1292,16 @@
       '  <el-button-group>',
       '    <el-button v-for="al in aligns" :key="al" size="small" :type="ts.textAlign === al ? \'primary\' : \'\'" :title="\'对齐: \' + al" @click="cmd(\'setTextAlign\', al)">{{ alignLabel[al] }}</el-button>',
       '  </el-button-group>',
+      '  <el-select class="emr-toolbar-line" size="small" :model-value="ts.lineHeight" placeholder="行距" clearable @change="onBlockStyle(\'lineHeight\',$event)"><el-option v-for="lh in lineHeights" :key="lh.v" :label="lh.l" :value="lh.v"></el-option></el-select>',
+      '  <el-select class="emr-toolbar-spacing" size="small" :model-value="ts.marginTop" placeholder="段前" clearable @change="onBlockStyle(\'marginTop\',$event)"><el-option v-for="sp in blockSpacings" :key="\'t\'+sp.v" :label="sp.l" :value="sp.v"></el-option></el-select>',
+      '  <el-select class="emr-toolbar-spacing" size="small" :model-value="ts.marginBottom" placeholder="段后" clearable @change="onBlockStyle(\'marginBottom\',$event)"><el-option v-for="sp in blockSpacings" :key="\'b\'+sp.v" :label="sp.l" :value="sp.v"></el-option></el-select>',
+      '  <el-button-group>',
+      '    <el-button size="small" title="减少首行缩进" @click="onBlockStyle(\'textIndent\',null)">⇤</el-button>',
+      '    <el-button size="small" title="首行缩进 2 字符" @click="onBlockStyle(\'textIndent\',\'2em\')">⇥</el-button>',
+      '  </el-button-group>',
       '  <el-color-picker size="small" :model-value="ts.color" title="文字颜色" @change="onColor"></el-color-picker>',
+      '  <el-color-picker size="small" :model-value="ts.backgroundColor" title="文字高亮" @change="onTextStyle(\'backgroundColor\',$event)"></el-color-picker>',
+      '  <el-button size="small" title="清除文字和段落格式" @click="clearFormatting">清除格式</el-button>',
       '  <el-button size="small" :type="ts.printHidden ? \'warning\' : \'\'" title="标记选中内容打印时隐藏" @click="cmd(\'toggleEmrPrintControl\')">不打印</el-button>',
       '  <el-dropdown trigger="click" @command="onInsert">',
       '    <el-button size="small" class="emr-toolbar-insert">插入 ▾</el-button>',
@@ -1009,6 +1317,16 @@
       '        <el-dropdown-item command="conditional">条件块</el-dropdown-item>',
       '      </el-dropdown-menu>',
       '    </template>',
+      '  </el-dropdown>',
+      '  <el-dropdown v-if="ts.inTable" trigger="click" @command="tableCmd($event)">',
+      '    <el-button size="small" type="primary" plain>表格工具 ▾</el-button>',
+      '    <template #dropdown><el-dropdown-menu>',
+      '      <el-dropdown-item command="addRowBefore">上方插入行</el-dropdown-item><el-dropdown-item command="addRowAfter">下方插入行</el-dropdown-item>',
+      '      <el-dropdown-item command="deleteRow">删除行</el-dropdown-item><el-dropdown-item command="addColumnBefore" divided>左侧插入列</el-dropdown-item>',
+      '      <el-dropdown-item command="addColumnAfter">右侧插入列</el-dropdown-item><el-dropdown-item command="deleteColumn">删除列</el-dropdown-item>',
+      '      <el-dropdown-item command="mergeCells" divided>合并单元格</el-dropdown-item><el-dropdown-item command="splitCell">拆分单元格</el-dropdown-item>',
+      '      <el-dropdown-item command="toggleHeaderRow">切换表头行</el-dropdown-item><el-dropdown-item command="deleteTable" divided>删除表格</el-dropdown-item>',
+      '    </el-dropdown-menu></template>',
       '  </el-dropdown>',
       '  <el-button-group v-if="!compact">',
       '    <el-button size="small" :disabled="!ts.canUndo" title="撤销 Ctrl+Z" @click="cmd(\'undo\')">↶</el-button>',
@@ -1031,9 +1349,12 @@
       '      <el-form-item v-if="f.valueType === \'select\' || f.valueType === \'multiselect\' || f.valueType === \'dict\'" label="字典源">',
       '        <el-input v-model="f.dictSource" placeholder="diag / drug / charge, 留空用手动选项"></el-input>',
       '      </el-form-item>',
-      '      <el-form-item v-if="!f.dictSource && (f.valueType === \'select\' || f.valueType === \'multiselect\' || f.valueType === \'checkbox\')" label="选项">',
-      '        <el-input v-model="f.options" type="textarea" :rows="2" placeholder="逗号分隔, 如: 阳性,阴性"></el-input>',
+      '      <el-form-item v-if="!f.dictSource && (f.valueType === \'select\' || f.valueType === \'multiselect\' || f.valueType === \'checkbox\' || f.valueType === \'textarea\')" :label="f.valueType === \'textarea\' ? \'快捷短语\' : \'选项\'">',
+      '        <el-input v-model="f.options" type="textarea" :rows="2" :placeholder="f.valueType === \'textarea\' ? \'每行一条快捷短语，或使用 JSON 数组\' : \'逗号分隔, 如: 阳性,阴性\'"></el-input>',
       '      </el-form-item>',
+      '      <el-form-item label="占位提示"><el-input v-model="f.placeholder" placeholder="医生书写时的简短提示"></el-input></el-form-item>',
+      '      <el-form-item label="单位" v-if="f.valueType !== \'textarea\' && f.valueType !== \'vitals\'"><el-input v-model="f.unit" placeholder="如 mmHg"></el-input></el-form-item>',
+      '      <el-form-item label="默认宏"><el-select v-model="f.defaultMacro" filterable clearable allow-create default-first-option style="width:100%" placeholder="仅空字段自动带入"><el-option v-for="p in macroPresets" :key="p.code" :label="p.label + \'（\' + p.code + \'）\'" :value="p.code"></el-option></el-select></el-form-item>',
       '      <el-form-item label="属性">',
       '        <el-checkbox v-model="f.required">必填</el-checkbox>',
       '        <el-checkbox v-model="f.readonly">只读</el-checkbox>',
@@ -1160,6 +1481,7 @@
     let listeners = {};
     let lastFields = null;
     let toolbar = null;
+    let pageCanvas = null;
 
     function emit(evt, payload) {
       (listeners[evt] || []).slice().forEach(function (cb) { try { cb(payload); } catch (e) { /* 宿主回调异常不扩散 */ } });
@@ -1203,6 +1525,12 @@
             orderedList: editor.isActive('orderedList'), blockquote: editor.isActive('blockquote'),
             textAlign: align || 'left',
             color: (editor.getAttributes('textStyle') || {}).color || '',
+            fontFamily: (editor.getAttributes('textStyle') || {}).fontFamily || '',
+            fontSize: (editor.getAttributes('textStyle') || {}).fontSize || '',
+            backgroundColor: (editor.getAttributes('textStyle') || {}).backgroundColor || '',
+            lineHeight: (editor.getAttributes(editor.isActive('heading') ? 'heading' : 'paragraph') || {}).lineHeight || '',
+            marginTop: (editor.getAttributes(editor.isActive('heading') ? 'heading' : 'paragraph') || {}).marginTop || '',
+            marginBottom: (editor.getAttributes(editor.isActive('heading') ? 'heading' : 'paragraph') || {}).marginBottom || '',
             printHidden: editor.isActive('emrPrintControl'),
             inTable: editor.isActive('table'),
             canUndo: editor.can().undo(), canRedo: editor.can().redo(),
@@ -1212,13 +1540,22 @@
       },
       toJSON: function () { return editor.getJSON(); },
       getHTML: function () { return editor.getHTML(); },
-      fromJSON: function (json) { editor.commands.setContent(json || DEFAULT_DOC, true); return wrapper; },
+      fromJSON: function (json) { editor.commands.setContent(json || DEFAULT_DOC, true); if (pageCanvas) { pageCanvas.refresh(); } return wrapper; },
       extractFields: extractFields,
       extractFieldsDetail: extractFieldsDetail,
       extractDocumentFields: function () { return extractDocumentFields(editor.state.doc); },
       /* resolveMacros(ctx) — 客户端宏预览: 解析并回写文档 */
       resolveMacros: function (ctx) { return EmrMacroResolver.resolveAll(editor, ctx); },
-      print: function (printOpts) { return EmrPrintPreview.print(editor, printOpts); },
+      print: function (printOpts) {
+        const merged = Object.assign({}, printOpts || {});
+        if (merged.printConfig == null) { merged.printConfig = wrapper.options.printConfig; }
+        if (merged.printScript == null) { merged.printScript = wrapper.options.printScript; }
+        return EmrPrintPreview.print(editor, merged);
+      },
+      setPrintConfig: function (config) { wrapper.options.printConfig = normalizePrintConfig(config); if (pageCanvas) { pageCanvas.setConfig(wrapper.options.printConfig); } return wrapper; },
+      setZoom: function (zoom) { if (pageCanvas) { pageCanvas.setZoom(zoom); } return wrapper; },
+      refreshPagination: function () { if (pageCanvas) { pageCanvas.refresh(); } return wrapper; },
+      getPaginationDiagnostics: function () { return pageCanvas ? pageCanvas.getDiagnostics() : []; },
       focus: function () { editor.commands.focus(); return wrapper; },
       /* setMode('edit'|'design'|'preview') — design 强化结构描边, preview 只读 */
       setMode: function (m) {
@@ -1246,10 +1583,12 @@
         emit('destroy', wrapper);
         listeners = {};
         if (toolbar) { try { toolbar.app.unmount(); } catch (e) { /* noop */ } toolbar = null; }
+        if (pageCanvas) { try { pageCanvas.destroy(); } catch (e) { /* noop */ } pageCanvas = null; }
         try { editor.destroy(); } catch (e) { /* noop */ }
       }
     };
     wrapper.setToolbar = function (t) { toolbar = t; };
+    if (opts.pageCanvas && hostEl) { pageCanvas = createPageCanvas(hostEl, wrapper, opts.printConfig); }
 
     function applyMode() {
       if (!hostEl) { return; }
@@ -1270,12 +1609,40 @@
       lastFields = fields;
       if (changes.length && typeof opts.onFieldChange === 'function') { opts.onFieldChange(changes, fields); }
       emit('update', wrapper);
+      if (pageCanvas) { pageCanvas.refresh(); }
     });
     editor.on('transaction', function () { emit('toolbar', wrapper.getToolbarState()); });
     on('save', function () { if (typeof opts.onSave === 'function') { opts.onSave(wrapper); } });
 
     applyMode();
     return wrapper;
+  }
+
+  function createTypographyExtension(T) {
+    return T.Extension.create({
+      name: 'emrTypography',
+      addGlobalAttributes: function () {
+        return [
+          {
+            types: ['textStyle'],
+            attributes: {
+              fontFamily: { default: null, parseHTML: function (el) { return el.style.fontFamily || null; }, renderHTML: function (a) { return a.fontFamily ? { style: 'font-family:' + a.fontFamily } : {}; } },
+              fontSize: { default: null, parseHTML: function (el) { return el.style.fontSize || null; }, renderHTML: function (a) { return a.fontSize ? { style: 'font-size:' + a.fontSize } : {}; } },
+              backgroundColor: { default: null, parseHTML: function (el) { return el.style.backgroundColor || null; }, renderHTML: function (a) { return a.backgroundColor ? { style: 'background-color:' + a.backgroundColor } : {}; } }
+            }
+          },
+          {
+            types: ['paragraph', 'heading'],
+            attributes: {
+              lineHeight: { default: null, parseHTML: function (el) { return el.style.lineHeight || null; }, renderHTML: function (a) { return a.lineHeight ? { style: 'line-height:' + a.lineHeight } : {}; } },
+              marginTop: { default: null, parseHTML: function (el) { return el.style.marginTop || null; }, renderHTML: function (a) { return a.marginTop ? { style: 'margin-top:' + a.marginTop } : {}; } },
+              marginBottom: { default: null, parseHTML: function (el) { return el.style.marginBottom || null; }, renderHTML: function (a) { return a.marginBottom ? { style: 'margin-bottom:' + a.marginBottom } : {}; } },
+              textIndent: { default: null, parseHTML: function (el) { return el.style.textIndent || null; }, renderHTML: function (a) { return a.textIndent ? { style: 'text-indent:' + a.textIndent } : {}; } }
+            }
+          }
+        ];
+      }
+    });
   }
 
   /* ================= createEditor(引擎入口) ================= */
@@ -1287,6 +1654,8 @@
       toolbarContainer: null,           /* 提供则自动挂载工具栏 */
       document: null,                   /* Tiptap JSON 或 HTML 字符串 */
       placeholder: '输入病历内容，或使用工具栏插入结构化元素…',
+      pageCanvas: false,                /* 设计器专用 A4 纸张画布与自动分页装饰 */
+      printConfig: null,
       onSave: null,                     /* (wrapper) => {} */
       onFieldChange: null,              /* (changes, fields) => {} */
       nlgEnabled: false,                /* NLG 自然语言预览: 底部面板 + 字段变更防抖 2s 生成 */
@@ -1304,10 +1673,10 @@
       T.History,
       T.Underline,
       T.TextAlign.configure({ types: ['heading', 'paragraph'] }),
-      T.Color, T.TextStyle,
+      T.Color, T.TextStyle, createTypographyExtension(T),
       T.Image.configure({ inline: false, allowBase64: true }),
       T.Placeholder.configure({ placeholder: opts.placeholder }),
-      ext.EmrTable, T.TableRow, T.TableCell, T.TableHeader,
+      ext.EmrTable.configure({ resizable: true }), T.TableRow, T.TableCell, T.TableHeader,
       ext.EmrField, ext.EmrSection, ext.EmrMacro, ext.EmrPrintControl,
       ext.EmrFragment, ext.EmrConditionalBlock, ext.EmrPageBreak, ext.EmrDrawing
     ];
@@ -1385,6 +1754,7 @@
       '.emr-toolbar::-webkit-scrollbar { height:5px; } .emr-toolbar::-webkit-scrollbar-thumb { background:#c6ccd6; border-radius:3px; }',
       '.emr-toolbar .el-button + .el-button { margin-left:0; } .emr-toolbar .el-button-group + .el-button-group { margin-left:0; }',
       '.emr-toolbar .el-color-picker, .emr-toolbar .el-dropdown { margin:0 2px; }',
+      '.emr-toolbar-font { width:104px; } .emr-toolbar-size { width:82px; } .emr-toolbar-line { width:92px; } .emr-toolbar-spacing { width:76px; }',
       '.emr-toolbar-insert { margin-left:2px !important; } .emr-toolbar-gap { flex:1; }',
       /* ---- 编辑器宿主 ---- */
       '.emr-editor-host { border:1px solid var(--yb-border,#dfe4eb); border-radius:6px; background:var(--yb-surface,#fff); }',
@@ -1393,6 +1763,15 @@
       '.emr-doc .ProseMirror > * + * { margin-top:.6em; }',
       '.emr-doc .ProseMirror p.is-editor-empty:first-child::before { content:attr(data-placeholder); color:var(--yb-ink-4,#8994a5); float:left; height:0; pointer-events:none; }',
       '.emr-doc--preview .ProseMirror { min-height:120px; background:var(--yb-surface-2,#f7f9fc); }',
+      /* ---- 设计器 A4 画布：纸张背景独立于文档，自动分页仅装饰 DOM ---- */
+      '.emr-page-canvas { position:relative; overflow:auto; background:#dfe3e8!important; padding:24px 36px 48px; }',
+      '.emr-page-canvas .emr-page-sheets { position:absolute; z-index:0; left:50%; top:24px; width:var(--emr-paper-width); height:var(--emr-paper-stack-height); transform:translateX(-50%); pointer-events:none; }',
+      '.emr-page-canvas .emr-page-sheet { position:absolute; left:0; background:#fff; box-shadow:0 2px 12px rgba(15,23,42,.2); }',
+      '.emr-page-canvas .emr-page-sheet span { position:absolute; right:10px; bottom:-19px; color:#64748b; font:11px/1 sans-serif; }',
+      '.emr-page-canvas .ProseMirror { position:relative; z-index:1; margin:0 auto; box-sizing:border-box; background:transparent; box-shadow:none; transition:width .18s ease,font-size .18s ease; }',
+      '.emr-page-canvas .ProseMirror .emr-auto-page-start { break-before:page; position:relative; }',
+      '.emr-page-canvas .ProseMirror .emr-auto-page-start::before { content:"分页"; position:absolute; right:0; top:-18px; color:#64748b; font:10px/1 sans-serif; }',
+      '.emr-page-canvas .ProseMirror .emr-page-overflow { outline:2px solid #dc2626; outline-offset:3px; }',
       /* ---- 表格(官方 Table 基础样式) ---- */
       '.emr-doc .ProseMirror table { border-collapse:collapse; width:100%; margin:8px 0; overflow:hidden; table-layout:fixed; }',
       '.emr-doc .ProseMirror td, .emr-doc .ProseMirror th { border:1px solid var(--yb-border-strong,#ccd4de); padding:4px 8px; vertical-align:top; position:relative; min-width:64px; }',
@@ -1470,6 +1849,7 @@
     EmrSectionRenderer: EmrSectionRenderer,
     EmrMacroResolver: EmrMacroResolver,
     EmrPrintPreview: EmrPrintPreview,
+    PageCanvas: { create: createPageCanvas, normalizeConfig: normalizePrintConfig, metrics: printMetrics },
     EmrDiffViewer: EmrDiffViewer,
     EmrNlgPanel: EmrNlgPanel,
     EmrCdssPanel: EmrCdssPanel

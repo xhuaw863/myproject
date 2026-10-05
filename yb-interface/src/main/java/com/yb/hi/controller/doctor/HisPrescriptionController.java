@@ -2,9 +2,11 @@ package com.yb.hi.controller.doctor;
 
 import com.yb.hi.dto.doctor.PrescriptionBatchReq;
 import com.yb.hi.dto.doctor.PrescriptionReq;
+import com.yb.hi.entity.community.HisDrugCatalog;
 import com.yb.hi.entity.doctor.HisPrescription;
 import com.yb.hi.entity.doctor.HisPrescriptionItem;
 import com.yb.hi.framework.common.R;
+import com.yb.hi.service.community.OrgCatalogService;
 import com.yb.hi.service.doctor.HisPrescriptionService;
 import org.springframework.web.bind.annotation.*;
 
@@ -20,9 +22,11 @@ import java.util.Map;
 public class HisPrescriptionController {
 
     private final HisPrescriptionService service;
+    private final OrgCatalogService orgCatalogService;
 
-    public HisPrescriptionController(HisPrescriptionService service) {
+    public HisPrescriptionController(HisPrescriptionService service, OrgCatalogService orgCatalogService) {
         this.service = service;
+        this.orgCatalogService = orgCatalogService;
     }
 
     /** 查询某次就诊的处方列表 */
@@ -59,6 +63,15 @@ public class HisPrescriptionController {
     @GetMapping("/print-data")
     public R<Map<String, Object>> printData(@RequestParam Long id) {
         return R.ok(service.printData(id));
+    }
+
+    /** P2 智能选药: 空输入聚焦的"精选候选"——按当前诊断推荐(限本机构启用, 附药房价/库存) */
+    @GetMapping("/drug-suggest")
+    public R<List<HisDrugCatalog>> drugSuggest(@RequestParam(required = false) Long deptId,
+                                               @RequestParam(required = false) String diagCodes,
+                                               @RequestParam(defaultValue = "12") int limit,
+                                               @RequestParam(required = false) Long pharmacyId) {
+        return R.ok(orgCatalogService.suggestDrugs(diagCodes, limit, pharmacyId));
     }
 
     /* ================= P8a-2: 草药方引用(病历编辑器引用草药处方, 前端 inp-emr-writer.js 已预埋调用) ================= */

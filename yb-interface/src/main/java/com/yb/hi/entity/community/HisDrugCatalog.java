@@ -179,6 +179,14 @@ public class HisDrugCatalog extends BaseEntity {
     @TableField(exist = false)
     private BigDecimal stockQty;
 
+    /** P3 软预占虚拟可用量 = stockQty - 他单已开未发占用量(无药房时=stockQty; 不落库) */
+    @TableField(exist = false)
+    private BigDecimal stockAvail;
+
+    /** P3 该药房已被他单(已开未发)占用量(不落库) */
+    @TableField(exist = false)
+    private BigDecimal reservedQty;
+
     /** 拼音简码(通用名首字母, 保存时自动生成只读) */
     private String pyCode;
 

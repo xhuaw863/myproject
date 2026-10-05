@@ -196,7 +196,7 @@ public class DemoDataInitializer implements ApplicationRunner {
     /* ===================== 系统参数种子(全局, 2026-09) ===================== */
 
     /**
-     * 系统参数全局种子: 9 个参数分组(sys_param_group) + 30 条参数定义(sys_param 定义行 scope_level=0,
+     * 系统参数全局种子: 9 个参数分组(sys_param_group) + 31 条参数定义(sys_param 定义行 scope_level=0,
      * scope_id=0, tenant_id=0)。sys_param/sys_param_group 均已豁免租户插件且全局行 tenant_id=0 需跨租户
      * 可见, 故不走 Mapper 而直接 JdbcTemplate INSERT 并显式落 tenant_id=0。
      * 幂等: 两表物理唯一键(uk_group_code / uk_param_scope)均不含 deleted, 墓碑行仍占键位 —— 判存查询
@@ -247,6 +247,7 @@ public class DemoDataInitializer implements ApplicationRunner {
                 {"system", "system.page_size_default", "默认分页行数", "enum", "20", "10,20,50,100", null, null, 1, "0,1,2,3", "列表页默认每页行数"},
                 {"system", "system.data_retain_months", "数据保留月数", "int", "36", null, "6", "120", 1, "0,1,2,3", "业务数据在线保留月数"},
                 {"system", "system.menu_default_collapsed", "左菜单默认折叠", "bool", "false", null, null, null, 0, "0,1,2", "登录后左侧菜单是否默认折叠为入口条; 机构级配置优先于租户级"},
+                {"system", "system.clinical_workstation_menu_default_collapsed", "临床工作站左菜单默认最小化", "bool", "true", null, null, null, 0, "0,1", "打开门诊医生、住院医生或住院护士工作站时是否默认将全局左菜单最小化; 仅支持租户级覆盖"},
                 {"system", "system.list_default_paged", "列表默认分页显示", "bool", "true", null, null, null, 0, "0,1,2", "列表页首次进入时默认使用分页(true)还是全量(false)模式; 用户手动切换后以本地偏好为准"},
                 {"system", "system.list_full_threshold", "全量显示确认阈值", "int", "2000", null, "100", "50000", 0, "0,1,2", "数据行数超过此阈值时切换全量模式需弹确认提示; 设为极大值等效于不提示"},
                 {"outpatient", "outpatient.default_reg_fee", "默认挂号费(元)", "decimal", "15.00", null, "0", "1000", 0, "0,1,2,3", "普通号默认挂号费"},

@@ -33,8 +33,8 @@
   ];
   var LEVEL_FILTERS = [{ v: -1, l: '全部层级' }, { v: 0, l: '全院' }, { v: 1, l: '科室' }, { v: 2, l: '个人' }];
   var OWNER_BY_LEVEL = { 0: 'global', 1: 'dept', 2: 'personal' };
-  var VALUE_TYPES = ['text', 'number', 'date', 'select', 'multiselect', 'checkbox', 'dict'];
-  var VT_LABEL = { text: '文本', number: '数字', date: '日期', select: '单选', multiselect: '多选', checkbox: '复选', dict: '字典' };
+  var VALUE_TYPES = ['text', 'textarea', 'number', 'date', 'select', 'multiselect', 'checkbox', 'dict', 'vitals'];
+  var VT_LABEL = { text: '单行文本', textarea: '长文本/快捷短语', number: '数字', date: '日期', select: '单选', multiselect: '多选', checkbox: '复选', dict: '字典', vitals: '生命体征' };
   var EDIT_MODES = [{ v: 'form', l: '表单' }, { v: 'free', l: '自由' }, { v: 'mixed', l: '混合' }];
   var EDITOR_MODES = [{ v: 'design', l: '设计' }, { v: 'edit', l: '编辑' }, { v: 'preview', l: '预览' }];
   var KIND_LABEL = { emrField: '数据元', emrSection: '章节', emrMacro: '宏变量', emrConditionalBlock: '条件块', emrDrawing: '医学图示', emrFragment: '片段引用' };
@@ -44,15 +44,113 @@
 
   /* ================= 工具 ================= */
   function text(v) { return v == null ? '' : String(v); }
-  /* 数据元字段类型 → 编辑器 valueType 归一: 兼容后端 mapValueType 的 'multiSelect', datetime/textarea 前端无控件回落 */
+  /* 数据元字段类型 → 编辑器 valueType 归一: 兼容后端 mapValueType 的 multiSelect/datetime。 */
   function mapValueType(t) {
     var s = text(t).toLowerCase();
     if (s === 'multiselect') { return 'multiselect'; }
     if (s === 'datetime') { return 'date'; }
-    if (s === 'textarea') { return 'text'; }
     return VALUE_TYPES.indexOf(s) >= 0 ? s : 'text';
   }
-  function safeParse(s) { try { var v = JSON.parse(s); return v || null; } catch (e) { return null; } }
+  function safeParse(s) { try { var v = typeof s === 'string' ? JSON.parse(s) : s; return v || null; } catch (e) { return null; } }
+  function defaultPrintConfig() {
+    return {
+      paperSize: 'A4', orientation: 'portrait',
+      margins: { top: 18, right: 16, bottom: 18, left: 16 },
+      header: { enabled: false, content: '' }, footer: { enabled: false, content: '' },
+      showPageNumber: true
+    };
+  }
+  function normalizePrintConfig(value) {
+    var input = safeParse(value) || {};
+    var base = defaultPrintConfig();
+    var orientation = input.orientation === 'landscape' ? 'landscape' : 'portrait';
+    var margins = input.margins || {};
+    function margin(name) {
+      var n = Number(margins[name]);
+      return isFinite(n) ? Math.max(0, Math.min(50, Math.round(n))) : base.margins[name];
+    }
+    return {
+      paperSize: 'A4', orientation: orientation,
+      margins: { top: margin('top'), right: margin('right'), bottom: margin('bottom'), left: margin('left') },
+      header: { enabled: !!(input.header && input.header.enabled), content: text(input.header && input.header.content) },
+      footer: { enabled: !!(input.footer && input.footer.enabled), content: text(input.footer && input.footer.content) },
+      showPageNumber: input.showPageNumber !== false
+    };
+  }
+  function parseFieldDefs(value) {
+    var parsed = safeParse(value);
+    if (Array.isArray(parsed)) { return parsed; }
+    return parsed && Array.isArray(parsed.fields) ? parsed.fields : [];
+  }
+  function fieldAttrs(def) {
+    def = def || {};
+    return {
+      fieldKey: text(def.fieldKey || def.fieldCode || def.key),
+      fieldName: text(def.fieldName || def.label || def.name),
+      value: def.value == null ? (def.defaultValue == null ? null : def.defaultValue) : def.value,
+      valueType: mapValueType(def.valueType || def.type || def.fieldType),
+      dictSource: def.dictSource || def.dictRef || null,
+      options: def.options == null ? null : def.options,
+      placeholder: text(def.placeholder), unit: text(def.unit), defaultMacro: text(def.defaultMacro),
+      required: def.required === true || Number(def.required) === 1,
+      readonly: def.readonly === true || Number(def.readonly) === 1,
+      noCopy: def.noCopy === true || Number(def.noCopy) === 1
+    };
+  }
+  /* 历史字段画布模板转为章节+字段文档，仅在内存中转换，首次保存时再持久化。 */
+  function fieldsToDocument(value) {
+    var defs = parseFieldDefs(value);
+    if (!defs.length) { return null; }
+    var doc = { type: 'doc', content: [] };
+    var section = null;
+    function target() { return section ? section.content : doc.content; }
+    defs.forEach(function (def, idx) {
+      var type = text(def && (def.type || def.valueType || def.fieldType)).toLowerCase();
+      if (type === 'section') {
+        var key = text(def.fieldKey || def.fieldCode || def.key) || ('section_' + idx);
+        section = {
+          type: 'emrSection',
+          attrs: { sectionKey: key, key: key, title: text(def.label || def.fieldName || def.name) || '未命名章节', editMode: text(def.editMode) || 'mixed', collapsible: def.collapsible !== false, printHidden: !!def.printHidden, locked: !!def.locked, collapsed: false },
+          content: [{ type: 'paragraph' }]
+        };
+        doc.content.push(section);
+        return;
+      }
+      var attrs = fieldAttrs(def);
+      if (!attrs.fieldKey) { attrs.fieldKey = 'field_' + idx; }
+      var paragraph = { type: 'paragraph', content: [{ type: 'emrField', attrs: attrs }] };
+      target().push(paragraph);
+    });
+    if (!doc.content.length) { doc.content.push({ type: 'paragraph' }); }
+    return doc;
+  }
+  /* 文档回抽 fields，按 fieldKey 合并历史定义，保留未知字典/宏/质控属性。 */
+  function documentToFields(json, legacy) {
+    var old = {};
+    (legacy || []).forEach(function (f) {
+      var k = text(f && (f.fieldKey || f.fieldCode || f.key));
+      if (k) { old[k] = Object.assign({}, f); }
+    });
+    var out = [];
+    walkDoc(json, function (n) {
+      var a = n.attrs || {};
+      if (n.type === 'emrSection') {
+        var sk = text(a.sectionKey || a.key);
+        if (!sk) { return; }
+        out.push(Object.assign({}, old[sk] || {}, { fieldKey: sk, label: text(a.title) || sk, type: 'section', required: false, editMode: a.editMode || 'mixed', collapsible: a.collapsible !== false, printHidden: !!a.printHidden, locked: !!a.locked }));
+      } else if (n.type === 'emrField') {
+        var fk = text(a.fieldKey);
+        if (!fk) { return; }
+        var f = Object.assign({}, old[fk] || {});
+        f.fieldKey = fk; f.label = text(a.fieldName) || fk; f.type = mapValueType(a.valueType);
+        f.required = !!a.required; f.readonly = !!a.readonly; f.noCopy = !!a.noCopy;
+        f.dictSource = a.dictSource || null; f.options = a.options == null ? null : a.options;
+        f.placeholder = text(a.placeholder); f.unit = text(a.unit); f.defaultMacro = text(a.defaultMacro);
+        out.push(f);
+      }
+    });
+    return out;
+  }
   /* lockedSections 解析: JSON 数组字符串 或 逗号分隔兜底 */
   function parseKeys(s) {
     var v = safeParse(s);
@@ -128,20 +226,23 @@
     var st = document.getElementById('emr-tpl-designer-css');
     if (!st) { st = document.createElement('style'); st.id = 'emr-tpl-designer-css'; document.head.appendChild(st); }
     st.textContent = [
-      '.etd-top { flex:none; flex-wrap:wrap; gap:8px; margin-bottom:8px; }',
+      '.etd-shell { background:#f3f5f7; } .etd-shell>.page-title { color:#17324d; letter-spacing:.02em; }',
+      '.etd-top { flex:none; flex-wrap:wrap; gap:8px; margin-bottom:6px; background:#fff; border:1px solid var(--yb-border,#dfe4eb); border-radius:4px; padding:6px 8px; }',
       '.etd-top .el-button+.el-button { margin-left:0; }',
-      '.etd-main { flex:1; min-height:0; display:flex; gap:10px; }',
-      '.etd-left { flex:none; width:22%; min-width:250px; display:flex; flex-direction:column; min-height:0; border:1px solid var(--yb-border,#dfe4eb); border-radius:var(--yb-r-md,8px); padding:8px; }',
+      '.etd-main { flex:1; min-height:0; display:flex; gap:8px; }',
+      '.etd-left { flex:none; width:232px; min-width:232px; display:flex; flex-direction:column; min-height:0; border:1px solid var(--yb-border,#dfe4eb); border-radius:4px; padding:8px; background:#fff; }',
       '.etd-tree { flex:1; min-height:0; overflow:auto; margin-top:8px; }',
       '.etd-tree .el-tree-node__content { height:28px; }',
       '.etd-tip { flex:none; margin-top:6px; font-size:12px; color:var(--yb-ink-4,#8994a5); line-height:1.7; }',
-      '.etd-mid { flex:1; min-width:0; display:flex; flex-direction:column; min-height:0; }',
-      '.etd-toolbar-host { flex:none; }',
-      '.etd-editor-host { flex:1; min-height:0; overflow:auto; border:1px solid var(--yb-border,#dfe4eb); border-top:none; border-radius:0 0 6px 6px; transition:border-color .15s, box-shadow .15s, background .15s; }',
+      '.etd-mid { flex:1; min-width:0; display:flex; flex-direction:column; min-height:0; border:1px solid #cfd6df; background:#fff; }',
+      '.etd-toolbar-host { flex:none; } .etd-toolbar-host .emr-toolbar { border-width:0 0 1px; border-radius:0; background:#f8fafc; }',
+      '.etd-canvasbar { flex:none; display:flex; align-items:center; gap:8px; min-height:34px; padding:4px 10px; background:#fff; border-bottom:1px solid #d8dee7; font-size:12px; color:#536273; }',
+      '.etd-canvasbar .etd-spacer { flex:1; } .etd-page-state { font-variant-numeric:tabular-nums; }',
+      '.etd-editor-host { flex:1; min-height:0; overflow:auto; border:0; border-radius:0; transition:border-color .15s, box-shadow .15s, background .15s; }',
       '.etd-editor-host.etd-drag-over { border-color:var(--yb-brand,#1a5c9e); box-shadow:inset 0 0 0 2px rgba(26,92,158,.14); background:var(--yb-brand-subtle,#eaf1f8); }',
       '.etd-editor-host .ProseMirror { min-height:100%; box-sizing:border-box; }',
       '.etd-editor-host .ProseMirror-selectednode { outline:2px solid var(--yb-brand,#1a5c9e); outline-offset:1px; border-radius:3px; }',
-      '.etd-right { flex:none; width:25%; min-width:262px; display:flex; flex-direction:column; min-height:0; overflow:auto; border:1px solid var(--yb-border,#dfe4eb); border-radius:var(--yb-r-md,8px); padding:8px 10px; }',
+      '.etd-right { flex:none; width:286px; min-width:286px; display:flex; flex-direction:column; min-height:0; overflow:auto; border:1px solid var(--yb-border,#dfe4eb); border-radius:4px; padding:8px 10px; background:#fff; }',
       '.etd-card { border-bottom:1px dashed var(--yb-divider,#f0f3f7); padding-bottom:10px; margin-bottom:10px; }',
       '.etd-card:last-child { border-bottom:none; margin-bottom:0; }',
       '.etd-card-hd { font-size:13px; font-weight:600; color:var(--yb-ink-1,#1c2430); margin-bottom:8px; display:flex; align-items:center; gap:6px; }',
@@ -156,6 +257,10 @@
       '.etd-tn-key { font-size:11px; color:var(--yb-ink-4,#8994a5); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }',
       '.etd-tn--element { cursor:grab; }',
       '.etd-tn--element:active { cursor:grabbing; }',
+      '.etd-component-group { margin-top:10px; } .etd-component-title { color:#64748b; font-size:11px; font-weight:700; letter-spacing:.08em; margin:0 0 6px; }',
+      '.etd-component-grid { display:grid; grid-template-columns:1fr 1fr; gap:6px; } .etd-component-grid .el-button { margin:0; justify-content:flex-start; border-radius:3px; }',
+      '.etd-left-tabs { margin-bottom:8px; } .etd-legacy-alert { flex:none; margin-bottom:6px; }',
+      '.etd-print-grid { display:grid; grid-template-columns:1fr 1fr; gap:6px 8px; } .etd-print-grid .el-form-item { margin-bottom:8px; }',
       '.etd-script textarea { font-family:Consolas,monospace; font-size:12px; }',
       '.etd-draw-preview { border:1px solid var(--yb-border-light,#ebeff4); border-radius:6px; background:var(--yb-surface-2,#f7f9fc); padding:6px; max-height:150px; overflow:hidden; text-align:center; }',
       '.etd-draw-preview svg { max-width:100%; max-height:136px; height:auto; }',
@@ -176,9 +281,16 @@
         tplLoading: false, allTemplates: [], currentTplId: '', current: null,
         tplFormName: '', saving: false,
         /* 文档附加载荷 */
-        printScript: '', lockedKeys: [], lockedDirty: false,
+        printScript: '', printConfig: defaultPrintConfig(), legacyFields: [], legacyConverted: false,
+        lockedKeys: [], lockedDirty: false,
         /* 编辑器 */
-        editorMode: 'design', editorLoading: false,
+        editorMode: 'design', editorLoading: false, zoom: 0.9, pageCount: 1, paginationDiagnostics: [],
+        leftTab: 'components',
+        componentGroups: [
+          { title: '结构', items: [{ k: 'section', l: '章节' }, { k: 'field', l: '数据元' }, { k: 'conditional', l: '条件块' }] },
+          { title: '内容', items: [{ k: 'macro', l: '宏变量' }, { k: 'table', l: '表格' }, { k: 'drawing', l: '医学图示' }] },
+          { title: '复用与分页', items: [{ k: 'fragment', l: '片段' }, { k: 'pagebreak', l: '分页符' }] }
+        ],
         /* 数据集(左栏) */
         datasets: [], dsListLoading: false, datasetId: '', treeLoading: false,
         dsDataset: null, chapters: [],
@@ -235,7 +347,7 @@
       },
       selKindLabel: function () { return this.sel ? (KIND_LABEL[this.sel.kind] || '节点') : ''; },
       selIsDict: function () { return ['select', 'multiselect', 'dict'].indexOf(text(this.selForm.valueType)) >= 0; },
-      selHasOpts: function () { return ['select', 'multiselect', 'checkbox'].indexOf(text(this.selForm.valueType)) >= 0; },
+      selHasOpts: function () { return ['select', 'multiselect', 'checkbox', 'textarea'].indexOf(text(this.selForm.valueType)) >= 0; },
       /* 当前文档数据元清单(条件块字段下拉数据源; 依赖 docTick 随编辑器事务失效重算) */
       documentFields: function () {
         void this.docTick;
@@ -264,7 +376,11 @@
     },
     watch: {
       currentTplId: function (nv) { this.loadTemplate(nv); },
-      scopeFilter: function () { this.fetchTemplates(); }
+      scopeFilter: function () { this.fetchTemplates(); },
+      printConfig: {
+        deep: true,
+        handler: function (value) { if (this._editor) { this._editor.setPrintConfig(value); } }
+      }
     },
     created: function () {
       this.isLead = typeof HIS.isLead === 'function' ? !!HIS.isLead() : false;
@@ -302,16 +418,19 @@
         HIS.EmrEditor.createEditor({
           container: vm.$refs.editorHost,
           toolbarContainer: vm.$refs.toolbarHost,
-          mode: vm.editorMode,
-          placeholder: '从左侧数据集双击或拖拽数据元插入, 或使用工具栏构建结构化病历…',
+          mode: vm.editorMode, pageCanvas: true, printConfig: vm.printConfig,
+          placeholder: '从左侧插入结构化组件，像编辑 Word 文档一样完成病历版式…',
           onSave: function () { vm.save(); }
         }).then(function (w) {
           if (vm._destroyed) { try { w.destroy(); } catch (e) { /* noop */ } return; }
           vm._editor = w;
+          w.setZoom(vm.zoom);
           w.on('toolbar', function () { vm.docTick++; vm.refreshSel(); });   /* docTick: documentFields 等依赖文档内容的计算属性失效重算 */
+          w.on('pagination', function (state) { vm.pageCount = state.pageCount || 1; vm.paginationDiagnostics = state.diagnostics || []; });
           /* 编辑器就绪前已选择模板的场景: 补载文档 */
           if (vm.current) {
-            var doc = safeParse(vm.current.document);
+            var doc = safeParse(vm.current.document) || fieldsToDocument(vm.current.fields);
+            vm.legacyConverted = !safeParse(vm.current.document) && !!doc;
             if (doc) { applyLockedFlags(normalizeDocIn(doc), vm.lockedKeys); }
             w.fromJSON(doc || null);
           }
@@ -321,6 +440,30 @@
       },
       onModeChange: function (m) {
         if (this._editor) { this._editor.setMode(m); }
+      },
+      setZoom: function (value) {
+        this.zoom = Math.max(0.5, Math.min(1.5, Number(value) || 1));
+        if (this._editor) { this._editor.setZoom(this.zoom); }
+      },
+      fitWidth: function () {
+        var host = this.$refs.editorHost;
+        if (!host) { return; }
+        var width = this.printConfig.orientation === 'landscape' ? 1122 : 794;
+        this.setZoom(Math.max(0.5, Math.min(1.25, (host.clientWidth - 84) / width)));
+      },
+      insertComponent: function (key) {
+        var ed = this._editor && this._editor.editor;
+        if (!ed) { ElementPlus.ElMessage.warning('编辑器尚未就绪'); return; }
+        try {
+          if (key === 'field') { ed.chain().focus().insertEmrField({ fieldKey: genCode('field'), fieldName: '新数据元', valueType: 'text' }).run(); }
+          else if (key === 'section') { ed.chain().focus().insertEmrSection({ sectionKey: genCode('section'), title: '新章节', editMode: 'mixed' }).run(); }
+          else if (key === 'macro') { ed.chain().focus().insertEmrMacro({ macroCode: 'patientName', dataSource: 'patient' }).run(); }
+          else if (key === 'conditional') { ed.chain().focus().insertEmrConditionalBlock({ conditionFieldKey: this.documentFields.length ? this.documentFields[0].fieldKey : '', conditionOperator: 'eq', conditionValue: '', visible: true }).run(); }
+          else if (key === 'table') { ed.chain().focus().insertTable(3, 3, true).run(); }
+          else if (key === 'drawing') { ed.chain().focus().insertEmrDrawing({ title: '医学图示', svgData: '' }).run(); }
+          else if (key === 'fragment') { ed.chain().focus().insertEmrFragment({ fragmentId: '', sourceTemplateId: '', version: '1', title: '片段引用' }).run(); }
+          else if (key === 'pagebreak') { ed.chain().focus().insertEmrPageBreak().run(); }
+        } catch (e) { HIS.notifyError(new Error('插入组件失败：' + ((e && e.message) || e))); }
       },
 
       /* ===== 模板查询与装载 ===== */
@@ -336,7 +479,8 @@
         var vm = this;
         if (!id) {
           vm.current = null; vm.tplFormName = '';
-          vm.printScript = ''; vm.lockedKeys = []; vm.lockedDirty = false;
+          vm.printScript = ''; vm.printConfig = defaultPrintConfig(); vm.legacyFields = []; vm.legacyConverted = false;
+          vm.lockedKeys = []; vm.lockedDirty = false;
           if (vm._editor) { vm._editor.fromJSON(null); }
           vm.clearSel();
           return;
@@ -346,10 +490,15 @@
           vm.current = tpl;
           vm.tplFormName = text(tpl.templateName);
           vm.printScript = text(tpl.printScript);
+          vm.printConfig = normalizePrintConfig(tpl.printConfig);
+          vm.legacyFields = parseFieldDefs(tpl.fields);
           vm.lockedKeys = parseKeys(tpl.lockedSections);
           vm.lockedDirty = false;
+          var storedDoc = safeParse(tpl.document);
+          var doc = storedDoc || fieldsToDocument(vm.legacyFields);
+          if (vm._editor) { vm._editor.setPrintConfig(vm.printConfig); }
+          vm.legacyConverted = !storedDoc && !!doc;
           if (vm._editor) {
-            var doc = safeParse(tpl.document);
             if (doc) { applyLockedFlags(normalizeDocIn(doc), vm.lockedKeys); }
             vm._editor.fromJSON(doc || null);
           }
@@ -371,10 +520,13 @@
         var tpl = vm.current;
         if (!tpl) { ElementPlus.ElMessage.warning('请先选择或新建模板'); return; }
         if (!vm._editor) { ElementPlus.ElMessage.warning('编辑器尚未就绪'); return; }
+        var normalizedDoc = normalizeDocOut(vm._editor.toJSON());
         var body = {
           templateName: text(vm.tplFormName).trim() || text(tpl.templateName),
-          document: JSON.stringify(normalizeDocOut(vm._editor.toJSON())),
-          printScript: text(vm.printScript)
+          document: JSON.stringify(normalizedDoc),
+          rawFields: documentToFields(normalizedDoc, vm.legacyFields),
+          printScript: text(vm.printScript),
+          printConfig: JSON.stringify(normalizePrintConfig(vm.printConfig))
         };
         if (vm.lockedDirty) { body.lockedSections = JSON.stringify(vm.lockedKeys); }
         vm.saving = true;
@@ -383,7 +535,7 @@
           HIS.notifySuccess('模板已保存(版本自增)');
           return HIS.get('/api/his/emr/template/' + HIS.idParam(tpl.id));
         }).then(function (d) {
-          if (d) { vm.current = d; vm.tplFormName = text(d.templateName); }
+          if (d) { vm.current = d; vm.tplFormName = text(d.templateName); vm.legacyFields = parseFieldDefs(d.fields); vm.legacyConverted = false; }
           vm.fetchTemplates();
         }).catch(HIS.notifyError).finally(function () { vm.saving = false; });
       },
@@ -403,7 +555,8 @@
           templateCode: text(f.templateCode).trim(), templateName: text(f.templateName).trim(),
           ownerScope: OWNER_BY_LEVEL[Number(f.scopeLevel)], scopeLevel: Number(f.scopeLevel),
           parentTemplateId: f.parentTemplateId || null, datasetId: f.datasetId || null,
-          document: JSON.stringify({ type: 'doc', content: [{ type: 'paragraph' }] })
+          document: JSON.stringify({ type: 'doc', content: [{ type: 'paragraph' }] }),
+          rawFields: [], printConfig: JSON.stringify(defaultPrintConfig())
         }).then(function (tpl) {
           HIS.notifySuccess('模板已创建');
           vm.newDlg = false;
@@ -446,7 +599,8 @@
           templateCode: text(f.templateCode).trim(), templateName: text(f.templateName).trim(),
           ownerScope: OWNER_BY_LEVEL[Number(f.scopeLevel)], scopeLevel: Number(f.scopeLevel),
           document: JSON.stringify(normalizeDocOut(vm._editor.toJSON())),
-          printScript: text(vm.printScript),
+          rawFields: documentToFields(normalizeDocOut(vm._editor.toJSON()), vm.legacyFields),
+          printScript: text(vm.printScript), printConfig: JSON.stringify(normalizePrintConfig(vm.printConfig)),
           lockedSections: JSON.stringify(vm.lockedKeys || []),
           datasetId: tpl.datasetId || null,
           recordType: tpl.recordType != null ? tpl.recordType : null,
@@ -490,7 +644,9 @@
         if (!vm._editor) { ElementPlus.ElMessage.warning('编辑器尚未就绪'); return; }
         vm._editor.print({
           title: (vm.current ? text(vm.current.templateName) : '病历模板') + ' - 打印预览',
-          printScript: text(vm.printScript)
+          printScript: text(vm.printScript), printConfig: normalizePrintConfig(vm.printConfig),
+          context: { templateName: vm.current ? text(vm.current.templateName) : '病历模板', name: '示例患者', patientName: '示例患者', visitNo: '示例就诊号', organizationName: '示例医疗机构' },
+          autoPrint: false
         });
       },
 
@@ -636,7 +792,7 @@
             fieldKey: text(a.fieldKey), fieldName: text(a.fieldName),
             valueType: mapValueType(a.valueType), dictSource: text(a.dictSource),
             options: typeof a.options === 'string' ? a.options : (a.options ? JSON.stringify(a.options) : ''),
-            placeholder: text(a.placeholder), unit: text(a.unit),
+            placeholder: text(a.placeholder), unit: text(a.unit), defaultMacro: text(a.defaultMacro),
             required: !!a.required, readonly: !!a.readonly, noCopy: !!a.noCopy
           };
         }
@@ -683,7 +839,7 @@
           return;
         }
         var v = vm.selForm[key];
-        if (key === 'options' || key === 'dictSource') { v = text(v).trim() || null; }
+        if (key === 'options' || key === 'dictSource' || key === 'defaultMacro') { v = text(v).trim() || null; }
         var attrs = Object.assign({}, node.attrs);
         attrs[key] = v;
         ed.view.dispatch(ed.view.state.tr.setNodeMarkup(sel.pos, undefined, attrs));
@@ -810,8 +966,8 @@
       }
     },
     template: [
-      '<div class="page-card cd-fill">',
-      '  <div class="page-title">病历模板设计器(结构化) <span style="font-size:12px;color:var(--yb-ink-2);font-weight:normal;">(数据集驱动 · Tiptap 模板 · 三级继承)</span> <el-tag size="small" effect="plain" :type="isLead?\'success\':\'info\'" style="margin-left:6px;">{{ isLead ? \'牵头机构 · 可维护全院\' : \'院内成员\' }}</el-tag></div>',
+      '<div class="page-card cd-fill etd-shell">',
+      '  <div class="page-title">病历模板设计器 <span style="font-size:12px;color:var(--yb-ink-2);font-weight:normal;">A4 所见即所得 · 结构化数据元 · 三级继承</span> <el-tag size="small" effect="plain" :type="isLead?\'success\':\'info\'" style="margin-left:6px;">{{ isLead ? \'牵头机构 · 可维护全院\' : \'院内成员\' }}</el-tag></div>',
       /* ===== 顶栏: 层级过滤 / 模板选择 / 视图模式 ===== */
       '  <div class="toolbar etd-top">',
       '    <el-select v-model="scopeFilter" size="small" style="width:112px">',
@@ -836,10 +992,17 @@
       '    <el-button size="small" type="warning" plain :disabled="!current || Number(current.scopeLevel)===2" @click="propagate">传播更新</el-button>',
       '    <el-button size="small" @click="doPrint">打印预览</el-button>',
       '  </div>',
+      '  <el-alert v-if="legacyConverted" class="etd-legacy-alert" type="warning" :closable="false" show-icon title="已将历史字段画布模板转换为类 Word 文档；保存后将持久化新文档，字段标识和原始属性会完整保留。"></el-alert>',
       /* ===== 三栏主体 ===== */
       '  <div class="etd-main">',
       /* ---- 左栏: 数据集元素树 ---- */
       '    <div class="etd-left">',
+      '      <el-radio-group v-model="leftTab" size="small" class="etd-left-tabs"><el-radio-button label="components">插入组件</el-radio-button><el-radio-button label="dataset">数据元库</el-radio-button></el-radio-group>',
+      '      <template v-if="leftTab===\'components\'">',
+      '        <div class="etd-component-group" v-for="g in componentGroups" :key="g.title"><div class="etd-component-title">{{ g.title }}</div><div class="etd-component-grid"><el-button v-for="it in g.items" :key="it.k" size="small" plain @click="insertComponent(it.k)">{{ it.l }}</el-button></div></div>',
+      '        <div class="etd-tip">组件插入当前光标位置；选中组件后在右侧配置业务属性。</div>',
+      '      </template>',
+      '      <template v-else>',
       '      <el-select v-model="datasetId" size="small" filterable clearable placeholder="选择数据集…" :loading="dsListLoading" @change="onDatasetChange" style="width:100%">',
       '        <el-option v-for="o in dsOptions" :key="o.id" :label="o.label" :value="o.id"></el-option>',
       '      </el-select>',
@@ -859,11 +1022,13 @@
       '          </template>',
       '        </el-tree>',
       '      </div>',
-      '      <div class="etd-tip">数据元拖拽到中间编辑器可插入到指定位置; 双击插入到光标处。</div>',
+      '      <div class="etd-tip">数据元拖拽到中间编辑器可插入到指定位置；双击插入到光标处。</div>',
+      '      </template>',
       '    </div>',
       /* ---- 中栏: Tiptap 编辑器 ---- */
       '    <div class="etd-mid">',
       '      <div class="etd-toolbar-host" ref="toolbarHost"></div>',
+      '      <div class="etd-canvasbar"><b>A4 {{ printConfig.orientation===\'landscape\' ? \'横向\' : \'纵向\' }}</b><el-button-group><el-button size="small" @click="setZoom(.75)">75%</el-button><el-button size="small" @click="setZoom(.9)">90%</el-button><el-button size="small" @click="setZoom(1)">100%</el-button><el-button size="small" @click="setZoom(1.25)">125%</el-button></el-button-group><el-button size="small" @click="fitWidth">适合宽度</el-button><span class="etd-spacer"></span><span class="etd-page-state">缩放 {{ Math.round(zoom*100) }}% · {{ pageCount }} 页</span><el-tag v-if="paginationDiagnostics.length" size="small" type="danger">{{ paginationDiagnostics.length }} 项越界</el-tag></div>',
       '      <div class="etd-editor-host" ref="editorHost" v-loading="editorLoading" :class="{ \'etd-drag-over\': dragOver }" @click="onEditorClick" @dragover.prevent.capture="onDragOver" @dragleave="onDragLeave" @drop.capture="onDropCapture"></div>',
       '    </div>',
       /* ---- 右栏: 属性面板 ---- */
@@ -896,9 +1061,10 @@
       '          <el-form-item label="字段名称"><el-input v-model="selForm.fieldName" @change="applySel(\'fieldName\')"></el-input></el-form-item>',
       '          <el-form-item label="值类型"><el-select v-model="selForm.valueType" style="width:100%" @change="applySel(\'valueType\')"><el-option v-for="vt in valueTypes" :key="vt.v" :label="vt.l" :value="vt.v"></el-option></el-select></el-form-item>',
       '          <el-form-item label="字典来源" v-if="selIsDict"><el-input v-model="selForm.dictSource" placeholder="如 std_gender / diag" @change="applySel(\'dictSource\')"></el-input></el-form-item>',
-      '          <el-form-item label="选项" v-if="selHasOpts"><el-input v-model="selForm.options" type="textarea" :rows="2" placeholder="逗号分隔, 如: 是,否" @change="applySel(\'options\')"></el-input></el-form-item>',
+      '          <el-form-item :label="selForm.valueType===\'textarea\' ? \'快捷短语\' : \'选项\'" v-if="selHasOpts"><el-input v-model="selForm.options" type="textarea" :rows="3" :placeholder="selForm.valueType===\'textarea\' ? \'每行一条快捷短语，点击后仍可编辑\' : \'逗号分隔, 如: 是,否\'" @change="applySel(\'options\')"></el-input></el-form-item>',
       '          <el-form-item label="占位提示"><el-input v-model="selForm.placeholder" @change="applySel(\'placeholder\')"></el-input></el-form-item>',
-      '          <el-form-item label="单位"><el-input v-model="selForm.unit" placeholder="如 mmHg" @change="applySel(\'unit\')"></el-input></el-form-item>',
+      '          <el-form-item label="单位" v-if="selForm.valueType!==\'textarea\' && selForm.valueType!==\'vitals\'"><el-input v-model="selForm.unit" placeholder="如 mmHg" @change="applySel(\'unit\')"></el-input></el-form-item>',
+      '          <el-form-item label="默认宏"><el-select v-model="selForm.defaultMacro" filterable clearable allow-create default-first-option style="width:100%" placeholder="仅空字段自动带入" @change="applySel(\'defaultMacro\')"><el-option v-for="p in macroPresets" :key="p.code" :label="p.label + \'（\' + p.code + \'）\'" :value="p.code"></el-option></el-select></el-form-item>',
       '          <el-form-item label="必填"><el-switch v-model="selForm.required" @change="applySel(\'required\')"></el-switch></el-form-item>',
       '          <el-form-item label="只读"><el-switch v-model="selForm.readonly" @change="applySel(\'readonly\')"></el-switch></el-form-item>',
       '          <el-form-item label="防复制"><el-switch v-model="selForm.noCopy" @change="applySel(\'noCopy\')"></el-switch></el-form-item>',
@@ -948,14 +1114,24 @@
       '          <el-tag v-for="k in lockedKeys" :key="k" size="small" type="warning" closable @close="toggleLockKey(k)">{{ k }}</el-tag>',
       '        </div>',
       '      </div>',
-      /* 打印脚本 */
+      /* 结构化打印配置 */
       '      <div class="etd-card">',
-      '        <div class="etd-card-hd">打印脚本 (print_script)</div>',
-      '        <el-input v-model="printScript" type="textarea" :rows="6" class="etd-script" placeholder="打印窗口载入后执行的脚本(可空), 将注入打印页执行"></el-input>',
-      '        <div style="margin-top:8px;display:flex;align-items:center;gap:8px;">',
-      '          <el-button size="small" @click="doPrint">预览打印</el-button>',
-      '          <span class="etd-hint" style="flex:1;">保存模板时随文档一并提交。</span>',
-      '        </div>',
+      '        <div class="etd-card-hd">页面与打印</div>',
+      '        <el-form class="etd-form" label-position="top" size="small">',
+      '          <el-form-item label="纸张方向"><el-radio-group v-model="printConfig.orientation"><el-radio-button label="portrait">纵向</el-radio-button><el-radio-button label="landscape">横向</el-radio-button></el-radio-group></el-form-item>',
+      '          <div class="etd-print-grid">',
+      '            <el-form-item label="上边距(mm)"><el-input-number v-model="printConfig.margins.top" :min="0" :max="50" controls-position="right" style="width:100%"></el-input-number></el-form-item>',
+      '            <el-form-item label="下边距(mm)"><el-input-number v-model="printConfig.margins.bottom" :min="0" :max="50" controls-position="right" style="width:100%"></el-input-number></el-form-item>',
+      '            <el-form-item label="左边距(mm)"><el-input-number v-model="printConfig.margins.left" :min="0" :max="50" controls-position="right" style="width:100%"></el-input-number></el-form-item>',
+      '            <el-form-item label="右边距(mm)"><el-input-number v-model="printConfig.margins.right" :min="0" :max="50" controls-position="right" style="width:100%"></el-input-number></el-form-item>',
+      '          </div>',
+      '          <el-form-item label="页眉"><el-switch v-model="printConfig.header.enabled"></el-switch><el-input v-if="printConfig.header.enabled" v-model="printConfig.header.content" style="margin-top:6px" placeholder="支持模板名称、患者信息和页码宏"></el-input></el-form-item>',
+      '          <el-form-item label="页脚"><el-switch v-model="printConfig.footer.enabled"></el-switch><el-input v-if="printConfig.footer.enabled" v-model="printConfig.footer.content" style="margin-top:6px" placeholder="支持模板宏与页码宏"></el-input></el-form-item>',
+      '          <el-form-item label="显示页码"><el-switch v-model="printConfig.showPageNumber"></el-switch></el-form-item>',
+      '        </el-form>',
+      '        <el-alert v-if="paginationDiagnostics.length" type="warning" :closable="false" show-icon :title="\'发现 \' + paginationDiagnostics.length + \' 项分页越界，请调整内容或页边距\'"></el-alert>',
+      '        <el-collapse v-if="printScript" style="margin-top:8px"><el-collapse-item title="历史打印脚本（兼容保留）" name="legacy"><el-input v-model="printScript" type="textarea" :rows="4" class="etd-script"></el-input></el-collapse-item></el-collapse>',
+      '        <div style="margin-top:8px;display:flex;align-items:center;gap:8px;"><el-button size="small" type="primary" plain @click="doPrint">逐页预览</el-button><span class="etd-hint">正式打印不输出诊断层。</span></div>',
       '      </div>',
       '    </div>',
       '  </div>',

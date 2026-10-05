@@ -544,6 +544,8 @@
           mode: 'edit',                    /* 引擎档位 edit|design|preview; 只读经 readOnly 控制 */
           readOnly: !vm.canWrite,
           document: doc,
+          printConfig: (vm.selectedTemplate && vm.selectedTemplate.printConfig) || null,
+          printScript: (vm.selectedTemplate && vm.selectedTemplate.printScript) || '',
           placeholder: '书写护理文书内容…',
           nlgEnabled: false,               /* NLG/CDSS 为病历域特性, 护理文书暂不启用 */
           cdssEnabled: false,
@@ -865,8 +867,24 @@
         if (!vm.ready()) { toast('warning', '请先选择模板并书写内容后再打印'); return; }
         var title = '护理文书' + (vm.selectedTemplate ? ' - ' + vm.selectedTemplate.name : '')
           + (vm.patientLabel ? ' - ' + vm.patientLabel : '');
+        var patient = vm.patient || {};
+        var user = typeof HIS.getUser === 'function' ? (HIS.getUser() || {}) : {};
         if (typeof vm.editorWrapper.print === 'function') {
-          try { vm.editorWrapper.print({ title: title }); return; } catch (e) { /* 回退提示 */ }
+          try {
+            vm.editorWrapper.print({
+              title: title,
+              context: {
+                templateName: vm.selectedTemplate ? vm.selectedTemplate.name : '护理文书',
+                name: vm.patientLabel, patientName: vm.patientLabel,
+                inpatientNo: patient.inpatientNo || patient.inpNo || vm.inpVisitId || '',
+                deptName: patient.deptName || '', wardName: patient.wardName || '',
+                doctorName: user.userName || user.realName || '',
+                organizationName: patient.organizationName || ''
+              },
+              autoPrint: false
+            });
+            return;
+          } catch (e) { /* 回退提示 */ }
         }
         toast('warning', '打印组件不可用');
       },

@@ -2191,122 +2191,134 @@
     ].join('\n')
   };
 
-  /* ================= 三期: 药房维度定价(覆盖价维护, 未覆盖回落目录价) =================
-   * 后端 /price/page 返回 JdbcTemplate 行(snake_case 键); 写守卫=管理员/药师(后端 requirePriceWrite)。
+  /* ================= P5: 处方发药默认药房路由(科室×时段×药品大类→药房) =================
+   * 后端 /api/his/pharmacy/rx-route/{list,save,{id}/toggle,{id}(DELETE)} + /resolve-route;
+   * 维度 deptId/timeSlot/drugMajorClass 任一为空=不限(全院/不限时段/不限大类), 解析按 精确>科室+大类>科室+时段>科室>默认西/中药 回落;
+   * 读放开(scopeOrgId 隔离), 写仅牵头机构 ADMIN/SUPER_ADMIN(后端 requireLeadWrite+角色双闸, 此处 lead 控制按钮显隐)。
+   * 时段取班次字典(HIS.shiftDict 同源 am/pm/night+自定义), 大类取医共体值域「药品大类」(HIS.valByType, 值=name 文本)。
    */
-  HIS.views.PharmacyPriceManage = {
+  HIS.views.RxPharmacyRouteConfig = {
+    components: { 'dept-tree-picker': HIS.components.DeptTreePicker },
     data: function () {
       return {
-        loading: false, saving: false,
-        pharmacyDefs: [], pharmacyId: null,
-        keyword: '', list: [], total: 0, page: 1, size: 20,
-        editPrice: null, editRow: null, editDlg: false
+        lead: HIS.isLead(), adminWrite: HIS.hasRole('ADMIN') || HIS.hasRole('SUPER_ADMIN'),
+        loading: false, list: [],
+        pharmacyDefs: [], deptDefs: [], shiftList: [], majorClassOpts: [],
+        dlgVisible: false, saving: false,
+        form: blankRouteForm()
       };
+    },
+    computed: {
+      canWrite: function () { return this.lead && this.adminWrite; }
     },
     created: function () {
       var vm = this;
-      HIS.get('/api/his/pharmacy/pharmacy-def').then(function (list) {
-        vm.pharmacyDefs = list || [];
-        if (vm.pharmacyDefs.length) { vm.pharmacyId = vm.pharmacyDefs[0].id; vm.load(); }
-      }).catch(HIS.notifyError);
+      HIS.get('/api/his/pharmacy/pharmacy-def').then(function (l) { vm.pharmacyDefs = l || []; }).catch(HIS.notifyError);
+      HIS.get('/api/his/dept/enabled').then(function (l) { vm.deptDefs = l || []; }).catch(HIS.notifyError);
+      HIS.shiftDict(function (l) { vm.shiftList = l || []; });
+      HIS.valByType('药品大类').then(function (l) { vm.majorClassOpts = l || []; }).catch(function () { });
+      this.load();
     },
     methods: {
       load: function () {
-        var vm = this;
-        if (!vm.pharmacyId) { vm.list = []; vm.total = 0; return; }
-        vm.loading = true;
-        var q = '/api/his/pharmacy/price/page?pharmacyId=' + vm.pharmacyId
-          + '&page=' + vm.page + '&size=' + vm.size;
-        if (vm.keyword) { q += '&keyword=' + encodeURIComponent(vm.keyword); }
-        HIS.get(q).then(function (d) {
-          vm.list = (d && d.records) || [];
-          vm.total = (d && d.total) || 0;
-        }).catch(HIS.notifyError).finally(function () { vm.loading = false; });
+        var vm = this; vm.loading = true;
+        HIS.get('/api/his/pharmacy/rx-route/list').then(function (l) { vm.list = l || []; })
+          .catch(HIS.notifyError).finally(function () { vm.loading = false; });
       },
-      search: function () { this.page = 1; this.load(); },
-      onPage: function (p) { this.page = p; this.load(); },
-      onSize: function (s) { this.size = s; this.page = 1; this.load(); },
-      onPharmacyChange: function () { this.page = 1; this.load(); },
-      seqNo: function (i) { return (this.page - 1) * this.size + i + 1; },
-      rowId: function (r) { return r.id != null ? r.id : r.drug_catalog_id; },
+      deptName: function (id) {
+        if (id === null || id === undefined || id === '') { return '全院'; }
+        for (var i = 0; i < this.deptDefs.length; i++) { if (String(this.deptDefs[i].id) === String(id)) { return this.deptDefs[i].deptName; } }
+        return '科室#' + id;
+      },
+      pn: function (id) {
+        if (id === null || id === undefined || id === '') { return '-'; }
+        for (var i = 0; i < this.pharmacyDefs.length; i++) { if (String(this.pharmacyDefs[i].id) === String(id)) { return this.pharmacyDefs[i].name; } }
+        return '药房#' + id;
+      },
+      slotName: function (code) {
+        if (!code) { return '不限'; }
+        for (var i = 0; i < this.shiftList.length; i++) { if (this.shiftList[i].v === code) { return this.shiftList[i].l; } }
+        var lab = (window.HIS && HIS.shiftLabel) ? HIS.shiftLabel(code) : null;
+        return lab || code;
+      },
+      clsName: function (c) { return c ? c : '不限'; },
+      openAdd: function () { this.form = blankRouteForm(); this.dlgVisible = true; },
       openEdit: function (row) {
-        this.editRow = row;
-        var ov = row.override_price != null ? row.override_price : row.eff_price;
-        this.editPrice = ov != null ? Number(ov) : null;
-        this.editDlg = true;
+        this.form = {
+          id: row.id, orgId: row.orgId,
+          deptId: (row.deptId === null || row.deptId === undefined) ? null : row.deptId,
+          timeSlot: row.timeSlot || '', drugMajorClass: row.drugMajorClass || '',
+          pharmacyId: row.pharmacyId, priority: row.priority == null ? 100 : row.priority,
+          status: row.status == null ? 1 : row.status, remark: row.remark || ''
+        };
+        this.dlgVisible = true;
       },
-      savePrice: function () {
+      save: function () {
         var vm = this;
-        if (!vm.editRow) { return; }
-        if (vm.editPrice == null || isNaN(Number(vm.editPrice)) || Number(vm.editPrice) < 0) {
-          ElementPlus.ElMessage.warning('请输入非负数字零售价'); return;
-        }
+        if (!vm.form.pharmacyId) { ElementPlus.ElMessage.warning('请选择发药药房'); return; }
         vm.saving = true;
-        HIS.post('/api/his/pharmacy/price/save', {
-          pharmacyId: vm.pharmacyId, drugCatalogId: vm.rowId(vm.editRow), retailPrice: Number(vm.editPrice)
-        }).then(function () {
-          HIS.notifySuccess('覆盖价已保存');
-          vm.editDlg = false;
-          vm.load();
+        HIS.post('/api/his/pharmacy/rx-route/save', vm.form).then(function (d) {
+          HIS.notifySuccess(vm.form.id ? '路由规则已更新' : '路由规则已新增');
+          vm.dlgVisible = false; vm.load();
         }).catch(HIS.notifyError).finally(function () { vm.saving = false; });
       },
-      clearPrice: function (row) {
-        var vm = this;
-        if (row.override_price == null) { ElementPlus.ElMessage.info('该药未设覆盖价(已是目录价)'); return; }
-        ElementPlus.ElMessageBox.confirm(
-          '清空"' + (row.generic_name || '') + '"的覆盖价, 生效价回落目录价 ￥' + money(row.catalog_price) + '？',
-          '清空覆盖价', { type: 'warning', confirmButtonText: '清空', cancelButtonText: '取消' }
-        ).then(function () {
-          return HIS.post('/api/his/pharmacy/price/clear', { pharmacyId: vm.pharmacyId, drugCatalogId: vm.rowId(row) });
-        }).then(function () {
-          HIS.notifySuccess('已清空, 回落目录价');
-          vm.load();
-        }).catch(function (e) { if (e !== 'cancel' && e !== 'close') { HIS.notifyError(e); } });
+      toggle: function (row) {
+        var vm = this; var on = row.status !== 1;
+        HIS.post('/api/his/pharmacy/rx-route/' + row.id + '/toggle?enabled=' + (on ? 'true' : 'false')).then(function () {
+          HIS.notifySuccess(on ? '已启用' : '已停用'); vm.load();
+        }).catch(HIS.notifyError);
       },
-      money: money
+      del: function (row) {
+        var vm = this;
+        ElementPlus.ElMessageBox.confirm('确认删除该路由规则（' + vm.deptName(row.deptId) + ' · ' + vm.slotName(row.timeSlot) + ' · ' + vm.clsName(row.drugMajorClass) + ' → ' + vm.pn(row.pharmacyId) + '）？', '删除路由', { type: 'warning' }).then(function () {
+          return HIS.del('/api/his/pharmacy/rx-route/' + row.id);
+        }).then(function () { HIS.notifySuccess('已删除'); vm.load(); }).catch(function (e) { if (e !== 'cancel' && e !== 'close') { HIS.notifyError(e); } });
+      }
     },
     template: [
       '<div class="page-card cd-fill">',
-      '  <div class="page-title">药房定价 <span style="font-size:12px;color:var(--yb-ink-2);font-weight:normal;">(按药房维护覆盖零售价 · 未覆盖回落目录价 · 开方计价按此生效价)</span></div>',
+      '  <div class="page-title">处方发药默认药房设置 <span style="font-size:12px;color:var(--yb-ink-2);font-weight:normal;">(科室×时段×药品大类 → 发药药房 · 开方预载优先级：精确&gt;科室+大类&gt;科室+时段&gt;科室&gt;西/中药默认 · 仅系统管理员维护)</span></div>',
       '  <div class="toolbar">',
-      '    <el-select v-model="pharmacyId" placeholder="选择药房" filterable style="width:180px" @change="onPharmacyChange">',
-      '      <el-option v-for="p in pharmacyDefs" :key="p.id" :label="p.name" :value="p.id"></el-option>',
-      '    </el-select>',
-      '    <el-input v-model="keyword" placeholder="药品名称/编码/拼音" clearable style="width:220px" @keyup.enter="search"></el-input>',
-      '    <el-button type="primary" @click="search" :disabled="!pharmacyId">查询</el-button>',
-      '    <el-button @click="load" :disabled="!pharmacyId">刷新</el-button>',
+      '    <el-button v-if="canWrite" type="primary" @click="openAdd">新增规则</el-button>',
+      '    <el-button @click="load">刷新</el-button>',
       '    <span style="flex:1;"></span>',
-      '    <span style="color:var(--yb-ink-2);font-size:13px;">共 {{ total }} 条</span>',
+      '    <span style="color:var(--yb-ink-2);font-size:13px;">共 {{ list.length }} 条规则</span>',
       '  </div>',
+      '  <el-alert type="info" :closable="false" show-icon style="margin-bottom:12px;" title="任一留空的维度(科室/时段/大类)代表不限; 开方时按最精确命中取药房, 未命中回落科室默认西/中药药房; 优先级数字小者优先"></el-alert>',
       '  <el-table :data="list" v-loading="loading" border stripe size="small" height="100%">',
-      '    <el-table-column type="index" label="序号" width="60" :index="seqNo"></el-table-column>',
-      '    <el-table-column prop="drug_code" label="编码" width="110" show-overflow-tooltip></el-table-column>',
-      '    <el-table-column prop="generic_name" label="通用名" min-width="160" show-overflow-tooltip></el-table-column>',
-      '    <el-table-column prop="spec" label="规格" width="120" show-overflow-tooltip></el-table-column>',
-      '    <el-table-column prop="min_unit" label="最小单位" width="80"><template #default="s">{{ s.row.min_unit || \'-\' }}</template></el-table-column>',
-      '    <el-table-column label="目录价" width="90" align="right"><template #default="s">{{ money(s.row.catalog_price) }}</template></el-table-column>',
-      '    <el-table-column label="覆盖价" width="90" align="right"><template #default="s">',
-      '      <span v-if="s.row.override_price!=null" style="color:var(--yb-link);font-weight:600;">{{ money(s.row.override_price) }}</span>',
-      '      <span v-else style="color:var(--yb-ink-4);">-</span>',
-      '    </template></el-table-column>',
-      '    <el-table-column label="生效价" width="90" align="right"><template #default="s"><b>{{ money(s.row.eff_price) }}</b></template></el-table-column>',
-      '    <el-table-column label="库存" width="90" align="right"><template #default="s">{{ s.row.stock_qty==null?\'-\':s.row.stock_qty }}</template></el-table-column>',
-      '    <el-table-column label="操作" width="140" fixed="right"><template #default="s">',
-      '      <el-button link type="primary" size="small" @click="openEdit(s.row)">{{ s.row.override_price==null?\'设覆盖价\':\'改覆盖价\' }}</el-button>',
-      '      <el-button v-if="s.row.override_price!=null" link type="danger" size="small" @click="clearPrice(s.row)">清空</el-button>',
+      '    <el-table-column type="index" label="序号" width="56"></el-table-column>',
+      '    <el-table-column label="开单科室" width="150"><template #default="s">{{ deptName(s.row.deptId) }}</template></el-table-column>',
+      '    <el-table-column label="时段" width="90" align="center"><template #default="s">{{ slotName(s.row.timeSlot) }}</template></el-table-column>',
+      '    <el-table-column label="药品大类" width="120"><template #default="s">{{ clsName(s.row.drugMajorClass) }}</template></el-table-column>',
+      '    <el-table-column label="发药药房" width="150"><template #default="s">{{ pn(s.row.pharmacyId) }}</template></el-table-column>',
+      '    <el-table-column prop="priority" label="优先级" width="80" align="center"></el-table-column>',
+      '    <el-table-column label="状态" width="80" align="center"><template #default="s"><el-tag size="small" :type="s.row.status===1?\'success\':\'info\'">{{ s.row.status===1?\'启用\':\'停用\' }}</el-tag></template></el-table-column>',
+      '    <el-table-column prop="remark" label="备注" show-overflow-tooltip><template #default="s">{{ s.row.remark||\'-\' }}</template></el-table-column>',
+      '    <el-table-column label="操作" width="170" fixed="right"><template #default="s">',
+      '      <template v-if="canWrite">',
+      '        <el-button link type="primary" size="small" @click="openEdit(s.row)">编辑</el-button>',
+      '        <el-button link size="small" @click="toggle(s.row)">{{ s.row.status===1?\'停用\':\'启用\' }}</el-button>',
+      '        <el-button link type="danger" size="small" @click="del(s.row)">删除</el-button>',
+      '      </template><span v-else style="color:var(--yb-ink-4);">-</span>',
       '    </template></el-table-column>',
       '  </el-table>',
-      '  <el-pagination style="margin-top:12px;justify-content:flex-end;" background layout="total, sizes, prev, pager, next" :total="total" :page-size="size" :page-sizes="[10, 20, 50, 100]" :current-page="page" @current-change="onPage" @size-change="onSize"></el-pagination>',
-      '  <el-dialog v-model="editDlg" title="维护覆盖价" width="420px">',
-      '    <el-form label-width="90px" v-if="editRow">',
-      '      <el-form-item label="药品">{{ editRow.generic_name }} {{ editRow.spec }}</el-form-item>',
-      '      <el-form-item label="目录价">{{ money(editRow.catalog_price) }}</el-form-item>',
-      '      <el-form-item label="覆盖价"><el-input-number v-model="editPrice" :min="0" :precision="6" :step="0.01" controls-position="right" style="width:60%;"></el-input-number></el-form-item>',
-      '      <el-form-item><span style="color:var(--yb-ink-2);font-size:12px;">最小单位零售价(元), 与目录价同口径</span></el-form-item>',
+      '  <el-dialog v-model="dlgVisible" :title="form.id?\'编辑路由规则\':\'新增路由规则\'" width="560px">',
+      '    <el-form :model="form" label-width="100px">',
+      '      <el-form-item label="开单科室"><dept-tree-picker v-model="form.deptId" :options="deptDefs" placeholder="留空=全院该维度" /></el-form-item>',
+      '      <el-form-item label="时段"><el-select v-model="form.timeSlot" clearable placeholder="留空=不限时段" style="width:100%"><el-option v-for="s in shiftList" :key="s.v" :label="s.l" :value="s.v"></el-option></el-select></el-form-item>',
+      '      <el-form-item label="药品大类"><el-select v-model="form.drugMajorClass" clearable filterable placeholder="留空=不限大类" style="width:100%"><el-option v-for="o in majorClassOpts" :key="o.code" :label="o.name" :value="o.name"></el-option></el-select></el-form-item>',
+      '      <el-form-item label="发药药房" required><el-select v-model="form.pharmacyId" filterable placeholder="选择启用中药房" style="width:100%"><el-option v-for="p in pharmacyDefs" :key="p.id" :label="p.name" :value="p.id"></el-option></el-select></el-form-item>',
+      '      <el-form-item label="优先级"><el-input-number v-model="form.priority" :min="0" :max="9999" controls-position="right" style="width:140px"></el-input-number><span style="margin-left:8px;color:var(--yb-ink-2);font-size:12px;">数字小者优先</span></el-form-item>',
+      '      <el-form-item label="启用"><el-switch v-model="form.status" :active-value="1" :inactive-value="0"></el-switch></el-form-item>',
+      '      <el-form-item label="备注"><el-input v-model="form.remark" maxlength="120"></el-input></el-form-item>',
       '    </el-form>',
-      '    <template #footer><el-button @click="editDlg=false">取消</el-button><el-button type="primary" :loading="saving" @click="savePrice">保存</el-button></template>',
+      '    <template #footer><el-button @click="dlgVisible=false">取 消</el-button><el-button type="primary" :loading="saving" @click="save">保 存</el-button></template>',
       '  </el-dialog>',
       '</div>'
     ].join('\n')
   };
+  function blankRouteForm() {
+    return { id: null, orgId: null, deptId: null, timeSlot: '', drugMajorClass: '', pharmacyId: null, priority: 100, status: 1, remark: '' };
+  }
+
 })();

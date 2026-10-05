@@ -115,6 +115,32 @@ public class UploadStatusService {
         }
     }
 
+    /**
+     * 入待传队列(上传时机参数 deferred 模式: 不即时调医保接口, 由定时扫描批量补传):
+     * 幂等 —— 已有行不降级不改写(已传/失败待补/已撤销各有归宿, 待传行重复入队也无害);
+     * 仅无行时新建 status=0, retry_count=0, next_retry=NOW(下个扫描周期即拾取)。
+     */
+    public void markPending(Long tenantId, String bizType, Long bizId, String mdtrtId) {
+        Long outer = TenantContext.get();
+        TenantContext.set(tenantId);
+        try {
+            HisUploadStatus row = selectByBiz(bizType, bizId);
+            if (row != null) {
+                return;
+            }
+            row = new HisUploadStatus();
+            row.setBizType(bizType);
+            row.setBizId(bizId);
+            row.setMdtrtId(mdtrtId);
+            row.setStatus(HisUploadStatus.STATUS_PENDING);
+            row.setRetryCount(0);
+            row.setNextRetry(java.time.LocalDateTime.now());
+            mapper.insert(row);
+        } finally {
+            restore(outer);
+        }
+    }
+
     /** 退号撤销: VISIT 标记 status=3 已撤销(不再补传, 收费守卫阻断) */
     public void markRevoked(Long tenantId, String bizType, Long bizId, String mdtrtId) {
         Long outer = TenantContext.get();

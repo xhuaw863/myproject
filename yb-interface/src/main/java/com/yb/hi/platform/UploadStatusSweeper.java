@@ -15,8 +15,9 @@ import java.util.Map;
 
 /**
  * 医保上传管线扫描器(批次4 M5, 设计 §6.2):
- * 周期扫描 his_upload_status 中纯上传类失败待补(status=2, retry_count<6, next_retry 到期)的行,
- * 按 biz_type 分派补传器: VISIT->2203门诊就诊(uploadVisitYb) / INP_REG->2401入院登记 / INP_DISCH->2402出院办理。
+ * 周期扫描 his_upload_status 中纯上传类的待传(0, 上传时机参数 deferred 入队)与失败待补(2,
+ * retry_count<6, next_retry 到期)行, 按 biz_type 分派补传器: VISIT->2203门诊就诊(uploadVisitYb) /
+ * INP_REG->2401入院登记 / INP_DISCH->2402出院办理。
  * 成功后置已传(1), 失败指数退避(1/5/15/60min), 满 6 次转人工【医保上报告警】。
  * 手动重传(retryRow)由上报中心触发: 仅失败待补行可重传, 复位退避后立即补传一次。
  * 责任分工: 2304/2305 UNKNOWN 资金补偿归 CompTaskSweeper, 本扫描器只处理 2401/2402/2203 纯上传语义。
@@ -39,16 +40,19 @@ public class UploadStatusSweeper {
 
     @Scheduled(fixedDelay = 60000)
     public void sweep() {
+        // 待传(0)目前仅 VISIT 会产生(deferred 入队); 失败待补(2)含三个纯上传类型
         List<Map<String, Object>> rows = jdbcTemplate.queryForList(
-                "SELECT id, tenant_id, biz_id, biz_type FROM his_upload_status"
-                        + " WHERE deleted = 0 AND biz_type IN ('VISIT', 'INP_REG', 'INP_DISCH') AND status = 2"
+                "SELECT id, tenant_id, biz_id, biz_type, status FROM his_upload_status"
+                        + " WHERE deleted = 0 AND (biz_type IN ('INP_REG', 'INP_DISCH') AND status = 2"
+                        + " OR biz_type = 'VISIT' AND status IN (0, 2))"
                         + " AND retry_count < " + HisUploadStatus.MAX_AUTO_RETRY
                         + " AND next_retry <= NOW() ORDER BY id LIMIT 50");
         for (Map<String, Object> r : rows) {
             Long id = toLong(r.get("id"));
             Long tenantId = toLong(r.get("tenant_id"));
             try {
-                attempt(id, tenantId, toLong(r.get("biz_id")), str(r.get("biz_type")), false);
+                attempt(id, tenantId, toLong(r.get("biz_id")), str(r.get("biz_type")), false,
+                        toLong(r.get("status")).intValue());
             } catch (Exception e) {
                 log.error("上传状态补传执行异常: uploadId={}, 原因: {}", id, e.getMessage(), e);
             }
@@ -82,7 +86,7 @@ public class UploadStatusSweeper {
             res.put("err", "该记录当前状态不可手动重传(仅失败待补可重传)");
             return res;
         }
-        return attempt(id, tenantId, toLong(biz.get(0).get("biz_id")), bizType, true);
+        return attempt(id, tenantId, toLong(biz.get(0).get("biz_id")), bizType, true, 2);
     }
 
     /** 是否本扫描器可补传的纯上传类型 */
@@ -92,14 +96,15 @@ public class UploadStatusSweeper {
                 || HisUploadStatus.BIZ_INP_DISCH.equals(bizType);
     }
 
-    /** 补传一条纯上传记录(认领 -> 按 biz_type 调对应上传器 -> 落状态)。manual=true 时认领已由 retryRow 完成 */
-    private Map<String, Object> attempt(Long id, Long tenantId, Long bizId, String bizType, boolean manual) {
+    /** 补传一条纯上传记录(认领 -> 按 biz_type 调对应上传器 -> 落状态)。manual=true 时认领已由 retryRow 完成;
+     *  claimStatus: 扫描到的当前状态(0待传/2失败待补), 认领 UPDATE 按它做条件防并发与状态漂移 */
+    private Map<String, Object> attempt(Long id, Long tenantId, Long bizId, String bizType, boolean manual, int claimStatus) {
         if (!manual) {
             int claimed = jdbcTemplate.update(
                     "UPDATE his_upload_status SET next_retry = DATE_ADD(NOW(), INTERVAL 30 MINUTE)"
-                            + " WHERE id = ? AND tenant_id = ? AND deleted = 0 AND status = 2"
+                            + " WHERE id = ? AND tenant_id = ? AND deleted = 0 AND status = ?"
                             + " AND retry_count < " + HisUploadStatus.MAX_AUTO_RETRY + " AND next_retry <= NOW()",
-                    id, tenantId);
+                    id, tenantId, claimStatus);
             if (claimed != 1) {
                 Map<String, Object> res = new LinkedHashMap<>();
                 res.put("success", false);
